@@ -161,6 +161,18 @@ public static class FlowValueEvaluation
                 "alert.agentId" => alert.AgentId.ToString("D"),
                 "alert.ruleId" => alert.RuleId.ToString("D"),
                 "alert.observedAtUtc" => alert.ObservedAtUtc.ToString("O", CultureInfo.InvariantCulture),
+                "alert.hostname" => alert.Presentation?.Hostname,
+                "alert.tenantName" => alert.Presentation?.TenantName,
+                "alert.clientUrl" => alert.Presentation?.ClientUrl,
+                "alert.alertUrl" => alert.Presentation?.AlertUrl,
+                "alert.formattedValue" => alert.Presentation?.FormattedValue,
+                "alert.condition" => alert.Presentation?.Condition,
+                "alert.recoveryCondition" => alert.Presentation?.RecoveryCondition,
+                "alert.raisedAtUtc" => alert.Presentation?.RaisedAtUtc.ToString("O", CultureInfo.InvariantCulture),
+                "alert.diskFreeBytes" => alert.Presentation?.Disk?.FreeBytes,
+                "alert.diskTotalBytes" => alert.Presentation?.Disk?.TotalBytes,
+                "alert.title" => alert.Presentation?.Title,
+                "alert.details" => alert.Presentation?.Details,
                 _ => UnknownPath
             };
             if (ReferenceEquals(value, UnknownPath)) return Missing("event-path");

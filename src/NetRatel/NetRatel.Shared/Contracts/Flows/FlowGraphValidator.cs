@@ -8,7 +8,8 @@ namespace NetRatel.Shared.Contracts.Flows;
 public static class FlowGraphValidator
 {
     private static readonly HashSet<string> TemplateFields = new(StringComparer.Ordinal)
-        { "ruleName", "clientName", "resource", "metric", "severity", "value", "serviceState", "occurredAt", "offlineSummary", "offlineCount", "offlineClients", "aiSummary", "aiEvidence", "aiRecommendations", "aiStatus", "aiObservedAt", "aiInvestigationId" };
+        { "ruleName", "clientName", "resource", "metric", "severity", "value", "serviceState", "occurredAt", "offlineSummary", "offlineCount", "offlineClients", "aiSummary", "aiEvidence", "aiRecommendations", "aiStatus", "aiObservedAt", "aiInvestigationId",
+          "alertTitle", "alertDetails", "hostname", "tenantName", "clientUrl", "alertUrl", "formattedValue", "condition", "recoveryCondition", "raisedAt", "diskFree", "diskTotal" };
     public static FlowValidationResultDto ValidateDraft(FlowGraphDto? graph) => Validate(graph, false, false);
     public static FlowValidationResultDto ValidatePublished(FlowGraphDto? graph) => Validate(graph, true, true);
     public static FlowValidationResultDto ValidateComplete(FlowGraphDto? graph) => Validate(graph, true, false);
@@ -186,7 +187,7 @@ public static class FlowGraphTemplates
         var trigger = Guid.NewGuid(); var mapping = Guid.NewGuid(); var action = Guid.NewGuid();
         return new(FlowLimits.SchemaVersion,
             [new(trigger, FlowNodeKind.AlertRaised, "Alert raised", new(60, 160)),
-             new(mapping, FlowNodeKind.MapIncident, "Map alert fields", new(350, 160), Mapping: new("{severity}: {ruleName} on {clientName}", "{ruleName}\nClient: {clientName}\nResource: {resource}\nMetric: {metric}\nValue: {value}\nService: {serviceState}\nObserved: {occurredAt}")),
+             new(mapping, FlowNodeKind.MapIncident, "Map alert fields", new(350, 160), Mapping: new(FlowMonitoringMappingFields.Title, FlowMonitoringMappingFields.Description)),
              new(action, FlowNodeKind.CreateIncident, "RatelDesk: Create incident", new(640, 160))],
             [new(trigger, FlowLimits.OutputPort, mapping, FlowLimits.InputPort), new(mapping, FlowLimits.OutputPort, action, FlowLimits.InputPort)], new());
     }

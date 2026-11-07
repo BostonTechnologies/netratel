@@ -33,6 +33,51 @@ opt-in is required. Optional deployment destination restrictions still apply.
 
 ## Durable delivery and recovery
 
+New Monitoring occurrences pin a versioned human presentation in the same
+tenant-scoped transaction as their occurrence, raised event and Flow outbox.
+The snapshot contains the tenant and client display identity, known hostname,
+the original metric/condition/holds, UTC observed and raised times, and any
+disk capacity facts from that exact accepted collection. A disk percentage is
+already a percentage: `0.01220703125` displays as `0.01% free (99.99% used)`.
+Missing byte counts stay missing. Disk incidents omit irrelevant service state;
+service incidents retain it. Grouped offline incidents describe availability
+and the pinned affected names/count, even if the parent rule has a disk name.
+
+The stock mapping uses `{alertTitle}` and `{alertDetails}`. New snapshot events
+also adopt this presentation when an existing published graph has the exact
+historical stock title and description. This forward-only compatibility path
+does not edit the published graph or its hash. Custom templates retain their
+mapping semantics, including raw `{value}`. Authoring, validation, preview and
+runtime also expose `{hostname}`, `{tenantName}`, `{clientUrl}`, `{alertUrl}`,
+`{formattedValue}`, `{condition}`, `{recoveryCondition}`, `{raisedAt}`,
+`{diskFree}` and `{diskTotal}`; the typed alert catalogue exposes corresponding
+fields and exact `alert.diskFreeBytes`/`alert.diskTotalBytes`. Unavailable optional
+facts resolve as empty template text or typed null. The receiver adds one
+compact technical reference section instead of repeating the measured facts.
+
+Links use the effective public Web base: deployment `ServiceIdentity:WebBaseUrl`,
+then saved service public settings, then effective Branding Site URL (deployment
+`Branding:SiteUrl` before the administrator value). Path prefixes are preserved.
+The routes are `/clients?tenantId=...&clientId=...` and
+`/monitoring?tenantId=...&alert=...`; the latter uses the immutable occurrence ID.
+Existing sign-in and tenant authorization remain required. No bearer token is
+added, and API/Gateway addresses are never used as fallback Web URLs. Missing,
+invalid or over-budget public bases leave readable content with explicit
+unavailable-link text. Individual links are bounded to 1,024 characters and the
+complete escaped snapshot to 4,096 bytes; long display text is shortened without
+splitting Unicode scalar values. Exact raw evidence and correlation IDs remain
+in Monitoring history.
+
+The RatelDesk payload remains plain text: its existing HTML removal/control
+validation runs before JSON serialization. Slack uses literal text with markup,
+mentions and link unfurl disabled; Discord escapes Markdown in the new plain
+presentation and disables mentions. Rendered titles/descriptions keep the existing
+receiver limits. A rename, deletion, later measurement or public-base edit does
+not change a pinned presentation. Pre-upgrade occurrences keep their absent
+snapshot and historical canonical envelope/suffix; already prepared delivery
+bodies and wire/idempotency keys are replayed exactly. No old incident is resent
+or reformatted during upgrade.
+
 Read-only preparation captures receiver/source/namespace, semantic connection
 and mapping revisions, fixed endpoints, receiver guarantees, exact wire body,
 receiver fingerprint, and wire key. Credentials are freshly resolved for this

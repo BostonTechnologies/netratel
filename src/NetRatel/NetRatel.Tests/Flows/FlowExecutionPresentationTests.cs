@@ -11,6 +11,37 @@ namespace NetRatel.Tests.Flows;
 public sealed class FlowExecutionPresentationTests
 {
     [Fact]
+    public void New_monitoring_presentation_has_compact_references_and_context_specific_literal_display()
+    {
+        var lease = FlowTestData.Lease("Synthetic worker", 90);
+        var data = lease.Event.Data!;
+        var at = lease.Event.OccurredAtUtc;
+        var snapshot = new NetRatel.Shared.Contracts.Monitoring.MonitoringPresentationSnapshotDto(1, 17, data.RuleId, data.AgentId,
+            lease.Event.OccurrenceId, "Example tenant", "[worker](https://untrusted.example.test)", null,
+            "Critical · <b>worker</b>", "Pinned disk facts. <script>untrusted</script>", "1% free", "below 10% for 60 seconds",
+            "above 12% for 30 seconds", at, at);
+        var input = lease.Event with { Data = data with { Presentation = snapshot, ClientName = snapshot.ClientName } };
+        var draft = new FlowIncidentActionDraft(17, lease.RunId, Guid.NewGuid(), Guid.NewGuid(), 1, lease.SourceInstanceId,
+            "new-action", input, new(snapshot.Title, snapshot.Details));
+        var description = FlowIncidentSourcePresentation.Description(draft);
+        Assert.Contains("Technical references", description);
+        Assert.Contains(lease.Event.OccurrenceId.ToString("D"), description);
+        Assert.DoesNotContain("Observed value:", description);
+        Assert.DoesNotContain("NetRatel monitoring occurrence", description);
+        var plain = RatelDeskPayload.Create(new("Example", "https://desk.example.test", "org", "customer", null, [], new(), true),
+            draft.Fields.Title, description, 1);
+        Assert.Equal("Critical · worker", plain.Title);
+        Assert.DoesNotContain("<script>", plain.Description);
+        var discord = NotificationMessageFormatter.Format(draft with { Kind = FlowActionKind.Discord,
+            Fields = new("[worker](https://untrusted.example.test)", "*literal facts* @everyone") });
+        Assert.Contains("\\[worker\\]\\(https://untrusted.example.test\\)", discord);
+        Assert.Contains("\\*literal facts\\*", discord);
+        // Existing transport tests also require allowed_mentions.parse=[] and Slack mrkdwn=false.
+        var custom = draft with { Fields = new("Custom title", "Custom description") };
+        Assert.StartsWith("Custom description\n\nTechnical references", FlowIncidentSourcePresentation.Description(custom));
+    }
+
+    [Fact]
     public void Independent_execution_AI_turn_is_stable_per_action_and_preserves_legacy_turn_identity()
     {
         const string key = "flow-17/run-1/node-1/attempt-1";

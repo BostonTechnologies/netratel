@@ -41,7 +41,19 @@ public static class FlowBindingCatalogue
         new("alert.serviceState", "Service state", FlowDataType.Text),
         new("alert.agentId", "Client ID", FlowDataType.Text, false),
         new("alert.ruleId", "Rule ID", FlowDataType.Text, false),
-        new("alert.observedAtUtc", "Observed time", FlowDataType.Text, false)
+        new("alert.observedAtUtc", "Observed time", FlowDataType.Text, false),
+        new("alert.hostname", "Pinned hostname", FlowDataType.Text),
+        new("alert.tenantName", "Pinned tenant name", FlowDataType.Text),
+        new("alert.clientUrl", "Authenticated client link", FlowDataType.Text),
+        new("alert.alertUrl", "Authenticated exact alert link", FlowDataType.Text),
+        new("alert.formattedValue", "Formatted measured value", FlowDataType.Text),
+        new("alert.condition", "Breach threshold and hold", FlowDataType.Text),
+        new("alert.recoveryCondition", "Recovery threshold and hold", FlowDataType.Text),
+        new("alert.raisedAtUtc", "Pinned raised time", FlowDataType.Text),
+        new("alert.diskFreeBytes", "Exact collected free bytes", FlowDataType.Number),
+        new("alert.diskTotalBytes", "Exact collected total bytes", FlowDataType.Number),
+        new("alert.title", "Pinned human alert title", FlowDataType.Text),
+        new("alert.details", "Pinned human alert details", FlowDataType.Text)
     ];
 
     private static readonly IReadOnlyList<FlowBindingFieldDto> ExecutionResultFields =

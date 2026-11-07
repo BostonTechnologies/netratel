@@ -17,6 +17,105 @@ namespace NetRatel.Tests.API;
 public sealed class MonitoringFlowBridgeTests
 {
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void New_disk_presentation_pins_human_identity_exact_percent_and_supported_public_routes(bool includeBytes)
+    {
+        var rig = new Rig();
+        var key = rig.Intent.Series with { ResourceKey = "disk:/data" };
+        var rule = rig.Rule with { Name = "Disk free space", Condition = new(MonitoringMetricKind.DiskFreePercent,
+            MonitoringNumericUnit.Percent, 10, 12, null, null, []), BreachHold = TimeSpan.FromSeconds(60), RecoveryHold = TimeSpan.FromSeconds(30) };
+        var evidence = rig.Intent.PinnedEvidence with { NumericValue = 0.01220703125,
+            DiskFacts = includeBytes ? new(1024UL * 1024 * 1024, 131072, new("zfs", "pool/data", "/", "quota:data", false)) : null };
+        var occurrence = rig.State.Occurrence! with { PinnedRule = rule, RaisedEvidence = evidence };
+        var snapshot = MonitoringIncidentPresentation.Create(key, occurrence, "Example tenant",
+            new(key.AgentId, "Backup appliance", "backup-01"), "https://monitor.example.test/ops/netratel/");
+        snapshot.Title.Should().Contain("backup-01").And.Contain("/data").And.Contain("0.01% free");
+        snapshot.Details.Should().Contain("99.99% used").And.Contain("below 10% for 60 seconds")
+            .And.Contain("above 12% for 30 seconds").And.Contain("UTC").And.NotContain("Service: Unknown");
+        snapshot.ClientUrl.Should().Be($"https://monitor.example.test/ops/netratel/clients?tenantId={key.TenantId}&clientId={key.AgentId:D}");
+        snapshot.AlertUrl.Should().Be($"https://monitor.example.test/ops/netratel/monitoring?tenantId={key.TenantId}&alert={occurrence.OccurrenceId:D}");
+        if (includeBytes) snapshot.Details.Should().Contain("128 KiB free / 1 GiB total").And.Contain("Filesystem: zfs");
+        else { snapshot.Disk.Should().BeNull(); snapshot.Details.Should().NotContain("Capacity:"); }
+        var intent = rig.Intent with { Series = key, PinnedRule = rule, PinnedEvidence = evidence, Presentation = snapshot };
+        var input = MonitoringFlowEventFactory.Create(intent)!;
+        FlowContractValidation.ValidEnvelope(input).Should().BeTrue();
+        input.Data!.ClientName.Should().Be("Backup appliance"); input.Data.NumericValue.Should().Be(0.01220703125);
+        input.Data.Presentation.Should().Be(snapshot);
+        var oldStock = new FlowIncidentMappingDto(FlowMonitoringMappingFields.HistoricalTitle, FlowMonitoringMappingFields.HistoricalDescription);
+        var upgraded = FlowPureEvaluation.Map(oldStock, input.Data);
+        upgraded.Title.Should().Be(snapshot.Title); upgraded.Description.Should().Be(snapshot.Details);
+        FlowPureEvaluation.Map(new("Custom {clientName}", "Raw {value}"), input.Data).Description.Should().Be("Raw 0.01220703125");
+        FlowPureEvaluation.FieldValue("diskFree", input.Data).Should().Be(includeBytes ? "128 KiB" : "");
+        FlowPureEvaluation.FieldValue("hostname", input.Data).Should().Be("backup-01");
+        MonitoringFlowEventFactory.Create(intent with { Presentation = snapshot with { TenantId = key.TenantId + 1 } }).Should().BeNull();
+        FlowContractValidation.ValidEnvelope(input with { TenantId = key.TenantId + 1 }).Should().BeFalse();
+        MonitoringFlowEventFactory.Create(intent with { Presentation = snapshot with { OccurrenceId = Guid.NewGuid() } }).Should().BeNull();
+    }
+
+    [Fact]
+    public void Missing_deleted_identity_and_missing_public_base_have_readable_explicit_fallbacks()
+    {
+        var rig = new Rig();
+        var snapshot = MonitoringIncidentPresentation.Create(rig.Intent.Series, rig.State.Occurrence!, null, null, null);
+        snapshot.ClientName.Should().Be("Client details unavailable");
+        snapshot.Title.Should().NotContain(rig.Client.AgentId.ToString("D"));
+        snapshot.ClientUrl.Should().BeNull(); snapshot.AlertUrl.Should().BeNull();
+        snapshot.Details.Should().Contain("Links unavailable");
+        var deleted = MonitoringIncidentPresentation.Create(rig.Intent.Series, rig.State.Occurrence!, "Example tenant",
+            new(rig.Client.AgentId, "Archived computer", Deleted: true), "https://monitor.example.test");
+        deleted.ClientName.Should().Be("Archived computer (deleted)");
+        snapshot.Should().NotBe(deleted);
+    }
+
+    [Fact]
+    public void Availability_presentation_ignores_parent_disk_name_and_service_presentation_retains_actual_state()
+    {
+        var rig = new Rig();
+        var occurrence = rig.State.Occurrence!;
+        var offline = occurrence with { PinnedRule = rig.Rule with { Name = "Disk free space", AlertIfOffline = true },
+            RaisedEvidence = occurrence.RaisedEvidence with { NumericValue = 2, OfflineSummary = new(2, 4, "backup-01, worker-02", false) } };
+        var grouped = MonitoringIncidentPresentation.Create(MonitoringOfflinePresentation.Series(rig.Rule.TenantId, rig.Rule.RuleId), offline,
+            "Example tenant", null, "https://monitor.example.test");
+        grouped.Title.Should().Contain("Client availability").And.Contain("2 offline").And.NotContain("Disk free space");
+        grouped.Details.Should().Contain("backup-01, worker-02").And.NotContain("Service:");
+        grouped.ClientUrl.Should().BeNull(); grouped.AlertUrl.Should().NotBeNull();
+        var service = occurrence with { PinnedRule = rig.Rule with { Name = "Database service", Condition = new(MonitoringMetricKind.ServiceExpectedState,
+            null, null, null, "example.service", NetRatel.Shared.Contracts.Services.ClientServicePlatform.LinuxSystemd,
+            [NetRatel.Shared.Contracts.Services.ClientServiceState.Running]) },
+            RaisedEvidence = occurrence.RaisedEvidence with { NumericValue = null, ServiceState = NetRatel.Shared.Contracts.Services.ClientServiceState.Failed } };
+        var detail = MonitoringIncidentPresentation.Create(rig.Intent.Series with { ResourceKey = "service:example.service" }, service,
+            "Example tenant", new(rig.Client.AgentId, "worker-02"), null);
+        detail.Details.Should().Contain("Failed").And.Contain("Running").And.NotContain("free space");
+    }
+
+    [Fact]
+    public void Presentation_budgets_preserve_valid_Unicode_and_do_not_invent_links_for_an_oversized_public_prefix()
+    {
+        var rig = new Rig();
+        var key = rig.Intent.Series with { ResourceKey = "disk:/" + new string('界', 506) };
+        var snapshot = MonitoringIncidentPresentation.Create(key, rig.State.Occurrence!, new string('界', 128),
+            new(key.AgentId, new string('界', 256), new string('界', 256)),
+            "https://monitor.example.test/" + new string('x', 1500));
+        MonitoringPresentationSnapshot.IsValid(snapshot).Should().BeTrue();
+        JsonSerializer.SerializeToUtf8Bytes(snapshot).Length.Should().BeLessThanOrEqualTo(MonitoringPresentationSnapshot.MaximumBytes);
+        snapshot.ClientUrl.Should().BeNull(); snapshot.AlertUrl.Should().BeNull();
+        snapshot.Details.Should().Contain("Links unavailable");
+        MonitoringFlowEventFactory.Create(rig.Intent with { Series = key, Presentation = snapshot }).Should().NotBeNull();
+    }
+
+    [Fact]
+    public void Absent_presentation_keeps_legacy_canonical_serialization_and_stock_mapping()
+    {
+        var rig = new Rig();
+        var input = MonitoringFlowEventFactory.Create(rig.Intent)!;
+        JsonSerializer.Serialize(input).Should().NotContain("Presentation");
+        JsonSerializer.Serialize(rig.Intent).Should().NotContain("Presentation").And.NotContain("DiskFacts");
+        var mapping = new FlowIncidentMappingDto(FlowMonitoringMappingFields.HistoricalTitle, FlowMonitoringMappingFields.HistoricalDescription);
+        FlowPureEvaluation.Map(mapping, input.Data!).Should().Be(FlowPureEvaluation.Map(new(FlowMonitoringMappingFields.Title, FlowMonitoringMappingFields.Description), input.Data!));
+    }
+
+    [Theory]
     [InlineData("tenant")]
     [InlineData("authority")]
     [InlineData("resource")]

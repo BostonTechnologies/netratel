@@ -42,7 +42,7 @@ public sealed partial class MonitoringStore
         var result = clear
             ? _evaluator.Clear(state, rule, command.OperatorId, command.Reason, command.OperatorDisplayName)
             : _evaluator.Acknowledge(state, rule, command.OperatorId, command.Reason, command.OperatorDisplayName);
-        result = await AttributeClientIdentityAsync(db, result, current, cancellationToken).ConfigureAwait(false);
+        result = await AttributeClientIdentityAsync(db, scope.ServiceProvider, result, current, cancellationToken).ConfigureAwait(false);
         await ApplyEvaluationAsync(db, result, configuration.Revision, cancellationToken).ConfigureAwait(false);
         await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);

@@ -28,6 +28,20 @@ internal static class FlowIncidentSourcePresentation
                 $"Flow run: {draft.RunId:D}\nVersion: {draft.Event.FlowVersionId:D}\n" +
                 $"Source: {draft.SourceInstanceId:D}/{draft.Event.OccurrenceId:D}/{draft.Event.EventId:D}";
         var data = draft.Event.Data ?? throw new ArgumentException("Monitoring alert data is required.");
+        if (data.Presentation is not null)
+        {
+            var technical = $"\n\nTechnical references\nClient: {data.AgentId:D}\nRule: {data.RuleId:D}\n" +
+                $"Occurrence: {draft.Event.OccurrenceId:D}\nEvent: {draft.Event.EventId:D}\nSource: {draft.SourceInstanceId:D}";
+            var description = draft.Fields.Description;
+            var available = FlowLimits.MaximumDescriptionLength - technical.Length;
+            if (description.Length > available)
+            {
+                var end = available - 24;
+                if (end > 0 && char.IsHighSurrogate(description[end - 1])) end--;
+                description = description[..end] + "\n[Description truncated]";
+            }
+            return description + technical;
+        }
         // Preserve the exact historical monitoring suffix and severity mapping.
         return draft.Fields.Description + "\n\nNetRatel monitoring occurrence\n" +
             (data.OfflineSummary is null ? $"Client: {data.ClientName} ({data.AgentId:D})\n" :
