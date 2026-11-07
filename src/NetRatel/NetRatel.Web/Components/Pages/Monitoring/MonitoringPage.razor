@@ -16,8 +16,8 @@
         <div class="monitoring-toolbar">
             <label>Tenant<select data-testid="monitoring-tenant" value="@State.TenantId" @onchange="ChangeTenant" disabled="@(_editor is not null)"><option value="0">Select tenant</option>@foreach (var tenant in _tenants) { <option value="@tenant.TenantId">@tenant.Name</option> }</select></label>
             <label>Search alerts<input type="search" value="@_search" @oninput="SearchChanged" maxlength="256" placeholder="Computer, rule or resource" data-testid="monitoring-search" /></label>
-            <details class="monitoring-filters" data-testid="monitoring-filters">
-                <summary>Filters (@FilterCount)</summary>
+            <details class="monitoring-filters" data-testid="monitoring-filters" open="@_filtersOpen" @onkeydown="FiltersKey" @onkeydown:stopPropagation>
+                <summary @ref="_filtersSummary" @onclick="ToggleFilters" @onclick:preventDefault>Filters (@FilterCount)</summary>
                 <div class="monitoring-filter-fields">
                     <label>Severity<select value="@_severity" @onchange="SeverityChanged" data-testid="monitoring-severity"><option value="">All severities</option><option value="Information">Information</option><option value="Warning">Warning</option><option value="Critical">Critical</option></select></label>
                     <MonitoringClientFilter TenantId="@State.TenantId" Value="@State.ClientFilter" ValueChanged="ClientChanged" />
@@ -90,7 +90,7 @@
         {
             <MudPaper Class="monitoring-panel monitoring-results pa-3">
                 <div class="monitoring-filter-heading" data-testid="monitoring-active-filter"><strong>@ActiveFilterLabel</strong><span>Filters apply to all authorized matching results</span></div>
-                <div @ref="_scrollRegion" class="monitoring-table-wrap" tabindex="0" role="region" aria-label="Scrollable alert results" data-testid="monitoring-table-scroll"><table class="monitoring-table"><caption class="monitoring-visually-hidden">Current alert occurrences and evidence</caption><thead><tr><th>Alert details</th><th>Client / host</th><th>Rule</th><th>Severity / state</th><th>Latest reading</th><th>Since / acknowledgement</th><th>Actions</th></tr></thead><tbody>
+                <div @ref="_scrollRegion" class="monitoring-table-wrap" tabindex="0" role="region" aria-label="Scrollable alert results" data-testid="monitoring-table-scroll"><table class="monitoring-table"><caption class="monitoring-visually-hidden">Current alert occurrences and evidence</caption><thead><tr><th>Alert details</th><th>Client / host</th><th>Rule</th><th>Severity / state</th><th>Latest reading</th><th>Since / acknowledged</th><th>Actions</th></tr></thead><tbody>
                     @foreach (var row in ActiveRows)
                     {
                         <tr @key="DetailKey(row)" data-testid="monitoring-series-row" data-health="@Health(row)">
@@ -117,7 +117,7 @@
                             <td data-label="Rule"><strong>@RuleName(row.Series.RuleId)</strong><div class="monitoring-secondary">@row.Series.ResourceKey</div></td>
                             <td data-label="Severity / state"><MudChip T="string" Size="Size.Small" Color="@SeverityColor(SeverityFor(row))" Variant="Variant.Outlined">@Label(SeverityFor(row))</MudChip><div class="monitoring-health" data-state="@Health(row)">@(row.Suppressed ? "Suppressed" : Health(row) == "Unknown" ? "Unknown" : Label(row.Phase))</div></td>
                             <td data-label="Latest reading">@EvidenceValue(row)<div class="monitoring-secondary">@Time(row.LatestEvidence?.ObservedAtUtc)</div></td>
-                            <td data-label="Since / acknowledgement">@Time(row.Occurrence?.BreachSinceAtUtc ?? row.WindowStartedAtUtc)<div class="monitoring-secondary">@(row.Occurrence?.AcknowledgedAtUtc is { } at ? $"Acknowledged {Time(at)}" : row.Occurrence is not null ? "Unacknowledged" : "—")</div></td>
+                            <td data-label="Since / acknowledged">@Time(row.Occurrence?.BreachSinceAtUtc ?? row.WindowStartedAtUtc)<div class="monitoring-secondary">@(row.Occurrence?.AcknowledgedAtUtc is { } at ? $"Acknowledged {Time(at)}" : row.Occurrence is not null ? "Unacknowledged" : "—")</div></td>
                             <td data-label="Actions"><div class="monitoring-row-actions">
                                 @if (row.Occurrence is { EndedAtUtc: null })
                                 {

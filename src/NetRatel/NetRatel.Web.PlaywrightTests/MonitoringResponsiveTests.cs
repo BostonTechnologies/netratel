@@ -69,6 +69,12 @@ public sealed class MonitoringResponsiveTests(ClientsManagementBrowserFixture br
         await page.GetByTestId("monitoring-from").FillAsync("2026-11-07");
         await page.GetByTestId("monitoring-to").FillAsync("2026-11-07");
         await page.GetByTestId("monitoring-filters").Locator("summary").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("monitoring-filters")).Not.ToHaveAttributeAsync("open", "");
+        await page.GetByTestId("monitoring-filters").Locator("summary").ClickAsync();
+        await page.GetByTestId("monitoring-client-search").FocusAsync();
+        await page.Keyboard.PressAsync("Escape");
+        await Assertions.Expect(page.GetByTestId("monitoring-filters")).Not.ToHaveAttributeAsync("open", "");
+        await Assertions.Expect(page.GetByTestId("monitoring-filters").Locator("summary")).ToBeFocusedAsync();
         await page.GetByTestId("monitoring-search").FillAsync("/backup/");
         await Assertions.Expect(page.GetByTestId("monitoring-series-row")).ToHaveCountAsync(100);
         Assert.Equal(_api.PagingAgent, _api.QueryReads.Last().ClientId);
