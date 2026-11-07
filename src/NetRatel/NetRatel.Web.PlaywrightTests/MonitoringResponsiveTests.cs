@@ -13,6 +13,79 @@ public sealed class MonitoringResponsiveTests(ClientsManagementBrowserFixture br
     private ClientsManagementFixtureHost? _host;
     private readonly FixtureMonitoringApi _api = new();
     [Theory]
+    [Trait("Category", "ManualBrowserAcceptance")]
+    [InlineData(1280, 800)]
+    [InlineData(390, 844)]
+    public async Task FilteredPaginationDisclosureAndStickyViewportWorkTogether(int width, int height)
+    {
+        _api.PagingDataset = true;
+        await using var context = await browserFixture.Browser.NewContextAsync(new() { ViewportSize = new() { Width = width, Height = height }, TimezoneId = "Africa/Johannesburg" });
+        var page = await context.NewPageAsync(); page.SetDefaultTimeout(30_000);
+        await page.GotoAsync(_host!.BaseAddress + "/monitoring?tenantId=1");
+        await page.GetByTestId("monitoring-interactive").WaitForAsync(new() { State = WaitForSelectorState.Attached });
+        await Assertions.Expect(page.GetByTestId("monitoring-series-row")).ToHaveCountAsync(20);
+        await Assertions.Expect(page.GetByTestId("monitoring-detail-row")).ToHaveCountAsync(0);
+        Assert.Equal(20, _api.QueryReads.Last().MaximumCount);
+        var disclosure = page.GetByTestId("monitoring-alert-details").First;
+        await disclosure.FocusAsync(); await page.Keyboard.PressAsync("Enter");
+        await Assertions.Expect(disclosure).ToHaveAttributeAsync("aria-expanded", "true");
+        await Assertions.Expect(disclosure).ToBeFocusedAsync();
+        await Assertions.Expect(page.GetByTestId("monitoring-detail-row")).ToHaveCountAsync(1);
+        Assert.Equal(4, await page.GetByTestId("monitoring-detail-row").Locator(".monitoring-detail-card").CountAsync());
+        var scroll = page.GetByTestId("monitoring-table-scroll");
+        await scroll.EvaluateAsync("e => e.scrollIntoView({block:'start'})");
+        await scroll.EvaluateAsync("e => e.scrollTop=e.scrollHeight");
+        await page.WaitForFunctionAsync("""
+            () => {
+                const scroller=document.querySelector('[data-testid=monitoring-table-scroll]'), head=scroller?.querySelector('thead th'), pager=document.querySelector('[data-testid=monitoring-pager]');
+                if(!head || !pager) return false;
+                const h=head.getBoundingClientRect(), p=pager.getBoundingClientRect();
+                return h.top>=-1 && h.bottom<=innerHeight && p.top>=0 && p.bottom<=innerHeight+1;
+            }
+            """);
+        if (width < 650)
+        {
+            Assert.True(await page.GetByTestId("monitoring-detail-row").Locator(".monitoring-alert-details").EvaluateAsync<bool>("e => e.getBoundingClientRect().width<=innerWidth-24"));
+        }
+        await scroll.EvaluateAsync("e => e.scrollTop=0");
+        await disclosure.FocusAsync(); await page.Keyboard.PressAsync("Space");
+        await Assertions.Expect(page.GetByTestId("monitoring-detail-row")).ToHaveCountAsync(0);
+        await page.GetByTestId("monitoring-next-series").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("monitoring-pager")).ToContainTextAsync("21–40");
+        await page.GetByTestId("monitoring-previous-series").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("monitoring-pager")).ToContainTextAsync("1–20");
+        foreach (var size in new[] { 50, 100 })
+        {
+            await page.GetByTestId("monitoring-page-size").SelectOptionAsync(size.ToString());
+            await Assertions.Expect(page.GetByTestId("monitoring-series-row")).ToHaveCountAsync(size);
+            Assert.Equal(size, _api.QueryReads.Last().MaximumCount);
+            await Assertions.Expect(page.GetByTestId("monitoring-previous-series")).ToBeDisabledAsync();
+        }
+        await page.GetByTestId("monitoring-filters").Locator("summary").ClickAsync();
+        await page.GetByTestId("monitoring-client-search").FillAsync("beta-host-260");
+        await Assertions.Expect(page.GetByTestId("monitoring-client-select").Locator("option")).ToHaveCountAsync(2);
+        await page.GetByTestId("monitoring-client-select").SelectOptionAsync(_api.PagingAgent.ToString());
+        await page.GetByTestId("monitoring-severity").SelectOptionAsync("Warning");
+        await page.GetByTestId("monitoring-from").FillAsync("2026-11-07");
+        await page.GetByTestId("monitoring-to").FillAsync("2026-11-07");
+        await page.GetByTestId("monitoring-filters").Locator("summary").ClickAsync();
+        await page.GetByTestId("monitoring-search").FillAsync("/backup/");
+        await Assertions.Expect(page.GetByTestId("monitoring-series-row")).ToHaveCountAsync(100);
+        Assert.Equal(_api.PagingAgent, _api.QueryReads.Last().ClientId);
+        Assert.Equal(DateTimeOffset.Parse("2026-11-06T22:00:00Z"), _api.QueryReads.Last().FromUtc);
+        await Assertions.Expect(page.GetByTestId("monitoring-filter-chips")).ToContainTextAsync("5 active filters");
+        await page.ReloadAsync();
+        await Assertions.Expect(page.GetByTestId("monitoring-page-size")).ToHaveValueAsync("100");
+        await Assertions.Expect(page.GetByTestId("monitoring-series-row")).ToHaveCountAsync(100);
+        await page.GetByTestId("monitoring-clear-filters").ClickAsync();
+        await Assertions.Expect(page.GetByTestId("monitoring-filter-chips")).ToHaveCountAsync(0);
+        Assert.Equal(1, _api.QueryReads.Last().TenantId); Assert.Null(_api.QueryReads.Last().ClientId);
+        Assert.Equal(0, _api.Writes);
+        Assert.False(await page.Locator("#blazor-error-ui").IsVisibleAsync());
+        var evidence = EvidenceRoot(); Directory.CreateDirectory(evidence);
+        await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, $"monitoring-paging-{width}-{height}.png"), Animations = ScreenshotAnimations.Disabled });
+    }
+    [Theory]
     [InlineData(1280, 800, "light", 1d)]
     [InlineData(1280, 800, "dark", 1d)]
     [InlineData(390, 844, "system", 1d)]
@@ -410,6 +483,9 @@ internal sealed class FixtureMonitoringApi : IMonitoringApiService
     private ImmutableArray<MonitoringEventIntent> _history = [];
     public MonitoringSeriesState Active { get; private set; }
     public int Writes { get; private set; }
+    public bool PagingDataset { get; set; }
+    public Guid PagingAgent => _estate[260].AgentId;
+    public List<MonitoringQueryDto> QueryReads { get; } = [];
     private ulong _revision = 1;
     private ImmutableArray<MonitoringRuleDto> _savedRules = [];
     public bool PersistRules { get; set; }
@@ -464,6 +540,38 @@ internal sealed class FixtureMonitoringApi : IMonitoringApiService
     public Task<MonitoringSummaryDto> GetSummaryAsync(int tenantId, CancellationToken token = default) => Task.FromResult(new MonitoringSummaryDto(tenantId, 2, Active.Occurrence?.EndedAtUtc is null ? 1 : 0, 0, 1, 0, Active.Suppressed ? 1 : 0, DateTimeOffset.UtcNow, Active.Phase == MonitoringPhase.Firing ? 1 : 0));
     public Task<MonitoringSeriesPageDto> GetSeriesAsync(int tenantId, string? cursor = null, CancellationToken token = default) => Task.FromResult(new MonitoringSeriesPageDto(tenantId == 1 ? [Active,
         new(new(1, _disk.RuleId, Agent, "disk:/"), 1, 1, MonitoringPhase.Healthy, MonitoringEvidenceQuality.Unknown)] : [], null, tenantId == 1 ? [_estate[0]] : []));
+    public async Task<MonitoringSeriesPageDto> GetSeriesAsync(MonitoringQueryDto query, string? cursor = null, CancellationToken token = default)
+    {
+        QueryReads.Add(query);
+        var baseline = await GetSeriesAsync(query.TenantId, cursor, token);
+        IEnumerable<MonitoringSeriesState> source = baseline.Items;
+        if (PagingDataset && query.TenantId == 1)
+        {
+            source = Enumerable.Range(0, 200).Select(index => Active with
+            {
+                Series = Active.Series with { AgentId = PagingAgent, ResourceKey = $"disk:/backup/{index:000}" },
+                Phase = index < 50 ? MonitoringPhase.Healthy : MonitoringPhase.Firing,
+                EvidenceQuality = index == 50 ? MonitoringEvidenceQuality.Unknown : MonitoringEvidenceQuality.Fresh,
+                Occurrence = index < 50 ? null : Active.Occurrence! with { OccurrenceId = Guid.Parse($"{index:x8}-0000-0000-0000-000000000000"), RaisedAtUtc = DateTimeOffset.Parse("2026-11-07T10:00:00Z") }
+            });
+        }
+        var rows = source.Where(row => (query.View switch
+        {
+            MonitoringView.Firing => row.Phase == MonitoringPhase.Firing && row.Occurrence is { EndedAtUtc: null },
+            MonitoringView.Active => row.Occurrence is { EndedAtUtc: null } || row.Phase == MonitoringPhase.Pending || row.EvidenceQuality == MonitoringEvidenceQuality.Unknown,
+            MonitoringView.Unknown => row.EvidenceQuality == MonitoringEvidenceQuality.Unknown,
+            MonitoringView.Pending => row.Phase == MonitoringPhase.Pending,
+            MonitoringView.Suppressed => row.Suppressed,
+            _ => true
+        }) && (query.ClientId is null || row.Series.AgentId == query.ClientId) &&
+            (query.Severity is null || row.Occurrence?.PinnedRule.Severity == query.Severity) &&
+            (query.Text is null || row.Series.ResourceKey.Contains(query.Text, StringComparison.OrdinalIgnoreCase) || row.Occurrence?.PinnedRule.Name.Contains(query.Text, StringComparison.OrdinalIgnoreCase) == true) &&
+            (query.FromUtc is null || row.Occurrence?.RaisedAtUtc >= query.FromUtc) && (query.ToExclusiveUtc is null || row.Occurrence?.RaisedAtUtc < query.ToExclusiveUtc)).ToArray();
+        var offset = cursor is null ? 0 : int.Parse(cursor, System.Globalization.CultureInfo.InvariantCulture);
+        var items = rows.Skip(offset).Take(query.MaximumCount).ToImmutableArray();
+        return new(items, offset + items.Length < rows.Length ? (offset + items.Length).ToString() : null, baseline.ClientIdentities);
+    }
+    public Task<MonitoringEventPageDto> GetEventsAsync(MonitoringQueryDto query, string? cursor = null, CancellationToken token = default) => GetEventsAsync(query.TenantId, cursor, token);
     public Task<MonitoringEventPageDto> GetEventsAsync(int tenantId, string? cursor = null, CancellationToken token = default) => Task.FromResult(new MonitoringEventPageDto(tenantId == 1 ? _history : [], null, tenantId == 1 ? [_estate[0]] : []));
     public Task<MonitoringClientPageDto> GetClientsAsync(int tenantId, string? cursor = null, CancellationToken token = default) => SearchClientsAsync(tenantId, null, cursor, token);
     public Task<MonitoringClientPageDto> SearchClientsAsync(int tenantId, string? search, string? cursor = null, CancellationToken token = default)

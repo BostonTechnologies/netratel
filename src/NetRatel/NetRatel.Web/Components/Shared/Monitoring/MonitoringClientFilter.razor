@@ -1,0 +1,66 @@
+@implements IDisposable
+@using NetRatel.Shared.Contracts.Monitoring
+@using NetRatel.Web.Services.Monitoring
+@inject IMonitoringApiService Api
+
+<div class="monitoring-client-picker" data-testid="monitoring-client-filter">
+    <label>Find computer<input type="search" value="@_search" @oninput="Search" maxlength="256" placeholder="Name or hostname" data-testid="monitoring-client-search" /></label>
+    <label>Computer<select value="@Value" @onchange="Select" aria-busy="@_loading" data-testid="monitoring-client-select">
+        <option value="">All computers</option>
+        @if (Value is { } selected && !_page.Items.Any(client => client.AgentId == selected)) { <option value="@selected">@ClientIdentityPresentation.Name(_selectedIdentity)</option> }
+        @foreach (var client in _page.Items) { <option value="@client.AgentId">@Name(client)</option> }
+    </select></label>
+    <button type="button" class="monitoring-button" disabled="@(_loading || _page.NextCursor is null)" @onclick="Next" data-testid="monitoring-client-more">More computers</button>
+    @if (_loading) { <small role="status">Searching tenant directory…</small> }
+    @if (_error is not null) { <span role="alert">@_error</span><button type="button" class="monitoring-button" @onclick="() => Read(null)">Retry directory</button> }
+</div>
+
+@code {
+    [Parameter] public int TenantId { get; set; }
+    [Parameter] public Guid? Value { get; set; }
+    [Parameter] public EventCallback<Guid?> ValueChanged { get; set; }
+    private int _tenant;
+    private Guid? _requestedIdentity;
+    private string? _search, _error;
+    private MonitoringClientIdentityDto? _selectedIdentity;
+    private MonitoringClientPageDto _page = new([], null, 0);
+    private bool _loading, _disposed;
+    private long _generation;
+    private CancellationTokenSource? _read;
+    private static string Name(MonitoringClientDto client) => ClientIdentityPresentation.Name(client.Identity ?? new(client.AgentId, client.DisplayName ?? "Client metadata unavailable"));
+    protected override async Task OnParametersSetAsync()
+    {
+        if (TenantId <= 0) return;
+        if (_tenant != TenantId) { _page = new([], null, 0); _error = null; _tenant = TenantId; _search = null; _selectedIdentity = null; _requestedIdentity = null; await Read(null); }
+        if (Value is not { } value || _requestedIdentity == value) return;
+        _requestedIdentity = value; var tenant = _tenant; var generation = _generation;
+        _selectedIdentity = _page.Items.FirstOrDefault(item => item.AgentId == value)?.Identity;
+        try
+        {
+            var identities = await Api.GetClientIdentitiesAsync(tenant, [value], _read?.Token ?? default);
+            if (!_disposed && tenant == _tenant && generation == _generation && Value == value) _selectedIdentity = identities.FirstOrDefault(identity => identity.AgentId == value);
+        }
+        catch (OperationCanceledException) { return; }
+        catch (HttpRequestException) { if (!_disposed && tenant == _tenant) _error = "Selected computer metadata is unavailable; the computer filter is retained."; }
+    }
+    private Task Search(ChangeEventArgs args) { _search = args.Value?.ToString(); return Read(null); }
+    private Task Select(ChangeEventArgs args) => ValueChanged.InvokeAsync(Guid.TryParse(args.Value?.ToString(), out var value) ? value : null);
+    private Task Next() => _page.NextCursor is null ? Task.CompletedTask : Read(_page.NextCursor);
+    private async Task Read(string? cursor)
+    {
+        _read?.Cancel(); _read?.Dispose(); _read = new();
+        var token = _read.Token; var generation = ++_generation; var tenant = _tenant;
+        _loading = true; _error = null;
+        try
+        {
+            var page = await Api.SearchClientsAsync(tenant, _search, cursor, token);
+            if (_disposed || generation != _generation || tenant != _tenant) return;
+            _page = page;
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { return; }
+        catch (Exception error) when (error is HttpRequestException or System.Text.Json.JsonException)
+        { if (!_disposed && generation == _generation && tenant == _tenant) _error = "Could not search this tenant's directory."; }
+        finally { if (!_disposed && generation == _generation && tenant == _tenant) _loading = false; }
+    }
+    public void Dispose() { _disposed = true; ++_generation; _read?.Cancel(); _read?.Dispose(); }
+}

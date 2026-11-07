@@ -83,6 +83,27 @@ public sealed class MonitoringApiTransportTests
         Assert.All(wire.Requests, request => Assert.Null(request.Authorization));
     }
 
+    [Theory]
+    [InlineData(false, 20)]
+    [InlineData(false, 50)]
+    [InlineData(true, 100)]
+    public async Task QueryAndOpaqueCursorAreHandedBackLosslesslyWithRealPageSize(bool history, int size)
+    {
+        var cursor = new string('a', 300) + "+/%?雪";
+        var wire = new RecordingHandler(_ => new(HttpStatusCode.OK) { Content = history ? JsonContent.Create(new MonitoringEventPageDto([], null)) : JsonContent.Create(new MonitoringSeriesPageDto([], null)) });
+        using var services = Services(wire); using var scope = services.CreateScope(); Bind(scope, "alice", "fixture-alice");
+        var api = scope.ServiceProvider.GetRequiredService<IMonitoringApiService>();
+        var client = Guid.NewGuid(); var from = DateTimeOffset.Parse("2026-11-06T22:00:00Z"); var to = from.AddDays(1);
+        var query = new MonitoringQueryDto(1, history ? MonitoringView.All : MonitoringView.Firing, client, MonitoringSeverity.Critical, "Backup / 雪", from, to, MaximumCount: size);
+        if (history) await api.GetEventsAsync(query, cursor); else await api.GetSeriesAsync(query, cursor);
+        var request = Assert.Single(wire.Requests); var values = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(new Uri(request.Uri).Query);
+        Assert.Equal(cursor, values["cursor"].ToString()); Assert.Equal(size.ToString(), values["maximumCount"].ToString());
+        Assert.Equal(client.ToString("D"), values["clientId"].ToString()); Assert.Equal("backup / 雪", values["text"].ToString());
+        Assert.Equal("Critical", values["severity"].ToString()); Assert.Equal(from, DateTimeOffset.Parse(values["fromUtc"].ToString()));
+        Assert.Equal(to, DateTimeOffset.Parse(values["toExclusiveUtc"].ToString()));
+        Assert.Contains(history ? "/events?" : "/series?", request.Uri);
+    }
+
     private static ServiceProvider Services(RecordingHandler wire)
     {
         var services = new ServiceCollection(); services.AddLogging(); services.AddHttpContextAccessor();
