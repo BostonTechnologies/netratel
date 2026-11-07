@@ -3,6 +3,7 @@ using Microsoft.Extensions.DependencyInjection;
 using MudBlazor;
 using MudBlazor.Services;
 using NetRatel.Shared.Contracts.Monitoring;
+using NetRatel.Application.Monitoring;
 using NetRatel.Web.Components.Shared.Monitoring;
 using NetRatel.Web.Services.Monitoring;
 using Xunit;
@@ -65,7 +66,7 @@ public sealed class MonitoringTargetPickerTests : AsyncBunitContext
     public void DiskPolicyEditorPreviewsCachedResourcesAndPreservesExplicitRuleReset()
     {
         var api = new PolicyApi(); Services.AddSingleton<IMonitoringApiService>(api);
-        var draft = MonitoringRuleDraft.Create(); draft.AgentIds.Add(api.Agent);
+        var draft = MonitoringRuleDraft.Create(); draft.Name = "Disk capacity"; draft.AgentIds.Add(api.Agent);
         draft.SelectMetric(MonitoringMetricKind.DiskFreePercent);
         var cut = Render<MonitoringDiskPolicyEditor>(parameters => parameters.Add(component => component.TenantId, 1)
             .Add(component => component.Draft, draft));
@@ -77,8 +78,16 @@ public sealed class MonitoringTargetPickerTests : AsyncBunitContext
         Assert.Contains("Inventory truncated", cut.Markup);
         Assert.Equal(0, api.Saves);
         var original = draft.Build(1) with { Revision = 1, EvaluationRevision = 1 };
+        Assert.True(MonitoringContractValidator.TryValidateRule(original, out var definitionError), definitionError);
         var edited = MonitoringRuleDraft.Create(original); edited.DiskExcludeMounts = "/snap/*\n/cache/*";
         Assert.Equal(2UL, edited.Build(1).EvaluationRevision);
+        Assert.NotEqual(MonitoringContractValidator.EvaluationFingerprint(original), MonitoringContractValidator.EvaluationFingerprint(edited.Build(1)));
+        var permissions = new MonitoringPermissionsDto(1, true, true, true, true, true, true);
+        edited.Reason = "Exclude cached package resources";
+        Assert.NotNull(edited.Validate(1, permissions, [], out var invalidField));
+        Assert.Equal(nameof(MonitoringRuleDraft.ResetConfirmed), invalidField);
+        edited.ResetConfirmed = true;
+        Assert.Null(edited.Validate(1, permissions, []));
     }
 
     private sealed class PolicyApi : MonitoringTestApi, IMonitoringApiService
