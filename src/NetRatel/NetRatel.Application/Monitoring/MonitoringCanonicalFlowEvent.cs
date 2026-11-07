@@ -61,7 +61,7 @@ public static class MonitoringCanonicalFlowEvent
         if (JsonSerializer.SerializeToUtf8Bytes(input).Length <= FlowLimits.MaximumEventBytes) return input;
         // An original envelope can occupy almost its entire budget. Retain the full snapshot on its
         // occurrence/outbox, and make the missing transport presentation explicit without changing raw values.
-        return input with { Data = data with { Presentation = null, ClientName = "[Client details omitted]" } };
+        return input with { Data = data with { Presentation = null, ClientName = "[Details omitted]" } };
     }
 
     private static string Cut(string text, int limit)

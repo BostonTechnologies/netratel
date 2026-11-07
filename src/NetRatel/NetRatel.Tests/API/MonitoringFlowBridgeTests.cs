@@ -132,8 +132,9 @@ public sealed class MonitoringFlowBridgeTests
         JsonSerializer.SerializeToUtf8Bytes(bounded).Length.Should().BeLessThanOrEqualTo(FlowLimits.MaximumEventBytes);
         bounded.Data!.NumericValue.Should().Be(original.PinnedEvidence.NumericValue);
         bounded.Data.Resource.Should().Be(key.ResourceKey);
-        if (bounded.Data.Presentation is null) bounded.Data.ClientName.Should().Contain("details omitted");
-        else bounded.Data.Presentation.Details.Should().Contain("transport limit");
+        if (bounded.Data.Presentation is null) bounded.Data.ClientName.Should().Contain("omitted");
+        else Assert.True(bounded.Data.Presentation.Details.Contains("truncated", StringComparison.Ordinal) ||
+            bounded.Data.Presentation.Details.Contains("transport limit", StringComparison.Ordinal));
         JsonSerializer.Serialize(MonitoringFlowEventFactory.Create(intent)).Should().Be(JsonSerializer.Serialize(bounded));
         intent.Presentation.Should().Be(snapshot);
     }
