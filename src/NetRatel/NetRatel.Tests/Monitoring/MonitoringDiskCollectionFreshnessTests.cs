@@ -301,6 +301,22 @@ public sealed class MonitoringDiskCollectionFreshnessTests
         Assert.NotEqual(s.State.EvaluationFingerprint, reset.State.EvaluationFingerprint);
     }
 
+    [Fact]
+    public void MissingFilesystemMetadataCannotRecoverAnExistingOccurrenceUnderFilesystemPolicy()
+    {
+        var s = new Scenario(new([], [], [], ["squashfs"]));
+        var known = new MonitoringDiskFactsDto(100, 5, new("ext4", "/dev/data", "/", new string('A', 64), false));
+        s.Observe(0, 0, 5, Id(1), known); s.Observe(30, 30, 5, Id(2), known);
+        Assert.Equal(MonitoringPhase.Firing, s.State.Phase);
+        var occurrence = s.State.Occurrence!.OccurrenceId;
+        s.Observe(40, 40, 90, Id(3), new(100, 90));
+        Assert.Equal(MonitoringPhase.Firing, s.State.Phase);
+        Assert.Equal(occurrence, s.State.Occurrence!.OccurrenceId);
+        Assert.Equal(MonitoringEvidenceQuality.Unknown, s.State.EvidenceQuality);
+        Assert.Equal("disk-policy-unclassified", s.State.LatestEvidence!.UnknownReason);
+        Assert.DoesNotContain(s.Events, item => item.Kind is MonitoringEventKind.AlertResolved or MonitoringEventKind.AlertSuspended);
+    }
+
     private static Guid Id(int value) => new(value, 0, 0, new byte[8]);
 
     private sealed class Clock : TimeProvider
@@ -325,12 +341,12 @@ public sealed class MonitoringDiskCollectionFreshnessTests
         public List<MonitoringEventIntent> Events { get; } = [];
         public List<MonitoringOutboxIntent> Outbox { get; } = [];
 
-        public Scenario()
+        public Scenario(MonitoringDiskPolicyDto? policy = null)
         {
             Evaluator = new(Clock);
             Rule = new(41, Id(201), 1, 1, "disk", true, MonitoringSeverity.Warning,
                 new(MonitoringTargetMode.AllEligible, [], []),
-                new(MonitoringMetricKind.DiskFreePercent, MonitoringNumericUnit.Percent, 10, 15, "/", null, []),
+                new(MonitoringMetricKind.DiskFreePercent, MonitoringNumericUnit.Percent, 10, 15, "/", null, [], policy),
                 TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(45),
                 Id(202), "test-operator", "test-credential");
             State = Evaluator.CreateInitial(new(41, Rule.RuleId, Id(203), "disk:/"), Rule);
