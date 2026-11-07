@@ -258,9 +258,9 @@ public sealed class MonitoringApiService(IMonitoringResourceAuthorizer authoriza
                 {
                     var now = timeProvider.GetUtcNow();
                     var budget = request.FreshnessBudget ?? TimeSpan.FromMinutes(2);
-                    var selected = snapshot.Disks.OrderBy(disk => !MonitoringDiskPolicy.Select(disk.Scope, disk.Metadata, request.Condition).Eligible)
+                    var selectedDisks = snapshot.Disks.OrderBy(disk => !MonitoringDiskPolicy.Select(disk.Scope, disk.Metadata, request.Condition).Eligible)
                         .ThenBy(disk => disk.Scope, StringComparer.Ordinal).Take(Math.Min(16, resourcesRemaining)).ToArray();
-                    disks = selected.Select(disk =>
+                    disks = selectedDisks.Select(disk =>
                     {
                         var selection = MonitoringDiskPolicy.Select(disk.Scope, disk.Metadata, request.Condition);
                         var fresh = snapshot.IsAuthoritative && disk.CollectionId is { } collectionId && collectionId != Guid.Empty &&
@@ -269,8 +269,8 @@ public sealed class MonitoringApiService(IMonitoringResourceAuthorizer authoriza
                         return new MonitoringDiskPreviewDto(disk.Scope, selection.Eligible, selection.Reason, disk.Metadata is not null,
                             fresh, disk.CollectedAtUtc, disk.Metadata);
                     }).ToImmutableArray();
-                    resourcesRemaining -= selected.Length;
-                    inventoryTruncated = snapshot.DiskInventoryTruncated || snapshot.Disks.Count > selected.Length;
+                    resourcesRemaining -= selectedDisks.Length;
+                    inventoryTruncated = snapshot.DiskInventoryTruncated || snapshot.Disks.Count > selectedDisks.Length;
                 }
             }
             details.Add(new(id, identity.DisplayName, support.Support, support.Code, support.At, identity, disks, inventoryTruncated));
