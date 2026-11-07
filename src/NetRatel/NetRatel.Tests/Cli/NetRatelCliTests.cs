@@ -6,7 +6,7 @@ using Xunit;
 
 namespace NetRatel.Tests.Cli;
 
-public sealed class NetRatelCliTests
+public sealed partial class NetRatelCliTests
 {
     [Theory]
     [InlineData("--token-url")]

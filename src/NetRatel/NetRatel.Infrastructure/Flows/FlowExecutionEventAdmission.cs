@@ -130,7 +130,7 @@ public sealed class FlowExecutionEventAdmission(IFlowExecutionAuthorityVerifier 
         }
         var aggregate = FlowExecutionEventMatching.Aggregate(version.Id, trigger.Id, settings, facts);
         var proof = new FlowSourceProof(definition, version, graph, trigger, authority!, aggregate, primaryDelivery, facts);
-        if (!definition.Enabled) return new(new(false, "flow-disabled"), proof);
+        if (definition.DeletedAtUtc is not null || !definition.Enabled) return new(new(false, "flow-disabled"), proof);
         if (!await db.Tenants.AsNoTracking().AnyAsync(row => row.Id == request.TenantId && row.DeletedAtUtc == null, ct).ConfigureAwait(false))
             return new(new(false, "execution-source-tenant-unavailable"), proof);
         if (!await verifier.AuthorizeAsync(request.TenantId, authority!, ct).ConfigureAwait(false))

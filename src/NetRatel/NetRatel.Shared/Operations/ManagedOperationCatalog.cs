@@ -21,7 +21,7 @@ public sealed record ManagedOperationDescriptor(string Tool, string Operation, s
         "client.manage" => Mutation ? McpOperationAccessScope.Execute : McpOperationAccessScope.Observe,
         "flow.execute" => McpOperationAccessScope.Execute,
         "tenant.admin" => McpOperationAccessScope.Admin,
-        "flow.edit" or "flow.publish" or "monitoring.manage" or "monitoring.ack" or
+        "flow.delete" or "flow.edit" or "flow.publish" or "monitoring.manage" or "monitoring.ack" or
             "monitoring.clear" or "monitoring.bypass" => McpOperationAccessScope.Write,
         _ => McpOperationAccessScope.Observe
     };
@@ -111,6 +111,7 @@ public static class ManagedOperationCatalog
         new("netratel_flows", "save_draft", "flow.edit", true, false, typeof(FlowSaveDraftRequest), "flowId"),
         new("netratel_flows", "clone", "flow.edit", true, false, typeof(FlowCloneRequest), "flowId"),
         new("netratel_flows", "set_enabled", "flow.edit", true, false, typeof(FlowEnabledRequest), "flowId"),
+        new("netratel_flows", "delete", "flow.delete", true, false, typeof(FlowDeleteRequest), "flowId"),
         new("netratel_flows", "publish", "flow.publish", true, false, typeof(FlowRevisionRequest), "flowId"),
         new("netratel_flows", "versions", "flow.read", false, false, IdProperty: "flowId"),
         new("netratel_flows", "version", "flow.read", false, false, IdProperty: "versionId"),
@@ -183,6 +184,8 @@ public static class ManagedOperationCatalog
                 var body = request.GetProperty("data").Deserialize(dataType, JsonOptions);
                 if (body is null)
                     return Invalid("data must contain the typed request body.", out error);
+                if (body is FlowDeleteRequest { ExpectedRevision: <= 0 })
+                    return Invalid("expectedRevision must be positive.", out error);
                 var flowGraph = body switch
                 {
                     FlowGraphDto graph => graph,

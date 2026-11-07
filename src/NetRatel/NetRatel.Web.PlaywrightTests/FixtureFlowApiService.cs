@@ -9,6 +9,47 @@ namespace NetRatel.Web.PlaywrightTests;
 
 internal sealed class FixtureFlowApiService : IFlowApiService
 {
+    private readonly Dictionary<Guid, FlowSummaryDto> _deleted = [];
+    private readonly ConcurrentQueue<FlowQueryDto> _managementQueries = new();
+    public IReadOnlyList<FlowQueryDto> ManagementQueries => _managementQueries.ToArray();
+    public void SeedManagementList()
+    {
+        _definitions.Clear();
+        for (var i = 0; i < 61; i++)
+        {
+            var id = Guid.NewGuid();
+            _definitions[id] = new(id, _tenantId, i == 0 ? "A synthetic flow with a deliberately long readable name " + new string('x', 70) : $"Synthetic flow {i:D3}",
+                1, i % 2 != 0, FlowGraphTemplates.IncidentFromAlert(), null, 0, DateTimeOffset.UtcNow.AddMinutes(-i));
+        }
+    }
+    private static FlowSummaryDto Summary(FlowDefinitionDto row) => new(row.Id, row.TenantId, row.Name, row.Revision,
+        row.Enabled, row.PublishedVersionId, row.PublishedVersionNumber, row.UpdatedAtUtc, row.LatestRun);
+    public async Task<FlowPageDto> QueryAsync(int tenantId, FlowQueryDto query, CancellationToken token = default)
+    {
+        _managementQueries.Enqueue(query);
+        IEnumerable<FlowSummaryDto> rows = (await ListAsync(tenantId, token)).Select(Summary)
+            .Where(row => string.IsNullOrWhiteSpace(query.Search) || row.Name.Contains(query.Search, StringComparison.OrdinalIgnoreCase))
+            .Where(row => query.Enabled == FlowEnabledFilter.All || row.Enabled == (query.Enabled == FlowEnabledFilter.Enabled))
+            .Where(row => query.Publication == FlowPublicationFilter.All || (row.PublishedVersionId is not null) == (query.Publication == FlowPublicationFilter.Published));
+        rows = query.Sort switch {
+            FlowSort.UpdatedAt => query.Descending ? rows.OrderByDescending(row => row.UpdatedAtUtc).ThenBy(row => row.Id) : rows.OrderBy(row => row.UpdatedAtUtc).ThenBy(row => row.Id),
+            FlowSort.LatestRunAt => query.Descending ? rows.OrderBy(row => row.LatestRun is null).ThenByDescending(row => row.LatestRun?.CreatedAtUtc).ThenBy(row => row.Id) : rows.OrderBy(row => row.LatestRun is null).ThenBy(row => row.LatestRun?.CreatedAtUtc).ThenBy(row => row.Id),
+            _ => query.Descending ? rows.OrderByDescending(row => row.Name).ThenBy(row => row.Id) : rows.OrderBy(row => row.Name).ThenBy(row => row.Id)
+        };
+        var items = rows.ToArray();
+        return new(items.Skip(query.PageIndex * query.PageSize).Take(query.PageSize).ToArray(), items.Length, query.PageIndex, query.PageSize);
+    }
+    public Task<FlowSummaryDto> GetMetadataAsync(int tenantId, Guid flowId, CancellationToken token = default) =>
+        Task.FromResult(_deleted.TryGetValue(flowId, out var deleted) && deleted.TenantId == tenantId ? deleted : Summary(Find(tenantId, flowId)));
+    public Task<FlowDeleteResultDto> DeleteAsync(int tenantId, Guid flowId, FlowDeleteRequest request, CancellationToken token = default)
+    {
+        var flow = Find(tenantId, flowId);
+        if (flow.Revision != request.ExpectedRevision) throw new FlowApiException(HttpStatusCode.Conflict, "flow-revision-conflict");
+        var now = DateTimeOffset.UtcNow;
+        _deleted[flowId] = Summary(flow) with { Revision = flow.Revision + 1, Enabled = false, DeletedAtUtc = now };
+        _definitions.Remove(flowId);
+        return Task.FromResult(new FlowDeleteResultDto(tenantId, flowId, flow.Revision + 1, FlowDeleteDisposition.Deleted, "flow-deleted", now));
+    }
     private readonly Dictionary<Guid, FlowDefinitionDto> _definitions = new();
     private readonly Dictionary<Guid, List<FlowVersionDto>> _versions = new();
     private readonly Dictionary<Guid, FlowRunDetailDto> _runs = new();
@@ -97,7 +138,7 @@ internal sealed class FixtureFlowApiService : IFlowApiService
             FlowOverhaulTemplates.CreateDraft(request.TemplateId), null, 0, DateTimeOffset.UtcNow);
         _definitions[definition.Id] = definition; return Task.FromResult(definition);
     }
-    public Task<IReadOnlyList<FlowTenantAccessDto>> GetTenantsAsync(CancellationToken token = default) => Task.FromResult<IReadOnlyList<FlowTenantAccessDto>>([new(_tenantId, $"Tenant {_tenantId}", true, true, true), new(23, "Tenant 23", true, false, false)]);
+    public Task<IReadOnlyList<FlowTenantAccessDto>> GetTenantsAsync(CancellationToken token = default) => Task.FromResult<IReadOnlyList<FlowTenantAccessDto>>([new(_tenantId, $"Tenant {_tenantId}", true, true, true) { CanDelete = true }, new(23, "Tenant 23", true, false, false)]);
     public Task<IReadOnlyList<FlowDefinitionDto>> ListAsync(int tenantId, CancellationToken token = default) => Task.FromResult<IReadOnlyList<FlowDefinitionDto>>(_definitions.Values.Where(f => f.TenantId == tenantId).ToArray());
     public Task<FlowDefinitionDto> GetAsync(int tenantId, Guid flowId, CancellationToken token = default) => Task.FromResult(Find(tenantId, flowId));
     public Task<FlowDefinitionDto> CreateAsync(int tenantId, FlowCreateRequest request, CancellationToken token = default)

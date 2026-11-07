@@ -78,9 +78,9 @@ public static class ExecutionLifecycleSubscriptions
     private static IQueryable<FlowDefinitionRecord> Definitions(OrchestratorDbContext db, int[] tenants) =>
         db.Database.IsNpgsql()
             ? db.FlowDefinitions.FromSqlInterpolated($@"SELECT * FROM ""FlowDefinitions""
-                WHERE ""TenantId"" = ANY ({tenants})
+                WHERE ""TenantId"" = ANY ({tenants}) AND ""DeletedAtUtc"" IS NULL
                 ORDER BY ""Id"" FOR SHARE").AsNoTracking()
-            : db.FlowDefinitions.AsNoTracking().Where(x => tenants.Contains(x.TenantId)).OrderBy(x => x.Id);
+            : db.FlowDefinitions.AsNoTracking().Where(x => tenants.Contains(x.TenantId) && x.DeletedAtUtc == null).OrderBy(x => x.Id);
 
     private static void RequireTransaction(OrchestratorDbContext db)
     {
@@ -119,7 +119,7 @@ public static class ExecutionLifecycleSubscriptions
     private static void Append(OrchestratorDbContext db, IReadOnlyList<(OutboxMessage Row, FlowExecutionEventDto Event)> facts,
         IReadOnlyList<FlowDefinitionRecord> definitions, IReadOnlyList<FlowVersionRecord> versions)
     {
-        foreach (var definition in definitions.Where(x => x.Enabled && x.PublishedVersionId is not null))
+        foreach (var definition in definitions.Where(x => x.DeletedAtUtc == null && x.Enabled && x.PublishedVersionId is not null))
         {
             var version = versions.SingleOrDefault(x => x.Id == definition.PublishedVersionId &&
                 x.TenantId == definition.TenantId && x.FlowId == definition.Id);

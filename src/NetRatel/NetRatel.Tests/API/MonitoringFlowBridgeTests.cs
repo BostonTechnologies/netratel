@@ -307,6 +307,9 @@ public sealed class MonitoringFlowBridgeTests
         var rig = new Rig { DefinitionEnabled = false };
         var provider = new PublishedMonitoringFlowProvider(rig.Flows);
         (await provider.IsPublishedAsync(rig.Client.TenantId, rig.Version.Id, default)).Should().BeTrue();
+        rig.DefinitionDeletedAt = rig.Clock.Now;
+        (await provider.IsPublishedAsync(rig.Client.TenantId, rig.Version.Id, default)).Should().BeFalse();
+        rig.DefinitionDeletedAt = null;
         (await provider.ListPublishedAsync(rig.Client.TenantId, 200, default)).Should().BeEmpty();
         rig.Version = rig.Version with { ConfigurationHash = new string('0', 64) };
         (await provider.IsPublishedAsync(rig.Client.TenantId, rig.Version.Id, default)).Should().BeFalse();
@@ -342,6 +345,7 @@ public sealed class MonitoringFlowBridgeTests
         public FlowVersionDto Version { get; set; }
         public FlowRunSummaryDto Run { get; set; }
         public bool DefinitionEnabled { get; set; } = true;
+        public DateTimeOffset? DefinitionDeletedAt { get; set; }
         public bool ReturnRun { get; set; } = true;
         public bool HandoffAccepted { get; set; } = true;
         public int FindCalls { get; private set; }
@@ -398,6 +402,9 @@ public sealed class MonitoringFlowBridgeTests
                     MonitoringFlowEventFactory.Create(Intent)!.Data, ActionResults ?? (Receipt is null ? [] :
                     [new(Version.Graph.Nodes.Single(node => node.Kind == FlowNodeKind.CreateIncident).Id, "persisted-action-key", FlowActionStatus.Succeeded, 1, 1, "incident-created", Receipt)]))),
                 nameof(IFlowDefinitionService.ListAsync) => Task.FromResult<IReadOnlyList<FlowDefinitionDto>>([Definition()]),
+                nameof(IFlowDefinitionService.GetMetadataAsync) => Task.FromResult<FlowSummaryDto?>(new(Definition().Id, Definition().TenantId,
+                    Definition().Name, Definition().Revision, Definition().Enabled, Definition().PublishedVersionId,
+                    Definition().PublishedVersionNumber, Definition().UpdatedAtUtc, DeletedAtUtc: DefinitionDeletedAt)),
                 nameof(IFlowDefinitionService.GetAsync) => Task.FromResult<FlowDefinitionDto?>(Definition()),
                 _ => throw new NotSupportedException(method.Name)
             });

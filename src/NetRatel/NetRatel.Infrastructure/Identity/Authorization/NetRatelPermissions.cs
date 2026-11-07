@@ -34,6 +34,7 @@ public static class NetRatelPermissions
     public const string McpConnectivityTest = "mcp.connectivity.test";
     public const string FlowRead = "flow.read";
     public const string FlowEdit = "flow.edit";
+    public const string FlowDelete = "flow.delete";
     public const string FlowPublish = "flow.publish";
     public const string FlowExecute = "flow.execute";
 
@@ -46,6 +47,6 @@ public static class NetRatelPermissions
         FileRead, FileWrite, FileDelete, RemoteSupport, ComputerUseView, ComputerUseControl, SecretUse, SecretReveal,
         AuditRead, IntegrationManagement, ArtifactPublication, McpPolicyAdministration, McpDiscoveryRead,
         McpConnectivityRead, McpConnectivityTest,
-        FlowRead, FlowEdit, FlowPublish, FlowExecute
+        FlowRead, FlowEdit, FlowDelete, FlowPublish, FlowExecute
     };
 }

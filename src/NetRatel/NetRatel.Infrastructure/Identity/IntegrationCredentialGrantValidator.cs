@@ -43,10 +43,10 @@ public sealed class IntegrationCredentialGrantValidator(NetRatelIdentityDbContex
             throw new IntegrationCredentialGrantValidationException("resource");
         var grants = request.Grants ?? [];
         var instance = request.InstancePermissions ?? [];
-        if ((grants.Count == 0 && instance.Count == 0) || grants.Count > 64 || grants.Distinct().Count() != grants.Count ||
+        if ((grants.Count == 0 && instance.Count == 0) || grants.Count > IntegrationPermissionCatalog.MaximumTenantGrants || grants.Distinct().Count() != grants.Count ||
             grants.Any(grant => grant.TenantId <= 0 || !IsDelegable(grant.Permission)))
             throw new IntegrationCredentialGrantValidationException("grants");
-        if (instance.Count > 32 || instance.Distinct(StringComparer.Ordinal).Count() != instance.Count || instance.Any(permission => !IsDelegable(permission)))
+        if (instance.Count > IntegrationPermissionCatalog.MaximumPermissionsPerScope || instance.Distinct(StringComparer.Ordinal).Count() != instance.Count || instance.Any(permission => !IsDelegable(permission)))
             throw new IntegrationCredentialGrantValidationException("instancePermissions");
         var tenantIds = grants.Select(grant => grant.TenantId).Distinct().ToArray();
         if (await applicationDb.Tenants.AsNoTracking().CountAsync(tenant => tenantIds.Contains(tenant.Id), cancellationToken).ConfigureAwait(false) != tenantIds.Length)

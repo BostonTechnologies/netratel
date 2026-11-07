@@ -7,6 +7,9 @@ namespace NetRatel.Web.Services.Flows;
 
 public interface IFlowApiService
 {
+    Task<FlowPageDto> QueryAsync(int tenantId, FlowQueryDto query, CancellationToken token = default);
+    Task<FlowSummaryDto> GetMetadataAsync(int tenantId, Guid flowId, CancellationToken token = default);
+    Task<FlowDeleteResultDto> DeleteAsync(int tenantId, Guid flowId, FlowDeleteRequest request, CancellationToken token = default);
     Task<IReadOnlyList<FlowTenantAccessDto>> GetTenantsAsync(CancellationToken token = default);
     Task<IReadOnlyList<FlowDefinitionDto>> ListAsync(int tenantId, CancellationToken token = default);
     Task<FlowDefinitionDto> GetAsync(int tenantId, Guid flowId, CancellationToken token = default);
@@ -58,6 +61,8 @@ public sealed class FlowApiException(HttpStatusCode statusCode, string? code = n
         "execution-definition-name-limit" => "This definition name exceeds the supported 512-character limit.",
         "execution-trigger-source-unavailable" => "Request events currently support job-backed definitions. Select Script execution events for library scripts, or remove the unavailable filter. Your draft is preserved.",
         "execution-definition-query-invalid" or "execution-definition-id-invalid" or "execution-target-query-invalid" => "The definition search or selection is invalid. Reload the catalogue.",
+        "flow-active-work" => "This flow has unfinished work or a live delivery obligation. Open History and wait for it to settle before deleting. Nothing was disabled or deleted.",
+        "flow-revision-conflict" => "This flow changed. Refresh and review its current revision before deleting.",
         "mapping-output-limit" => "The sample expands beyond the incident field limits. Shorten the title or description template.",
         "canonical-principal-required" => "This session cannot publish. Sign in again with an authorized operator account; your draft is preserved.",
         _ => StatusMessage(status)
@@ -76,6 +81,16 @@ public sealed class FlowApiException(HttpStatusCode statusCode, string? code = n
 /// <summary>Only explicit commands write drafts or publish. No browser execution endpoint is exposed.</summary>
 public sealed class FlowApiService(IHttpClientFactory factory) : IFlowApiService
 {
+    public Task<FlowPageDto> QueryAsync(int tenantId, FlowQueryDto query, CancellationToken token = default)
+    {
+        if (!query.IsValid) throw new ArgumentException("flow-query-invalid");
+        var path = $"{Root(tenantId)}/summary?search={Uri.EscapeDataString(query.Search?.Trim() ?? "")}&enabled={query.Enabled}&publication={query.Publication}&sort={query.Sort}&descending={query.Descending}&pageIndex={query.PageIndex}&pageSize={query.PageSize}";
+        return SendAsync<FlowPageDto>(HttpMethod.Get, path, null, token);
+    }
+    public Task<FlowSummaryDto> GetMetadataAsync(int tenantId, Guid flowId, CancellationToken token = default) =>
+        SendAsync<FlowSummaryDto>(HttpMethod.Get, Flow(tenantId, flowId) + "/metadata", null, token);
+    public Task<FlowDeleteResultDto> DeleteAsync(int tenantId, Guid flowId, FlowDeleteRequest request, CancellationToken token = default) =>
+        SendAsync<FlowDeleteResultDto>(HttpMethod.Delete, Flow(tenantId, flowId), request, token);
     public const string ClientName = "FlowsApi";
     private readonly HttpClient _http = factory.CreateClient(ClientName);
     private static string Root(int tenantId) => $"/api/v1/tenants/{tenantId}/flows";

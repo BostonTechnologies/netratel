@@ -1,6 +1,7 @@
 using System.Text.Json;
 using AwesomeAssertions;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using NetRatel.Application.Flows;
 using NetRatel.Application.Netclaw;
@@ -18,7 +19,7 @@ using Xunit;
 namespace NetRatel.Tests.Flows;
 
 [Collection(PostgreSqlPersistenceCollection.Name)]
-public sealed class FlowPostgreSqlTests(PostgreSqlPersistenceFixture postgres)
+public sealed partial class FlowPostgreSqlTests(PostgreSqlPersistenceFixture postgres)
 {
     [Fact]
     public async Task Migration_CAS_tenant_fences_and_database_immutable_versions_preserve_published_semantics()
@@ -639,9 +640,9 @@ public sealed class FlowPostgreSqlTests(PostgreSqlPersistenceFixture postgres)
             await using var scope = h.Provider.CreateAsyncScope(); var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
             await db.Database.MigrateAsync(); db.Tenants.AddRange(new Tenant { Id = 17, Name = "Flows fixture" }, new Tenant { Id = 18, Name = "Foreign tenant" }); await db.SaveChangesAsync(); h.Clock.CaptureSystemTime(); return h;
         }
-        public ServiceProvider NewProvider()
+        public ServiceProvider NewProvider(DbCommandInterceptor? interceptor = null)
         {
-            var services = new ServiceCollection(); services.AddLogging(); services.AddDbContext<OrchestratorDbContext>(options => options.UseNpgsql(Connection));
+            var services = new ServiceCollection(); services.AddLogging(); services.AddDbContext<OrchestratorDbContext>(options => { options.UseNpgsql(Connection); if (interceptor is not null) options.AddInterceptors(interceptor); });
             services.AddSingleton<TimeProvider>(Clock); services.AddNetRatelFlows();
             services.AddSingleton<IFlowExecutionAuthorityVerifier>(Authority); services.AddSingleton<IFlowDispatchGuard>(Guard);
             services.AddSingleton<IFlowTransactionAdmission>(Guard);

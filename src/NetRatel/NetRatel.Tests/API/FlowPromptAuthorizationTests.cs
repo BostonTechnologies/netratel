@@ -55,6 +55,20 @@ public sealed class FlowPromptAuthorizationTests
     }
 
     [Fact]
+    public async Task Metadata_summary_requires_flow_read_without_disclosing_protected_prompt_content()
+    {
+        await using var rig = new Rig();
+        Assert.Equal(403, Status(await rig.ReadAsync("list")));
+        var result = await FlowEndpoints.QueryAsync(17, new(), rig.Http, rig.Access, rig.Db, rig.Flows, default);
+        Assert.Equal(200, Status(result));
+        var page = Assert.IsType<FlowPageDto>(((IValueHttpResult)result).Value);
+        Assert.Equal(rig.FlowId, Assert.Single(page.Items).Id);
+        var json = System.Text.Json.JsonSerializer.Serialize(page);
+        Assert.DoesNotContain("PinnedPrompts", json); Assert.DoesNotContain("Graph", json);
+        Assert.Equal(0, rig.Mutations);
+    }
+
+    [Fact]
     public async Task Prompt_free_versions_retain_the_existing_flow_read_capability()
     {
         await using var rig = new Rig();
@@ -152,6 +166,7 @@ public sealed class FlowPromptAuthorizationTests
         public IFlowDefinitionService Flows { get; }
         public int Mutations;
         private readonly ServiceProvider provider;
+        private FlowSummaryDto Metadata => new(FlowId, 17, "AI flow", 1, true, VersionId, 1, DateTimeOffset.UtcNow);
         private FlowDefinitionDto Definition => new(FlowId, 17, "AI flow", 1, true, Graph, VersionId, 1, DateTimeOffset.UtcNow);
         private FlowVersionDto Version => new(VersionId, FlowId, 17, 1, Graph, "test-hash", "operator", DateTimeOffset.UtcNow);
         public Rig()
@@ -182,6 +197,8 @@ public sealed class FlowPromptAuthorizationTests
             ((InterfaceProxy)Flows).Handler = (method, _) => method.Name switch
             {
                 nameof(IFlowDefinitionService.ListAsync) => Task.FromResult<IReadOnlyList<FlowDefinitionDto>>([Definition]),
+                nameof(IFlowDefinitionService.GetMetadataAsync) => Task.FromResult<FlowSummaryDto?>(Metadata),
+                nameof(IFlowDefinitionService.QueryAsync) => Task.FromResult(new FlowPageDto([Metadata], 1, 0, 20)),
                 nameof(IFlowDefinitionService.GetAsync) => Task.FromResult<FlowDefinitionDto?>(Definition),
                 nameof(IFlowDefinitionService.GetVersionsAsync) => Task.FromResult<IReadOnlyList<FlowVersionDto>>([Version]),
                 nameof(IFlowDefinitionService.GetVersionAsync) => Task.FromResult<FlowVersionDto?>(Version),

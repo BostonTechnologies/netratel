@@ -288,6 +288,7 @@ internal static partial class NetRatelCli
             ("netratel_flows", "save_draft") => "Save {expectedRevision,name,graph} to an existing flow draft.",
             ("netratel_flows", "clone") => "Clone an existing draft using {expectedRevision,name} data.",
             ("netratel_flows", "set_enabled") => "Change flow availability with {expectedRevision,enabled} data.",
+            ("netratel_flows", "delete") => "Delete one exact flow with {expectedRevision}; requires flow.delete, Write scope, an allowing destructive AutomationWrite policy and --confirm. Preview changes no business state; retained history follows existing retention.",
             ("netratel_flows", "publish") => "Publish an immutable version of the reviewed draft using {expectedRevision} data.",
             ("netratel_flows", "versions") => "List immutable published versions for a flow.",
             ("netratel_flows", "version") => "Read one immutable flow version and its graph.",

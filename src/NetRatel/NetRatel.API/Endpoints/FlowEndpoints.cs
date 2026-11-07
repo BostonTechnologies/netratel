@@ -15,6 +15,9 @@ public static partial class FlowEndpoints
     {
         app.MapGet("/api/v1/flows/tenants", TenantsAsync).RequireAuthorization().WithTags("Flows");
         var group = app.MapGroup("/api/v1/tenants/{tenantId:int}/flows").RequireAuthorization().WithTags("Flows");
+        group.MapGet("/summary", QueryAsync);
+        group.MapGet("/{flowId:guid}/metadata", MetadataAsync);
+        group.MapDelete("/{flowId:guid}", DeleteAsync);
         group.MapGet("", ListAsync); group.MapPost("", CreateAsync);
         group.MapGet("/template", TemplateAsync); group.MapGet("/connectors", ConnectorsAsync);
         group.MapGet("/schema-capabilities", SchemaCapabilitiesAsync);
@@ -39,7 +42,8 @@ public static partial class FlowEndpoints
         foreach (var tenant in tenants)
             result.Add(new(tenant.Id, tenant.Name, await access.AuthorizeAsync(http.User, NetRatelPermissions.FlowEdit, tenant.Id, ct).ConfigureAwait(false),
                 await access.AuthorizeAsync(http.User, NetRatelPermissions.FlowPublish, tenant.Id, ct).ConfigureAwait(false),
-                await access.AuthorizeAsync(http.User, NetRatelPermissions.FlowExecute, tenant.Id, ct).ConfigureAwait(false)));
+                await access.AuthorizeAsync(http.User, NetRatelPermissions.FlowExecute, tenant.Id, ct).ConfigureAwait(false))
+                { CanDelete = await access.AuthorizeAsync(http.User, NetRatelPermissions.FlowDelete, tenant.Id, ct).ConfigureAwait(false) });
         return Results.Ok(result);
     }
     private static async Task<IResult?> AdmitAsync(int tenantId, string permission, HttpContext http, IEffectiveAccessService access, OrchestratorDbContext db, CancellationToken ct)
@@ -193,12 +197,14 @@ public static partial class FlowEndpoints
     internal static async Task<IResult> VersionsAsync(int tenantId, Guid flowId, HttpContext http, IEffectiveAccessService access, OrchestratorDbContext db, IFlowDefinitionService flows, CancellationToken ct)
     {
         var denied = await AdmitAsync(tenantId, NetRatelPermissions.FlowRead, http, access, db, ct).ConfigureAwait(false); if (denied is not null) return denied;
-        if (await flows.GetAsync(tenantId, flowId, ct).ConfigureAwait(false) is null) return Results.NotFound();
-        var versions = await flows.GetVersionsAsync(tenantId, flowId, ct).ConfigureAwait(false);
+        var metadata = await flows.GetMetadataAsync(tenantId, flowId, ct).ConfigureAwait(false);
+        if (metadata is null) return Results.NotFound();
+        var versions = (await flows.GetVersionsAsync(tenantId, flowId, ct).ConfigureAwait(false))
+            .Select(version => version with { FlowDeletedAtUtc = metadata.DeletedAtUtc }).ToArray();
         return await PromptAccessAsync(tenantId, versions.Any(version => ContainsPromptBodies(version.Graph)), http, access, ct).ConfigureAwait(false) ?? Results.Ok(versions);
     }
     internal static async Task<IResult> RunsAsync(int tenantId, Guid flowId, HttpContext http, IEffectiveAccessService access, OrchestratorDbContext db, IFlowDefinitionService flows, CancellationToken ct)
-    { var denied = await AdmitAsync(tenantId, NetRatelPermissions.FlowRead, http, access, db, ct).ConfigureAwait(false); if (denied is not null) return denied; return await flows.GetAsync(tenantId, flowId, ct).ConfigureAwait(false) is null ? Results.NotFound() : Results.Ok(await flows.GetRunsAsync(tenantId, flowId, ct).ConfigureAwait(false)); }
+    { var denied = await AdmitAsync(tenantId, NetRatelPermissions.FlowRead, http, access, db, ct).ConfigureAwait(false); if (denied is not null) return denied; return await flows.GetMetadataAsync(tenantId, flowId, ct).ConfigureAwait(false) is null ? Results.NotFound() : Results.Ok(await flows.GetRunsAsync(tenantId, flowId, ct).ConfigureAwait(false)); }
     internal static async Task<IResult> RunAsync(int tenantId, Guid flowId, Guid runId, HttpContext http, IEffectiveAccessService access, OrchestratorDbContext db, IFlowDefinitionService flows, CancellationToken ct)
     {
         var denied = await AdmitAsync(tenantId, NetRatelPermissions.FlowRead, http, access, db, ct).ConfigureAwait(false); if (denied is not null) return denied;

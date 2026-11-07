@@ -95,7 +95,10 @@ public sealed record FlowDefinitionDto(Guid Id, int TenantId, string Name, long 
     FlowGraphDto Draft, Guid? PublishedVersionId, int PublishedVersionNumber, DateTimeOffset UpdatedAtUtc,
     FlowRunSummaryDto? LatestRun = null);
 public sealed record FlowVersionDto(Guid Id, Guid FlowId, int TenantId, int VersionNumber, FlowGraphDto Graph,
-    string ConfigurationHash, string PublishedBy, DateTimeOffset PublishedAtUtc);
+    string ConfigurationHash, string PublishedBy, DateTimeOffset PublishedAtUtc)
+{
+    public DateTimeOffset? FlowDeletedAtUtc { get; init; }
+}
 public sealed record FlowRunSummaryDto(Guid Id, Guid FlowId, Guid FlowVersionId, Guid EventId, Guid OccurrenceId,
     FlowRunStatus Status, DateTimeOffset CreatedAtUtc, DateTimeOffset? CompletedAtUtc, string? Code = null);
 public sealed record FlowActionReceiptDto(string IncidentId, string? TrackingId = null, string? SafeLink = null);
@@ -111,6 +114,7 @@ public sealed record FlowRunDetailDto(FlowRunSummaryDto Run,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] FlowEventDataDto? Input,
     IReadOnlyList<FlowActionSummaryDto> Actions)
 {
+    public DateTimeOffset? FlowDeletedAtUtc { get; init; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public FlowTraceDto? Trace { get; init; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -126,7 +130,10 @@ public sealed record FlowConnectorReferenceDto(Guid Id, int TenantId, string Nam
 {
     public FlowActionKind Kind { get; init; }
 }
-public sealed record FlowTenantAccessDto(int TenantId, string TenantName, bool CanEdit, bool CanPublish, bool CanExecute);
+public sealed record FlowTenantAccessDto(int TenantId, string TenantName, bool CanEdit, bool CanPublish, bool CanExecute)
+{
+    public bool CanDelete { get; init; }
+}
 
 public static class FlowLimits
 {

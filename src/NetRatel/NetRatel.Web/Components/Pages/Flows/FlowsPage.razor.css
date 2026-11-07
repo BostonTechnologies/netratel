@@ -1,9 +1,20 @@
-.flows-page{padding:1rem;max-width:100%;min-width:0;color:var(--mud-palette-text-primary)}.flows-heading{display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-start;gap:.75rem;margin-bottom:1rem}.flows-heading h1{font-size:1.5rem;margin:0}.flows-heading p{font-size:.875rem;color:var(--mud-palette-text-secondary);margin:.3rem 0}.flows-page label{display:flex;flex-direction:column;gap:.25rem;font-size:.875rem;min-width:0}.flows-page input,.flows-page select{max-width:100%;min-width:0;padding:.45rem;border:1px solid var(--mud-palette-divider);border-radius:4px;background:var(--mud-palette-surface);color:inherit;font:inherit}.flows-page button{padding:.4rem .6rem;border:1px solid var(--mud-palette-divider);border-radius:4px;background:var(--mud-palette-surface);color:inherit;font:inherit;font-size:.8125rem;white-space:normal;overflow-wrap:anywhere}.flows-page button:disabled{opacity:.55;cursor:default}.flows-page button:not(:disabled){cursor:pointer}.flows-page button:focus-visible,.flows-page input:focus-visible,.flows-page select:focus-visible{outline:2px solid var(--mud-palette-primary);outline-offset:2px}.flows-toolbar,.flow-create,.flow-row-actions{display:flex;gap:.5rem;align-items:end;flex-wrap:wrap}.flows-toolbar{margin-bottom:1rem}.flow-create{padding:1rem;margin-bottom:1rem;border:1px solid var(--mud-palette-divider);border-radius:6px}.flows-table{width:100%;border-collapse:collapse;font-size:.875rem;background:var(--mud-palette-surface)}.flows-table caption{text-align:left;color:var(--mud-palette-text-secondary);padding:.5rem}.flows-table th,.flows-table td{text-align:left;vertical-align:top;padding:.65rem;border-bottom:1px solid var(--mud-palette-divider);overflow-wrap:anywhere}.flows-table td span{display:block;font-size:.75rem;color:var(--mud-palette-text-secondary)}.flow-notice,.flow-error{padding:.75rem;margin:.75rem 0;border:1px solid var(--mud-palette-divider);border-radius:6px;overflow-wrap:anywhere}.flow-error{border-color:var(--mud-palette-error)}@media(max-width:760px){.flows-page{padding:.6rem}.flows-heading>label{width:100%}.flows-table thead{display:none}.flows-table,.flows-table tbody,.flows-table tr,.flows-table td{display:block;width:100%}.flows-table tr{margin-bottom:.75rem;border:1px solid var(--mud-palette-divider);border-radius:6px}.flows-table td{border:0;padding:.45rem .6rem}.flows-table td:before{content:attr(data-label);display:block;font-size:.75rem;font-weight:600;color:var(--mud-palette-text-secondary)}.flows-toolbar>label,.flow-create>label{width:100%}}
-
-.flows-page{padding:.5rem .75rem}.flows-heading{gap:.5rem;margin-bottom:.4rem}.flows-heading h1{font-size:1.125rem}.flows-heading p{display:none}.flows-heading label{font-size:.75rem}.flows-heading select{padding:.3rem}.flows-heading a{font-size:.8125rem}
-
-.flows-heading>a{margin-left:auto}@media(max-width:760px){.flows-heading>a{margin-left:0}}
-
+.flows-page{padding:.5rem .75rem;min-width:0;color:var(--mud-palette-text-primary)}
+.flows-heading,.flows-toolbar,.flow-create,.flow-row-actions{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap}
+.flows-heading{margin-bottom:.5rem}.flows-heading h1{font-size:1.25rem}.flows-heading p{display:none}.flows-heading>a{margin-left:auto}
+.flows-page label{display:flex;flex-direction:column;gap:.2rem;font-size:.8rem;min-width:0}
+.flows-page select,.flow-create input{padding:.4rem;border:1px solid var(--mud-palette-divider);border-radius:4px;background:var(--mud-palette-surface);color:inherit;font:inherit}
+.flows-toolbar{align-items:end;margin-bottom:.65rem}.flows-toolbar ::deep .mud-input-control{flex:1;min-width:180px;max-width:350px}
+.flow-create{padding:1rem;border:1px solid var(--mud-palette-divider);margin-bottom:.6rem}
+.flow-error{padding:.75rem;border:1px solid var(--mud-palette-error);border-radius:6px;overflow-wrap:anywhere}.flow-error button{margin-left:1rem}
+.flows-table-region{min-width:0;max-width:100%;border:1px solid var(--mud-palette-divider);border-radius:6px;overflow:hidden}
+.flows-table-region ::deep .mud-table-container{overscroll-behavior:contain;max-height:min(62vh,700px)}
+.flows-table-region ::deep .mud-table-pagination{position:relative;background:var(--mud-palette-surface);border-top:1px solid var(--mud-palette-divider);flex-shrink:0}
+.flows-table-region ::deep .mud-table-cell{font-size:.8125rem;vertical-align:middle;overflow-wrap:anywhere}
+.flows-table-region ::deep .mud-table-cell>span{display:block;font-size:.75rem;color:var(--mud-palette-text-secondary)}
+.flow-name{display:block;min-width:8rem;max-width:22rem;overflow-wrap:anywhere}
+.flow-row-actions{flex-wrap:nowrap;gap:0}.flow-row-actions ::deep .mud-icon-button,.flows-toolbar ::deep .mud-icon-button{min-width:44px;min-height:44px}
+.flows-page ::deep button:focus-visible,.flows-page select:focus-visible{outline:2px solid var(--mud-palette-primary);outline-offset:2px}
+@media(max-width:760px){.flows-page{padding:.5rem}.flows-heading>a{margin-left:0}.flows-toolbar{gap:.4rem}.flows-table-region ::deep .mud-table-container{max-height:55vh}.flows-table-region ::deep .mud-table-pagination .mud-toolbar{flex-wrap:wrap;height:auto;min-height:64px;padding:.25rem}.flows-toolbar ::deep .mud-input-control{min-width:100%;max-width:none}}
 .flow-history-heading{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:start;gap:1rem;min-width:0;padding:.3rem .1rem}
 .flow-history-symbol{display:grid;place-items:center;flex-shrink:0;width:3rem;height:3rem;border-radius:12px;color:var(--mud-palette-primary);background:var(--mud-palette-primary-hover)}
 .flow-history-title{flex:1;min-width:0;overflow-wrap:anywhere}
@@ -15,3 +26,13 @@
 @media(max-width:600px){.flow-history-heading{gap:.65rem}.flow-history-symbol{width:2.3rem;height:2.3rem}.flow-history-title h2{font-size:1.05rem}.flow-history-title p{font-size:.75rem}.flow-history-footer{gap:.5rem;padding:.15rem}}
 
 @media(max-width:360px){.flow-history-heading{grid-template-columns:minmax(0,1fr) auto}.flow-history-symbol,.flow-history-subtitle{display:none}}
+
+/* Keep narrow views horizontally scrollable without crushing words into vertical columns. */
+.flows-table-region ::deep .mud-table-root{min-width:1000px}
+.flows-table-region ::deep .mud-table-cell:nth-child(1){min-width:180px}
+.flows-table-region ::deep .mud-table-cell:nth-child(2){min-width:135px}
+.flows-table-region ::deep .mud-table-cell:nth-child(3){min-width:80px}
+.flows-table-region ::deep .mud-table-cell:nth-child(4){min-width:160px}
+.flows-table-region ::deep .mud-table-cell:nth-child(5){min-width:150px}
+.flows-table-region ::deep .mud-table-cell:nth-child(6){min-width:230px}
+.flow-name{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;line-clamp:3;overflow:hidden}

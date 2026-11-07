@@ -16,7 +16,7 @@ public sealed class FlowPreviewPlaybackTests(ClientsManagementBrowserFixture bro
         var page = await context.NewPageAsync(); page.SetDefaultTimeout(30_000);
         var errors = new List<string>(); page.PageError += (_, error) => errors.Add(error);
         await page.GotoAsync(fixture.BaseAddress + "/flows", new() { WaitUntil = WaitUntilState.DOMContentLoaded });
-        await page.GetByTestId("flow-row").WaitForAsync(new() { Timeout = 90_000 });
+        await page.Locator(".flows-table .flow-row").WaitForAsync(new() { Timeout = 90_000 });
         await page.GetByTestId("flow-edit").First.ClickAsync();
         await Assertions.Expect(page.GetByTestId("flow-node-title")).ToHaveCountAsync(3);
         await FitAndWaitAsync(page);
@@ -73,7 +73,7 @@ public sealed class FlowPreviewPlaybackTests(ClientsManagementBrowserFixture bro
         var page = await context.NewPageAsync(); page.SetDefaultTimeout(30_000);
         var errors = new List<string>(); page.PageError += (_, error) => errors.Add(error);
         await page.GotoAsync(fixture.BaseAddress + "/flows", new() { WaitUntil = WaitUntilState.DOMContentLoaded });
-        await page.GetByTestId("flow-row").WaitForAsync(new() { Timeout = 90_000 });
+        await page.Locator(".flows-table .flow-row").WaitForAsync(new() { Timeout = 90_000 });
         await page.GetByTestId("flow-edit").First.ClickAsync();
         await Assertions.Expect(page.GetByTestId("flow-node-title")).ToHaveCountAsync(6);
         await FitAndWaitAsync(page);

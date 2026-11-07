@@ -5,9 +5,16 @@ public sealed record IntegrationPermissionDescriptor(string Id, string Label, st
 /// <summary>Human-readable permission descriptions shared by the delegation API and Web editor.</summary>
 public static class IntegrationPermissionCatalog
 {
+    // Keep proposals bounded while allowing the complete separately assignable catalog
+    // at instance scope and across the existing two-full-tenant grant budget. These
+    // cardinality bounds grant no authority; each requested permission is still checked.
+    public static int MaximumPermissionsPerScope => Math.Max(32, Delegable.Count);
+    public static int MaximumTenantGrants => 2 * MaximumPermissionsPerScope;
+
     public static IReadOnlyList<IntegrationPermissionDescriptor> Delegable { get; } =
     [
         new(NetRatelPermissions.FlowRead, "Read flows", "View tenant flow drafts, published versions and run history."),
+        new(NetRatelPermissions.FlowDelete, "Delete flows", "Disable and logically delete tenant flows, retaining history under the existing retention policy. Separate from editing."),
         new(NetRatelPermissions.FlowEdit, "Edit flows", "Create, clone and change inert tenant flow drafts."),
         new(NetRatelPermissions.FlowPublish, "Publish flows", "Publish immutable tenant flow definition versions."),
         new(NetRatelPermissions.FlowExecute, "Execute flows", "Bind and execute approved published tenant flows."),

@@ -40,7 +40,7 @@ public sealed partial class IntegrationPairingService(NetRatelIdentityDbContext 
         var name = input.Name?.Trim();
         var requested = input.RequestedPermissions ?? [];
         if (string.IsNullOrWhiteSpace(name) || name.Length > 128 || name.Any(char.IsControl) || !Enum.IsDefined(input.Purpose) ||
-            requested.Count > 32 || requested.Distinct(StringComparer.Ordinal).Count() != requested.Count ||
+            requested.Count > IntegrationPermissionCatalog.MaximumPermissionsPerScope || requested.Distinct(StringComparer.Ordinal).Count() != requested.Count ||
             requested.Any(permission => !Authorization.NetRatelPermissions.All.Contains(permission) || permission == Authorization.NetRatelPermissions.IntegrationManagement))
             throw new IntegrationPairingUnavailableException();
         if (input.TemporaryVerifier && (input.Purpose != PairingCredentialPurpose.HttpMcp ||

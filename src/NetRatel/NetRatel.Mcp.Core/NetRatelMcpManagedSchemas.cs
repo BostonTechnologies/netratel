@@ -77,6 +77,11 @@ public static partial class NetRatelMcpToolDefinitions
             // Exported references are relative to the DTO root. Inline them
             // before embedding under the tool's operation-discriminated request.
             properties["data"] = InlineManagedSchema(schema, schema, new HashSet<string>(StringComparer.Ordinal));
+            if (operation.Tool == "netratel_flows" && operation.Operation == "delete")
+            {
+                properties["data"]!["properties"]!["expectedRevision"]!["minimum"] = 1;
+                properties["data"]!["description"] = "Graph-free deletion intent. Expected revision is the exact positive revision reviewed by the user. Requires flow.delete, Write / netratel.mcp.write, an allowing AutomationWrite policy, and Destructive confirmation. Preview with confirm false changes no business state; history retains existing retention.";
+            }
         }
         return new RequestDefinition(new JsonObject
         {

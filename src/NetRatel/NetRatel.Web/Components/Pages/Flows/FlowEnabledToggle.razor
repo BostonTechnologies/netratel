@@ -1,0 +1,30 @@
+@using NetRatel.Shared.Contracts.Flows
+<MudTooltip Text="@Label">
+    <span class="flow-toggle" aria-busy="@(_pending ? "true" : "false")">
+        <MudToggleIconButton @key="_activation" Toggled="Enabled" ToggledChanged="RequestAsync"
+            Icon="@Icons.Material.Filled.ToggleOff" ToggledIcon="@Icons.Material.Filled.ToggleOn"
+            Color="Color.Error" ToggledColor="Color.Success" Size="Size.Medium"
+            Disabled="@(Disabled || _pending)" aria-label="@Label" aria-pressed="@(Enabled ? "true" : "false")"
+            data-testid="flow-enabled" />
+        @if (_pending) { <span role="status" class="flow-toggle-pending">Saving…</span> }
+    </span>
+</MudTooltip>
+
+@code {
+    [Parameter] public bool Enabled { get; set; }
+    [Parameter] public bool Disabled { get; set; }
+    [Parameter] public string Name { get; set; } = "flow";
+    [Parameter] public EventCallback<bool> Requested { get; set; }
+    private bool _pending;
+    private long _activation;
+    private string Label => $"{Name}: {(Enabled ? "Enabled; disable flow" : "Disabled; enable flow")}";
+    private async Task RequestAsync(bool target)
+    {
+        if (Disabled || _pending) return;
+        // MudBlazor updates its internal Toggled before this callback. Recreate the controlled
+        // child immediately with the confirmed value while the requested write is pending.
+        _pending = true; ++_activation; StateHasChanged();
+        try { await Requested.InvokeAsync(target); }
+        finally { _pending = false; ++_activation; }
+    }
+}

@@ -63,7 +63,7 @@ public static partial class GlobalSearchEndpoints
 
     internal static IQueryable<GlobalSearchFlowDto> BuildFlowQuery(OrchestratorDbContext db, string? term, int[]? ids = null)
     {
-        var flows = db.FlowDefinitions.AsNoTracking();
+        var flows = db.FlowDefinitions.AsNoTracking().Where(row => row.DeletedAtUtc == null);
         if (ids is not null) flows = flows.Where(row => ids.Contains(row.TenantId));
         var query = from flow in flows join tenant in db.Tenants.AsNoTracking() on flow.TenantId equals tenant.Id
                     select new { Flow = flow, TenantName = tenant.Name };

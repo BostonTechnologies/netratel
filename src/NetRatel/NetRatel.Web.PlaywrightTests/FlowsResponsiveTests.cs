@@ -345,7 +345,7 @@ public sealed class FlowsResponsiveTests(ClientsManagementBrowserFixture browser
         Assert.NotEqual(1, saved.Viewport.Scale); Assert.True(saved.Viewport.ScrollX > 0 || saved.Viewport.ScrollY > 0);
         var canonical = JsonSerializer.Serialize(saved);
         await page.ReloadAsync(new() { WaitUntil = WaitUntilState.DOMContentLoaded });
-        await page.GetByTestId("flow-row").Filter(new() { HasText = "Native canvas roundtrip" }).GetByTestId("flow-edit").ClickAsync();
+        await page.Locator(".flows-table .flow-row").Filter(new() { HasText = "Native canvas roundtrip" }).GetByTestId("flow-edit").ClickAsync();
         await Assertions.Expect(page.GetByTestId("flow-node-title")).ToHaveCountAsync(4); await Assertions.Expect(page.GetByTestId("flow-link")).ToHaveCountAsync(2);
         await page.GetByTestId("flow-name").FillAsync("Native canvas roundtrip restored");
         await page.GetByTestId("flow-save").ClickAsync(); await Assertions.Expect(page.GetByTestId("flow-result")).ToContainTextAsync("Draft saved");
@@ -502,7 +502,7 @@ public sealed class FlowsResponsiveTests(ClientsManagementBrowserFixture browser
     private static async Task OpenPageAsync(IPage page, ClientsManagementFixtureHost fixture)
     {
         await page.GotoAsync(fixture.BaseAddress + "/flows", new() { WaitUntil = WaitUntilState.DOMContentLoaded });
-        await page.GetByTestId("flow-row").WaitForAsync(new() { Timeout = 90_000 });
+        await page.Locator(".flows-table .flow-row").WaitForAsync(new() { Timeout = 90_000 });
     }
     [Theory]
     [InlineData(1280, 800)]
@@ -538,9 +538,9 @@ public sealed class FlowsResponsiveTests(ClientsManagementBrowserFixture browser
         await page.GetByTestId("flow-clone-confirm").ClickAsync(); await page.GetByTestId("flow-name").WaitForAsync();
         await Assertions.Expect(page.GetByTestId("flow-name")).ToHaveValueAsync("Independent copy");
         await CloseEditorAsync(page);
-        var copy = page.GetByTestId("flow-row").Filter(new() { HasText = "Independent copy" });
+        var copy = page.Locator(".flows-table .flow-row").Filter(new() { HasText = "Independent copy" });
         await Assertions.Expect(copy).ToContainTextAsync("Disabled"); await Assertions.Expect(copy).ToContainTextAsync("Not published");
-        await Assertions.Expect(page.GetByTestId("flow-row")).ToHaveCountAsync(2);
+        await Assertions.Expect(page.Locator(".flows-table .flow-row")).ToHaveCountAsync(2);
         Assert.Equal(0, fixture.FlowsData.SaveCalls); Assert.Equal(0, fixture.FlowsData.PublishCalls);
         Assert.Empty(errors); Assert.False(await page.Locator("#blazor-error-ui").IsVisibleAsync());
     }

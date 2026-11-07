@@ -11,6 +11,7 @@ public static class FlowPersistenceModel
             entity.ToTable("FlowDefinitions"); entity.HasKey(row => row.Id);
             entity.HasAlternateKey(row => new { row.TenantId, row.Id });
             entity.Property(row => row.Name).HasMaxLength(128).IsRequired();
+            entity.Property(row => row.DeletedBy).HasMaxLength(256);
             entity.Property(row => row.DraftJson).HasColumnType("jsonb").IsRequired();
             entity.Property(row => row.Revision).IsConcurrencyToken(); entity.HasIndex(row => new { row.TenantId, row.UpdatedAtUtc });
         });
@@ -50,6 +51,7 @@ public static class FlowPersistenceModel
         builder.Entity<FlowAuditRecord>(entity =>
         {
             entity.ToTable("FlowAudits"); entity.HasKey(row => row.Id);
+            entity.Property(row => row.CorrelationId).HasMaxLength(128);
             entity.Property(row => row.ActorId).HasMaxLength(256).IsRequired(); entity.Property(row => row.Operation).HasMaxLength(64).IsRequired();
             entity.HasIndex(row => new { row.TenantId, row.FlowId, row.AtUtc });
         });

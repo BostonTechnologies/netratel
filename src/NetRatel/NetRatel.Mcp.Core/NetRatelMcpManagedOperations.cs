@@ -29,7 +29,7 @@ public sealed partial class NetRatelMcpOperationalTools
         bool confirm = false, CancellationToken cancellationToken = default) =>
         ManagedOperationAsync("netratel_monitoring", operation, request, confirm, cancellationToken);
 
-    [McpServerTool(UseStructuredContent = true), Description("Create and edit inert tenant flow drafts. Read template and connectors, create, edit graph with save_draft and current expectedRevision, validate/dry_run, then explicitly publish. Bind the resulting immutable version through a monitoring rule to execute on alerts; inspect runs and per-action receipts. Published actions can notify Discord/Slack, open RatelDesk incidents or start Netclaw investigations. Mutations require confirm:true and their distinct flow.edit/flow.publish permissions.")]
+    [McpServerTool(UseStructuredContent = true), Description("Create and edit inert tenant flow drafts. Read template and connectors, create, edit graph with save_draft and current expectedRevision, validate/dry_run, then explicitly publish. Bind the resulting immutable version through a monitoring rule to execute on alerts; inspect runs and per-action receipts. Published actions can notify Discord/Slack, open RatelDesk incidents or start Netclaw investigations. Mutations require confirm:true and their distinct flow.edit/flow.publish permissions. Delete requires explicit user deletion intent, exact discovered tenant/flow/revision, current delegated flow.delete, Write scope and an allowing destructive AutomationWrite policy. Omit/false confirm for a metadata-only preview; confirm:true rechecks authority. Deletion works across graph generations, stops future processing and retains history under existing retention. Never guess IDs, perform automatic/bulk cleanup, or silently retry a newer revision. After transport uncertainty reconcile the exact same intent via preview before retrying.")]
     public Task<NetRatelToolResponse> netratel_flows(string operation, JsonElement? request = null,
         bool confirm = false, CancellationToken cancellationToken = default) =>
         ManagedOperationAsync("netratel_flows", operation, request, confirm, cancellationToken);
@@ -55,6 +55,30 @@ public sealed partial class NetRatelMcpOperationalTools
         };
         var response = await ExecuteAsync(tool, operation, () => client.SendAsync(HttpMethod.Post,
             $"/api/v2/mcp/operator/application/{tool}/{operation}", body, cancellationToken), cancellationToken).ConfigureAwait(false);
+        if (tool == "netratel_flows" && operation == "delete" && confirm)
+        {
+            var target = new JsonObject
+            {
+                ["tenantId"] = payload.GetProperty("tenantId").GetInt32(),
+                ["flowId"] = payload.GetProperty("flowId").GetString(),
+                ["expectedRevision"] = payload.GetProperty("data").GetProperty("expectedRevision").GetInt64()
+            };
+            var returned = response.Data as JsonObject;
+            var identityMatches = returned?["tenantId"]?.ToString() == target["tenantId"]!.ToString() &&
+                Guid.TryParse(returned?["flowId"]?.ToString(), out var returnedId) && returnedId == payload.GetProperty("flowId").GetGuid();
+            var committed = returned?["disposition"]?.ToString() is "0" or "1" or "Deleted" or "AlreadyDeleted";
+            var revisionMatches = long.TryParse(returned?["revision"]?.ToString(), out var revision) &&
+                revision > 0 && target["expectedRevision"]!.GetValue<long>() < long.MaxValue && revision == target["expectedRevision"]!.GetValue<long>() + 1;
+            if (response.Success && (!identityMatches || !committed || !revisionMatches) ||
+                !response.Success && response.Error?.UpstreamStatus is null or 0 or >= 500)
+            {
+                target["requiresReconciliation"] = true; target["automaticRetry"] = false;
+                return (response with { Success = false, Status = "uncertain", Data = target, FailureContext = null,
+                    Summary = "Deletion was not confirmed. Reconcile this exact tenant, flow and pre-delete revision through an authorized preview before retrying. Never substitute a newer revision.",
+                    Error = new NetRatelToolError("flow_delete_transport_uncertain", false, response.Error?.UpstreamStatus) })
+                    .WithFailureContext(tool, operation, target);
+            }
+        }
         if (!response.Success || !descriptor.Mutation || confirm)
             return response;
         if (response.Data?["requiresConfirm"] is not JsonValue value || !value.TryGetValue<bool>(out var requiresConfirm) || !requiresConfirm)
@@ -62,7 +86,9 @@ public sealed partial class NetRatelMcpOperationalTools
                 Error: new NetRatelToolError("invalid_api_response", false));
         return Confirmation(operation,
             $"Current permissions and MCP policy admit {tool}/{operation}. Review the arguments and repeat the unchanged request with confirm: true. No business state was changed.",
-            descriptor.AgentTarget ? [payload.GetProperty("agentId").GetString()!] : [payload.GetProperty("tenantId").ToString()])
+            descriptor.Tool == "netratel_flows" && descriptor.Operation == "delete"
+                ? [payload.GetProperty("tenantId").ToString(), payload.GetProperty("flowId").GetString()!]
+                : descriptor.AgentTarget ? [payload.GetProperty("agentId").GetString()!] : [payload.GetProperty("tenantId").ToString()])
             with { Data = response.Data };
     }
 }

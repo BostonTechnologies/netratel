@@ -11,6 +11,32 @@ namespace NetRatel.Tests.Infrastructure;
 public sealed class EffectiveAccessServiceTests
 {
     [Fact]
+    public async Task Flow_deletion_is_independent_and_current_credential_expiry_revocation_and_owner_grants_are_enforced()
+    {
+        await using var db = CreateDb();
+        var role = Role("Synthetic flow author", NetRatelPermissions.FlowEdit, NetRatelPermissions.FlowPublish, NetRatelPermissions.FlowExecute);
+        db.AccessRoles.Add(role);
+        db.Users.Add(new LocalUser { Id = "owner", UserName = "owner", PrincipalId = "principal-a", IsEnabled = true });
+        db.PrincipalRoleAssignments.Add(new() { PrincipalId = "principal-a", RoleId = role.Id, TenantId = 7 });
+        var credential = Credential("flow-credential"); var expiry = credential.ExpiresAtUtc;
+        credential.Grants.Add(new() { CredentialId = credential.Id, TenantId = 7, Permission = NetRatelPermissions.FlowDelete });
+        db.IntegrationCredentials.Add(credential); await db.SaveChangesAsync();
+        var access = new EffectiveAccessService(db, Configuration()); var principal = CredentialPrincipal(credential.Id);
+        (await access.AuthorizeAsync(principal, NetRatelPermissions.FlowDelete, 7)).Should().BeFalse();
+        (await access.AuthorizeAsync(Principal("principal-a"), NetRatelPermissions.FlowDelete, 7)).Should().BeFalse();
+        role.Permissions.Add(new() { Permission = NetRatelPermissions.FlowDelete }); await db.SaveChangesAsync();
+        (await access.AuthorizeAsync(principal, NetRatelPermissions.FlowDelete, 7)).Should().BeTrue();
+        (await access.AuthorizeAsync(principal, NetRatelPermissions.FlowDelete, 8)).Should().BeFalse();
+        credential.ExpiresAtUtc.Should().Be(expiry); credential.Grants.Should().Contain(grant => grant.Permission == NetRatelPermissions.TelemetryRead);
+        credential.ExpiresAtUtc = DateTimeOffset.UtcNow.AddMinutes(-1); await db.SaveChangesAsync();
+        (await access.AuthorizeAsync(principal, NetRatelPermissions.FlowDelete, 7)).Should().BeFalse();
+        credential.ExpiresAtUtc = expiry; credential.RevokedAtUtc = DateTimeOffset.UtcNow; await db.SaveChangesAsync();
+        (await access.AuthorizeAsync(principal, NetRatelPermissions.FlowDelete, 7)).Should().BeFalse();
+        credential.RevokedAtUtc = null; role.Permissions.Remove(role.Permissions.Single(permission => permission.Permission == NetRatelPermissions.FlowDelete)); await db.SaveChangesAsync();
+        (await access.AuthorizeAsync(principal, NetRatelPermissions.FlowDelete, 7)).Should().BeFalse();
+    }
+
+    [Fact]
     public async Task Tenant_permission_and_role_scope_are_evaluated_together()
     {
         await using var db = CreateDb();

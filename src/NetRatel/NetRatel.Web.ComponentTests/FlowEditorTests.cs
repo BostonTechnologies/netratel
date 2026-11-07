@@ -605,6 +605,27 @@ public sealed class FlowEditorTests : AsyncBunitContext
 
 internal sealed class FakeFlowApi : IFlowApiService
 {
+    public Func<int, FlowQueryDto, CancellationToken, Task<FlowPageDto>>? QueryLookup;
+    public Func<int, Guid, FlowDeleteRequest, CancellationToken, Task<FlowDeleteResultDto>>? DeleteLookup;
+    public Func<int, Guid, FlowEnabledRequest, CancellationToken, Task<FlowDefinitionDto>>? EnabledLookup;
+    public Func<int, Guid, CancellationToken, Task<FlowSummaryDto>>? MetadataLookup;
+    public IReadOnlyList<FlowTenantAccessDto>? TenantAccess;
+    public readonly List<FlowQueryDto> Queries = [];
+    public int DeleteCalls, EnabledCalls;
+    public static FlowSummaryDto Summary(FlowDefinitionDto row) => new(row.Id, row.TenantId, row.Name, row.Revision,
+        row.Enabled, row.PublishedVersionId, row.PublishedVersionNumber, row.UpdatedAtUtc, row.LatestRun);
+    public async Task<FlowPageDto> QueryAsync(int tenantId, FlowQueryDto query, CancellationToken token = default)
+    {
+        Queries.Add(query);
+        if (QueryLookup is not null) return await QueryLookup(tenantId, query, token);
+        var rows = (await ListAsync(tenantId, token)).Select(Summary).Where(row => row.TenantId == tenantId &&
+            (string.IsNullOrWhiteSpace(query.Search) || row.Name.Contains(query.Search, StringComparison.OrdinalIgnoreCase))).ToArray();
+        return new(rows.Skip(query.PageIndex * query.PageSize).Take(query.PageSize).ToArray(), rows.Length, query.PageIndex, query.PageSize);
+    }
+    public async Task<FlowSummaryDto> GetMetadataAsync(int tenantId, Guid flowId, CancellationToken token = default) =>
+        MetadataLookup is null ? Summary(await GetAsync(tenantId, flowId, token)) : await MetadataLookup(tenantId, flowId, token);
+    public Task<FlowDeleteResultDto> DeleteAsync(int tenantId, Guid flowId, FlowDeleteRequest request, CancellationToken token = default)
+    { DeleteCalls++; return DeleteLookup?.Invoke(tenantId, flowId, request, token) ?? throw new NotSupportedException(); }
     public int CapabilityReads;
     public Func<int, CancellationToken, Task<FlowSchemaCapabilitiesDto>>? Capabilities;
     public int DefinitionSearchCalls, DefinitionDetailsCalls, TargetSearchCalls, TargetSelectionCalls, TemplateReads, TemplateCreates;
@@ -640,14 +661,15 @@ internal sealed class FakeFlowApi : IFlowApiService
     { TemplateReads++; return Templates?.Invoke(tenantId, token) ?? Task.FromResult<IReadOnlyList<FlowTemplateDescriptorDto>>([]); }
     public Task<FlowDefinitionDto> CreateFromTemplateAsync(int tenantId, FlowCreateFromTemplateRequest request, CancellationToken token = default)
     { TemplateCreates++; return TemplateCreate?.Invoke(tenantId, request, token) ?? throw new NotSupportedException(); }
-    public Task<IReadOnlyList<FlowTenantAccessDto>> GetTenantsAsync(CancellationToken token = default) => Task.FromResult<IReadOnlyList<FlowTenantAccessDto>>([new(17, "Tenant 17", true, true, true)]);
+    public Task<IReadOnlyList<FlowTenantAccessDto>> GetTenantsAsync(CancellationToken token = default) => Task.FromResult<IReadOnlyList<FlowTenantAccessDto>>(TenantAccess ?? [new(17, "Tenant 17", true, true, true) { CanDelete = true }]);
     public Task<IReadOnlyList<FlowDefinitionDto>> ListAsync(int tenantId, CancellationToken token = default) => Task.FromResult<IReadOnlyList<FlowDefinitionDto>>([FlowEditorTests.Definition()]);
     public Task<FlowDefinitionDto> GetAsync(int tenantId, Guid flowId, CancellationToken token = default) => Task.FromResult(ReloadDefinition ?? FlowEditorTests.Definition());
     public Task<FlowDefinitionDto> CreateAsync(int tenantId, FlowCreateRequest request, CancellationToken token = default) => throw new NotSupportedException();
     public Task<FlowDefinitionDto> SaveAsync(int tenantId, Guid flowId, FlowSaveDraftRequest request, CancellationToken token = default)
     { SaveCalls++; LastSave = request; return SavePending?.Task ?? Task.FromResult(FlowEditorTests.Definition() with { Revision = request.ExpectedRevision + 1, Name = request.Name, Draft = request.Graph }); }
     public Task<FlowDefinitionDto> CloneAsync(int tenantId, Guid flowId, FlowCloneRequest request, CancellationToken token = default) => throw new NotSupportedException();
-    public Task<FlowDefinitionDto> SetEnabledAsync(int tenantId, Guid flowId, FlowEnabledRequest request, CancellationToken token = default) => throw new NotSupportedException();
+    public Task<FlowDefinitionDto> SetEnabledAsync(int tenantId, Guid flowId, FlowEnabledRequest request, CancellationToken token = default)
+    { EnabledCalls++; return EnabledLookup?.Invoke(tenantId, flowId, request, token) ?? throw new NotSupportedException(); }
     public Task<FlowVersionDto> PublishAsync(int tenantId, Guid flowId, FlowRevisionRequest request, CancellationToken token = default) { PublishCalls++; throw new NotSupportedException(); }
     public Task<FlowValidationResultDto> ValidateAsync(int tenantId, FlowGraphDto graph, CancellationToken token = default) { ValidateCalls++; return Task.FromResult(graph.SchemaVersion == FlowGraphV2Limits.SchemaVersion ? FlowGraphV2Validator.ValidateComplete(graph) : FlowGraphValidator.ValidateComplete(graph)); }
     public Task<FlowDryRunResultDto> DryRunAsync(int tenantId, FlowDryRunRequest request, CancellationToken token = default) { DryRunCalls++; return Preview?.Invoke(request) ?? Task.FromResult(new FlowDryRunResultDto(false, false, "connector-required", null, [], [new("connector-required")])); }

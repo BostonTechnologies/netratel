@@ -123,7 +123,7 @@ public sealed class IntegrationCredentialService(NetRatelIdentityDbContext db, T
             (request.Purpose == IntegrationCredentialPurpose.Api && !string.IsNullOrWhiteSpace(resource)) ||
             request.ExpiresAtUtc <= now || request.ExpiresAtUtc > now.Add(MaximumLifetime) ||
             (grants.Length == 0 && instancePermissions.Length == 0) ||
-            suppliedGrants.Count > 64 || suppliedInstancePermissions.Count > 32 ||
+            suppliedGrants.Count > IntegrationPermissionCatalog.MaximumTenantGrants || suppliedInstancePermissions.Count > IntegrationPermissionCatalog.MaximumPermissionsPerScope ||
             suppliedGrants.Count != grants.Length || suppliedInstancePermissions.Count != instancePermissions.Length ||
             grants.Any(grant => !NetRatelPermissions.All.Contains(grant.Permission) ||
                 grant.Permission == NetRatelPermissions.IntegrationManagement) ||
