@@ -38,7 +38,11 @@ public static class MonitoringDiskPolicy
             if (Matches(policy.ExcludeMounts, mount, comparison) || fileSystem is not null &&
                 Matches(policy.ExcludeFileSystems, fileSystem, StringComparison.OrdinalIgnoreCase)) return (false, "explicit-exclude");
             var hasIncludes = !policy.IncludeMounts.IsDefaultOrEmpty || !policy.IncludeFileSystems.IsDefaultOrEmpty;
-            var included = Matches(policy.IncludeMounts, mount, comparison) || fileSystem is not null &&
+            var mountIncluded = Matches(policy.IncludeMounts, mount, comparison);
+            // An older agent cannot prove either a filesystem include or an exclusion did not match.
+            if (fileSystem is null && (!policy.ExcludeFileSystems.IsDefaultOrEmpty || !policy.IncludeFileSystems.IsDefaultOrEmpty && !mountIncluded))
+                return (true, "unclassified-policy");
+            var included = mountIncluded || fileSystem is not null &&
                 Matches(policy.IncludeFileSystems, fileSystem, StringComparison.OrdinalIgnoreCase);
             if (hasIncludes && !included) return (false, "outside-explicit-includes");
             if (included) return (true, metadata is null ? "included-unclassified" : "explicit-include");

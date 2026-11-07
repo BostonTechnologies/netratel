@@ -235,6 +235,9 @@ public sealed class GenuineDiskCollectionPipelineTests
         var windows = include with { DiskPolicy = new([@"C:\DATA\*"], [], [], []) };
         Assert.True(MonitoringDiskPolicy.Select(@"c:\data\backup", null, windows).Eligible);
         Assert.Equal("unclassified-legacy", MonitoringDiskPolicy.Select("/data", null, rule.Condition).Reason);
+        var fsPolicy = rule.Condition with { DiskPolicy = new([], [], ["ext4"], []) };
+        Assert.Equal("unclassified-policy", MonitoringDiskPolicy.Select("/data", null, fsPolicy).Reason);
+        Assert.True(MonitoringDiskPolicy.Select("/data", null, fsPolicy).Eligible);
         Assert.False(MonitoringDiskPolicy.Select("/other", null, rule.Condition with { ResourceName = "/data" }).Eligible);
         Assert.Equal(MonitoringContractValidator.EvaluationFingerprint(rule), MonitoringContractValidator.EvaluationFingerprint(rule with { Condition = rule.Condition with { DiskPolicy = new([], [], [], []) } }));
         Assert.NotEqual(MonitoringContractValidator.EvaluationFingerprint(rule), MonitoringContractValidator.EvaluationFingerprint(rule with { Condition = include }));
