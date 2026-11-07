@@ -231,6 +231,8 @@
                 else
                 {
                     @if (draft.Metric != MonitoringMetricKind.CpuUsagePercent) { <label>Exact normalized volume (blank = each volume)<input @attributes="FieldAttributes(nameof(MonitoringRuleDraft.ResourceName))" @bind="draft.ResourceName" @bind:event="oninput" placeholder="C:\ or /" /></label> }
+                    @if (draft.Metric is MonitoringMetricKind.DiskFreePercent or MonitoringMetricKind.DiskFreeSpace)
+                    { <MonitoringDiskPolicyEditor TenantId="editSnapshot.Configuration.TenantId" Draft="draft" /> }
                     <label>Units<select @bind="draft.Unit" disabled="@(draft.Metric != MonitoringMetricKind.DiskFreeSpace)">@if (draft.Metric == MonitoringMetricKind.DiskFreeSpace) { @foreach (var unit in new[] { MonitoringNumericUnit.Bytes, MonitoringNumericUnit.KiB, MonitoringNumericUnit.MiB, MonitoringNumericUnit.GiB }) { <option value="@unit">@unit</option> } } else { <option value="Percent">Percent</option> }</select></label>
                     <label>Breach @(draft.Metric == MonitoringMetricKind.CpuUsagePercent ? "above" : "below")<input @attributes="FieldAttributes(nameof(MonitoringRuleDraft.BreachThreshold))" type="number" step="any" @bind="draft.BreachThreshold" data-testid="monitoring-breach" />@FieldFeedback(nameof(MonitoringRuleDraft.BreachThreshold))</label>
                     <label>Recover @(draft.Metric == MonitoringMetricKind.CpuUsagePercent ? "below" : "above")<input @attributes="FieldAttributes(nameof(MonitoringRuleDraft.RecoveryThreshold))" type="number" step="any" @bind="draft.RecoveryThreshold" data-testid="monitoring-recovery" />@FieldFeedback(nameof(MonitoringRuleDraft.RecoveryThreshold))</label>

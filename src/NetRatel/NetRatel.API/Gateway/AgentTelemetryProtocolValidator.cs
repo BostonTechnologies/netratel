@@ -116,7 +116,7 @@ public static class AgentTelemetryProtocolValidator
     private static AgentFrameValidationResult ValidateDisks(IEnumerable<TelemetryDisk> disks, DateTimeOffset envelopeObservedAtUtc, DateTimeOffset receivedAtUtc)
     {
         var diskArray = disks as TelemetryDisk[] ?? disks.ToArray();
-        if (!HaveValidUniqueScopes(diskArray.Select(disk => disk.Scope)) ||
+        if (!HaveValidUniqueScopes(diskArray.Select(disk => disk.Scope), diskScopes: true) ||
             diskArray.Any(disk =>
                 !IsNonNegativeFinite(disk.TotalGb) ||
                 !IsNonNegativeFinite(disk.UsedGb) ||
@@ -124,13 +124,18 @@ public static class AgentTelemetryProtocolValidator
                 !IsPercentage(disk.UsagePercent) ||
                 disk.HasTotalBytes != disk.HasFreeBytes ||
                 (disk.HasTotalBytes && (disk.TotalBytes == 0 || disk.FreeBytes > disk.TotalBytes)) ||
-                !HasValidDiskCollection(disk, envelopeObservedAtUtc, receivedAtUtc)))
+                !HasValidDiskCollection(disk, envelopeObservedAtUtc, receivedAtUtc) || !HasValidDiskMetadata(disk)))
         {
             return Invalid(StatusCode.InvalidArgument, "Disk telemetry contains an unsupported value or duplicate scope.");
         }
 
         return AgentFrameValidationResult.Success;
     }
+
+    private static bool HasValidDiskMetadata(TelemetryDisk disk) => disk.Metadata is null ||
+        NetRatel.Application.Monitoring.MonitoringDiskPolicy.IsValidMetadata(new(disk.Metadata.FileSystem,
+            disk.Metadata.Source, disk.Metadata.MountRoot, disk.Metadata.CapacityKey, disk.Metadata.ReadOnly,
+            disk.Metadata.DefaultExclusionReason.Length == 0 ? null : disk.Metadata.DefaultExclusionReason));
 
     private static bool HasValidDiskCollection(TelemetryDisk disk, DateTimeOffset envelopeObservedAtUtc, DateTimeOffset receivedAtUtc)
     {
@@ -176,12 +181,13 @@ public static class AgentTelemetryProtocolValidator
         return AgentFrameValidationResult.Success;
     }
 
-    private static bool HaveValidUniqueScopes(IEnumerable<string> scopes)
+    private static bool HaveValidUniqueScopes(IEnumerable<string> scopes, bool diskScopes = false)
     {
-        var normalized = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var normalized = new HashSet<string>(StringComparer.Ordinal);
         foreach (var scope in scopes)
         {
-            if (string.IsNullOrWhiteSpace(scope) || scope.Length > 128 || !normalized.Add(scope.Trim()))
+            if (string.IsNullOrWhiteSpace(scope) || scope.Length > 128 || scope.Any(char.IsControl) || !normalized.Add(
+                diskScopes && scope.StartsWith("/", StringComparison.Ordinal) ? scope.Trim() : scope.Trim().ToUpperInvariant()))
             {
                 return false;
             }

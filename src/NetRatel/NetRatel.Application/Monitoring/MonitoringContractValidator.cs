@@ -27,6 +27,9 @@ public static class MonitoringContractValidator
         if (!TryValidateTargets(rule.Targets, out error)) return false;
         var condition = rule.Condition;
         if (!Enum.IsDefined(condition.Kind)) return Fail("invalid_condition", out error);
+        if (!MonitoringDiskPolicy.TryValidate(condition.DiskPolicy, out error)) return false;
+        if (condition.DiskPolicy is not null && condition.Kind is not (MonitoringMetricKind.DiskFreePercent or MonitoringMetricKind.DiskFreeSpace))
+            return Fail("disk_policy_requires_disk_condition", out error);
         if (condition.Kind == MonitoringMetricKind.ServiceExpectedState)
         {
             if (condition.Unit is not null || condition.BreachThreshold is not null || condition.RecoveryThreshold is not null ||
@@ -155,6 +158,15 @@ public static class MonitoringContractValidator
             {
                 writer.Write("offline.v1");
                 writer.Write(rule.OfflineGraceSeconds ?? MonitoringOfflinePresentation.DefaultGraceSeconds);
+            }
+            if (MonitoringDiskPolicy.Normalize(condition.DiskPolicy) is { } policy)
+            {
+                writer.Write("disk-policy.v1");
+                foreach (var patterns in new[] { policy.IncludeMounts, policy.ExcludeMounts, policy.IncludeFileSystems, policy.ExcludeFileSystems })
+                {
+                    writer.Write(patterns.Length);
+                    foreach (var pattern in patterns) writer.Write(pattern);
+                }
             }
         }
         return Convert.ToHexString(SHA256.HashData(memory.ToArray()));

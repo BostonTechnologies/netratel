@@ -61,6 +61,43 @@ public sealed class MonitoringTargetPickerTests : AsyncBunitContext
         Assert.Empty(selected);
     }
 
+    [Fact]
+    public void DiskPolicyEditorPreviewsCachedResourcesAndPreservesExplicitRuleReset()
+    {
+        var api = new PolicyApi(); Services.AddSingleton<IMonitoringApiService>(api);
+        var draft = MonitoringRuleDraft.Create(); draft.AgentIds.Add(api.Agent);
+        draft.SelectMetric(MonitoringMetricKind.DiskFreePercent);
+        var cut = Render<MonitoringDiskPolicyEditor>(parameters => parameters.Add(component => component.TenantId, 1)
+            .Add(component => component.Draft, draft));
+        cut.Find("textarea[aria-label='Exclude mount/path patterns']").Input("/snap/*");
+        cut.Find("[data-testid='monitoring-disk-preview']").Click();
+        cut.WaitForAssertion(() => Assert.Contains("package-image", cut.Find("[data-testid='monitoring-disk-preview-results']").TextContent));
+        Assert.Equal(new[] { "/snap/*" }, api.Request!.Condition!.DiskPolicy!.ExcludeMounts);
+        Assert.Contains("Unclassified: client upgrade required", cut.Markup);
+        Assert.Contains("Inventory truncated", cut.Markup);
+        Assert.Equal(0, api.Saves);
+        var original = draft.Build(1) with { Revision = 1, EvaluationRevision = 1 };
+        var edited = MonitoringRuleDraft.Create(original); edited.DiskExcludeMounts = "/snap/*\n/cache/*";
+        Assert.Equal(2UL, edited.Build(1).EvaluationRevision);
+    }
+
+    private sealed class PolicyApi : MonitoringTestApi, IMonitoringApiService
+    {
+        public Guid Agent { get; } = Guid.NewGuid();
+        public MonitoringTargetPreviewRequest? Request { get; private set; }
+        public int Saves { get; private set; }
+        public Task<MonitoringTargetPreviewDto> PreviewTargetsAsync(int tenantId, MonitoringTargetPreviewRequest request, CancellationToken token = default)
+        {
+            Request = request;
+            return Task.FromResult(new MonitoringTargetPreviewDto([Agent], 1,
+                [new(Agent, "Backup host", MonitoringTargetSupport.Supported, "cached", Disks:
+                    [new("/snap/core/42", false, "package-image", true, true, DateTimeOffset.UtcNow),
+                     new("/backup", true, "unclassified-legacy", false, false, null)], DiskInventoryTruncated: true)], 1));
+        }
+        public Task<MonitoringConfigurationDto> SaveRuleAsync(int tenantId, MonitoringRuleWriteDto request, CancellationToken token = default)
+        { Saves++; throw new InvalidOperationException("Preview must not save rules."); }
+    }
+
     private sealed class PickerApi : MonitoringTestApi, IMonitoringApiService
     {
         public Guid First { get; } = Guid.Parse("11111111-1111-1111-1111-111111111111");

@@ -1,0 +1,67 @@
+@using NetRatel.Application.Monitoring
+@using NetRatel.Shared.Contracts.Monitoring
+@using NetRatel.Web.Services.Monitoring
+@implements IDisposable
+@inject IMonitoringApiService Api
+
+<fieldset class="monitoring-disk-policy" data-testid="monitoring-disk-policy">
+    <legend>Disk resource policy</legend>
+    <p>Defaults exclude known package images, pseudo filesystems and proven duplicate capacity views. Exact volume and this policy apply together.</p>
+    <label>Include mount/path patterns<textarea rows="2" @bind="Draft.DiskIncludeMounts" @bind:event="oninput" aria-label="Include mount/path patterns"></textarea></label>
+    <label>Exclude mount/path patterns<textarea rows="2" @bind="Draft.DiskExcludeMounts" @bind:event="oninput" aria-label="Exclude mount/path patterns"></textarea></label>
+    <label>Include filesystem patterns<textarea rows="2" @bind="Draft.DiskIncludeFileSystems" @bind:event="oninput" aria-label="Include filesystem patterns"></textarea></label>
+    <label>Exclude filesystem patterns<textarea rows="2" @bind="Draft.DiskExcludeFileSystems" @bind:event="oninput" aria-label="Exclude filesystem patterns"></textarea></label>
+    <small>One whole-string pattern per line; * matches any text and ? one character. Linux paths are case-sensitive. Excludes win; explicit includes override defaults. Maximum 32 patterns, 256 characters each.</small>
+    <button type="button" class="monitoring-button" disabled="@_loading" @onclick="Preview" data-testid="monitoring-disk-preview">Preview cached disk resources</button>
+    @if (_error is not null) { <p role="alert">@_error</p> }
+    @if (_loading) { <p role="status">Reading cached inventory…</p> }
+    @if (_preview is { } preview)
+    {
+        <div aria-live="polite" data-testid="monitoring-disk-preview-results">
+        <p>@preview.Total target clients. Preview reads cached inventory and never collects telemetry. Re-run after changing the policy.</p>
+        @foreach (var client in preview.Details)
+        {
+            <h4>@client.DisplayName</h4>
+            @if (client.Disks.IsDefaultOrEmpty) { <p>Disk inventory unavailable or outside this bounded preview.</p> }
+            else
+            {
+                <ul>@foreach (var disk in client.Disks)
+                { <li><strong>@disk.Mount</strong> · @(disk.Eligible ? "Eligible" : "Excluded") · @disk.Reason · @(disk.Classified ? disk.Metadata?.FileSystem : "Unclassified: client upgrade required") · @(disk.Fresh ? "Fresh" : "Stale or unproven")<span> · collected @(disk.CollectedAtUtc?.ToString("u") ?? "unknown")</span></li> }</ul>
+            }
+            @if (client.DiskInventoryTruncated) { <p>Inventory truncated; additional resources may exist.</p> }
+        }
+        @if (preview.DetailsTruncated) { <p>Client details truncated; narrow the target selection for a complete preview.</p> }
+        </div>
+    }
+</fieldset>
+
+@code {
+    [Parameter, EditorRequired] public int TenantId { get; set; }
+    [Parameter, EditorRequired] public MonitoringRuleDraft Draft { get; set; } = null!;
+    private MonitoringTargetPreviewDto? _preview;
+    private string? _error;
+    private bool _loading, _disposed;
+    private long _generation;
+    private CancellationTokenSource? _read;
+
+    private async Task Preview()
+    {
+        _read?.Cancel(); _read?.Dispose(); _read = new();
+        var generation = ++_generation; var token = _read.Token; var tenant = TenantId;
+        var rule = Draft.Build(tenant);
+        if (!MonitoringDiskPolicy.TryValidate(rule.Condition.DiskPolicy, out _) ||
+            !MonitoringContractValidator.TryValidateTargets(rule.Targets, out _))
+        { _error = "Select valid target clients/groups and at most 32 valid disk patterns before previewing."; return; }
+        _loading = true; _error = null; _preview = null;
+        try
+        {
+            var preview = await Api.PreviewTargetsAsync(tenant, new(rule.Targets, rule.Condition, rule.FreshnessBudget), token);
+            if (!_disposed && tenant == TenantId && generation == _generation) _preview = preview;
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { return; }
+        catch (Exception error) when (error is HttpRequestException or System.Text.Json.JsonException or ArgumentException)
+        { if (!_disposed && generation == _generation) _error = "Could not read this policy's cached resource preview. Check the thresholds and targets, then retry."; }
+        finally { if (!_disposed && generation == _generation) _loading = false; }
+    }
+    public void Dispose() { _disposed = true; ++_generation; _read?.Cancel(); _read?.Dispose(); }
+}

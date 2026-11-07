@@ -32,7 +32,8 @@ public sealed record MonitoringConditionDto(
     double? RecoveryThreshold,
     string? ResourceName,
     ClientServicePlatform? ServicePlatform,
-    ImmutableArray<ClientServiceState> ExpectedServiceStates);
+    ImmutableArray<ClientServiceState> ExpectedServiceStates,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] MonitoringDiskPolicyDto? DiskPolicy = null);
 
 /// <summary>EvaluationRevision changes only for scope/condition edits, which require an explicit reset operation.</summary>
 public sealed record MonitoringRuleDto(

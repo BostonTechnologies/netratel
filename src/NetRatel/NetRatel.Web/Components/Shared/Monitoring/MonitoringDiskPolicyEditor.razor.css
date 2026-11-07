@@ -1,0 +1,7 @@
+.monitoring-disk-policy { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:.6rem; min-width:0; border:1px solid var(--mud-palette-divider); border-radius:6px; padding:.75rem; }
+.monitoring-disk-policy > legend,.monitoring-disk-policy > p,.monitoring-disk-policy > small,.monitoring-disk-policy > button,.monitoring-disk-policy > div { grid-column:1/-1; }
+.monitoring-disk-policy label { display:flex; flex-direction:column; gap:.25rem; font-size:.875rem; }
+.monitoring-disk-policy textarea { width:100%; min-width:0; padding:.5rem; border:1px solid var(--mud-palette-divider); border-radius:4px; background:var(--mud-palette-surface); color:var(--mud-palette-text-primary); font:inherit; resize:vertical; }
+.monitoring-disk-policy textarea:focus-visible,.monitoring-disk-policy button:focus-visible { outline:2px solid var(--mud-palette-primary); outline-offset:2px; }
+.monitoring-disk-policy ul { overflow-wrap:anywhere; }
+@media(max-width:650px) { .monitoring-disk-policy { grid-template-columns:minmax(0,1fr); } }

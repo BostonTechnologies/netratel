@@ -45,13 +45,15 @@ public sealed record GatewayTelemetrySummary(
     IReadOnlyList<GatewayTelemetryNetwork> Networks,
     GatewayTelemetryTransportHealth? TransportHealth,
     string Source,
-    bool IsAuthoritative);
+    bool IsAuthoritative, bool DiskInventoryTruncated = false);
 
 public sealed record GatewayTelemetryCpu(double UsagePercent, double? LoadAverage, int? ProcessCount);
 
 public sealed record GatewayTelemetryMemory(double TotalMb, double UsedMb, double AvailableMb, double UsagePercent);
 
-public sealed record GatewayTelemetryDisk(string Scope, double TotalGb, double UsedGb, double FreeGb, double UsagePercent);
+public sealed record GatewayTelemetryDisk(string Scope, double TotalGb, double UsedGb, double FreeGb, double UsagePercent,
+    ulong? TotalBytes = null, ulong? FreeBytes = null, Guid? CollectionId = null, DateTimeOffset? CollectedAtUtc = null,
+    int CollectionQuality = 0, NetRatel.Shared.Contracts.Monitoring.TelemetryDiskMetadataDto? Metadata = null);
 
 public sealed record GatewayTelemetryNetwork(string Scope, double RxBytesPerSec, double TxBytesPerSec);
 

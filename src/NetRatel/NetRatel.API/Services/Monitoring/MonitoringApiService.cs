@@ -183,6 +183,9 @@ public sealed class MonitoringApiService(IMonitoringResourceAuthorizer authoriza
                 request.Targets, request.Condition, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30), TimeSpan.FromMinutes(2)));
         var identities = await ReadIdentitiesAsync(tenantId, ids, cancellationToken).ConfigureAwait(false);
         var identityMap = identities.ToDictionary(item => item.AgentId);
+        if (request.FreshnessBudget is { } freshness && (freshness < MonitoringLimits.MinimumFreshness || freshness > MonitoringLimits.MaximumFreshness))
+            throw new MonitoringApiException(400, "invalid_monitoring_freshness");
+        var resourcesRemaining = 160;
         var details = ImmutableArray.CreateBuilder<MonitoringTargetPreviewEntryDto>();
         foreach (var id in ids.Take(100))
         {
@@ -192,9 +195,34 @@ public sealed class MonitoringApiService(IMonitoringResourceAuthorizer authoriza
                 : await GetMetricSupportAsync(new(tenantId, id), request.Condition, cancellationToken).ConfigureAwait(false);
             if (request.Condition?.ServicePlatform is { } selected && support.Platform is { } actual && selected != actual)
                 support = (MonitoringTargetSupport.Unsupported, "platform-mismatch", support.At, actual);
-            details.Add(new(id, identity.DisplayName, support.Support, support.Code, support.At, identity));
+            ImmutableArray<MonitoringDiskPreviewDto> disks = default;
+            var inventoryTruncated = false;
+            if (request.Condition?.Kind is MonitoringMetricKind.DiskFreePercent or MonitoringMetricKind.DiskFreeSpace)
+            {
+                var state = await telemetry.GetSnapshotAsync(new(tenantId, id), cancellationToken).ConfigureAwait(false);
+                if (state.Client != new ClientKey(tenantId, id)) throw new InvalidOperationException("Telemetry projection returned a different client.");
+                if (state.Latest is { } snapshot)
+                {
+                    var now = timeProvider.GetUtcNow();
+                    var budget = request.FreshnessBudget ?? TimeSpan.FromMinutes(2);
+                    var selected = snapshot.Disks.OrderBy(disk => !MonitoringDiskPolicy.Select(disk.Scope, disk.Metadata, request.Condition).Eligible)
+                        .ThenBy(disk => disk.Scope, StringComparer.Ordinal).Take(Math.Min(16, resourcesRemaining)).ToArray();
+                    disks = selected.Select(disk =>
+                    {
+                        var selection = MonitoringDiskPolicy.Select(disk.Scope, disk.Metadata, request.Condition);
+                        var fresh = snapshot.IsAuthoritative && disk.CollectionId is { } collectionId && collectionId != Guid.Empty &&
+                            disk.CollectionQuality == NetRatel.Application.Telemetry.TelemetryDiskCollectionQuality.Complete &&
+                            disk.CollectedAtUtc is { } collected && collected <= now && now - collected <= budget;
+                        return new MonitoringDiskPreviewDto(disk.Scope, selection.Eligible, selection.Reason, disk.Metadata is not null,
+                            fresh, disk.CollectedAtUtc, disk.Metadata);
+                    }).ToImmutableArray();
+                    resourcesRemaining -= selected.Length;
+                    inventoryTruncated = snapshot.DiskInventoryTruncated || snapshot.Disks.Count > selected.Length;
+                }
+            }
+            details.Add(new(id, identity.DisplayName, support.Support, support.Code, support.At, identity, disks, inventoryTruncated));
         }
-        return new(ids, configuration.Revision, details.ToImmutable(), ids.Length, ids.Length > details.Count, identities);
+        return Bounded(new MonitoringTargetPreviewDto(ids, configuration.Revision, details.ToImmutable(), ids.Length, ids.Length > details.Count, identities));
     }
 
     public async Task<MonitoringConfigurationDto> SaveRuleAsync(int tenantId, Guid ruleId, MonitoringRuleWriteDto request, ClaimsPrincipal user, CancellationToken cancellationToken)
@@ -209,7 +237,8 @@ public sealed class MonitoringApiService(IMonitoringResourceAuthorizer authoriza
         {
             Condition = request.Rule.Condition with
             {
-                ExpectedServiceStates = request.Rule.Condition.ExpectedServiceStates.IsDefault ? [] : request.Rule.Condition.ExpectedServiceStates
+                ExpectedServiceStates = request.Rule.Condition.ExpectedServiceStates.IsDefault ? [] : request.Rule.Condition.ExpectedServiceStates,
+                DiskPolicy = MonitoringDiskPolicy.Normalize(request.Rule.Condition.DiskPolicy)
             },
             ExecutionPrincipalId = request.Rule.PublishedFlowVersionId is null ? null : existing?.PublishedFlowVersionId == request.Rule.PublishedFlowVersionId
                 ? existing.ExecutionPrincipalId : user.FindFirstValue("netratel_principal_id"),
