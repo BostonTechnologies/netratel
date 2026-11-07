@@ -114,7 +114,9 @@ Series `view` supports All, Active, Firing, Pending, Unknown, Acknowledged,
 Suppressed and Offline. Firing is an occurrence lifecycle: Unknown/stale evidence
 cannot remove an unresolved Firing occurrence from that selection. Unknown uses
 both observed and received times, rejects future times and applies the current
-rule's freshness budget (one minute for offline summaries). A client selection
+rule's freshness budget (one minute for offline summaries). Clock and JSON evidence
+use the same PostgreSQL timestamp conversion, preserving fresh evidence at the
+exact current instant despite .NET's finer timestamp precision. A client selection
 also matches an offline aggregate containing that client. Severity uses the pinned
 occurrence rule when one exists, otherwise the current rule. Text searches current
 friendly computer/directory names, pinned identity, rule and resource text.

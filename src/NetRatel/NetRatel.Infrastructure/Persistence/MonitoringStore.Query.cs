@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -34,6 +35,10 @@ public sealed partial class MonitoringStore
         var severity = query.Severity is { } selectedSeverity ? (int)selectedSeverity : -1;
         var view = (int)query.View;
         var text = query.Text ?? "";
+        // PostgreSQL rounds JSON timestamp text to microseconds, whereas Npgsql's binary
+        // DateTimeOffset parameter truncates sub-microsecond ticks. Parse both clocks alike
+        // so evidence at the exact current instant cannot become spuriously future-dated.
+        var nowText = now.ToString("O", CultureInfo.InvariantCulture);
         return db.MonitoringSeries.FromSqlInterpolated($"""
             SELECT s.* FROM "MonitoringSeries" s
             LEFT JOIN "MonitoringRules" r ON r."TenantId"=s."TenantId" AND r."RuleId"=s."RuleId"
@@ -43,12 +48,12 @@ public sealed partial class MonitoringStore
                 OR COALESCE((s."StateJson" #>> ARRAY['LatestEvidence','Classification'])::integer,0)={(int)MonitoringClassification.Unknown}
                 OR s."StateJson" #>> ARRAY['LatestEvidence','ObservedAtUtc'] IS NULL
                 OR s."StateJson" #>> ARRAY['LatestEvidence','ReceivedAtUtc'] IS NULL
-                OR (s."StateJson" #>> ARRAY['LatestEvidence','ObservedAtUtc'])::timestamptz > {now}
-                OR (s."StateJson" #>> ARRAY['LatestEvidence','ReceivedAtUtc'])::timestamptz > {now}
-                OR {now} - (s."StateJson" #>> ARRAY['LatestEvidence','ObservedAtUtc'])::timestamptz >
+                OR (s."StateJson" #>> ARRAY['LatestEvidence','ObservedAtUtc'])::timestamptz > {nowText}::timestamptz
+                OR (s."StateJson" #>> ARRAY['LatestEvidence','ReceivedAtUtc'])::timestamptz > {nowText}::timestamptz
+                OR {nowText}::timestamptz - (s."StateJson" #>> ARRAY['LatestEvidence','ObservedAtUtc'])::timestamptz >
                     CASE WHEN s."AgentId"={Guid.Empty} AND s."ResourceKey"={MonitoringOfflinePresentation.ResourceKey}
                     THEN {MonitoringOfflinePresentation.SnapshotFreshness} ELSE COALESCE((r."DefinitionJson" ->> 'FreshnessBudget')::interval, interval '0') END
-                OR {now} - (s."StateJson" #>> ARRAY['LatestEvidence','ReceivedAtUtc'])::timestamptz >
+                OR {nowText}::timestamptz - (s."StateJson" #>> ARRAY['LatestEvidence','ReceivedAtUtc'])::timestamptz >
                     CASE WHEN s."AgentId"={Guid.Empty} AND s."ResourceKey"={MonitoringOfflinePresentation.ResourceKey}
                     THEN {MonitoringOfflinePresentation.SnapshotFreshness} ELSE COALESCE((r."DefinitionJson" ->> 'FreshnessBudget')::interval, interval '0') END
                 AS unknown) evidence
