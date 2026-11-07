@@ -14,7 +14,9 @@ public sealed class PublishedMonitoringFlowProvider(IFlowDefinitionService flows
     {
         if (tenantId <= 0 || versionId == Guid.Empty) return false;
         var version = await flows.GetVersionAsync(tenantId, versionId, cancellationToken).ConfigureAwait(false);
-        return version is not null && version.TenantId == tenantId && version.Id == versionId && HasValidImmutableGraph(version);
+        if (version is null || version.TenantId != tenantId || version.Id != versionId || !HasValidImmutableGraph(version)) return false;
+        var definition = await flows.GetMetadataAsync(tenantId, version.FlowId, cancellationToken).ConfigureAwait(false);
+        return definition is { DeletedAtUtc: null };
     }
 
     public async Task<ImmutableArray<MonitoringPublishedFlowDto>> ListPublishedAsync(int tenantId, int maximumCount, CancellationToken cancellationToken)

@@ -62,13 +62,13 @@ public sealed class FlowExecutionEventFactsTests : AsyncBunitContext
         var run = new FlowRunSummaryDto(Guid.NewGuid(), flow.Id, Guid.NewGuid(), source.EventId, source.OccurrenceId,
             FlowRunStatus.WaitingForExecution, source.OccurredAtUtc, null, "execution-pending");
         var detail = new FlowRunDetailDto(run, null, [AiAction(run, source.OccurredAtUtc, FlowAiFailureBehavior.StopFlow)]) { ExecutionEvent = source };
-        var cut = Render<FlowHistoryPanel>(p => p.Add(c => c.Flow, flow).Add(c => c.TenantId, 17).Add(c => c.Detail, detail));
+        var cut = Render<FlowHistoryPanel>(p => p.Add(c => c.Flow, FakeFlowApi.Summary(flow)).Add(c => c.TenantId, 17).Add(c => c.Detail, detail));
         cut.Find("[data-testid=flow-run-result]").TextContent.Should().Contain("Waiting for execution").And.Contain("Original request execution").And.Contain("Follow the configured outcome branch");
         cut.FindComponent<FlowExecutionEventFacts>().Instance.Event.Should().BeSameAs(source);
         cut.Markup.Should().NotContain("Alert that started this run");
         cut.Find("[data-testid=flow-source-execution-id]").TextContent.Should().Be("9223372036854775807");
 
-        cut.Render(p => p.Add(c => c.Flow, flow).Add(c => c.TenantId, 17)
+        cut.Render(p => p.Add(c => c.Flow, FakeFlowApi.Summary(flow)).Add(c => c.TenantId, 17)
             .Add(c => c.Detail, detail with { ExecutionEvent = null, Trace = null, DataUnavailableReason = "source-read-denied" }));
         cut.FindAll("[data-testid=flow-execution-facts]").Should().BeEmpty();
         cut.Find("[data-testid=flow-source-unavailable]").TextContent.Should().Contain("Original source data is unavailable");
@@ -93,7 +93,7 @@ public sealed class FlowExecutionEventFactsTests : AsyncBunitContext
         var run = new FlowRunSummaryDto(Guid.NewGuid(), flow.Id, version.Id, Guid.NewGuid(), Guid.NewGuid(), FlowRunStatus.Failed, time, time);
         var alert = new FlowEventDataDto(Guid.NewGuid(), Guid.NewGuid(), "Recorded monitoring rule", "Synthetic client", "cpu", "CPU", "warning", 95, null, time);
         var detail = new FlowRunDetailDto(run, alert, [AiAction(run, time, behavior)]);
-        var cut = Render<FlowHistoryPanel>(p => p.Add(c => c.Flow, flow).Add(c => c.TenantId, 17)
+        var cut = Render<FlowHistoryPanel>(p => p.Add(c => c.Flow, FakeFlowApi.Summary(flow)).Add(c => c.TenantId, 17)
             .Add(c => c.Versions, new[] { version }).Add(c => c.Detail, detail));
         cut.Find("[data-testid=flow-ai-result]").TextContent.Should().Contain("Failure policy: " + expected);
         if (schema == 2) cut.Find("[data-testid=flow-ai-result]").TextContent.Should().NotContain("Stop the flow").And.NotContain("Continue with the alert");
@@ -107,27 +107,27 @@ public sealed class FlowExecutionEventFactsTests : AsyncBunitContext
         var run = new FlowRunSummaryDto(Guid.NewGuid(), flow.Id, Guid.NewGuid(), source.EventId, source.OccurrenceId,
             FlowRunStatus.WaitingForExecution, source.OccurredAtUtc, null, "execution-pending");
         var detail = new FlowRunDetailDto(run, null, []) { ExecutionEvent = source };
-        var cut = Render<FlowHistoryPanel>(p => p.Add(c => c.Flow, flow).Add(c => c.TenantId, 17).Add(c => c.Detail, detail));
+        var cut = Render<FlowHistoryPanel>(p => p.Add(c => c.Flow, FakeFlowApi.Summary(flow)).Add(c => c.TenantId, 17).Add(c => c.Detail, detail));
         cut.Find("[data-testid=flow-run-contributions]").TextContent.Should().Contain("Contributing source references unavailable")
             .And.NotContain("captured").And.NotContain("truncated");
 
-        cut.Render(p => p.Add(c => c.Flow, flow).Add(c => c.TenantId, 17)
+        cut.Render(p => p.Add(c => c.Flow, FakeFlowApi.Summary(flow)).Add(c => c.TenantId, 17)
             .Add(c => c.Detail, detail with { SourceEventIds = [] }));
         cut.Find("[data-testid=flow-run-contributions]").TextContent.Should().Contain("0 contributing source references captured")
             .And.NotContain("unavailable").And.NotContain("truncated");
 
         var captured = Enumerable.Range(0, 16).Select(_ => Guid.NewGuid()).ToArray();
-        cut.Render(p => p.Add(c => c.Flow, flow).Add(c => c.TenantId, 17)
+        cut.Render(p => p.Add(c => c.Flow, FakeFlowApi.Summary(flow)).Add(c => c.TenantId, 17)
             .Add(c => c.Detail, detail with { SourceEventIds = captured, SourceEventIdsTruncated = true }));
         cut.Find("[data-testid=flow-run-contributions]").TextContent.Should().Contain("16 contributing source references captured")
             .And.Contain("Contributing references truncated at admission").And.NotContain("unavailable");
 
-        cut.Render(p => p.Add(c => c.Flow, flow).Add(c => c.TenantId, 17)
+        cut.Render(p => p.Add(c => c.Flow, FakeFlowApi.Summary(flow)).Add(c => c.TenantId, 17)
             .Add(c => c.Detail, detail with { SourceEventIds = captured, SourceEventIdsTruncated = false }));
         cut.Find("[data-testid=flow-run-contributions]").TextContent.Should().Contain("16 contributing source references captured")
             .And.NotContain("truncated");
 
-        cut.Render(p => p.Add(c => c.Flow, flow).Add(c => c.TenantId, 17)
+        cut.Render(p => p.Add(c => c.Flow, FakeFlowApi.Summary(flow)).Add(c => c.TenantId, 17)
             .Add(c => c.Detail, detail with { ExecutionEvent = null, SourceEventIds = null, DataUnavailableReason = "source-read-denied" }));
         cut.FindAll("[data-testid=flow-run-contributions]").Should().BeEmpty();
         cut.Find("[data-testid=flow-run-data-unavailable]").TextContent.Should().Contain("source-read-denied");

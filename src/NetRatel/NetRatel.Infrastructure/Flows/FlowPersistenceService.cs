@@ -27,16 +27,16 @@ public sealed partial class FlowPersistenceService(IServiceScopeFactory scopes, 
 
     public Task<IReadOnlyList<FlowDefinitionDto>> ListAsync(int tenantId, CancellationToken ct = default) => WithDb<IReadOnlyList<FlowDefinitionDto>>(async (db, _) =>
     {
-        var rows = await db.FlowDefinitions.AsNoTracking().Where(row => row.TenantId == tenantId).OrderBy(row => row.Name).ThenBy(row => row.Id).Take(FlowLimits.MaximumFlowsPerTenant).ToListAsync(ct).ConfigureAwait(false);
+        var rows = await db.FlowDefinitions.AsNoTracking().Where(row => row.TenantId == tenantId && row.DeletedAtUtc == null).OrderBy(row => row.Name).ThenBy(row => row.Id).Take(FlowLimits.MaximumFlowsPerTenant).ToListAsync(ct).ConfigureAwait(false);
         var latest = await db.FlowRuns.AsNoTracking().Where(row => row.TenantId == tenantId).GroupBy(row => row.FlowId)
             .Select(group => group.OrderByDescending(row => row.CreatedAtUtc).ThenByDescending(row => row.Id).First()).ToListAsync(ct).ConfigureAwait(false);
         return rows.Select(row => Definition(row, latest.FirstOrDefault(run => run.FlowId == row.Id))).ToArray();
     });
     public Task<FlowDefinitionDto?> GetAsync(int tenantId, Guid flowId, CancellationToken ct = default) => WithDb<FlowDefinitionDto?>(async (db, _) =>
     {
-        var row = await db.FlowDefinitions.AsNoTracking().SingleOrDefaultAsync(row => row.TenantId == tenantId && row.Id == flowId, ct).ConfigureAwait(false);
+        var row = await db.FlowDefinitions.AsNoTracking().SingleOrDefaultAsync(row => row.TenantId == tenantId && row.Id == flowId && row.DeletedAtUtc == null, ct).ConfigureAwait(false);
         if (row is null) return null;
-        var run = await db.FlowRuns.AsNoTracking().Where(run => run.TenantId == tenantId && run.FlowId == flowId).OrderByDescending(run => run.CreatedAtUtc).FirstOrDefaultAsync(ct).ConfigureAwait(false);
+        var run = await db.FlowRuns.AsNoTracking().Where(run => run.TenantId == tenantId && run.FlowId == flowId).OrderByDescending(run => run.CreatedAtUtc).ThenByDescending(run => run.Id).FirstOrDefaultAsync(ct).ConfigureAwait(false);
         return Definition(row, run);
     });
 
@@ -45,7 +45,7 @@ public sealed partial class FlowPersistenceService(IServiceScopeFactory scopes, 
         if (!ValidName(request.Name) || !ValidActor(actorId) || tenantId <= 0) return new FlowDefinitionWriteResult(FlowWriteDisposition.Invalid, Code: "flow-name");
         await using var transaction = await BeginAsync(db, ct).ConfigureAwait(false); await TenantLockAsync(db, tenantId, ct).ConfigureAwait(false);
         if (!await db.Tenants.AnyAsync(row => row.Id == tenantId, ct).ConfigureAwait(false)) return new(FlowWriteDisposition.NotFound);
-        if (await db.FlowDefinitions.CountAsync(row => row.TenantId == tenantId, ct).ConfigureAwait(false) >= FlowLimits.MaximumFlowsPerTenant) return new(FlowWriteDisposition.CapacityExceeded);
+        if (await db.FlowDefinitions.CountAsync(row => row.TenantId == tenantId && row.DeletedAtUtc == null, ct).ConfigureAwait(false) >= FlowLimits.MaximumFlowsPerTenant) return new(FlowWriteDisposition.CapacityExceeded);
         var now = clock.GetUtcNow(); var row = new FlowDefinitionRecord { Id = Guid.NewGuid(), TenantId = tenantId, Name = request.Name.Trim(), Revision = 1, Enabled = true,
             DraftJson = Serialize(request.UseTemplate ? FlowGraphTemplates.IncidentFromAlert() : new FlowGraphDto(1, [], [], new())), CreatedAtUtc = now, UpdatedAtUtc = now, EnabledSinceUtc = await ActivationNowAsync(db, ct).ConfigureAwait(false) };
         db.FlowDefinitions.Add(row); Audit(db, row, actorId, "created"); await db.SaveChangesAsync(ct).ConfigureAwait(false); if (transaction is not null) await transaction.CommitAsync(ct).ConfigureAwait(false);
@@ -74,8 +74,8 @@ public sealed partial class FlowPersistenceService(IServiceScopeFactory scopes, 
         await using var transaction = await BeginAsync(db, ct).ConfigureAwait(false); await TenantLockAsync(db, tenantId, ct).ConfigureAwait(false);
         var row = db.Database.IsNpgsql()
             ? await db.FlowDefinitions.FromSqlInterpolated($"SELECT * FROM \"FlowDefinitions\" WHERE \"TenantId\" = {tenantId} AND \"Id\" = {flowId} FOR UPDATE").SingleOrDefaultAsync(ct).ConfigureAwait(false)
-            : await db.FlowDefinitions.SingleOrDefaultAsync(row => row.TenantId == tenantId && row.Id == flowId, ct).ConfigureAwait(false);
-        if (row is null) return new(FlowWriteDisposition.NotFound); if (row.Revision != expected) return new(FlowWriteDisposition.Conflict);
+            : await db.FlowDefinitions.SingleOrDefaultAsync(row => row.TenantId == tenantId && row.Id == flowId && row.DeletedAtUtc == null, ct).ConfigureAwait(false);
+        if (row is null || row.DeletedAtUtc is not null) return new(FlowWriteDisposition.NotFound); if (row.Revision != expected) return new(FlowWriteDisposition.Conflict);
         if (validate?.Invoke(row) is { } rejected) return new(FlowWriteDisposition.Invalid, Code: rejected);
         var reenabled = operation == "enabled" && !row.Enabled;
         change(row);
@@ -89,9 +89,9 @@ public sealed partial class FlowPersistenceService(IServiceScopeFactory scopes, 
     {
         if (!ValidName(request.Name) || !ValidActor(actorId)) return new FlowDefinitionWriteResult(FlowWriteDisposition.Invalid);
         await using var transaction = await BeginAsync(db, ct).ConfigureAwait(false); await TenantLockAsync(db, tenantId, ct).ConfigureAwait(false);
-        var source = await db.FlowDefinitions.AsNoTracking().SingleOrDefaultAsync(row => row.TenantId == tenantId && row.Id == flowId, ct).ConfigureAwait(false);
+        var source = await db.FlowDefinitions.AsNoTracking().SingleOrDefaultAsync(row => row.TenantId == tenantId && row.Id == flowId && row.DeletedAtUtc == null, ct).ConfigureAwait(false);
         if (source is null) return new(FlowWriteDisposition.NotFound); if (source.Revision != request.ExpectedRevision) return new(FlowWriteDisposition.Conflict);
-        if (await db.FlowDefinitions.CountAsync(row => row.TenantId == tenantId, ct).ConfigureAwait(false) >= FlowLimits.MaximumFlowsPerTenant) return new(FlowWriteDisposition.CapacityExceeded);
+        if (await db.FlowDefinitions.CountAsync(row => row.TenantId == tenantId && row.DeletedAtUtc == null, ct).ConfigureAwait(false) >= FlowLimits.MaximumFlowsPerTenant) return new(FlowWriteDisposition.CapacityExceeded);
         var graph = Parse<FlowGraphDto>(source.DraftJson); var ids = graph.Nodes.ToDictionary(node => node.Id, _ => Guid.NewGuid());
         graph = graph.SchemaVersion == FlowGraphV2Limits.SchemaVersion ? FlowGraphDraftClone.SchemaTwo(graph) :
             graph with { Nodes = graph.Nodes.Select(node => node with { Id = ids[node.Id],
@@ -109,8 +109,8 @@ public sealed partial class FlowPersistenceService(IServiceScopeFactory scopes, 
         await using var transaction = await BeginAsync(db, ct).ConfigureAwait(false); await TenantLockAsync(db, tenantId, ct).ConfigureAwait(false);
         var row = db.Database.IsNpgsql()
             ? await db.FlowDefinitions.FromSqlInterpolated($"SELECT * FROM \"FlowDefinitions\" WHERE \"TenantId\" = {tenantId} AND \"Id\" = {flowId} FOR UPDATE").SingleOrDefaultAsync(ct).ConfigureAwait(false)
-            : await db.FlowDefinitions.SingleOrDefaultAsync(row => row.TenantId == tenantId && row.Id == flowId, ct).ConfigureAwait(false);
-        if (row is null) return new(FlowWriteDisposition.NotFound); if (row.Revision != request.ExpectedRevision) return new(FlowWriteDisposition.Conflict);
+            : await db.FlowDefinitions.SingleOrDefaultAsync(row => row.TenantId == tenantId && row.Id == flowId && row.DeletedAtUtc == null, ct).ConfigureAwait(false);
+        if (row is null || row.DeletedAtUtc is not null) return new(FlowWriteDisposition.NotFound); if (row.Revision != request.ExpectedRevision) return new(FlowWriteDisposition.Conflict);
         if (row.PublishedVersionNumber >= FlowLimits.MaximumVersionsPerFlow) return new(FlowWriteDisposition.CapacityExceeded);
         var graph = Parse<FlowGraphDto>(row.DraftJson);
         if (graph.SchemaVersion == FlowGraphV2Limits.SchemaVersion)
@@ -152,7 +152,10 @@ public sealed partial class FlowPersistenceService(IServiceScopeFactory scopes, 
     public Task<FlowVersionDto?> GetVersionAsync(int tenantId, Guid versionId, CancellationToken ct = default) => WithDb<FlowVersionDto?>(async (db, _) =>
     {
         var row = await db.FlowVersions.AsNoTracking().SingleOrDefaultAsync(row => row.TenantId == tenantId && row.Id == versionId, ct).ConfigureAwait(false);
-        return row is null ? null : Version(row);
+        if (row is null) return null;
+        var deletedAt = await db.FlowDefinitions.Where(definition => definition.TenantId == tenantId && definition.Id == row.FlowId)
+            .Select(definition => definition.DeletedAtUtc).SingleOrDefaultAsync(ct).ConfigureAwait(false);
+        return Version(row) with { FlowDeletedAtUtc = deletedAt };
     });
     public Task<FlowRunDetailDto?> GetRunByIdAsync(int tenantId, Guid runId, CancellationToken ct = default) => WithDb<FlowRunDetailDto?>((db, _) => ReadRunAsync(db, tenantId, null, runId, ct));
     public Task<FlowRunDetailDto?> GetRunAsync(int tenantId, Guid flowId, Guid runId, CancellationToken ct = default) => WithDb<FlowRunDetailDto?>(async (db, _) =>
@@ -173,7 +176,9 @@ public sealed partial class FlowPersistenceService(IServiceScopeFactory scopes, 
                 AiResult = action.AiResultJson is null ? null : Parse<FlowAiResultDto>(action.AiResultJson),
                 AiFailureBehavior = targets.GetValueOrDefault(action.NodeId)?.Kind == FlowActionKind.NetclawInvestigation
                     ? Parse<FlowGraphDto>(version.GraphJson).Nodes.SingleOrDefault(node => node.Id == action.NodeId)?.AiSettings?.FailureBehavior ?? FlowAiFailureBehavior.ContinueWithAlert : null }).ToArray())
-        { ExecutionEvent = original.ExecutionEvent, SourceEventIds = original.SourceEventIds,
+        { FlowDeletedAtUtc = await db.FlowDefinitions.Where(definition => definition.TenantId == tenantId && definition.Id == row.FlowId)
+                .Select(definition => definition.DeletedAtUtc).SingleOrDefaultAsync(ct).ConfigureAwait(false),
+            ExecutionEvent = original.ExecutionEvent, SourceEventIds = original.SourceEventIds,
             SourceEventIdsTruncated = original.SourceEventIdsTruncated, Trace = checkpoint?.Trace };
     }
 
@@ -192,7 +197,7 @@ public sealed partial class FlowPersistenceService(IServiceScopeFactory scopes, 
         var graph = Parse<FlowGraphDto>(version.GraphJson);
         if (!ValidRuntimeGraph(graph) || !graph.Nodes.Any(node => node.Kind == FlowNodeKind.AlertRaised))
             return new(FlowIngressDisposition.Invalid, Code: "flow-version");
-        var enabled = await db.FlowDefinitions.AnyAsync(row => row.TenantId == input.TenantId && row.Id == version.FlowId && row.Enabled, ct).ConfigureAwait(false);
+        var enabled = await db.FlowDefinitions.AnyAsync(row => row.TenantId == input.TenantId && row.Id == version.FlowId && row.DeletedAtUtc == null && row.Enabled, ct).ConfigureAwait(false);
         var active = new[] { FlowRunStatus.Queued, FlowRunStatus.Running, FlowRunStatus.RetryWaiting, FlowRunStatus.WaitingForAi, FlowRunStatus.AwaitingApproval, FlowRunStatus.WaitingForExecution };
         if (await db.FlowRuns.CountAsync(row => row.TenantId == input.TenantId, ct).ConfigureAwait(false) >= FlowLimits.MaximumRunsPerTenant ||
             await db.FlowRuns.CountAsync(row => row.TenantId == input.TenantId && active.Contains(row.Status), ct).ConfigureAwait(false) >= FlowLimits.MaximumQueuedRunsPerTenant) return new(FlowIngressDisposition.CapacityExceeded);

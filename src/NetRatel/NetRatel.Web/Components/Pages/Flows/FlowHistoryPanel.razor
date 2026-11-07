@@ -5,6 +5,7 @@
 <div id="@BodyId" class="flow-history-panel" tabindex="0" aria-label="Flow history and execution results" data-testid="flow-history-panel">
     <div class="history-summary">
         <MudChip T="string" Size="Size.Small" Color="@(Flow.Enabled ? Color.Success : Color.Default)" Variant="Variant.Outlined">@(Flow.Enabled ? "Enabled" : "Disabled")</MudChip>
+        @if (Flow.DeletedAtUtc is not null) { <MudChip T="string" Color="Color.Error">Deleted flow · retained history</MudChip> }
         <span>Draft revision <strong>@Flow.Revision</strong></span>
         <span>@(Flow.PublishedVersionNumber > 0 ? $"Published version {Flow.PublishedVersionNumber}" : "Not published")</span>
     </div>
@@ -140,7 +141,7 @@
 </div>
 
 @code {
-    [Parameter, EditorRequired] public FlowDefinitionDto Flow { get; set; } = default!;
+    [Parameter, EditorRequired] public FlowSummaryDto Flow { get; set; } = default!;
     [Parameter] public int TenantId { get; set; }
     [Parameter] public IReadOnlyList<FlowVersionDto> Versions { get; set; } = [];
     [Parameter] public IReadOnlyList<FlowRunSummaryDto> Runs { get; set; } = [];

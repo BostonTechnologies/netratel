@@ -13,7 +13,7 @@ using MudBlazor.Services;
 
 namespace NetRatel.Web.ComponentTests;
 
-public sealed class FlowsPageTests : AsyncBunitContext
+public sealed partial class FlowsPageTests : AsyncBunitContext
 {
     private readonly FakeFlowApi _api = new();
     private readonly IRenderedComponent<MudDialogProvider> _dialogs;
@@ -108,7 +108,9 @@ public sealed class FlowsPageTests : AsyncBunitContext
         _api.VersionsLookup = (_, _, token) => { historyToken = token; return pending.Task; };
         var cut = Render<FlowsPage>();
         cut.Find("[data-testid=flows-search]").Input("Incident");
-        var opening = cut.Find("[data-testid=flow-history]").ClickAsync(new());
+        await cut.WaitForAssertionAsync(() => _api.Queries.Should().Contain(query => query.Search == "Incident"));
+        Task opening = Task.CompletedTask;
+        await cut.InvokeAsync(() => { opening = cut.Find("[data-testid=flow-history]").ClickAsync(new()); });
         await _dialogs.WaitForAssertionAsync(() => _dialogs.Find("[data-testid=flow-history-loading]").TextContent.Should().Contain("Loading flow history"));
         _dialogs.Find("[role=dialog]").GetAttribute("aria-modal").Should().Be("true");
         await _dialogs.Find("[data-testid=flow-history-close]").ClickAsync(new());
@@ -117,7 +119,7 @@ public sealed class FlowsPageTests : AsyncBunitContext
         await opening;
         await _dialogs.WaitForAssertionAsync(() => _dialogs.FindAll("[data-testid=flow-history-panel]").Should().BeEmpty());
         cut.Find("[data-testid=flows-search]").GetAttribute("value").Should().Be("Incident");
-        cut.FindAll("[data-testid=flow-row]").Should().HaveCount(1);
+        cut.FindAll(".mud-table-body .mud-table-row").Should().HaveCount(1);
         await cut.WaitForAssertionAsync(() => JSInterop.Invocations["restoreFocus"].Should().Contain(call =>
             call.Arguments.Count > 0 && Equals(call.Arguments[0], $"flow-history-{FlowEditorTests.Definition().Id:N}")));
         _api.SaveCalls.Should().Be(0); _api.PublishCalls.Should().Be(0);

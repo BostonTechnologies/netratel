@@ -130,6 +130,7 @@ public static class McpOperatorOperationCatalog
             ("netratel_services", "control") or ("netratel_ai", "send" or "respond" or "reconcile") =>
                 McpOperatorConfirmationClass.RemoteExecution,
             ("netratel_ai", "pair") => McpOperatorConfirmationClass.CredentialIssuance,
+            ("netratel_flows", "delete") => McpOperatorConfirmationClass.Destructive,
             ("netratel_monitoring", "delete_rule" or "delete_group" or "delete_silence") =>
                 McpOperatorConfirmationClass.Destructive,
             _ => operation.Mutation ? McpOperatorConfirmationClass.StandardMutation : McpOperatorConfirmationClass.None

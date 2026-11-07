@@ -86,6 +86,9 @@ public sealed record FlowDefinitionWriteResult(FlowWriteDisposition Disposition,
 public sealed record FlowPublishResult(FlowWriteDisposition Disposition, FlowVersionDto? Version = null, string? Code = null);
 public interface IFlowDefinitionService
 {
+    Task<FlowPageDto> QueryAsync(int tenantId, FlowQueryDto query, CancellationToken cancellationToken = default);
+    Task<FlowSummaryDto?> GetMetadataAsync(int tenantId, Guid flowId, CancellationToken cancellationToken = default);
+    Task<FlowDeleteResultDto> DeleteAsync(int tenantId, Guid flowId, FlowDeleteRequest request, string actorId, CancellationToken cancellationToken = default, string? correlationId = null);
     Task<IReadOnlyList<FlowDefinitionDto>> ListAsync(int tenantId, CancellationToken cancellationToken = default);
     Task<FlowDefinitionDto?> GetAsync(int tenantId, Guid flowId, CancellationToken cancellationToken = default);
     Task<FlowDefinitionWriteResult> CreateAsync(int tenantId, FlowCreateRequest request, string actorId, CancellationToken cancellationToken = default);

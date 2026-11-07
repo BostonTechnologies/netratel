@@ -227,7 +227,7 @@ public sealed class FlowTypedAuthoringAcceptanceTests(ClientsManagementBrowserFi
             JsonSerializer.Serialize(new { beforeSaveGeometry, beforeReloadGeometry, savedPath, immediatePostSavePath, savedRoute.Points, savedGraph.Viewport }, new JsonSerializerOptions { WriteIndented = true }));
 
         await page.ReloadAsync(new() { WaitUntil = WaitUntilState.DOMContentLoaded });
-        await page.GetByTestId("flow-row").Filter(new() { HasText = "Synthetic near-limit graph" }).GetByTestId("flow-edit").ClickAsync();
+        await page.Locator(".flows-table .flow-row").Filter(new() { HasText = "Synthetic near-limit graph" }).GetByTestId("flow-edit").ClickAsync();
         await Assertions.Expect(page.GetByTestId("flow-node-title")).ToHaveCountAsync(32);
         await Assertions.Expect(page.GetByTestId("flow-link")).ToHaveCountAsync(61);
         Assert.Equal(nodeIds, await page.Locator(".flow-node[data-node-id]").EvaluateAllAsync<string[]>("nodes => nodes.map(node=>node.dataset.nodeId).sort()"));
@@ -376,7 +376,7 @@ public sealed class FlowTypedAuthoringAcceptanceTests(ClientsManagementBrowserFi
 
         await page.GetByTestId("flow-close").ClickAsync();
         await Assertions.Expect(page.GetByTestId("flow-editor")).ToHaveCountAsync(0);
-        var row = page.GetByTestId("flow-row").Filter(new() { HasText = "Synthetic typed authoring" });
+        var row = page.Locator(".flows-table .flow-row").Filter(new() { HasText = "Synthetic typed authoring" });
         await Assertions.Expect(row).ToContainTextAsync("Disabled"); await Assertions.Expect(row).ToContainTextAsync("Not published");
         await row.GetByTestId("flow-edit").ClickAsync();
         await Assertions.Expect(page.GetByTestId("flow-node-title")).ToHaveCountAsync(5);
@@ -515,7 +515,7 @@ public sealed class FlowTypedAuthoringAcceptanceTests(ClientsManagementBrowserFi
     private static async Task OpenAsync(IPage page, ClientsManagementFixtureHost fixture)
     {
         await page.GotoAsync(fixture.BaseAddress + "/flows", new() { WaitUntil = WaitUntilState.DOMContentLoaded });
-        await page.GetByTestId("flow-row").WaitForAsync(new() { Timeout = 90_000 });
+        await page.Locator(".flows-table .flow-row").WaitForAsync(new() { Timeout = 90_000 });
     }
     private static string EvidenceRoot() => Environment.GetEnvironmentVariable("NETRATEL_PLAYWRIGHT_ARTIFACT_ROOT") ?? Path.Combine(Directory.GetCurrentDirectory(), "TestResults", "playwright");
     public async ValueTask InitializeAsync() => _fixture = await ClientsManagementFixtureHost.StartAsync(services =>

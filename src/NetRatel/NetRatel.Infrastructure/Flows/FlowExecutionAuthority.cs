@@ -130,7 +130,7 @@ public sealed class FlowExecutionAuthority(OrchestratorDbContext db, IFlowExecut
         }
         catch (JsonException) { throw new ExecutionAdmissionDeniedException("The immutable continuation version is invalid."); }
         var source = await db.FlowRuntimeIdentity.AsNoTracking().SingleOrDefaultAsync(row => row.Id == 1, ct);
-        if (definition is not { Enabled: true } || definition.EnabledSinceUtc > input.OccurredAtUtc ||
+        if (definition is not { Enabled: true, DeletedAtUtc: null } || definition.EnabledSinceUtc > input.OccurredAtUtc ||
             version.PublishedAtUtc > input.OccurredAtUtc || run is null || run.FlowId != version.FlowId ||
             run.FlowVersionId != identity.FlowVersionId || run.EventId != (input.SourceAdmissionKey ?? input.EventId) || run.OccurrenceId != input.OccurrenceId ||
             run.EventFingerprint != candidate.EventFingerprint ||

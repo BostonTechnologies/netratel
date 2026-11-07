@@ -1,4 +1,4 @@
-# Upcoming beta — logging and Monitoring
+# Upcoming beta — logging, Monitoring and Flows
 
 This is unreleased source work. Version selection, tagging, release builds and
 publication are deferred while the next beta's scope remains open. Product
@@ -80,3 +80,11 @@ viewports, including expanded details.
 Required fast CI remains separate from the focused optional browser and
 disposable-container checks. Source validation and those synthetic checks do
 not establish owner production acceptance or a live deployment.
+
+## Flow lifecycle, list and tooling
+
+Flows support tenant-scoped, revision-checked logical deletion with independent `flow.delete` authority and a distinct Web capability. Disable and tombstone commit atomically; active work conflicts, historical versions/runs/evidence remain readable, and tombstones release active capacity within the existing 128-flow limit. Terminal unknown-delivery history alone does not block deletion; live leases, continuations and dispatch obligations do. Ordinary terminal retention remains 90 days with existing unknown-delivery protection.
+
+The management table uses metadata-only server search, enabled/publication filters, stable name/updated/latest-run sorting and real 20/50/100 paging. The measured row viewport retains its header and pager. Named icon actions and a controlled red/green toggle preserve confirmed persisted state while writes are pending or uncertain. Writes reload the current query, including page clamping.
+
+CLI and both MCP transports expose the same graph-free `netratel_flows/delete` intent, authorized preview and confirmed backend lifecycle. The operation explicitly requires Write scope, `flow.delete`, an allowing AutomationWrite policy and Destructive admission. Existing credentials/edit-only roles are not upgraded. The legacy list array contract and full-content prompt guards are preserved; summaries do not disclose graphs, prompts, execution pins or credentials. Monitoring references to deleted targets remain readable and replaceable.

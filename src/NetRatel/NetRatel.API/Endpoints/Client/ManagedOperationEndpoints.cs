@@ -65,6 +65,19 @@ public static class ManagedOperationEndpoints
             var admitted = await admission.EvaluateAsync(descriptor, request, http, cancellationToken).ConfigureAwait(false);
             if (admitted.FailureCode is { } failure)
                 return Denied(failure);
+            if (descriptor.Tool == "netratel_flows" && descriptor.Operation == "delete" && !confirmed)
+            {
+                var previewOriginal = http.User;
+                try
+                {
+                    http.User = admitted.User!;
+                    return await FlowEndpoints.DeletePreviewAsync(request.GetProperty("tenantId").GetInt32(), Id(request, "flowId"),
+                        Data<FlowDeleteRequest>(request), http, http.RequestServices.GetRequiredService<IEffectiveAccessService>(),
+                        http.RequestServices.GetRequiredService<OrchestratorDbContext>(),
+                        http.RequestServices.GetRequiredService<IFlowDefinitionService>(), cancellationToken).ConfigureAwait(false);
+                }
+                finally { http.User = previewOriginal; }
+            }
             if (descriptor.Mutation && !confirmed)
                 return Results.Ok(new
                 {
@@ -180,6 +193,7 @@ public static class ManagedOperationEndpoints
             "create" => FlowEndpoints.CreateAsync(tenant, Data<FlowCreateRequest>(request), http, access, db, flows, ct),
             "save_draft" => FlowEndpoints.SaveAsync(tenant, Id(request, "flowId"), Data<FlowSaveDraftRequest>(request), http, access, db, flows, ct),
             "clone" => FlowEndpoints.CloneAsync(tenant, Id(request, "flowId"), Data<FlowCloneRequest>(request), http, access, db, flows, ct),
+            "delete" => FlowEndpoints.DeleteAsync(tenant, Id(request, "flowId"), Data<FlowDeleteRequest>(request), http, access, db, flows, ct),
             "set_enabled" => FlowEndpoints.EnabledAsync(tenant, Id(request, "flowId"), Data<FlowEnabledRequest>(request), http, access, db, flows, ct),
             "publish" => FlowEndpoints.PublishAsync(tenant, Id(request, "flowId"), Data<FlowRevisionRequest>(request), http, access, db, flows, ct),
             "validate" => FlowEndpoints.ValidateAsync(tenant, Data<FlowGraphDto>(request), http, access, db, ct),

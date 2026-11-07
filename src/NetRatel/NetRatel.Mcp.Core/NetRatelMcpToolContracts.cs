@@ -45,6 +45,9 @@ public record NetRatelToolFailure(
 
     private static string LayerFor(string code) => code switch
     {
+        "flow_delete_transport_uncertain" => "transport",
+        "flow-active-work" => "conflict",
+        "flow-revision-conflict" => "revision",
         "oauth_scope_missing" => "oauth_scope",
         "oauth_role_missing" => "oauth_role",
         "tenant_not_authorized" => "tenant",
@@ -61,6 +64,9 @@ public record NetRatelToolFailure(
 
     private static string SafeDetailsFor(string code) => code switch
     {
+        "flow_delete_transport_uncertain" => "The deletion response did not prove committed deletion of the reviewed target and revision.",
+        "flow-active-work" => "Current unfinished runs or live delivery/continuation obligations prevent deletion; nothing was disabled or cancelled.",
+        "flow-revision-conflict" => "The deletion intent uses a different revision from the current definition.",
         "search_query_too_broad" => "The client search exceeds the bounded candidate limit.",
         "search_visibility_limit_exceeded" => "Tenant visibility exceeds the bounded discovery limit.",
         "oauth_role_missing" => "The delegated operator lacks the required role.",
@@ -77,6 +83,9 @@ public record NetRatelToolFailure(
 
     private static string RemediationFor(string code) => code switch
     {
+        "flow_delete_transport_uncertain" => "Preview the exact same tenant, flow UUID and pre-delete revision to reconcile state before retrying. Never substitute a newer revision or retry automatically.",
+        "flow-active-work" => "Use authorized history to inspect unfinished work and wait for its current obligations to settle.",
+        "flow-revision-conflict" => "Discover and explicitly review the current exact target again before forming a new deletion intent.",
         "search_query_too_broad" => "Narrow request.q with a client name or exact agent ID.",
         "search_visibility_limit_exceeded" => "Use exact target reads or ask a policy administrator to narrow discovery visibility.",
         "oauth_role_missing" => "Ask an administrator to review the operator role assignment.",

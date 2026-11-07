@@ -12,6 +12,8 @@ using NetRatel.API.Security.Integration;
 using NetRatel.Application.Operations;
 using NetRatel.Application.Presence;
 using NetRatel.Infrastructure.Identity;
+using NetRatel.Infrastructure.Flows;
+using NetRatel.Application.Flows;
 using NetRatel.Infrastructure.Identity.Authorization;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Infrastructure.Services;
@@ -20,7 +22,7 @@ using Xunit;
 
 namespace NetRatel.Tests.API;
 
-public sealed class ManagedOperationAdmissionTests
+public sealed partial class ManagedOperationAdmissionTests
 {
     [Fact]
     public async Task Api_credential_preview_changes_nothing_and_revocation_blocks_confirmation()
@@ -183,7 +185,7 @@ public sealed class ManagedOperationAdmissionTests
             var policy = new McpOperatorAuthorization(scenario.Db);
             scenario.Admission = new(scenario.Access, scenario.Resolver, policy, new McpOperatorRouteAdmissionService(scenario.Db, policy), scenario.Db,
                 new OfflinePresence(), new HostingEnvironment { EnvironmentName = "Production" });
-            scenario._provider = new ServiceCollection().AddSingleton<IEffectiveAccessService>(scenario.Access).AddSingleton(scenario.Db)
+            scenario._provider = new ServiceCollection().AddLogging().AddNetRatelFlows().AddSingleton<IEffectiveAccessService>(scenario.Access).AddSingleton(scenario.Db)
                 .AddSingleton(TimeProvider.System).BuildServiceProvider();
             scenario.Http.RequestServices = scenario._provider;
             scenario.Http.User = new ClaimsPrincipal(new ClaimsIdentity(

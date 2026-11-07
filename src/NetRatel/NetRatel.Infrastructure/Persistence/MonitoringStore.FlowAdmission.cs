@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using NetRatel.Application.Flows;
+using NetRatel.Infrastructure.Flows;
 using NetRatel.Application.Monitoring;
 using NetRatel.Application.Presence;
 using NetRatel.Shared.Contracts.Monitoring;
@@ -26,6 +27,7 @@ public sealed partial class MonitoringStore
     {
         if (!FlowContractValidation.ValidEnvelope(input) || expectedRunId == Guid.Empty ||
             !db.Database.IsNpgsql() || db.Database.CurrentTransaction is null) return new(false, "monitoring-admission-invalid");
+        await FlowTenantTransactionLock.AcquireAsync(db, input.TenantId, ct).ConfigureAwait(false);
         var key = $"monitoring:v1:{input.TenantId}:{input.OccurrenceId:D}:{input.EventId:D}:{input.FlowVersionId:D}";
         var candidate = await db.MonitoringFlowOutbox.AsNoTracking().SingleOrDefaultAsync(row => row.TenantId == input.TenantId &&
             row.StableFlowDispatchKey == key && row.EventId == input.EventId && row.OccurrenceId == input.OccurrenceId, ct).ConfigureAwait(false);
@@ -74,7 +76,7 @@ public sealed partial class MonitoringStore
             return new(false, "monitoring-target-removed");
         if (!await (from version in db.FlowVersions.AsNoTracking()
             join definition in db.FlowDefinitions.AsNoTracking() on new { version.TenantId, Id = version.FlowId } equals new { definition.TenantId, definition.Id }
-            where version.TenantId == input.TenantId && version.Id == input.FlowVersionId && definition.Enabled
+            where version.TenantId == input.TenantId && version.Id == input.FlowVersionId && definition.DeletedAtUtc == null && definition.Enabled
             select version.Id).AnyAsync(ct).ConfigureAwait(false)) return new(false, "monitoring-published-flow-unavailable");
         var state = series is null ? null : ReadState(series);
         if (offline)

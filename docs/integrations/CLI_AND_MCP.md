@@ -492,3 +492,34 @@ Stdio MCP diagnostics use the shared [logging Options/environment
 contract](../deployment/CONFIGURATION.md#diagnostic-logging-and-docker-retention)
 with Warning as the default. Diagnostics stay on stderr; stdout remains
 protocol-only. CLI results and setup output retain their existing behavior.
+
+## Delete one reviewed flow
+
+CLI, stdio MCP and HTTP MCP share `netratel_flows/delete` and the Web/API tombstone lifecycle. It requires current tenant `flow.delete`, OAuth **Write** (`netratel.mcp.write`), and an allowing exact operation policy in **AutomationWrite**. Its confirmation class is explicitly **Destructive**: `DestructiveOperationsAllowed=false` denies it even when other grants match. Edit, publish, execute, Write scope or an operation policy alone cannot grant deletion. Default deny, explicit deny and parent/base-policy attenuation still apply. Existing credentials and edit-only roles gain no deletion grant automatically; preserve unrelated grants, policies and exact expiry when editing configured access.
+
+In the terminal where the verified CLI is installed, create a synthetic body file and preview one exact target:
+
+```sh
+printf '%s\n' '{"expectedRevision":4}' > delete-flow.json
+netratel flows delete --tenant-id 17 --flow-id 11111111-1111-4111-8111-111111111111 --body-file delete-flow.json
+# After reviewing the authorized preview and explicit user intent:
+netratel flows delete --tenant-id 17 --flow-id 11111111-1111-4111-8111-111111111111 --body-file delete-flow.json --confirm
+```
+
+The existing inline alternative is `--body '{"expectedRevision":4}'`. Both MCP transports accept the same closed request:
+
+```json
+{
+  "operation": "delete",
+  "request": {
+    "tenantId": 17,
+    "flowId": "11111111-1111-4111-8111-111111111111",
+    "data": { "expectedRevision": 4 }
+  },
+  "confirm": false
+}
+```
+
+Omitted/false confirmation performs an authorized metadata-only preview with the exact flow UUID, expected/current revisions and deletion/retention semantics. The name appears only with current read authority. Unauthorized calls reveal no existence, name or graph. Confirmed execution rechecks the current actor, credential, policy, tenant, instance/environment/resource constraints and revision; preview is not durable permission and `confirm=true` grants no authority.
+
+AI clients must have explicit user deletion intent, discover the exact authorized target and revision, and explain that future processing stops while history follows existing retention. Never guess IDs, automatically clean up flows, or bulk delete. Deleted/already-deleted results describe persisted state. Permission/policy denial, stale revision and unfinished-work conflicts are structured failures. On transport uncertainty, reconcile the exact same intent through preview before retrying; never silently select a newer revision. See [Flows lifecycle and retention](../operations/FLOWS.md#delete-a-flow) for terminal unknown-delivery rules and retained historical routes.

@@ -138,7 +138,10 @@ public sealed partial class FlowEndpointTests
     private sealed class Access : IEffectiveAccessService
     {
         public Task<bool> AuthorizeAsync(ClaimsPrincipal principal, string permission, int? tenantId, CancellationToken cancellationToken = default) => Task.FromResult(tenantId == 17 &&
-            (principal.FindFirstValue("mode") == "all" || permission == NetRatelPermissions.FlowRead ||
+            (principal.FindFirstValue("mode") == "all" ||
+                principal.FindFirstValue("mode") == "delete" && permission == NetRatelPermissions.FlowDelete ||
+                principal.FindFirstValue("mode") == "edit" && permission == NetRatelPermissions.FlowEdit ||
+                principal.FindFirstValue("mode") is not ("delete" or "edit") && permission == NetRatelPermissions.FlowRead ||
                 principal.FindFirstValue("mode") == "source" && permission == NetRatelPermissions.JobManagement));
         public Task<int[]?> GetAuthorizedTenantIdsAsync(ClaimsPrincipal principal, string permission, CancellationToken cancellationToken = default) => Task.FromResult<int[]?>([17]);
         public Task<EffectiveAccessSnapshot> GetSnapshotAsync(ClaimsPrincipal principal, int? tenantId, CancellationToken cancellationToken = default) => throw new NotSupportedException();

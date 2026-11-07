@@ -24,78 +24,6 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
             NpgsqlModelBuilderExtensions.HasPostgresExtension(modelBuilder, "pg_trgm");
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
-
-            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.ScriptExecutionReplayRecord", b =>
-                {
-                    b.Property<string>("RequestId").HasMaxLength(256).HasColumnType("character varying(256)");
-                    b.Property<int>("TenantId").HasColumnType("integer");
-                    b.Property<Guid>("AgentId").HasColumnType("uuid");
-                    b.Property<long>("ScriptId").HasColumnType("bigint");
-                    b.Property<string>("ScriptName").IsRequired().HasMaxLength(512).HasColumnType("character varying(512)");
-                    b.Property<long>("ScriptRevision").HasColumnType("bigint");
-                    b.Property<string>("ScriptContentHash").IsRequired().HasMaxLength(64).HasColumnType("character varying(64)");
-                    b.Property<string>("PayloadHash").IsRequired().HasMaxLength(64).HasColumnType("character varying(64)");
-                    b.Property<string>("ProtectedSnapshotJson").IsRequired().HasColumnType("text");
-                    b.Property<DateTimeOffset>("CreatedAtUtc").HasColumnType("timestamp with time zone");
-                    b.HasKey("RequestId");
-                    b.HasIndex("TenantId", "AgentId", "CreatedAtUtc");
-                    b.ToTable("ScriptExecutionReplays", (string)null);
-                });
-
-            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.ExecutionAdmissionRecord", b =>
-                {
-                    b.Property<Guid>("ActionKey")
-                        .HasColumnType("uuid");
-                    b.Property<DateTimeOffset?>("DispatchStartedAtUtc")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<DateTimeOffset?>("DispatchAcceptedAtUtc")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<DateTimeOffset?>("AuthorityDeniedAtUtc")
-                        .HasColumnType("timestamp with time zone");
-                    b.Property<string>("CausationJson")
-                        .HasColumnType("text");
-                    b.Property<DateTimeOffset>("CreatedAtUtc")
-                        .HasColumnType("timestamp with time zone");
-                    b.Property<string>("ExecutionId")
-                        .IsRequired()
-                        .HasMaxLength(128)
-                        .HasColumnType("character varying(128)");
-                    b.Property<Guid>("FlowRunId")
-                        .HasColumnType("uuid");
-                    b.Property<Guid>("FlowVersionId")
-                        .HasColumnType("uuid");
-                    b.Property<string>("IntegrationCredentialId")
-                        .HasMaxLength(256)
-                        .HasColumnType("character varying(256)");
-                    b.Property<int>("Kind")
-                        .HasColumnType("integer");
-                    b.Property<int>("NodeAttempt")
-                        .HasColumnType("integer");
-                    b.Property<Guid>("NodeId")
-                        .HasColumnType("uuid");
-                    b.Property<string>("PayloadHash")
-                        .IsRequired()
-                        .HasMaxLength(64)
-                        .HasColumnType("character varying(64)");
-                    b.Property<string>("PrincipalId")
-                        .IsRequired()
-                        .HasMaxLength(256)
-                        .HasColumnType("character varying(256)");
-                    b.Property<string>("ProtectedPayloadJson")
-                        .IsRequired()
-                        .HasColumnType("text");
-                    b.Property<int>("TenantId")
-                        .HasColumnType("integer");
-                    b.HasKey("ActionKey");
-                    b.HasIndex("Kind", "ExecutionId")
-                        .IsUnique();
-                    b.HasIndex("TenantId", "FlowRunId", "NodeId", "NodeAttempt")
-                        .IsUnique();
-                    b.ToTable("ExecutionAdmissions");
-                });
-
             modelBuilder.Entity("NetRatel.Infrastructure.Netclaw.AiInvestigationApprovalRecord", b =>
                 {
                     b.Property<Guid>("InvestigationId")
@@ -2742,6 +2670,78 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.ToTable("EnrollmentCodes", (string)null);
                 });
 
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.ExecutionAdmissionRecord", b =>
+                {
+                    b.Property<Guid>("ActionKey")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset?>("AuthorityDeniedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("CausationJson")
+                        .HasColumnType("text");
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("DispatchAcceptedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("DispatchStartedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ExecutionId")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<Guid>("FlowRunId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("FlowVersionId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("IntegrationCredentialId")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<int>("Kind")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("NodeAttempt")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("NodeId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("PayloadHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("PrincipalId")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<string>("ProtectedPayloadJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("integer");
+
+                    b.HasKey("ActionKey");
+
+                    b.HasIndex("Kind", "ExecutionId")
+                        .IsUnique();
+
+                    b.HasIndex("TenantId", "FlowRunId", "NodeId", "NodeAttempt")
+                        .IsUnique();
+
+                    b.ToTable("ExecutionAdmissions", (string)null);
+                });
+
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.FlowActionRecord", b =>
                 {
                     b.Property<Guid>("RunId")
@@ -2816,6 +2816,10 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.Property<DateTimeOffset>("AtUtc")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<string>("CorrelationId")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
                     b.Property<Guid>("FlowId")
                         .HasColumnType("uuid");
 
@@ -2839,9 +2843,6 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
 
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.FlowDefinitionRecord", b =>
                 {
-                    b.Property<DateTimeOffset?>("EnabledSinceUtc")
-                        .HasColumnType("timestamp with time zone");
-
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
@@ -2849,12 +2850,25 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.Property<DateTimeOffset>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<DateTimeOffset?>("DeletedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("DeletedBy")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<long?>("DeletedFromRevision")
+                        .HasColumnType("bigint");
+
                     b.Property<string>("DraftJson")
                         .IsRequired()
                         .HasColumnType("jsonb");
 
                     b.Property<bool>("Enabled")
                         .HasColumnType("boolean");
+
+                    b.Property<DateTimeOffset?>("EnabledSinceUtc")
+                        .HasColumnType("timestamp with time zone");
 
                     b.Property<string>("Name")
                         .IsRequired()
@@ -3047,11 +3061,6 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
 
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.FlowVersionRecord", b =>
                 {
-                    b.Property<string>("ProtectedExecutionPinsJson")
-                        .HasColumnType("text");
-                    b.Property<string>("ExecutionAuthorityJson")
-                        .HasColumnType("text");
-
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
@@ -3061,12 +3070,18 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                         .HasMaxLength(64)
                         .HasColumnType("character varying(64)");
 
+                    b.Property<string>("ExecutionAuthorityJson")
+                        .HasColumnType("text");
+
                     b.Property<Guid>("FlowId")
                         .HasColumnType("uuid");
 
                     b.Property<string>("GraphJson")
                         .IsRequired()
                         .HasColumnType("jsonb");
+
+                    b.Property<string>("ProtectedExecutionPinsJson")
+                        .HasColumnType("text");
 
                     b.Property<DateTimeOffset>("PublishedAtUtc")
                         .HasColumnType("timestamp with time zone");
@@ -6497,6 +6512,53 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.HasIndex("FolderPath", "Name");
 
                     b.ToTable("Scripts", (string)null);
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.ScriptExecutionReplayRecord", b =>
+                {
+                    b.Property<string>("RequestId")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<Guid>("AgentId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("PayloadHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("ProtectedSnapshotJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("ScriptContentHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<long>("ScriptId")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("ScriptName")
+                        .IsRequired()
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)");
+
+                    b.Property<long>("ScriptRevision")
+                        .HasColumnType("bigint");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("integer");
+
+                    b.HasKey("RequestId");
+
+                    b.HasIndex("TenantId", "AgentId", "CreatedAtUtc");
+
+                    b.ToTable("ScriptExecutionReplays", (string)null);
                 });
 
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.ScriptParameterDefinition", b =>

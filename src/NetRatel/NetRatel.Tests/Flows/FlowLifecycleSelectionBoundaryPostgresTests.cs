@@ -18,7 +18,7 @@ using Xunit;
 namespace NetRatel.Tests.Flows;
 
 [Collection(PostgreSqlPersistenceCollection.Name)]
-public sealed class FlowLifecycleSelectionBoundaryPostgresTests(PostgreSqlPersistenceFixture postgres)
+public sealed partial class FlowLifecycleSelectionBoundaryPostgresTests(PostgreSqlPersistenceFixture postgres)
 {
     [Theory]
     [InlineData("enable", false)]

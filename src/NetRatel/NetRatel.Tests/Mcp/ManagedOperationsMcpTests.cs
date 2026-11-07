@@ -14,6 +14,25 @@ namespace NetRatel.Tests.Mcp;
 
 public sealed class ManagedOperationsMcpTests
 {
+    [Theory]
+    [InlineData(NetRatelMcpTransport.Stdio)]
+    [InlineData(NetRatelMcpTransport.StreamableHttp)]
+    public async Task Delete_requires_a_committed_minimal_result_and_preserves_the_exact_intent_on_uncertainty(NetRatelMcpTransport transport)
+    {
+        var client = new RecordingClient { Reply = JsonNode.Parse("{\"accepted\":true,\"privateGraph\":\"never echo\"}") };
+        var tools = Tools(client, transport); var id = Guid.NewGuid();
+        var request = JsonSerializer.SerializeToElement(new { tenantId = 17, flowId = id, data = new { expectedRevision = 4 } });
+        var unknown = await tools.netratel_flows("delete", request, true);
+        unknown.Success.Should().BeFalse(); unknown.Status.Should().Be("uncertain");
+        unknown.Error!.Code.Should().Be("flow_delete_transport_uncertain"); unknown.Error.Retryable.Should().BeFalse();
+        unknown.Failure!.RequiredOperation.Should().Be("netratel_flows/delete");
+        unknown.Data!["flowId"]!.GetValue<string>().Should().Be(id.ToString());
+        unknown.Data.ToJsonString().Should().NotContain("privateGraph").And.NotContain("never echo");
+        client.Calls.Should().HaveCount(1);
+        client.Reply = JsonSerializer.SerializeToNode(new { tenantId = 17, flowId = id, revision = 5, disposition = 0, code = "flow-deleted" });
+        (await tools.netratel_flows("delete", request, true)).Success.Should().BeTrue();
+    }
+
     [Fact]
     public void Both_transports_expose_the_same_complete_typed_managed_schemas()
     {
@@ -235,6 +254,7 @@ public sealed class ManagedOperationsMcpTests
     private sealed class RecordingClient : INetRatelMcpApiClient
     {
         public bool Deny { get; init; }
+        public JsonNode? Reply { get; set; }
         public List<(string Path, JsonNode? Body)> Calls { get; } = [];
         public Task<JsonNode?> GetAsync(string path, CancellationToken cancellationToken = default) => throw new InvalidOperationException("Managed operations must use their dedicated adapter.");
         public Task<JsonNode?> SendAsync(HttpMethod method, string path, JsonNode? body = null, CancellationToken cancellationToken = default)
@@ -242,6 +262,7 @@ public sealed class ManagedOperationsMcpTests
             method.Should().Be(HttpMethod.Post);
             Calls.Add((path, body?.DeepClone()));
             if (Deny) throw new NetRatelMcpApiException("permission_denied", "Permission denied.", 403, false);
+            if (Reply is not null) return Task.FromResult<JsonNode?>(Reply.DeepClone());
             return Task.FromResult<JsonNode?>(body?["confirm"]?.GetValue<bool>() == false
                 ? new JsonObject { ["requiresConfirm"] = true }
                 : new JsonObject { ["accepted"] = true });

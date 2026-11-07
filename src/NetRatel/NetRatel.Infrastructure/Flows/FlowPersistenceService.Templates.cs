@@ -23,7 +23,7 @@ public sealed partial class FlowPersistenceService : IFlowTemplateService
         await TenantLockAsync(db, tenantId, cancellationToken).ConfigureAwait(false);
         if (!await db.Tenants.AnyAsync(row => row.Id == tenantId && row.DeletedAtUtc == null, cancellationToken).ConfigureAwait(false))
             return new(FlowWriteDisposition.NotFound);
-        if (await db.FlowDefinitions.CountAsync(row => row.TenantId == tenantId, cancellationToken).ConfigureAwait(false) >= FlowLimits.MaximumFlowsPerTenant)
+        if (await db.FlowDefinitions.CountAsync(row => row.TenantId == tenantId && row.DeletedAtUtc == null, cancellationToken).ConfigureAwait(false) >= FlowLimits.MaximumFlowsPerTenant)
             return new(FlowWriteDisposition.CapacityExceeded);
         var now = clock.GetUtcNow();
         var row = new FlowDefinitionRecord

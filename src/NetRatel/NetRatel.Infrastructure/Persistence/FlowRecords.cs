@@ -10,6 +10,9 @@ public sealed class FlowDefinitionRecord
     public long Revision { get; set; }
     public bool Enabled { get; set; }
     public DateTimeOffset? EnabledSinceUtc { get; set; }
+    public DateTimeOffset? DeletedAtUtc { get; set; }
+    public string? DeletedBy { get; set; }
+    public long? DeletedFromRevision { get; set; }
     public string DraftJson { get; set; } = "";
     public Guid? PublishedVersionId { get; set; }
     public int PublishedVersionNumber { get; set; }
@@ -76,6 +79,7 @@ public sealed class FlowAuditRecord
     public Guid FlowId { get; init; }
     public long Revision { get; init; }
     public string ActorId { get; init; } = "";
+    public string? CorrelationId { get; init; }
     public string Operation { get; init; } = "";
     public DateTimeOffset AtUtc { get; init; }
 }
