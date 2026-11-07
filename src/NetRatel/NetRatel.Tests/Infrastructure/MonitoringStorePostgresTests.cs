@@ -31,10 +31,15 @@ public sealed class MonitoringStorePostgresTests(PostgreSqlPersistenceFixture fi
         {
             RuleId = Guid.NewGuid(), Name = "genuine disk collections", BreachHold = TimeSpan.FromSeconds(30),
             RecoveryHold = TimeSpan.FromSeconds(30), FreshnessBudget = TimeSpan.FromMinutes(1),
-            Condition = new(MonitoringMetricKind.DiskFreeSpace, MonitoringNumericUnit.Bytes, 200, 500, null, null, [])
+            Condition = new(MonitoringMetricKind.DiskFreeSpace, MonitoringNumericUnit.Bytes, 200, 500, null, null, [],
+                new([], ["/snap/*", "/cache/*"], [], []))
         };
         (await rig.Provider.GetRequiredService<IMonitoringConfigurationStore>().SaveRuleAsync(
             new(rule, 1, Guid.NewGuid(), "disk sample regression"), default)).Disposition.Should().Be(MonitoringConfigurationWriteDisposition.Stored);
+        var configurations = rig.Provider.GetRequiredService<IMonitoringConfigurationStore>();
+        var persistedRule = (await configurations.GetAsync(rule.TenantId, default)).Rules.Single(item => item.RuleId == rule.RuleId);
+        persistedRule.Condition.DiskPolicy!.ExcludeMounts.Should().Equal("/cache/*", "/snap/*");
+        MonitoringContractValidator.EvaluationFingerprint(persistedRule).Should().Be(MonitoringContractValidator.EvaluationFingerprint(rule));
         var key = new MonitoringSeriesKey(rig.Client.TenantId, rule.RuleId, rig.Client.AgentId, "disk:/");
         var state = rig.Evaluator.CreateInitial(key, rule);
         MonitoringObservationDto Sample(ulong sequence, MonitoringDiskCollectionStamp stamp) =>
@@ -83,6 +88,18 @@ public sealed class MonitoringStorePostgresTests(PostgreSqlPersistenceFixture fi
         var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
         (await db.MonitoringOccurrences.CountAsync(row => row.RuleId == rule.RuleId)).Should().Be(1);
         (await db.MonitoringEvents.CountAsync(row => row.OccurrenceId == occurrence)).Should().Be(2);
+        var oldPinnedEvidence = JsonSerializer.Serialize(durable.Occurrence!.RaisedEvidence);
+        var policyEdit = persistedRule with { Revision = 2, EvaluationRevision = 2,
+            Condition = persistedRule.Condition with { DiskPolicy = new([], ["/snap/*", "/cache/*", "/scratch/*"], [], []) } };
+        Func<Task> noReset = async () => await configurations.SaveRuleAsync(new(policyEdit, 2, Guid.NewGuid(), "edit disk exclusions"), default);
+        await noReset.Should().ThrowAsync<ArgumentException>();
+        (await configurations.SaveRuleAsync(new(policyEdit, 2, Guid.NewGuid(), "edit disk exclusions",
+            MonitoringConditionResetPolicy.SuspendOccurrenceAndRequireNewWindow), default)).Disposition.Should().Be(MonitoringConfigurationWriteDisposition.Stored);
+        var reset = (await store.LoadSeriesAsync(key, default))!;
+        reset.EvaluationRevision.Should().Be(2);
+        reset.WindowStartedAtUtc.Should().BeNull();
+        JsonSerializer.Serialize(reset.Occurrence!.RaisedEvidence).Should().Be(oldPinnedEvidence);
+        reset.Occurrence.PinnedRule.Condition.DiskPolicy!.ExcludeMounts.Should().NotContain("/scratch/*");
     }
 
     [Fact]
