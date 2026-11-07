@@ -160,6 +160,11 @@ Restore, build and test outcomes remain independently visible. The same fast
 selection applies to tag-build validation, with real CLI/stdio/native packaging
 and integrity checks retained. Packaging/publication costs are measured
 separately; the under-20-minute acceptance applies to required PR/main runs.
+Tag source validation has a bounded 25-minute allowance for the same assertions
+and authenticated receipt finalization. The preceding 20-minute tag allowance
+canceled a run after all fast cases passed but before finalization completed.
+Its immutable tag and unpublished draft remain evidence; a workflow/source fix
+uses the next unused product version rather than moving that tag.
 
 Before the fast assemblies start, `tools/ci/prepare-fast-test-containers.sh`
 prepares their PostgreSQL and Testcontainers resource-reaper images sequentially.

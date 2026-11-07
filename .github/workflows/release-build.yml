@@ -35,7 +35,8 @@ jobs:
   validate:
     name: Validate release source
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Tag validation includes complete receipt finalization; PR/main retain 20 minutes.
+    timeout-minutes: 25
     outputs:
       version: ${{ steps.version.outputs.value }}
     steps:
