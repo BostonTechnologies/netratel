@@ -117,6 +117,11 @@ public sealed class IntegrationSetupTransactionTests(PostgreSqlPersistenceFixtur
             new[] { 701, 702 }.SelectMany(t => permissions.Select(p => new IntegrationCredentialGrantRequest(t, p))).ToArray(), Resource, permissions);
         await using var session = Open(connection, protection);
         var credential = await session.Setup.CreateAsync(Principal(), Guid.NewGuid().ToString("N"), request, Plan(request), McpOperatorEnvironment.Production, default);
+        var stored = await session.Identity.IntegrationCredentials.AsNoTracking().Include(row => row.Grants)
+            .Include(row => row.InstanceGrants).SingleAsync(row => row.Id == credential.CredentialId);
+        Assert.Equal(request.ExpiresAtUtc, stored.ExpiresAtUtc);
+        Assert.Equal(2, stored.Grants.Count(grant => grant.Permission == NetRatelPermissions.FlowDelete));
+        Assert.Contains(stored.InstanceGrants, grant => grant.Permission == NetRatelPermissions.FlowDelete);
         var authority = new McpOperatorAuthorization(session.App);
         var routes = new McpOperatorRouteAdmissionService(session.App, authority);
         var principal = new McpOperatorPrincipal(Owner, credential.CredentialId, null, new HashSet<string>(), new HashSet<string>(["Operator", "PolicyAdministrator"]),

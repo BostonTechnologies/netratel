@@ -1,4 +1,5 @@
 using NetRatel.Application.Operations;
+using NetRatel.Infrastructure.Identity.Authorization;
 using NetRatel.Shared.Connectivity;
 
 namespace NetRatel.Infrastructure.Identity;
@@ -10,7 +11,7 @@ public sealed partial class IntegrationPairingService
         string requestId, IReadOnlyList<IntegrationPairingGrant> grants, IReadOnlyList<string> instancePermissions,
         string origin, string resource, McpOperatorEnvironment environment, CancellationToken ct = default, IReadOnlyList<McpIntegrationPolicy>? basePolicies = null)
     {
-        if (grants is null || instancePermissions is null || grants.Count > 64 || instancePermissions.Count > 32 ||
+        if (grants is null || instancePermissions is null || grants.Count > IntegrationPermissionCatalog.MaximumTenantGrants || instancePermissions.Count > IntegrationPermissionCatalog.MaximumPermissionsPerScope ||
             grants.Any(grant => grant is null))
             throw new IntegrationCredentialGrantValidationException("grants");
         var credential = await AccountAccessCredentialAsync(owner, credentialId, resource, ct).ConfigureAwait(false);
