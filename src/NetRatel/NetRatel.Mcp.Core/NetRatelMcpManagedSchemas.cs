@@ -32,7 +32,7 @@ public static partial class NetRatelMcpToolDefinitions
         if (operation.MonitoringQuery)
         {
             properties["view"] = new JsonObject { ["type"] = "string", ["enum"] = operation.Operation == "events"
-                ? new JsonArray("All") : new JsonArray(Enum.GetNames<MonitoringView>().Select(name => (JsonNode?)JsonValue.Create(name)).ToArray()),
+                ? new JsonArray("All") : new JsonArray(System.Enum.GetNames<MonitoringView>().Select(name => (JsonNode?)JsonValue.Create(name)).ToArray()),
                 ["default"] = "All", ["description"] = "Additive full-result selection. Unfiltered reads include Healthy series." };
             properties["clientId"] = new JsonObject { ["type"] = "string", ["format"] = "uuid" };
             properties["severity"] = new JsonObject { ["type"] = "string", ["enum"] = new JsonArray("Information", "Warning", "Critical") };
