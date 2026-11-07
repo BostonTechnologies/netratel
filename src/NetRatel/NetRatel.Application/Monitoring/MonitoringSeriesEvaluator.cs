@@ -433,6 +433,9 @@ public sealed class MonitoringSeriesEvaluator(TimeProvider timeProvider, Func<Gu
             state.NotBeforeReceivedAtUtc is { } receivedFence && observation.ReceivedAtUtc <= receivedFence ? "before_receipt_fence" :
             state.LatestEvidence is { } previous && observation.Cursor.ConnectionEpoch == previous.Cursor.ConnectionEpoch &&
                 (offline || !IsDisk(rule)) && (observation.ObservedAtUtc <= previous.ObservedAtUtc || observation.ReceivedAtUtc <= previous.ReceivedAtUtc) ? "reordered_clock" : null);
+        if (reason is null && !offline && IsDisk(rule) && observation.DiskFacts is { } facts &&
+            MonitoringDiskPolicy.Select(state.Series.ResourceKey[5..], facts.Metadata, rule.Condition).Reason == "unclassified-policy")
+            reason = "disk-policy-unclassified";
         var classification = MonitoringClassification.Unknown;
         if (reason is null)
         {
