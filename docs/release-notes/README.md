@@ -1,6 +1,6 @@
 # Release history
 
-- [Upcoming beta — unreleased source work](upcoming-beta.md) — logging, disk policy, incident presentation and Monitoring filtering/paging; release remains on hold.
+- [0.1.4-beta.9](0.1.4-beta.9.md) — logging, disk policy, incident presentation, Monitoring paging and Flows lifecycle/list/tooling.
 
 - [0.1.4-beta.7](0.1.4-beta.7.md) — compact software inventory rows that expand into the existing detail panels.
 - [0.1.4-beta.6](0.1.4-beta.6.md) — visible chat controls, Enter sending, archive dialogs and recovery feedback.
