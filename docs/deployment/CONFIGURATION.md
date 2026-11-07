@@ -433,3 +433,95 @@ business admission remain separate observations.
 ## Web gateway and operator tooling
 
 [Web/YARP routing](web-gateway.md) documents the selective API allowlist, generated private Compose destinations, explicit overrides and optional same-origin MCP. [Shared CLI/stdio configuration](../integrations/configuration.md) covers isolated profiles, deterministic precedence and secret references. The [HTTP MCP reference](../mcp-http/configuration.md) contains the complete ingress/outbound/delegation Docker mapping; its [setup guide](../mcp-http/setup.md) distinguishes browser client approval from administrator deployment setup.
+
+## Diagnostic logging and Docker retention
+
+Application diagnostics default to **Warning** (Warning, Error and
+Critical/Fatal). API, including its restricted bootstrap host, Web and HTTP MCP
+use `NetRatelLoggingOptions` from `NetRatel:Logging` for the actual Serilog
+logger and its console, OTEL and application-consumer forwarding. Stdio MCP
+uses the same options with its console provider exclusively on **stderr**;
+stdout remains the MCP protocol. The native Client loads the same options
+before its startup diagnostics, using its packaged/installed configuration and
+environment/command-line precedence. Its file, console and runtime diagnostic
+stream share that threshold. Existing untyped Client calls retain the runtime
+buffer's established fatal/error/failed/warn/debug classification; explicit
+level calls carry that level through to the buffer. Category names are
+`NetRatel.Client.<bracketed prefix>` (for example `NetRatel.Client.Gateway`),
+with `Other` for unprefixed diagnostics. Shared legacy configuration diagnostics
+use `NetRatel.Shared`.
+
+| Process environment key | Default | Meaning |
+| --- | --- | --- |
+| `NetRatel__Logging__MinimumLevel` | `Warning` | Global diagnostic threshold |
+| `NetRatel__Logging__Overrides__<category>` | No overrides | Longest matching, case-sensitive category prefix wins |
+
+Accepted levels are `Trace`, `Debug`, `Information`, `Warning`, `Error`,
+`Critical` and `None`. Invalid levels, more than 64 overrides, or empty/control
+character/over-128-character categories fail startup clearly. Environment keys
+use .NET's `__` hierarchy syntax. Standard host configuration precedence
+applies: packaged appsettings, environment-specific appsettings, environment,
+then command line. The native Client also loads installed `clientsettings.json`
+before environment and command line. Restart the process after edits. The
+canonical `NetRatel:Logging` section controls diagnostic emission;
+`Logging:LogLevel` and `Serilog:MinimumLevel` do not override it. For example,
+run a native Client or stdio MCP with `NetRatel__Logging__MinimumLevel=Information`,
+or add `NetRatel__Logging__Overrides__NetRatel.Client.Gateway=Debug` to its
+service environment for narrower diagnostics. Do not put dotted variable names
+in a shell assignment; use the service manager, an env file, or `env 'key=value' command`.
+
+The request-path categories `Microsoft.AspNetCore.Hosting.Diagnostics` and
+`Yarp.ReverseProxy` remain at least Warning even during a diagnostic opt-in:
+public installation paths are bearer capabilities. Existing HTTP trace
+exclusions and command-line/token redaction remain in force. One compact JSON
+console record is emitted for each admitted hosted event. The default .NET
+console provider is removed to avoid its duplicate forwarded record; OTEL and
+application log consumers remain connected. Traces and metrics retain their
+existing independent configuration. CLI command results, requested task and
+terminal output, setup prompts and migration progress are product output and
+retain their existing behavior; they are not diagnostic records.
+
+Compose exposes `NETRATEL_LOG_MINIMUM_LEVEL` (default `Warning`) and maps it to
+`NetRatel__Logging__MinimumLevel` in API/Web/HTTP MCP. For a category override,
+add the actual key under the selected service's `environment` in your local
+Compose override; putting an arbitrary key in Compose's interpolation `.env`
+does not by itself pass that key into a container. For example:
+
+```yaml
+services:
+  api:
+    environment:
+      NetRatel__Logging__Overrides__Microsoft.EntityFrameworkCore.Database.Command: Information
+```
+
+Docker retention is a separate **HostConfig** setting, not a .NET option.
+Supported source/release Compose recipes use `json-file` with quoted string
+options and these interpolation inputs:
+
+| Compose `.env` input | Default | Unit |
+| --- | --- | --- |
+| `NETRATEL_DOCKER_LOG_MAX_SIZE` | `200m` | Maximum file size; Docker `k`, `m`, `g` suffixes |
+| `NETRATEL_DOCKER_LOG_MAX_FILE` | `5` | Positive number of retained files |
+
+The approximate 1 GB budget is **per container**, including infrastructure and
+one-shot containers, not a global host cap. Allow space for all containers,
+volumes, databases, images and file-system overhead. HTTP host setup preserves
+an explicit operator `logging` section (driver and options); it adds these
+defaults only when the section is absent. Operators using another driver own
+its corresponding options.
+
+From the deployment host terminal with Docker Engine and the Compose plugin
+installed, inspect rendered settings, then recreate affected containers after
+changing either driver or retention options (`restart` alone does not apply
+HostConfig changes):
+
+```sh
+docker compose --env-file .env -f compose.images.yaml config
+docker compose --env-file .env -f compose.images.yaml up -d --force-recreate
+container_id="$(docker compose --env-file .env -f compose.images.yaml ps -q api)"
+docker inspect --format '{{json .HostConfig.LogConfig}}' "$container_id"
+```
+
+Use `compose.yaml` instead of `compose.images.yaml` for a source deployment;
+include the same selected overlays on every command. Obtain Docker/Compose
+through the [installation prerequisites](../../release/INSTALL.md).

@@ -8,6 +8,8 @@ using NetRatel.Mcp;
 using NetRatel.Mcp.Core;
 using NetRatel.Mcp.Core.Prompts;
 using NetRatel.Mcp.Tools;
+using NetRatel.Shared.Service.Logging;
+using Microsoft.Extensions.Options;
 
 if (args is ["http-bridge", .. var bridgeArguments])
     return await HttpMcpBridgeCommand.RunAsync(bridgeArguments);
@@ -22,6 +24,28 @@ var builder = Host.CreateApplicationBuilder(args);
 // MCP stdio reserves stdout for protocol frames. The console logger is explicitly stderr-only.
 builder.Logging.ClearProviders();
 builder.Logging.AddConsole(options => options.LogToStandardErrorThreshold = LogLevel.Trace);
+try
+{
+    _ = NetRatelLoggingOptions.Load(builder.Configuration);
+}
+catch (InvalidOperationException)
+{
+    await Console.Error.WriteLineAsync("Invalid NetRatel:Logging configuration. Use Trace, Debug, Information, Warning, Error, Critical or None and bounded category overrides.");
+    return 2;
+}
+builder.Services.AddOptions<NetRatelLoggingOptions>()
+    .Bind(builder.Configuration.GetSection(NetRatelLoggingOptions.SectionName))
+    .Validate(value => value.IsValid(), "Invalid NetRatel:Logging diagnostic thresholds.")
+    .ValidateOnStart();
+builder.Services.AddOptions<LoggerFilterOptions>().PostConfigure<IOptions<NetRatelLoggingOptions>>((filters, configured) =>
+{
+    var diagnosticOptions = configured.Value;
+    // One canonical diagnostic contract; legacy Logging provider rules do not
+    // bypass its threshold. stdout remains exclusively the MCP protocol.
+    filters.Rules.Clear();
+    filters.MinLevel = LogLevel.Trace;
+    filters.Rules.Add(new LoggerFilterRule(null, null, null, (_, category, level) => diagnosticOptions.IsEnabled(category, level)));
+});
 
 var configurationPath = AgentClientConfigurationResolver.GetMcpConfigurationPath(Environment.GetEnvironmentVariable);
 var effective = new NetRatelConfigurationService().Load(new(ConfigurationSurface.StdioMcp, configurationPath));

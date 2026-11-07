@@ -130,6 +130,20 @@ public static class HttpHostingComposeDocument
             Environment(webService, web, "web", effectiveDeployment);
             Environment(apiService, api, "api", effectiveDeployment);
             Environment(mcpService, mcp, "mcp-http", effectiveDeployment);
+            // Existing logging is deployment-owned (including non-json drivers
+            // and their options). Supply defaults only for an absent mapping.
+            foreach (var service in new[] { webService, apiService, mcpService })
+                if (!service.Children.ContainsKey(Key("logging")))
+                    service.Add(Key("logging"), new YamlMappingNode
+                    {
+                        { Key("driver"), Text("json-file") },
+                        { Key("options"), new YamlMappingNode
+                            {
+                                { Key("max-size"), Text("${NETRATEL_DOCKER_LOG_MAX_SIZE:-200m}") },
+                                { Key("max-file"), Text("${NETRATEL_DOCKER_LOG_MAX_FILE:-5}") }
+                            }
+                        }
+                    });
             AddGroup(apiService, runtimeGroup);
             AddGroup(mcpService, runtimeGroup);
             AddMount(apiService, "volume", setupKey, "/run/netratel-http-host", readOnly: true);

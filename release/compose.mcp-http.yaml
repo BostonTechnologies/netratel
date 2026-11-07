@@ -6,6 +6,7 @@ name: netratel
 services:
   web:
     environment:
+      NetRatel__Logging__MinimumLevel: ${NETRATEL_LOG_MINIMUM_LEVEL:-Warning}
       ApiBaseUrl: ${NETRATEL_WEB_API_BACKEND_URL:-http://api:9222/}
       NETRATEL_PUBLIC_ORIGIN: ${NETRATEL_PUBLIC_ORIGIN:-}
       WebGateway__Topology: Compose
@@ -17,6 +18,7 @@ services:
       - path: ${NETRATEL_MCP_API_ENV_FILE:-./mcp-http.api.env}
         required: false
     environment:
+      NetRatel__Logging__MinimumLevel: ${NETRATEL_LOG_MINIMUM_LEVEL:-Warning}
       Integration__HttpMcp__PublicResourceUri: ${NETRATEL_MCP_PUBLIC_RESOURCE_URI:-${NETRATEL_PUBLIC_ORIGIN:-}/mcp}
       # Expose the selected MCP ingress mode to URL-first host discovery.
       Integration__HttpMcp__AuthenticationMode: ${NETRATEL_MCP_AUTHENTICATION_MODE:-Oidc}
@@ -31,6 +33,11 @@ services:
       NetRatel__Mcp__Delegation__SharedKeyBase64: ${NETRATEL_MCP_DELEGATION_KEY_BASE64:-}
       NetRatel__Mcp__Delegation__SharedKeyBase64File: ${NETRATEL_MCP_DELEGATION_KEY_FILE:-}
   mcp-http:
+    logging:
+      driver: json-file
+      options:
+        max-size: "${NETRATEL_DOCKER_LOG_MAX_SIZE:-200m}"
+        max-file: "${NETRATEL_DOCKER_LOG_MAX_FILE:-5}"
     image: ${NETRATEL_MCP_HTTP_IMAGE:?set the approved HTTP MCP image digest}
     restart: unless-stopped
     # A dedicated actual-key env file supports environment-only outbound config.
@@ -39,6 +46,7 @@ services:
       - path: ${NETRATEL_MCP_OUTBOUND_ENV_FILE:-./mcp-http.outbound.env}
         required: false
     environment:
+      NetRatel__Logging__MinimumLevel: ${NETRATEL_LOG_MINIMUM_LEVEL:-Warning}
       ASPNETCORE_URLS: http://+:9224
       NETRATEL_MCP_INSTANCE: ${NETRATEL_MCP_INSTANCE:-prod}
       # Personal client profiles use a separate writable volume; API never mounts it.

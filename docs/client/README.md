@@ -10,3 +10,8 @@
 - [Services inventory and refresh](client-services-inventory.md)
 - [Software inventory, estate intelligence, API and MCP](software-inventory.md)
 - [Windows computer use](computer-use.md): optional pinned driver, native fallback, exact interactive-session targeting and owner-run canary acceptance.
+
+Native Client diagnostics use the shared [logging Options/environment
+contract](../deployment/CONFIGURATION.md#diagnostic-logging-and-docker-retention),
+including a Warning default, category opt-ins, startup validation and restart
+semantics. Command/task and terminal output remain product data.

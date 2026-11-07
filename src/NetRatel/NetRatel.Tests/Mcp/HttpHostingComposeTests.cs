@@ -52,6 +52,20 @@ public sealed class HttpHostingComposeTests : IDisposable
     private static string Merge(string source) => HttpHostingComposeDocument.Merge(source, Web, Api, Mcp, 10001,
         "existing-stack-host", "existing-stack-clients", 9224, "existing-stack");
 
+    [Fact]
+    public void Export_adds_bounded_logging_only_when_the_operator_has_not_configured_it()
+    {
+        var merged = Merge(Compose);
+        Assert.Equal(3, merged.Split("max-size: \"${NETRATEL_DOCKER_LOG_MAX_SIZE:-200m}\"").Length - 1);
+        Assert.Equal(3, merged.Split("max-file: \"${NETRATEL_DOCKER_LOG_MAX_FILE:-5}\"").Length - 1);
+        var source = Compose.Replace("    labels:\n", "    logging:\n      driver: syslog\n      options:\n        syslog-address: 'udp://logs.example.invalid:514'\n    labels:\n", StringComparison.Ordinal);
+        var configured = Merge(source);
+        Assert.Contains("driver: syslog", configured);
+        Assert.Contains("udp://logs.example.invalid:514", configured);
+        Assert.Equal(2, configured.Split("max-size: \"${NETRATEL_DOCKER_LOG_MAX_SIZE:-200m}\"").Length - 1);
+        Assert.Equal(configured, Merge(configured));
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
