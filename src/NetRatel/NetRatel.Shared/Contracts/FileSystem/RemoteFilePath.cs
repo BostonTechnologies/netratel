@@ -97,7 +97,7 @@ public static partial class RemoteFilePath
 
     public static string Join(string parent, string child)
     {
-        if (!TryNormalize(parent, out var normalizedParent) || string.IsNullOrWhiteSpace(child) || child.IndexOfAny(['/', '\\', '\0']) >= 0)
+        if (!TryNormalize(parent, out var normalizedParent) || string.IsNullOrEmpty(child) || child.IndexOfAny(['/', '\\', '\0']) >= 0)
         {
             throw new ArgumentException("A normalized remote parent path and a single child name are required.");
         }
@@ -112,7 +112,7 @@ public static partial class RemoteFilePath
     {
         path = string.Empty;
         if (!TryNormalizeDirectory(parent, out var normalizedParent) ||
-            string.IsNullOrWhiteSpace(name) || name.Length > 255 || name is "." or ".." ||
+            string.IsNullOrEmpty(name) || name.Length > 255 || name is "." or ".." ||
             name.Any(char.IsControl) || name.IndexOfAny(['/', '\\']) >= 0)
         {
             return false;

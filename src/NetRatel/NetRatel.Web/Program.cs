@@ -78,7 +78,8 @@ builder.Services.AddControllers();
 // Register MudBlazor and CodeBeam extension services.
 builder.Services.AddMudServices();
 MudExtensions.Services.ExtensionServiceCollectionExtensions.AddMudExtensions(builder.Services, _ => { });
-MudBlazor.Extensions.ServiceCollectionExtensions.AddMudExtensions(builder.Services);
+MudBlazor.Extensions.ServiceCollectionExtensions.AddMudExtensions(builder.Services,
+    configuration => configuration.WithoutAutomaticCssLoading(), typeof(NetRatel.Web.Components.Dialogs.FileBrowser.RemoteDataRenderer).Assembly);
 
 builder.Services.AddSingleton(new ClientApiOptions());
 builder.Services.AddScoped<INetclawApiService, NetclawApiService>();
@@ -117,6 +118,7 @@ builder.Services.AddScoped<ITaskExecutionStream, TaskExecutionStream>();
 builder.Services.AddScoped<FileSystemApiService>();
 builder.Services.AddScoped<GatewayFileSystemApiService>();
 builder.Services.AddScoped<FileBrowserContentService>();
+builder.Services.AddScoped<ExplorerPreferenceService>();
 builder.Services.AddSingleton<FileBrowserContentRegistry>();
 builder.Services.AddSingleton<TimeProvider>(TimeProvider.System);
 builder.Services.AddSingleton<IFileBrowserDownloadTransferRegistry, FileBrowserDownloadTransferRegistry>();
@@ -165,6 +167,8 @@ builder.Services.AddScoped<BrowserSessionRenewal>();
 builder.Services.AddScoped<OperatorApiCredentialState>();
 builder.Services.AddScoped<OperatorApiCredentialProvider>();
 builder.Services.AddScoped<CircuitHandler, OperatorApiCredentialCircuitHandler>();
+builder.Services.AddScoped<FileBrowserCircuitLifetime>();
+builder.Services.AddScoped<CircuitHandler>(services => services.GetRequiredService<FileBrowserCircuitLifetime>());
 builder.Services.AddScoped<ILocalAccountApiService, LocalAccountApiService>();
 builder.Services.AddScoped<CookieOidcSessionEvents>();
 builder.Services.AddScoped<ISystemTokenService, SystemTokenService>();
@@ -352,7 +356,6 @@ builder.Services.AddHttpClient("OrchestratorApiStreaming", c =>
     c.Timeout = Timeout.InfiniteTimeSpan;
 })
 .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false, UseCookies = false })
-.AddHttpMessageHandler<RedirectReissueHandler>()
 .AddHttpMessageHandler<TokenAuthorizationHandler>()
 .RemoveAllResilienceHandlers();
 

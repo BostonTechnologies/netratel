@@ -1,0 +1,10 @@
+.full-explorer { min-width: 0; }
+.full-explorer input[type=file] { max-width: 210px; }
+/* The pinned manager does not expose callbacks for its Up/Refresh bar. The
+   app owns navigation/refresh and view controls so every route keeps the
+   committed remote directory, upload destination and generation together. */
+.full-explorer ::deep .mud-ex-fm-bar { display: none; }
+@media (max-width: 959px) {
+    .full-explorer { width: 100%; }
+    .full-explorer ::deep .mud-ex-fm { height: 45vh !important; }
+}

@@ -160,6 +160,32 @@ def main() -> int:
             args.project_assets, args.distribution, args.runtime_graph or [None] * len(args.distribution))
         for package in packages_from_assets(assets_path, args.runtime, distribution, runtime_graph)
     }
+    # These are actual self-hosted browser runtime packages, not development
+    # dependencies. Keep provenance/licenses beside their distributed scripts.
+    for distribution in args.distribution:
+        browser_notices = []
+        for manifest in sorted(distribution.glob("wwwroot/js/viewers/*/*/package.json")):
+            metadata = json.loads(manifest.read_text(encoding="utf-8"))
+            name, version = metadata["name"], metadata["version"]
+            identity = f"npm-{name}-{version}"
+            package_id = spdx_id(identity, "Package")
+            license_texts = [path for path in sorted(manifest.parent.rglob("*"))
+                             if path.is_file() and path.name.upper().startswith(("LICENSE", "LICENCE", "NOTICE"))]
+            if not license_texts:
+                raise ValueError(f"Missing distributed browser runtime license for {identity}")
+            dependency_packages[package_id] = {
+                "name": name, "SPDXID": package_id, "versionInfo": version,
+                "downloadLocation": f"https://registry.npmjs.org/{name}/-/{name}-{version}.tgz",
+                "filesAnalyzed": False, "licenseConcluded": "NOASSERTION",
+                "licenseDeclared": metadata.get("license", "NOASSERTION"),
+                "copyrightText": "NOASSERTION", "_dependencies": [],
+                "externalRefs": [{"referenceCategory": "PACKAGE-MANAGER", "referenceType": "purl",
+                                  "referenceLocator": f"pkg:npm/{name}@{version}"}]
+            }
+            browser_notices.append(f"{name} {version}\n" + "\n".join(path.read_text(encoding="utf-8-sig") for path in license_texts))
+        if browser_notices:
+            with (distribution / "THIRD-PARTY-NOTICES.txt").open("a", encoding="utf-8") as notices:
+                notices.write("\nSelf-hosted browser runtime packages\n\n" + "\n\n".join(browser_notices) + "\n")
     files = []
     relationships = []
     inventoried_files = set()

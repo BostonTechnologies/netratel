@@ -144,7 +144,7 @@ public sealed class AgentFileGatewayClient
             {
                 Sequence = 0,
                 Hello = new AgentFileHello { Capabilities = { "file-list", "file-read", "file-write", "file-stat-v1", "file-create-directory-v1", "file-delete-v1", "file-delete-directory-v1", "file-copy-v1", "file-move-v1", "chunk-sha256", "file-policy-roots-v1",
-                    "file-create-v1", "file-move-entry-v1", "file-delete-recursive-v1", "file-read-range-v1", "file-write-conditional-v1" } }
+                    "file-create-v1", "file-move-entry-v1", "file-delete-recursive-v1", "file-read-range-v1", "file-write-conditional-v1", "file-roots-v1" } }
             }, streamToken).ConfigureAwait(false);
 
             if (!await call.ResponseStream.MoveNext(streamToken).ConfigureAwait(false) ||
@@ -285,7 +285,7 @@ public sealed class AgentFileGatewayClient
     {
         if (!Guid.TryParse(dispatch.RequestId, out var requestId) || requestId == Guid.Empty ||
             !Guid.TryParse(dispatch.AttemptId, out var attemptId) || attemptId == Guid.Empty ||
-            !fileSystem.IsValidPath(dispatch.Path) || string.IsNullOrWhiteSpace(dispatch.Operation))
+            (dispatch.Operation != "roots" && !fileSystem.IsValidPath(dispatch.Path)) || string.IsNullOrWhiteSpace(dispatch.Operation))
         {
             await WriteFailureAsync(dispatch.RequestId, dispatch.AttemptId, "invalid_dispatch", writer, stoppingToken).ConfigureAwait(false);
             return;
@@ -362,6 +362,7 @@ public sealed class AgentFileGatewayClient
         switch (operation.Operation)
         {
             case "list":
+            case "roots":
                 workers.Start(() => HandleListAsync(operation, Math.Clamp((int)dispatch.PageSize, 1, 256), operations, writer, stoppingToken));
                 break;
             case "read":
@@ -415,7 +416,11 @@ public sealed class AgentFileGatewayClient
             operation.Token.ThrowIfCancellationRequested();
             var page = new List<FileEntry>(pageSize);
             uint pageIndex = 0;
-            foreach (var entry in enumerateEntries(operation.Path))
+            var entries = operation.Operation == "roots"
+                ? DriveInfo.GetDrives().Where(drive => Directory.Exists(drive.RootDirectory.FullName))
+                    .Select(drive => new FileSystemService.BrowseEntry("", drive.Name, drive.RootDirectory.FullName, true, 0))
+                : enumerateEntries(operation.Path);
+            foreach (var entry in entries)
             {
                 operation.Token.ThrowIfCancellationRequested();
                 page.Add(new FileEntry
@@ -569,7 +574,7 @@ public sealed class AgentFileGatewayClient
                 return;
             }
 
-            Directory.CreateDirectory(operation.Path);
+            NativeFileOperations.CreateDirectory(operation.Path);
             await WriteCompletedAsync(operation, writer, stoppingToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException)

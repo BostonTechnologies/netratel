@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Http.Features;
 using NetRatel.API.Gateway;
 using NetRatel.Application.Presence;
 using NetRatel.Infrastructure.Identity.Authorization;
@@ -58,8 +59,12 @@ public static partial class AgentFileGatewayEndpoints
             if (range.Partial) http.Response.Headers.ContentRange = $"bytes {range.Offset}-{range.Offset + range.Length - 1}/{stat.SizeBytes}";
             while (hasChunk)
             {
-                await http.Response.Body.WriteAsync(chunks.Current, cancellationToken);
+                var current = chunks.Current;
                 hasChunk = await chunks.MoveNextAsync();
+                // Withhold the final bounded chunk until native completion is
+                // validated, so a late failure cannot look like a complete body.
+                if (!hasChunk) await operation.Completion;
+                await http.Response.Body.WriteAsync(current, cancellationToken);
             }
             await operation.Completion;
             completed = true;
@@ -89,6 +94,12 @@ public static partial class AgentFileGatewayEndpoints
         if (replace && !HasPermission(authorization.Access!, NetRatelPermissions.FileDelete)) return Results.Forbid();
         if (!RemoteFilePath.TryNormalizeDirectory(path, out path) || RemoteFilePath.IsRoot(path) ||
             (replace && string.IsNullOrEmpty(expectedVersion))) return FileProblem("invalid_dispatch");
+        const long maximumUploadBytes = 16L * 1024 * 1024 * 1024;
+        if (http.Request.ContentLength > maximumUploadBytes) return Results.StatusCode(StatusCodes.Status413PayloadTooLarge);
+        // Override only this bounded streaming route. Other API requests keep
+        // their existing host limit; gRPC/SignalR frame limits are unchanged.
+        if (http.Features.Get<IHttpMaxRequestBodySizeFeature>() is { IsReadOnly: false } size)
+            size.MaxRequestBodySize = maximumUploadBytes;
         try
         {
             await services.GetRequiredService<IAgentFileGatewaySessionRegistry>().WriteConditionalAsync(new(tenantId, agentId),
@@ -96,6 +107,8 @@ public static partial class AgentFileGatewayEndpoints
             return Results.Ok(new GatewayFileSystemWriteResponse(tenantId, agentId, path, Authority));
         }
         catch (AgentFileGatewayOperationException exception) { return FileProblem(exception.Code); }
+        catch (BadHttpRequestException exception) when (exception.StatusCode == StatusCodes.Status413PayloadTooLarge)
+        { return Results.StatusCode(StatusCodes.Status413PayloadTooLarge); }
         catch (Exception exception) when (exception is AgentFileGatewaySessionUnavailableException or OperationCanceledException)
         { return Results.Problem(statusCode: 409, detail: "Upload outcome unknown. Refresh before trying again.", extensions: new Dictionary<string, object?> { ["code"] = "outcome_unknown" }); }
     }

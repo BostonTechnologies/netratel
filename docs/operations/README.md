@@ -7,6 +7,7 @@ These guides describe application permissions, monitoring, services and operatio
 - [Client Services](SERVICES.md)
 - [Troubleshooting](TROUBLESHOOTING.md)
 - [Scoped RBAC](rbac.md)
+- [Basic and Full remote file explorers](remote-file-explorer.md)
 
 ## Task history
 

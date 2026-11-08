@@ -31,18 +31,16 @@ public sealed class UploadsApiClient : IDisposable, IUploadsApiClient
             PooledConnectionLifetime = TimeSpan.FromMinutes(5) // good hygiene
         };
 
-        // Your redirect re-issuer (avoid replaying huge multipart bodies if you like)
-        var redirect = new RedirectReissueHandler
+        // Streaming bodies are sent once. A redirect is surfaced to the caller;
+        // it must never buffer/reissue an upload or an uncertain mutation.
+        var authorized = new TokenAuthorizationHandler(tokenLogger)
         {
-            InnerHandler = new TokenAuthorizationHandler(tokenLogger)
-            {
-                InnerHandler = sockets
-            }
+            InnerHandler = sockets
         };
 
         var forwarding = new OperatorApiCredentialForwardingHandler(credentials)
         {
-            InnerHandler = redirect
+            InnerHandler = authorized
         };
 
         _rootHandler = forwarding;

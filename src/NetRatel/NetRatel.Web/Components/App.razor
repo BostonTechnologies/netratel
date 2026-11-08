@@ -59,6 +59,7 @@
     @* File-browser downloads invoke this bridge from interactive components. Load the
        fingerprinted asset before Blazor can dispatch those component events. *@
     <script id="netratel-downloads-script" src=@Assets["download.js"]></script>
+    <script src=@Assets["js/full-explorer.js"]></script>
 
     @* Cookie renewal must run in a new browser HTTP request, never on the circuit response. *@
     <script src=@Assets["js/session-renewal.js"]></script>
@@ -66,6 +67,7 @@
     <!-- Blazor Framework Script -->
     @* Dock popouts must capture Blazor's delegated event registrations before startup. *@
     <script src="_content/MudBlazor.Extensions/js/mudExPopoutEvents.js"></script>
+    <script src="js/explorer-popout-lifecycle.js"></script>
     <script src="_framework/blazor.web.js"></script>
     <script src="/js/notifications.js"></script>
     <script src="/js/global-search-hotkeys.js"></script>

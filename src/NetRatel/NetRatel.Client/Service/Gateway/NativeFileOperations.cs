@@ -9,6 +9,17 @@ namespace NetRatel.Client.Service.Gateway;
 /// <summary>Native, no-copy moves and bounded deletion. No Web filesystem is involved.</summary>
 internal static class NativeFileOperations
 {
+    internal static void CreateDirectory(string path)
+    {
+        var success = OperatingSystem.IsWindows() ? CreateDirectoryWindows(path, IntPtr.Zero) :
+            OperatingSystem.IsLinux() || OperatingSystem.IsMacOS() ? MakeDirectory(path, 511) == 0 : throw new NotSupportedException();
+        if (success) return;
+        var error = Marshal.GetLastPInvokeError();
+        throw new NativeFileOperationException(OperatingSystem.IsWindows()
+            ? error is 80 or 183 ? "path_already_exists" : error == 5 ? "access_denied" : "io_failure"
+            : error == 17 ? "path_already_exists" : error is 1 or 13 ? "access_denied" : "io_failure");
+    }
+
     internal static string ObservedVersion(string path)
     {
         var file = new FileInfo(path);
@@ -62,6 +73,8 @@ internal static class NativeFileOperations
         const long maximumEntries = 100_000;
         const int maximumDepth = 128;
         long affected = 0;
+        var volumeRoots = new HashSet<string>(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+        foreach (var drive in DriveInfo.GetDrives()) volumeRoots.Add(Path.TrimEndingDirectorySeparator(drive.RootDirectory.FullName));
         var stack = new Stack<(string Path, IEnumerator<string> Entries)>();
         try
         {
@@ -76,6 +89,8 @@ internal static class NativeFileOperations
                 {
                     var child = current.Entries.Current;
                     CheckLink(child);
+                    if (volumeRoots.Contains(Path.TrimEndingDirectorySeparator(child)))
+                        throw new NativeFileOperationException("protected_path", affected);
                     if (Directory.Exists(child))
                     {
                         if (stack.Count >= maximumDepth) throw new NativeFileOperationException("deletion_limit", affected);
@@ -110,6 +125,11 @@ internal static class NativeFileOperations
     [DllImport("kernel32.dll", EntryPoint = "MoveFileExW", CharSet = CharSet.Unicode, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool MoveFileEx(string source, string destination, uint flags);
+    [DllImport("kernel32.dll", EntryPoint = "CreateDirectoryW", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CreateDirectoryWindows(string path, IntPtr securityAttributes);
+    [DllImport("libc", EntryPoint = "mkdir", SetLastError = true)]
+    private static extern int MakeDirectory(string path, uint mode);
     [DllImport("libc", EntryPoint = "renameat2", SetLastError = true)]
     private static extern int RenameAt2(int oldDirectory, string source, int newDirectory, string destination, uint flags);
     [DllImport("libSystem.B.dylib", EntryPoint = "renamex_np", SetLastError = true)]

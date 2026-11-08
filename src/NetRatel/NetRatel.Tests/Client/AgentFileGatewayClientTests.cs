@@ -18,6 +18,64 @@ namespace NetRatel.Tests.Client;
 
 public sealed class AgentFileGatewayClientTests
 {
+    [Fact]
+    public async Task LargeNativeUploadDownloadRoundTripUsesBoundedChunksAndMatchingHashes()
+    {
+        using var directory = new TestDirectory();
+        var gateway = new LargeRoundTripGateway(directory.Path);
+        using var host = await BuildHostAsync(gateway);
+        using var stopping = new CancellationTokenSource();
+        var run = NewClient(host).RunForPresenceSessionAsync(NewPresence(), "test-token", stopping.Token);
+        try
+        {
+            var result = await gateway.Result.Task.WaitAsync(TimeSpan.FromSeconds(30));
+            result.Bytes.Should().Be(LargeRoundTripGateway.Length);
+            result.ReadHash.Should().Be(result.WriteHash);
+            new FileInfo(Path.Combine(directory.Path, "roundtrip.bin")).Length.Should().Be(LargeRoundTripGateway.Length);
+            Directory.EnumerateFiles(directory.Path, "*.tmp").Should().BeEmpty();
+        }
+        finally { stopping.Cancel(); await run.WaitAsync(TimeSpan.FromSeconds(5)); }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CreateFileDispatchCreatesEmptyContentAndNeverTruncatesAConflict(bool conflict)
+    {
+        using var directory = new TestDirectory();
+        var path = Path.Combine(directory.Path, "created.txt");
+        if (conflict) File.WriteAllText(path, "keep");
+        var gateway = new DirectoryOperationGateway(directory.Path, path, "create_file");
+        using var host = await BuildHostAsync(gateway);
+        using var stopping = new CancellationTokenSource();
+        var run = NewClient(host).RunForPresenceSessionAsync(NewPresence(), "test-token", stopping.Token);
+        try
+        {
+            var result = await gateway.Result.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            if (conflict) { result.Failed.Code.Should().Be("path_already_exists"); File.ReadAllText(path).Should().Be("keep"); }
+            else { result.Completed.AffectedEntries.Should().Be(1); new FileInfo(path).Length.Should().Be(0); }
+        }
+        finally { stopping.Cancel(); await run.WaitAsync(TimeSpan.FromSeconds(5)); }
+    }
+
+    [Fact]
+    public async Task RootsDispatchReturnsNativeVolumesWithoutLoadingTheirChildren()
+    {
+        using var directory = new TestDirectory();
+        var gateway = new DirectoryOperationGateway(directory.Path, "/", "roots", dispatch => dispatch.AllowedRoots.Clear());
+        using var host = await BuildHostAsync(gateway);
+        using var stopping = new CancellationTokenSource();
+        var run = NewClient(host).RunForPresenceSessionAsync(NewPresence(), "test-token", stopping.Token);
+        try
+        {
+            (await gateway.Result.Task.WaitAsync(TimeSpan.FromSeconds(5))).Completed.Should().NotBeNull();
+            gateway.Entries.Should().NotBeEmpty();
+            gateway.Entries.Should().OnlyContain(entry => entry.IsDirectory && entry.SizeBytes == 0);
+            gateway.Entries.Select(entry => entry.FullPath).Should().Contain(Path.GetPathRoot(directory.Path)!);
+        }
+        finally { stopping.Cancel(); await run.WaitAsync(TimeSpan.FromSeconds(5)); }
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -452,11 +510,108 @@ public sealed class AgentFileGatewayClientTests
         return await builder.StartAsync();
     }
 
+    private sealed class LargeRoundTripGateway(string root) : AgentFileGateway.AgentFileGatewayBase
+    {
+        public const long Length = 16 * 1024 * 1024 + 37;
+        public TaskCompletionSource<(long Bytes, string WriteHash, string ReadHash)> Result { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public override async Task Connect(IAsyncStreamReader<AgentFileFrame> requests,
+            IServerStreamWriter<GatewayFileFrame> responses, ServerCallContext context)
+        {
+            try
+            {
+                if (!await requests.MoveNext(context.CancellationToken)) return;
+                var hello = requests.Current.Clone();
+                ulong sequence = 0;
+                var accepted = Frame();
+                accepted.Accepted = new FileConnectAccepted { FileAuthority = "akka" };
+                await responses.WriteAsync(accepted, context.CancellationToken);
+                var write = Dispatch("write");
+                write.Dispatch.CreateOnly = true;
+                await responses.WriteAsync(write, context.CancellationToken);
+                await WaitForAsync(frame => frame.RequestAccepted?.RequestId == write.Dispatch.RequestId);
+                using var expected = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+                var buffer = new byte[FileTransferFrameBudget.PayloadBytes];
+                ulong index = 0;
+                for (long offset = 0; offset < Length; offset += buffer.Length)
+                {
+                    var count = (int)Math.Min(buffer.Length, Length - offset);
+                    for (var i = 0; i < count; i++) buffer[i] = (byte)((offset + i) % 251);
+                    expected.AppendData(buffer, 0, count);
+                    var content = ByteString.CopyFrom(buffer, 0, count);
+                    var chunk = Frame();
+                    chunk.TransferChunk = new FileTransferChunk
+                    {
+                        RequestId = write.Dispatch.RequestId, AttemptId = write.Dispatch.AttemptId,
+                        ChunkIndex = index++, Content = content, Sha256 = Convert.ToHexString(SHA256.HashData(content.Span))
+                    };
+                    await responses.WriteAsync(chunk, context.CancellationToken);
+                }
+                var last = Frame();
+                last.TransferChunk = new FileTransferChunk { RequestId = write.Dispatch.RequestId, AttemptId = write.Dispatch.AttemptId, ChunkIndex = index, IsLastChunk = true };
+                await responses.WriteAsync(last, context.CancellationToken);
+                await WaitForAsync(frame => frame.Completed?.RequestId == write.Dispatch.RequestId);
+                var read = Dispatch("read");
+                await responses.WriteAsync(read, context.CancellationToken);
+                await WaitForAsync(frame => frame.RequestAccepted?.RequestId == read.Dispatch.RequestId);
+                using var observed = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+                long bytes = 0;
+                await CreditAsync();
+                while (await requests.MoveNext(context.CancellationToken))
+                {
+                    var current = requests.Current;
+                    if (current.Failed is { } failure) throw new InvalidOperationException(failure.Code);
+                    if (current.TransferChunk is { } chunk)
+                    {
+                        chunk.Content.Length.Should().BeLessThanOrEqualTo(FileTransferFrameBudget.PayloadBytes);
+                        chunk.Sha256.Should().BeEquivalentTo(Convert.ToHexString(SHA256.HashData(chunk.Content.Span)));
+                        observed.AppendData(chunk.Content.Span);
+                        bytes += chunk.Content.Length;
+                        await CreditAsync();
+                    }
+                    if (current.Completed?.RequestId == read.Dispatch.RequestId)
+                    { Result.TrySetResult((bytes, Convert.ToHexString(expected.GetHashAndReset()), Convert.ToHexString(observed.GetHashAndReset()))); break; }
+                }
+                await Signal().Task.WaitAsync(context.CancellationToken);
+
+                GatewayFileFrame Frame() => new()
+                {
+                    ProtocolVersion = hello.ProtocolVersion, TenantId = hello.TenantId, ClientId = hello.ClientId,
+                    ConnectionEpoch = hello.ConnectionEpoch, ConnectionId = hello.ConnectionId, Sequence = sequence++
+                };
+                GatewayFileFrame Dispatch(string operation)
+                {
+                    var frame = Frame();
+                    frame.Dispatch = new() { RequestId = Guid.NewGuid().ToString("D"), AttemptId = Guid.NewGuid().ToString("D"),
+                        Operation = operation, Path = Path.Combine(root, "roundtrip.bin"), AllowedRoots = { root } };
+                    return frame;
+                }
+                async Task WaitForAsync(Func<AgentFileFrame, bool> match)
+                {
+                    while (await requests.MoveNext(context.CancellationToken))
+                    {
+                        if (requests.Current.Failed is { } failure) throw new InvalidOperationException(failure.Code);
+                        if (match(requests.Current)) return;
+                    }
+                    throw new IOException("Native file stream ended before completion.");
+                }
+                async Task CreditAsync()
+                {
+                    var credit = Frame();
+                    credit.Credit = new() { RequestId = read.Dispatch.RequestId, AttemptId = read.Dispatch.AttemptId, AvailableBytes = FileTransferFrameBudget.PayloadBytes };
+                    await responses.WriteAsync(credit, context.CancellationToken);
+                }
+            }
+            catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested) { return; }
+            catch (Exception exception) { Result.TrySetException(exception); throw; }
+        }
+    }
+
     private sealed class DirectoryOperationGateway(string root, string path, string operation,
         Action<FileRequestDispatch>? configure = null) : AgentFileGateway.AgentFileGatewayBase
     {
         public TaskCompletionSource<AgentFileFrame> Result { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public List<byte> Content { get; } = [];
+        public List<FileEntry> Entries { get; } = [];
 
         public override async Task Connect(IAsyncStreamReader<AgentFileFrame> requests,
             IServerStreamWriter<GatewayFileFrame> responses, ServerCallContext context)
@@ -478,6 +633,7 @@ public sealed class AgentFileGatewayClientTests
             ulong sequence = 1;
             while (await requests.MoveNext(context.CancellationToken))
             {
+                if (requests.Current.ListPage is { } page) Entries.AddRange(page.Entries);
                 if (operation == "read" && (requests.Current.RequestAccepted is not null || requests.Current.TransferChunk is not null))
                 {
                     if (requests.Current.TransferChunk is { } chunk)

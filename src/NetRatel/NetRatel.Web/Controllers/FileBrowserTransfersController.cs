@@ -5,6 +5,8 @@ using NetRatel.Web.Services;
 using NetRatel.Web.Services.FileSystem;
 using System.Buffers;
 using System.Diagnostics;
+using Microsoft.AspNetCore.Antiforgery;
+using NetRatel.Shared.Contracts.FileSystem;
 
 namespace NetRatel.Web.Controllers;
 
@@ -15,6 +17,27 @@ public sealed class FileBrowserTransfersController(
     IFileBrowserDownloadTransferRegistry downloads,
     ILogger<FileBrowserTransfersController> logger) : Controller
 {
+    [HttpGet("antiforgery")]
+    public IActionResult Antiforgery([FromServices] IAntiforgery antiforgery) =>
+        Ok(new { token = antiforgery.GetAndStoreTokens(HttpContext).RequestToken });
+
+    [HttpPut("upload-entry")]
+    [ValidateAntiForgeryToken]
+    [DisableRequestSizeLimit]
+    public async Task<IActionResult> UploadEntry(int tenantId, Guid agentId, string path, bool replace,
+        string? expectedVersion, CancellationToken ct)
+    {
+        const long limit = 16L * 1024 * 1024 * 1024;
+        if (!IsValidRequest(tenantId, agentId, path) || !RemoteFilePath.TryNormalizeDirectory(path, out path) ||
+            (replace && string.IsNullOrEmpty(expectedVersion))) return BadRequest();
+        if (Request.ContentLength > limit) return StatusCode(StatusCodes.Status413PayloadTooLarge);
+        using var request = new HttpRequestMessage(HttpMethod.Put,
+            $"/api/v2/agents/{tenantId}/{agentId:D}/filesystem/content?path={Uri.EscapeDataString(path)}&replace={replace.ToString().ToLowerInvariant()}&expectedVersion={Uri.EscapeDataString(expectedVersion ?? "")}")
+        { Content = new StreamContent(new BoundedUploadStream(Request.Body, limit)) };
+        using var response = await uploads.Http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+        return response.IsSuccessStatusCode ? Ok() : StatusCode((int)response.StatusCode);
+    }
+
     [HttpGet("download")]
     public async Task<IActionResult> Download(int tenantId, Guid agentId, string path, Guid transferId, long? expectedBytes, bool inlinePreview = false, CancellationToken ct = default)
     {
@@ -172,5 +195,33 @@ public sealed class FileBrowserTransfersController(
     {
         var index = Math.Max(path.LastIndexOf('/'), path.LastIndexOf('\\'));
         return index < path.Length - 1 ? path[(index + 1)..] : "download";
+    }
+
+    private sealed class BoundedUploadStream(Stream source, long limit) : Stream
+    {
+        private long _read;
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => _read; set => throw new NotSupportedException(); }
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            var count = await source.ReadAsync(buffer, cancellationToken);
+            _read += count;
+            if (_read > limit) throw new InvalidDataException("Upload exceeds the 16 GiB transfer limit.");
+            return count;
+        }
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            var read = source.Read(buffer, offset, count);
+            _read += read;
+            if (_read > limit) throw new InvalidDataException("Upload exceeds the 16 GiB transfer limit.");
+            return read;
+        }
+        public override void Flush() => throw new NotSupportedException();
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 }

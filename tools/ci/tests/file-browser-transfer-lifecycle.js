@@ -71,3 +71,45 @@ for (const scenario of ["network-error", "unexpected-abort", "marked-session-los
     assert.equal(retryTimers.length, 0);
   });
 }
+
+test("closed document ignores late browser stream completion before creating a sandbox", async () => {
+  const explorerSource = fs.readFileSync(path.resolve(__dirname, "../../../src/NetRatel/NetRatel.Web/wwwroot/js/full-explorer.js"), "utf8");
+  const window = { addEventListener() {} };
+  let finishRead;
+  const stream = { arrayBuffer: () => new Promise(resolve => { finishRead = resolve; }) };
+  // Deliberately leave the DOM connected: disposal must fence the operation
+  // even when Blazor has not yet removed or moved its element.
+  const frame = { isConnected: true, srcdoc: "unchanged" };
+  vm.runInNewContext(explorerSource, { window });
+  const opening = window.netratelExplorer.renderDocx(frame, stream, "old-selection");
+  window.netratelExplorer.disposeDocument("old-selection");
+  finishRead(new ArrayBuffer(10));
+  await assert.rejects(opening, /preview was closed/);
+  assert.equal(frame.srcdoc, "unchanged");
+});
+
+test("cancelled upload preparation never creates a late native write", async () => {
+  const explorerSource = fs.readFileSync(path.resolve(__dirname, "../../../src/NetRatel/NetRatel.Web/wwwroot/js/full-explorer.js"), "utf8");
+  let writes = 0;
+  const window = { addEventListener() {}, netratelFileTransfers: { cancel() {}, upload() { writes++; return Promise.resolve(); } } };
+  const fetch = (_, options) => new Promise((resolve, reject) => options.signal.addEventListener('abort', () => reject(new Error('preparation aborted'))));
+  vm.runInNewContext(explorerSource, { window, AbortController, fetch });
+  const opening = window.netratelExplorer.upload({ files: [{ size: 1, name: 'new.txt' }], value: 'selected' }, 3, 'agent', '/fixtures', 'cancel-before-write', null);
+  window.netratelExplorer.cancelUpload('cancel-before-write');
+  await assert.rejects(opening, /preparation aborted/);
+  assert.equal(writes, 0);
+});
+
+test("popout bridge preserves delegated UI events without replaying document startup", () => {
+  const lifecycleSource = fs.readFileSync(path.resolve(__dirname, "../../../src/NetRatel/NetRatel.Web/wwwroot/js/explorer-popout-lifecycle.js"), "utf8");
+  const native = [], bridged = [];
+  class EventTarget { addEventListener(type) { native.push(type); } }
+  const document = new EventTarget();
+  document.addEventListener = type => bridged.push(type);
+  const window = { MudExPopoutEvents: {} };
+  vm.runInNewContext(lifecycleSource, { window, document, EventTarget });
+  for (const type of ['DOMContentLoaded', 'readystatechange', 'visibilitychange', 'click', 'keydown', 'load'])
+    document.addEventListener(type, () => {});
+  assert.deepEqual(native, ['DOMContentLoaded', 'readystatechange', 'visibilitychange']);
+  assert.deepEqual(bridged, ['click', 'keydown', 'load']);
+});

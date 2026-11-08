@@ -143,21 +143,27 @@ verified.
 
 The 7 October 2026 owner policy requires PR/main validation to succeed in
 strictly less than 20 minutes, targeting 10–15 minutes. It keeps disclosure,
-version, PostgreSQL-only and release-script checks, one solution Release
+version, PostgreSQL-only and release-script checks, a solution Release
 restore/build, and three prebuilt fast assemblies with separate nonzero
-all-passing TRX receipts. Components run first; Core's Infrastructure namespace
-and its exact complement then overlap with the separate API suite. Each Core
-process owns its PostgreSQL collection server and isolated databases. Each
+all-passing TRX receipts. PR/main compile and run the existing API/PostgreSQL
+suite on a separate runner so it does not compete with Core's migrations.
+Both jobs are required by the aggregate gate, with unchanged 20-minute caps.
+Components run first on the solution runner; Core's Infrastructure namespace
+and its exact complement then overlap. Each Core
+process owns its PostgreSQL collection server and isolated databases on
+disposable tmpfs, retaining default PostgreSQL WAL/fsync/commit settings. Each
 uses half the default collection-thread allowance, preserving Core's aggregate
 concurrency budget across the two processes. A
 same-binary discovery manifest verifies that both completed receipts cover the
 full selected Core population without overlap, including theory rows. Each
 group reports its duration. Source-changing PR events retain required checks;
 draft/readiness changes alone do not restart them.
-`tools/ci/run-fast-regressions.sh` excludes
+`tools/ci/run-fast-regressions.sh` defaults to the complete selection; the
+`core-components` and `api` arguments divide that same selection for PR/main.
+The helper excludes
 `category=compose`, `category=hosted` and `category=manual-integration`.
 Restore, build and test outcomes remain independently visible. The same fast
-selection applies to tag-build validation, with real CLI/stdio/native packaging
+selection applies together on the tag validation runner, with real CLI/stdio/native packaging
 and integrity checks retained. Packaging/publication costs are measured
 separately; the under-20-minute acceptance applies to required PR/main runs.
 Tag source validation has a bounded 25-minute allowance for the same assertions

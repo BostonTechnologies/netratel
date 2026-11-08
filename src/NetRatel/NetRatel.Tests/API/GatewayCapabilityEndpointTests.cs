@@ -35,6 +35,92 @@ namespace NetRatel.Tests.API;
 public sealed class GatewayCapabilityEndpointTests
 {
     [Fact]
+    public async Task OversizedConditionalUploadIsRefusedBeforeNativeDispatch()
+    {
+        using var app = await BuildAppAsync();
+        var client = app.GetTestClient();
+        client.DefaultRequestHeaders.Authorization = new("Test");
+        using var request = new HttpRequestMessage(HttpMethod.Put,
+            $"/api/v2/agents/3/{Guid.NewGuid():D}/filesystem/content?path=%2Fdata%2Foversize.bin&replace=false")
+        { Content = new ByteArrayContent([]) };
+        request.Content.Headers.ContentLength = 16L * 1024 * 1024 * 1024 + 1;
+        using var response = await client.SendAsync(request);
+        response.StatusCode.Should().Be(HttpStatusCode.RequestEntityTooLarge);
+    }
+
+    [Theory]
+    [InlineData("bytes=4-7", 206, "4567", 4L)]
+    [InlineData("bytes=-3", 206, "def", 13L)]
+    [InlineData("bytes=14-", 206, "ef", 14L)]
+    [InlineData("bytes=16-", 416, "", -1L)]
+    public async Task AuthenticatedContentMapsSingleRangesToNativeOffsets(string range, int status, string content, long offset)
+    {
+        using var app = await BuildAppAsync();
+        var client = app.GetTestClient();
+        client.DefaultRequestHeaders.Authorization = new("Test");
+        using var request = new HttpRequestMessage(HttpMethod.Get,
+            $"/api/v2/agents/3/{Guid.NewGuid():D}/filesystem/content?path=%2Fdata%2Fmovie.mp4&expectedVersion=v1:test");
+        request.Headers.TryAddWithoutValidation("Range", range);
+        using var response = await client.SendAsync(request);
+        ((int)response.StatusCode).Should().Be(status);
+        (await response.Content.ReadAsStringAsync()).Should().Be(content);
+        var registry = app.Services.GetRequiredService<FileRegistry>();
+        registry.RangeOffset.Should().Be(offset < 0 ? null : offset);
+        if (status == 206) response.Content.Headers.ContentLength.Should().Be(content.Length);
+        if (status == 416) response.Content.Headers.ContentRange!.ToString().Should().Be("bytes */16");
+    }
+
+    [Fact]
+    public async Task ContentHeadIgnoresRangeAndChangedVersionFailsBeforeNativeRead()
+    {
+        using var app = await BuildAppAsync();
+        var client = app.GetTestClient();
+        client.DefaultRequestHeaders.Authorization = new("Test");
+        var route = $"/api/v2/agents/3/{Guid.NewGuid():D}/filesystem/content?path=%2Fdata%2Fmovie.mp4&expectedVersion=";
+        using var head = new HttpRequestMessage(HttpMethod.Head, route + "v1:test");
+        head.Headers.TryAddWithoutValidation("Range", "bytes=99-");
+        using var response = await client.SendAsync(head);
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        response.Content.Headers.ContentLength.Should().Be(16);
+        (await client.GetAsync(route + "stale")).StatusCode.Should().Be(HttpStatusCode.PreconditionFailed);
+        app.Services.GetRequiredService<FileRegistry>().RangeOffset.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task MoveRequiresWriteAndDeleteAndReportsPerItemPartialResults()
+    {
+        using var app = await BuildAppAsync();
+        var client = app.GetTestClient();
+        client.DefaultRequestHeaders.Authorization = new("Test");
+        var route = $"/api/v2/agents/3/{Guid.NewGuid():D}/filesystem/entries";
+        var request = new GatewayFileSystemMutationRequest("move", [new("/data/a", "/target/a"), new("/data/bad", "/target/bad")]);
+        var access = app.Services.GetRequiredService<FileAccess>();
+        access.Permissions.Remove(NetRatelPermissions.FileDelete);
+        (await client.PostAsJsonAsync(route, request)).StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        app.Services.GetRequiredService<FileRegistry>().MutatedPaths.Should().BeEmpty();
+        access.Permissions.Add(NetRatelPermissions.FileDelete);
+        using var response = await client.PostAsJsonAsync(route, request);
+        var outcomes = await response.Content.ReadFromJsonAsync<GatewayFileSystemMutationResponse>();
+        outcomes!.Items.Select(item => item.Outcome).Should().Equal("completed", "failed");
+        app.Services.GetRequiredService<FileRegistry>().MutatedPaths.Should().Equal("/data/a", "/data/bad");
+        (await client.PostAsJsonAsync(route.Replace("/agents/3/", "/agents/4/"), request)).StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
+    [Fact]
+    public async Task OverlappingSelectionAndDescendantMoveAreRejectedBeforeAnyNativeMutation()
+    {
+        using var app = await BuildAppAsync();
+        var client = app.GetTestClient();
+        client.DefaultRequestHeaders.Authorization = new("Test");
+        var route = $"/api/v2/agents/3/{Guid.NewGuid():D}/filesystem/entries";
+        (await client.PostAsJsonAsync(route, new GatewayFileSystemMutationRequest("delete", [new("/data/a"), new("/data/a/b")], true)))
+            .StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await client.PostAsJsonAsync(route, new GatewayFileSystemMutationRequest("move", [new("/data/a", "/data/a/b")])))
+            .StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        app.Services.GetRequiredService<FileRegistry>().MutatedPaths.Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task FolderMutationsUseSeparatePermissionsAndTheSelectedParentBoundary()
     {
         var agentId = Guid.NewGuid();
@@ -345,10 +431,29 @@ public sealed class GatewayCapabilityEndpointTests
         public string? FailureCode { get; set; }
         public List<string> CreatedPaths { get; } = [];
         public List<string> DeletedPaths { get; } = [];
+        public List<string> MutatedPaths { get; } = [];
+        public long? RangeOffset { get; private set; }
         public GatewayFileAccessPolicy? LastPolicy { get; private set; }
 
         public GatewayFileGatewayAvailability? GetAvailability(ClientKey client) => new(Guid.NewGuid(), 1,
-            ["file-create-directory-v1", "file-delete-directory-v1", "file-delete-v1", "file-policy-roots-v1"], DateTimeOffset.UtcNow);
+            ["file-create-directory-v1", "file-delete-directory-v1", "file-delete-v1", "file-policy-roots-v1", "file-read-range-v1"], DateTimeOffset.UtcNow);
+        public Task<GatewayFileMetadata> StatAsync(ClientKey client, string path, CancellationToken cancellationToken) =>
+            Task.FromResult(new GatewayFileMetadata(path, false, 16, DateTimeOffset.UtcNow, "application/octet-stream") { ObservedVersion = "v1:test" });
+        public Task<GatewayFileReadOperation> ReadRangeAsync(ClientKey client, string path, long offset, long length,
+            string expectedVersion, CancellationToken cancellationToken)
+        {
+            RangeOffset = offset;
+            var chunks = Channel.CreateBounded<ReadOnlyMemory<byte>>(1);
+            chunks.Writer.TryWrite("0123456789abcdef"u8.ToArray().AsMemory((int)offset, (int)length));
+            chunks.Writer.Complete();
+            return Task.FromResult(new GatewayFileReadOperation(chunks.Reader, Task.CompletedTask, (_, _) => Task.CompletedTask));
+        }
+        public Task<long> MutateEntryAsync(ClientKey client, string operation, string path, string? destinationPath,
+            GatewayFileAccessPolicy policy, GatewayFileMoveCopyAccessPolicy? movePolicy, CancellationToken cancellationToken)
+        {
+            MutatedPaths.Add(path);
+            return path.EndsWith("bad", StringComparison.Ordinal) ? Task.FromException<long>(new AgentFileGatewayOperationException("path_already_exists")) : Task.FromResult(1L);
+        }
         public Task CreateDirectoryAsync(ClientKey client, string path, GatewayFileAccessPolicy accessPolicy, CancellationToken cancellationToken)
         {
             CreatedPaths.Add(path);

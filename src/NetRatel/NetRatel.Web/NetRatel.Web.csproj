@@ -17,6 +17,9 @@
   </ItemGroup>
 
     <ItemGroup>
+      <PackageReference Include="BlazorJS" Version="2.3.0" />
+      <PackageReference Include="ExcelDataReader" Version="3.9.0" />
+      <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.14" />
       <PackageReference Include="MudBlazor.Extensions" Version="9.12.2" />
       <PackageReference Include="VeloxDev.Core" Version="10.0.1" />
       <PackageReference Include="VeloxDev.Razor" Version="10.0.1" />

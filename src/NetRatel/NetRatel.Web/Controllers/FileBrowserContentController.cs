@@ -14,6 +14,8 @@ public sealed class FileBrowserContentController(FileBrowserContentRegistry leas
     public async Task<IActionResult> Read(Guid id, CancellationToken cancellationToken)
     {
         if (!leases.TryGet(id, FileBrowserContentRegistry.OperatorId(User), out var lease)) return NotFound();
+        using var readLifetime = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, lease.Lifetime);
+        cancellationToken = readLifetime.Token;
         var file = lease.File;
         using var request = new HttpRequestMessage(new HttpMethod(Request.Method),
             $"/api/v2/agents/{file.TenantId}/{file.AgentId:D}/filesystem/content?path={Uri.EscapeDataString(file.Path)}&expectedVersion={Uri.EscapeDataString(file.ObservedVersion)}");

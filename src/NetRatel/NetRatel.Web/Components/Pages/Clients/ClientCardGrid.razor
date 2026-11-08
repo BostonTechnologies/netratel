@@ -4,6 +4,8 @@
 @using NetRatel.Web.Services.RemoteSupport
 @using NetRatel.Web.Services.Telemetry
 @using Microsoft.JSInterop
+@using NetRatel.Web.Services.FileSystem
+@inject IServiceProvider Services
 @inject GatewayClientActionApiService GatewayActions
 @inject IDialogService DialogService
 @inject ISnackbar Snackbar
@@ -129,6 +131,15 @@
                                                        OnClick="@(() => OpenFileBrowserAsync(client, primaryDisk?.Scope ?? "/"))"
                                                        aria-label="Open file browser" />
                                     </MudTooltip>
+                                    <MudMenu Dense="true" Disabled="@(!client.CanUseFilesystem)">
+                                      <ActivatorContent Context="explorerMenu">
+                                        <MudIconButton Icon="@Icons.Material.Filled.ArrowDropDown" Size="Size.Small" Disabled="@(!client.CanUseFilesystem)" OnClick="@explorerMenu.ToggleAsync" aria-label="Choose file explorer" />
+                                      </ActivatorContent>
+                                      <ChildContent>
+                                        <MudMenuItem OnClick="@(() => OpenFileBrowserAsync(client, primaryDisk?.Scope ?? "/", false))">Basic Explorer</MudMenuItem>
+                                        <MudMenuItem OnClick="@(() => OpenFileBrowserAsync(client, primaryDisk?.Scope ?? "/", true))">Full Explorer</MudMenuItem>
+                                      </ChildContent>
+                                    </MudMenu>
                                     <MudTooltip Text="@LogsTooltip(client)">
                                         <MudIconButton Icon="@Icons.Material.Filled.FormatListBulleted" Color="Color.Info"
                                                        Size="Size.Small"
@@ -291,8 +302,20 @@
             new DialogOptions { FullScreen = true, FullWidth = true, CloseOnEscapeKey = true, CloseButton = false });
     }
 
-    private async Task OpenFileBrowserAsync(ClientPresentationModel client, string initialPath)
+    private async Task OpenFileBrowserAsync(ClientPresentationModel client, string initialPath, bool? explicitFull = null)
     {
+        var preference = Services.GetService<ExplorerPreferenceService>();
+        var full = explicitFull ?? (preference is not null && await preference.IsFullAsync(client.TenantId));
+        if (explicitFull.HasValue && preference is not null) await preference.RememberAsync(client.TenantId, full);
+        if (full)
+        {
+            await DialogService.ShowAsync<FullFileExplorerDialog>("Full Explorer", new DialogParameters<FullFileExplorerDialog>
+            {
+                { dialog => dialog.TenantId, client.TenantId }, { dialog => dialog.AgentId, client.AgentId },
+                { dialog => dialog.HostLabel, client.HostName ?? client.DisplayName }, { dialog => dialog.InitialPath, initialPath }
+            }, new DialogOptions { FullScreen = true, CloseOnEscapeKey = true, CloseButton = false });
+            return;
+        }
         var parameters = new DialogParameters<ClientFileSystemViewer>
         {
             { dialog => dialog.TenantId, client.TenantId }, { dialog => dialog.AgentId, client.AgentId },

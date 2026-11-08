@@ -242,7 +242,9 @@ exhausted bounded identity storage; missing identities are counted separately.
 Microsoft.Testing.Platform. The authoritative invocation and receipt verifier
 are in [.github/workflows/public-pr-validation.yml](../../.github/workflows/public-pr-validation.yml).
 Under the 7 October 2026 owner policy, required PR/main validation runs source
-checks, one build and three fast regression assemblies. Release builds run on
+checks, the solution build and three fast regression assemblies. The existing
+API/PostgreSQL suite builds/runs separately from Core/components to avoid
+runner contention; both jobs remain required. Release builds run on
 GitHub-hosted Actions; these commands document their selection:
 
 ```sh

@@ -1,0 +1,90 @@
+@using MudBlazor.Extensions.Components
+@using MudBlazor.Extensions.Core
+@using NetRatel.Shared.Contracts.FileSystem
+@using NetRatel.Web.Services.FileSystem
+@implements IAsyncDisposable
+@inject FileBrowserContentService Content
+@inject IEnumerable<IMudExFileDisplay> Renderers
+
+@if (_error is not null)
+{
+    <MudAlert Severity="Severity.Warning">@_error</MudAlert>
+}
+else if (_preview is null)
+{
+    <MudProgressCircular Indeterminate="true" Size="Size.Small" aria-label="Loading remote preview" />
+}
+else if (_document is not null)
+{
+    <MudExFileDisplay @key="_generation" FileName="@File.Name" ContentType="@_preview.ContentType"
+                      ContentStream="@_preview.Stream" Url="@_preview.Url" IgnoredRenderControls="@Ignored"
+                      ParametersForSubControls="@Parameters" ShowRenderer="false" ShowFileName="false"
+                      AllowDownload="false" AllowSaveAs="false" AllowCopyUrl="false" AllowOpenInNewTab="false"
+                      FallBackInIframe="false" ShowContentError="false" Style="height:100%;min-height:240px" />
+}
+
+@code {
+    [Parameter] public int TenantId { get; set; }
+    [Parameter] public Guid AgentId { get; set; }
+    [Parameter, EditorRequired] public GatewayFileSystemEntryDto File { get; set; } = default!;
+    private CancellationTokenSource? _selection;
+    private FileBrowserPreview? _preview;
+    private RemotePreviewDocument? _document;
+    private string? _error;
+    private string? _identity;
+    private long _generation;
+    private bool _disposed;
+    private Type[] Ignored => Renderers.Select(renderer => renderer.GetType()).Where(type => type != typeof(RemoteDataRenderer)).ToArray();
+    private IDictionary<string, object> Parameters => new Dictionary<string, object>
+    { [nameof(RemoteDataRenderer.Document)] = _document!, [nameof(RemoteDataRenderer.Preview)] = _preview! };
+
+    protected override async Task OnParametersSetAsync()
+    {
+        var identity = $"{TenantId}/{AgentId:D}/{File.FullPath}/{File.SizeBytes}/{File.LastModifiedUtc}";
+        if (_identity == identity) return;
+        _identity = identity;
+        var generation = ++_generation;
+        _selection?.Cancel();
+        _selection?.Dispose();
+        _selection = new();
+        var token = _selection.Token;
+        if (_preview is not null) await _preview.DisposeAsync();
+        _preview = null;
+        _document = null;
+        _error = null;
+        FileBrowserPreview? acquired = null;
+        try
+        {
+            acquired = await Content.AcquireAsync(TenantId, AgentId, File.FullPath, token);
+            var document = acquired.Url is not null
+                ? new RemotePreviewDocument(acquired.ContentType == "application/pdf" ? "pdf" : acquired.ContentType.StartsWith("video/") ? "video" : "audio", "Native seekable preview · browser codec support applies")
+                : RemotePreviewPolicy.Inspect(File.Name, acquired.Stream!, token);
+            if (token.IsCancellationRequested || generation != _generation || _disposed) { await acquired.DisposeAsync(); return; }
+            if (document.Kind == "image" && FileBrowserContentClassifier.TryGetPreviewImageContentType(File.Name, out var imageType))
+            {
+                // The HTTP acquisition is generic octet-stream; the governed
+                // renderer chooses an allowlisted raster MIME after header checks.
+                var bytes = acquired.Stream!;
+                acquired = new FileBrowserPreview(bytes, null, acquired.File, imageType);
+            }
+            _preview = acquired;
+            _document = document;
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        { if (acquired is not null) await acquired.DisposeAsync(); }
+        catch (Exception exception) when (exception is HttpRequestException or InvalidOperationException or IOException or System.Text.DecoderFallbackException or System.Xml.XmlException or System.Text.Json.JsonException or Microsoft.VisualBasic.FileIO.MalformedLineException or ExcelDataReader.Exceptions.ExcelReaderException)
+        {
+            if (acquired is not null) await acquired.DisposeAsync();
+            if (generation == _generation && !_disposed) _error = exception.Message;
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _disposed = true;
+        _generation++;
+        _selection?.Cancel();
+        _selection?.Dispose();
+        if (_preview is not null) await _preview.DisposeAsync();
+    }
+}
