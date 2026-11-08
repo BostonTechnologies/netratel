@@ -2,6 +2,7 @@ using System.IO.Compression;
 using System.Net;
 using System.Net.Http.Json;
 using System.Text;
+using System.Collections.Concurrent;
 using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Playwright;
@@ -27,6 +28,7 @@ public sealed class FullExplorerAcceptanceTests(ClientsManagementBrowserFixture 
         {
             MudBlazor.Extensions.ServiceCollectionExtensions.AddMudExtensions(services, configuration => configuration.WithoutAutomaticCssLoading(), typeof(RemoteDataRenderer).Assembly);
             services.AddSingleton<IHttpClientFactory>(provider => remote = new ExplorerFixtureFactory(provider.GetRequiredService<ClientDirectoryFixtureData>()));
+            services.AddScoped<NetRatel.Web.Services.IUploadsApiClient>(provider => new FixtureUploadsClient(provider.GetRequiredService<IHttpClientFactory>().CreateClient("OrchestratorApiStreaming")));
             services.AddScoped<GatewayFileSystemApiService>();
             services.AddScoped<FileSystemApiService>();
             services.AddScoped<ExplorerPreferenceService>();
@@ -40,7 +42,8 @@ public sealed class FullExplorerAcceptanceTests(ClientsManagementBrowserFixture 
         await using var context = await browser.Browser.NewContextAsync(new() { ViewportSize = new() { Width = width, Height = height } });
         await context.RouteAsync("https://**/*", route => route.AbortAsync());
         var page = await context.NewPageAsync();
-        page.PageError += (_, error) => Console.WriteLine("Explorer browser error: " + error);
+        var browserErrors = new List<string>();
+        page.PageError += (_, error) => { browserErrors.Add(error); Console.WriteLine("Explorer browser error: " + error); };
         page.Response += (_, response) => { if (response.Status >= 400) Console.WriteLine($"Explorer HTTP {response.Status}: {response.Url}"); };
         var externalContent = new List<string>();
         context.Request += (_, request) => { if (request.Url.StartsWith("http", StringComparison.Ordinal) && !request.Url.StartsWith(fixture.BaseAddress + "/", StringComparison.Ordinal)) externalContent.Add(request.Url); };
@@ -126,6 +129,9 @@ public sealed class FullExplorerAcceptanceTests(ClientsManagementBrowserFixture 
         Assert.True(await workspace.Locator("canvas[aria-label='PDF page']").First.EvaluateAsync<bool>("canvas => canvas.width > 0 && canvas.height > 0"));
         await workspace.GetByRole(AriaRole.Button, new() { Name = "Zoom in", Exact = true }).First.ClickAsync();
         await workspace.Locator("span[role='status']:visible").Filter(new() { HasText = "Page 1 / 1 · 125%" }).First.WaitForAsync();
+        Assert.Contains(remote!.RangeOffsets, offset => offset > 1024 * 1024);
+        await workspace.GetByText("small.pdf", new() { Exact = true }).ClickAsync();
+        await workspace.Locator("span[role='status']:visible").Filter(new() { HasText = "Page 1 / 1 · 100%" }).First.WaitForAsync();
         await workspace.GetByText("notes.txt", new() { Exact = true }).ClickAsync();
         await workspace.GetByText("Synthetic remote text", new() { Exact = true }).First.WaitForAsync();
         Assert.Empty(externalContent);
@@ -140,6 +146,7 @@ public sealed class FullExplorerAcceptanceTests(ClientsManagementBrowserFixture 
         await page.GetByRole(AriaRole.Button, new() { Name = "Open Basic", Exact = true }).ClickAsync();
         await page.GetByText("File Browser · gateway-agent-01", new() { Exact = true }).WaitForAsync();
         Assert.DoesNotContain(fixture.StartupServerDiagnostics, message => message.Contains("Unhandled exception", StringComparison.Ordinal));
+        Assert.Empty(browserErrors);
     }
 
     private const string ActiveMarkup = "<script>fetch('https://preview-leak.invalid/')</script><img src='https://preview-leak.invalid/pixel'>";
@@ -163,7 +170,7 @@ public sealed class FullExplorerAcceptanceTests(ClientsManagementBrowserFixture 
         return stream.ToArray();
     }
 
-    private static byte[] Pdf()
+    private static byte[] Pdf(bool large = false)
     {
         const string text = "BT /F1 24 Tf 40 100 Td (Synthetic PDF) Tj ET";
         string[] objects = ["<< /Type /Catalog /Pages 2 0 R >>", "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
@@ -172,6 +179,7 @@ public sealed class FullExplorerAcceptanceTests(ClientsManagementBrowserFixture 
         var pdf = new StringBuilder("%PDF-1.4\n");
         var offsets = new List<int>();
         for (var i = 0; i < objects.Length; i++) { offsets.Add(pdf.Length); pdf.Append($"{i + 1} 0 obj\n{objects[i]}\nendobj\n"); }
+        if (large) pdf.Append('%').Append(' ', 2 * 1024 * 1024).Append('\n');
         var xref = pdf.Length;
         pdf.Append($"xref\n0 {objects.Length + 1}\n0000000000 65535 f \n");
         foreach (var offset in offsets) pdf.Append($"{offset:D10} 00000 n \n");
@@ -181,6 +189,7 @@ public sealed class FullExplorerAcceptanceTests(ClientsManagementBrowserFixture 
 
     private sealed class ExplorerFixtureFactory(ClientDirectoryFixtureData directory) : IHttpClientFactory
     {
+        public ConcurrentQueue<long> RangeOffsets { get; } = new();
         public TaskCompletionSource SlowStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource ReleaseSlow { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public HttpClient CreateClient(string name) => new(new Handler(this, directory)) { BaseAddress = new("https://netratel.test") };
@@ -192,7 +201,7 @@ public sealed class FullExplorerAcceptanceTests(ClientsManagementBrowserFixture 
                 ["/notes.txt"] = Encoding.UTF8.GetBytes("Synthetic remote text"),
                 ["/active.html"] = Encoding.UTF8.GetBytes(ActiveMarkup),
                 ["/slow.txt"] = Encoding.UTF8.GetBytes("Stale selection must never appear"),
-                ["/document.docx"] = Docx(), ["/document.pdf"] = Pdf()
+                ["/document.docx"] = Docx(), ["/document.pdf"] = Pdf(true), ["/small.pdf"] = Pdf()
             };
             protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
             {
@@ -208,7 +217,23 @@ public sealed class FullExplorerAcceptanceTests(ClientsManagementBrowserFixture 
                 if (uri.AbsolutePath.EndsWith("/roots", StringComparison.Ordinal))
                     body = new GatewayFileSystemListResponse(tenant, agent, "", "akka", [new("/", "/", true, 0)]);
                 else if (uri.AbsolutePath.EndsWith("/stat", StringComparison.Ordinal))
-                    body = new GatewayFileSystemStatResponse(tenant, agent, path, false, content.Length, Modified, Modified, "v1:fixture", false);
+                    body = new GatewayFileSystemStatResponse(tenant, agent, path, false, content.Length, Modified, Modified, "v1:fixture", path == "/document.pdf");
+                else if (uri.AbsolutePath.EndsWith("/content", StringComparison.Ordinal))
+                {
+                    var response = new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(content) };
+                    response.Headers.AcceptRanges.Add("bytes");
+                    if (request.Headers.Range?.Ranges.SingleOrDefault() is { } range)
+                    {
+                        var start = range.From ?? Math.Max(0, content.Length - range.To!.Value);
+                        var end = Math.Min(range.To ?? content.Length - 1L, content.Length - 1L);
+                        owner.RangeOffsets.Enqueue(start);
+                        response.Dispose();
+                        response = new(HttpStatusCode.PartialContent) { Content = new ByteArrayContent(content.AsSpan((int)start, (int)(end - start + 1)).ToArray()) };
+                        response.Content.Headers.ContentRange = new(start, end, content.Length);
+                        response.Headers.AcceptRanges.Add("bytes");
+                    }
+                    return Task.FromResult(response);
+                }
                 else if (uri.AbsolutePath.EndsWith("/file", StringComparison.Ordinal))
                 {
                     if (path == "/slow.txt") { owner.SlowStarted.TrySetResult(); return LateResponseAsync(); }
@@ -232,4 +257,7 @@ public sealed class FullExplorerAcceptanceTests(ClientsManagementBrowserFixture 
             }
         }
     }
+
+    private sealed class FixtureUploadsClient(HttpClient client) : NetRatel.Web.Services.IUploadsApiClient
+    { public HttpClient Http { get; } = client; }
 }

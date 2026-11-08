@@ -58,7 +58,7 @@ OfficeLive and unrestricted MudEx fallback are disabled. All enabled dependencie
 
 ZIP-based documents also obey archive bounds. DOCX/PPTX disallow DTD/external XML resolution and cap each XML part at 512 Ki characters, depth 64 and 30,000 total nodes. Embedded raster images share 16 million pixels and are individually limited to 8 MiB. Basic's separate local Monaco/editor workers remain available.
 
-Pinned compatible packages: MudBlazor.Extensions 9.12.2, MudBlazor 9.12.0, CodeBeam.MudBlazor.Extensions 9.2.0 and BlazorJS 2.3.0. CodeBeam is a distinct package. Full explicitly initializes the packaged fingerprinted BlazorJS module with local CSS. Browser assets: JSZip 3.10.1, docx-preview 0.3.3, pdfjs-dist 6.5.438. Shipped assets/licenses are in release SBOM/notices. Local previews need no external network, while app/authentication/native-client connectivity remains necessary.
+Pinned compatible packages: MudBlazor.Extensions 9.12.2, MudBlazor 9.12.0, CodeBeam.MudBlazor.Extensions 9.2.0 and BlazorJS 2.3.0. CodeBeam is a distinct package. Full explicitly initializes the packaged fingerprinted BlazorJS module with local CSS. A local pre-start lifecycle filter keeps the popout event bridge from replaying document startup and visibility events. Browser assets: JSZip 3.10.1, docx-preview 0.3.3, pdfjs-dist 6.5.438. Shipped assets/licenses are in release SBOM/notices. Local previews need no external network, while app/authentication/native-client connectivity remains necessary.
 
 ## Disposable owner retest
 

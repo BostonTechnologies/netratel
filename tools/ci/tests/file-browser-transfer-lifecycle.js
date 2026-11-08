@@ -99,3 +99,17 @@ test("cancelled upload preparation never creates a late native write", async () 
   await assert.rejects(opening, /preparation aborted/);
   assert.equal(writes, 0);
 });
+
+test("popout bridge preserves delegated UI events without replaying document startup", () => {
+  const lifecycleSource = fs.readFileSync(path.resolve(__dirname, "../../../src/NetRatel/NetRatel.Web/wwwroot/js/explorer-popout-lifecycle.js"), "utf8");
+  const native = [], bridged = [];
+  class EventTarget { addEventListener(type) { native.push(type); } }
+  const document = new EventTarget();
+  document.addEventListener = type => bridged.push(type);
+  const window = { MudExPopoutEvents: {} };
+  vm.runInNewContext(lifecycleSource, { window, document, EventTarget });
+  for (const type of ['DOMContentLoaded', 'readystatechange', 'visibilitychange', 'click', 'keydown', 'load'])
+    document.addEventListener(type, () => {});
+  assert.deepEqual(native, ['DOMContentLoaded', 'readystatechange', 'visibilitychange']);
+  assert.deepEqual(bridged, ['click', 'keydown', 'load']);
+});
