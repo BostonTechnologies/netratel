@@ -34,6 +34,20 @@ namespace NetRatel.Tests.API;
 
 public sealed class GatewayCapabilityEndpointTests
 {
+    [Fact]
+    public async Task OversizedConditionalUploadIsRefusedBeforeNativeDispatch()
+    {
+        using var app = await BuildAppAsync();
+        var client = app.GetTestClient();
+        client.DefaultRequestHeaders.Authorization = new("Test");
+        using var request = new HttpRequestMessage(HttpMethod.Put,
+            $"/api/v2/agents/3/{Guid.NewGuid():D}/filesystem/content?path=%2Fdata%2Foversize.bin&replace=false")
+        { Content = new ByteArrayContent([]) };
+        request.Content.Headers.ContentLength = 16L * 1024 * 1024 * 1024 + 1;
+        using var response = await client.SendAsync(request);
+        response.StatusCode.Should().Be(HttpStatusCode.RequestEntityTooLarge);
+    }
+
     [Theory]
     [InlineData("bytes=4-7", 206, "4567", 4L)]
     [InlineData("bytes=-3", 206, "def", 13L)]
