@@ -198,11 +198,48 @@ public sealed class FileBrowserContentClassifierTests : AsyncBunitContext
     [Fact]
     public void XlsxUsesStoredValuesWithoutEvaluatingFormulas()
     {
-        using var source = new MemoryStream();
+        using var source = Spreadsheet("""
+            <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>Synthetic spreadsheet</t></is></c><c r="B1"><f>1+1</f><v>42</v></c></row></sheetData></worksheet>
+            """);
+        var document = RemotePreviewPolicy.Inspect("stored.xlsx", source, CancellationToken.None);
+        document.Rows![0].Should().Equal("Synthetic spreadsheet", "42");
+    }
+
+    [Theory]
+    [InlineData(16, false)]
+    [InlineData(17, true)]
+    public void XlsxSharedStringsCannotAmplifyTheDecodedTableBeyondItsTextBudget(int rowCount, bool exceedsBudget)
+    {
+        var sheet = new StringBuilder("<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><sheetData>");
+        for (var row = 1; row <= rowCount; row++)
+        {
+            sheet.Append($"<row r=\"{row}\">");
+            for (var column = 0; column < 8; column++)
+                sheet.Append($"<c r=\"{(char)('A' + column)}{row}\" t=\"s\"><v>0</v></c>");
+            sheet.Append("</row>");
+        }
+        sheet.Append("</sheetData></worksheet>");
+        using var source = Spreadsheet(sheet.ToString(), new string('x', 4096));
+        source.Length.Should().BeLessThan(16 * 1024, "the shared-string input is small despite repeated decoded cells");
+        if (exceedsBudget)
+        {
+            var inspect = () => RemotePreviewPolicy.Inspect("shared.xlsx", source, CancellationToken.None);
+            inspect.Should().Throw<InvalidDataException>().WithMessage("*decoded text limit*");
+        }
+        else
+        {
+            var document = RemotePreviewPolicy.Inspect("shared.xlsx", source, CancellationToken.None);
+            document.Rows!.Sum(row => row.Sum(cell => cell.Length)).Should().Be(RemotePreviewPolicy.MaximumTextCharacters);
+        }
+    }
+
+    private static MemoryStream Spreadsheet(string sheet, string sharedString = "")
+    {
+        var source = new MemoryStream();
         using (var archive = new System.IO.Compression.ZipArchive(source, System.IO.Compression.ZipArchiveMode.Create, true))
         {
             Add("[Content_Types].xml", """
-                <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>
+                <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/></Types>
                 """);
             Add("_rels/.rels", """
                 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>
@@ -211,15 +248,13 @@ public sealed class FileBrowserContentClassifierTests : AsyncBunitContext
                 <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Synthetic" sheetId="1" r:id="rId1"/></sheets></workbook>
                 """);
             Add("xl/_rels/workbook.xml.rels", """
-                <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>
+                <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/></Relationships>
                 """);
-            Add("xl/worksheets/sheet1.xml", """
-                <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>Synthetic spreadsheet</t></is></c><c r="B1"><f>1+1</f><v>42</v></c></row></sheetData></worksheet>
-                """);
+            Add("xl/worksheets/sheet1.xml", sheet);
+            Add("xl/sharedStrings.xml", $"<sst xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" count=\"1\" uniqueCount=\"1\"><si><t>{System.Security.SecurityElement.Escape(sharedString)}</t></si></sst>");
             void Add(string name, string text) { using var writer = new StreamWriter(archive.CreateEntry(name).Open()); writer.Write(text); }
         }
-        var document = RemotePreviewPolicy.Inspect("stored.xlsx", source, CancellationToken.None);
-        document.Rows![0].Should().Equal("Synthetic spreadsheet", "42");
+        return source;
     }
 
     [Theory]

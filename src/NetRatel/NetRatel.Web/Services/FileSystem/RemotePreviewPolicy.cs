@@ -191,6 +191,7 @@ public static class RemotePreviewPolicy
         Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
         using var reader = ExcelReaderFactory.CreateReader(stream, new ExcelReaderConfiguration { LeaveOpen = true });
         var rows = new List<string[]>();
+        var characters = 0;
         while (rows.Count < 1000 && reader.Read())
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -200,10 +201,13 @@ public static class RemotePreviewPolicy
             {
                 var value = Convert.ToString(reader.GetValue(index), CultureInfo.InvariantCulture) ?? "";
                 row[index] = value.Length <= 4096 ? value : value[..4096] + "…";
+                if (row[index].Length > MaximumTextCharacters - characters)
+                    throw new InvalidDataException("Spreadsheet decoded text limit exceeded (512 Ki characters). Use Download for the complete workbook.");
+                characters += row[index].Length;
             }
             rows.Add(row);
         }
-        return new("table", $"{reader.Name} · first sheet, first 1,000 rows / 100 columns · stored values, no formula execution", Rows: rows);
+        return new("table", $"{reader.Name} · first sheet, first 1,000 rows / 100 columns / 512 Ki characters · stored values, no formula execution", Rows: rows);
     }
 
     private static RemotePreviewDocument InspectCertificate(Stream stream)
