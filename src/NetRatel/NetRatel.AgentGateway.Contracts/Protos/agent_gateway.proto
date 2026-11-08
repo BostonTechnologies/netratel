@@ -781,6 +781,13 @@ message FileRequestDispatch {
   string destination_path = 9;
   repeated string source_allowed_roots = 10;
   repeated string destination_allowed_roots = 11;
+  // Negotiated file-read-range-v1: native seek, bounded length and detectable
+  // version precondition. This version is metadata, not an immutable snapshot.
+  optional int64 read_offset = 12;
+  optional int64 read_length = 13;
+  string expected_version = 14;
+  // Negotiated file-write-conditional-v1. Legacy writes retain their behavior.
+  bool create_only = 15;
 }
 message FileRequestAccepted { string request_id = 1; string attempt_id = 2; }
 message FileListPage {
@@ -809,6 +816,7 @@ message FileMetadata {
   google.protobuf.Timestamp last_modified_utc = 6;
   string mime_type = 7;
   google.protobuf.Timestamp created_utc = 8;
+  string observed_version = 9;
 }
 message FileTransferChunk {
   string request_id = 1;
@@ -818,8 +826,8 @@ message FileTransferChunk {
   string sha256 = 5;
   bool is_last_chunk = 6;
 }
-message FileRequestCompleted { string request_id = 1; string attempt_id = 2; }
-message FileRequestFailed { string request_id = 1; string attempt_id = 2; string code = 3; }
+message FileRequestCompleted { string request_id = 1; string attempt_id = 2; int64 affected_entries = 3; }
+message FileRequestFailed { string request_id = 1; string attempt_id = 2; string code = 3; int64 affected_entries = 4; }
 message FileRequestCancel { string request_id = 1; string attempt_id = 2; string reason = 3; }
 message FileTransferCredit { string request_id = 1; string attempt_id = 2; uint32 available_bytes = 3; }
 

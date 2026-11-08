@@ -17,6 +17,7 @@
   </ItemGroup>
 
     <ItemGroup>
+      <PackageReference Include="MudBlazor.Extensions" Version="9.12.2" />
       <PackageReference Include="VeloxDev.Core" Version="10.0.1" />
       <PackageReference Include="VeloxDev.Razor" Version="10.0.1" />
       <PackageReference Include="BlazorDownloadFile" Version="2.4.0.2" />
@@ -28,7 +29,7 @@
       <PackageReference Include="Microsoft.IdentityModel.Protocols.OpenIdConnect" Version="8.23.0" />
       <PackageReference Include="Microsoft.VisualStudio.Azure.Containers.Tools.Targets" Version="1.23.0" />
       <PackageReference Include="CodeBeam.MudBlazor.Extensions" Version="9.2.0" />
-      <PackageReference Include="MudBlazor" Version="9.11.0" />
+      <PackageReference Include="MudBlazor" Version="9.12.0" />
       <PackageReference Include="MudBlazor.ThemeManager" Version="4.0.0" />
       <PackageReference Include="QRCoder" Version="1.8.1" />
       <PackageReference Include="Scalar.AspNetCore" Version="2.18.3" />
@@ -51,31 +52,17 @@
   <!-- The app uses Monaco's default English UI; browser locale does not select NLS.
        Revalidate this publish-only selection when the package or locale policy changes.
        Keep the English bundle, NLS loader, all languages, workers and vendor sources. -->
-  <Target Name="SelectPublishedMonacoAssets"
-          BeforeTargets="GenerateStaticWebAssetsPublishManifest"
-          DependsOnTargets="ResolveAllPublishStaticWebAssets">
-    <Error Condition="'%(PackageReference.Identity)' == 'BlazorMonaco' and '%(PackageReference.Version)' != '3.5.0'"
-           Text="Revalidate the Monaco NLS publish selection for the changed BlazorMonaco package." />
+  <Target Name="SelectPublishedMonacoAssets" BeforeTargets="GenerateStaticWebAssetsPublishManifest" DependsOnTargets="ResolveAllPublishStaticWebAssets">
+    <Error Condition="'%(PackageReference.Identity)' == 'BlazorMonaco' and '%(PackageReference.Version)' != '3.5.0'" Text="Revalidate the Monaco NLS publish selection for the changed BlazorMonaco package." />
     <ItemGroup>
-      <_MonacoAlternateNls Include="@(StaticWebAsset)"
-          Condition="'%(StaticWebAsset.SourceId)' == 'BlazorMonaco'
-            and $([System.String]::Copy('%(StaticWebAsset.RelativePath)').StartsWith('lib/monaco-editor/min/vs/nls.messages.'))
-            and '%(StaticWebAsset.RelativePath)' != 'lib/monaco-editor/min/vs/nls.messages.js.js'" />
-      <_SelectedMonacoAlternateNls Include="@(_MonacoAlternateNls)"
-          Condition="'%(_MonacoAlternateNls.SourceType)' == 'Package'
-            and '%(_MonacoAlternateNls.BasePath)' == '_content/BlazorMonaco'
-            and '%(_MonacoAlternateNls.AssetRole)' == 'Primary'
-            and '%(_MonacoAlternateNls.AssetKind)' == 'All'
-            and $([System.Text.RegularExpressions.Regex]::IsMatch('%(_MonacoAlternateNls.RelativePath)', '^lib/monaco-editor/min/vs/nls[.]messages[.](cs|de|es|fr|it|ja|ko|pl|pt-br|ru|tr|zh-cn|zh-tw)[.]js[.]js$'))" />
+      <_MonacoAlternateNls Include="@(StaticWebAsset)" Condition="'%(StaticWebAsset.SourceId)' == 'BlazorMonaco'&#xA;            and $([System.String]::Copy('%(StaticWebAsset.RelativePath)').StartsWith('lib/monaco-editor/min/vs/nls.messages.'))&#xA;            and '%(StaticWebAsset.RelativePath)' != 'lib/monaco-editor/min/vs/nls.messages.js.js'" />
+      <_SelectedMonacoAlternateNls Include="@(_MonacoAlternateNls)" Condition="'%(_MonacoAlternateNls.SourceType)' == 'Package'&#xA;            and '%(_MonacoAlternateNls.BasePath)' == '_content/BlazorMonaco'&#xA;            and '%(_MonacoAlternateNls.AssetRole)' == 'Primary'&#xA;            and '%(_MonacoAlternateNls.AssetKind)' == 'All'&#xA;            and $([System.Text.RegularExpressions.Regex]::IsMatch('%(_MonacoAlternateNls.RelativePath)', '^lib/monaco-editor/min/vs/nls[.]messages[.](cs|de|es|fr|it|ja|ko|pl|pt-br|ru|tr|zh-cn|zh-tw)[.]js[.]js$'))" />
     </ItemGroup>
-    <Error Condition="'@(_MonacoAlternateNls->Count())' != '13' or '@(_SelectedMonacoAlternateNls->Count())' != '13'"
-           Text="The Monaco NLS asset graph changed; revalidate the exact 13 alternate locale assets before publishing." />
-    <FilterStaticWebAssetEndpoints Endpoints="@(StaticWebAssetEndpoint)"
-                                  Assets="@(_SelectedMonacoAlternateNls)" Filters="">
+    <Error Condition="'@(_MonacoAlternateNls-&gt;Count())' != '13' or '@(_SelectedMonacoAlternateNls-&gt;Count())' != '13'" Text="The Monaco NLS asset graph changed; revalidate the exact 13 alternate locale assets before publishing." />
+    <FilterStaticWebAssetEndpoints Endpoints="@(StaticWebAssetEndpoint)" Assets="@(_SelectedMonacoAlternateNls)" Filters="">
       <Output TaskParameter="FilteredEndpoints" ItemName="_SelectedMonacoAlternateNlsEndpoints" />
     </FilterStaticWebAssetEndpoints>
-    <Error Condition="'@(_SelectedMonacoAlternateNlsEndpoints->Count())' != '26'"
-           Text="The Monaco NLS endpoint graph changed; revalidate its asset and fingerprinted routes before publishing." />
+    <Error Condition="'@(_SelectedMonacoAlternateNlsEndpoints-&gt;Count())' != '26'" Text="The Monaco NLS endpoint graph changed; revalidate its asset and fingerprinted routes before publishing." />
     <ItemGroup>
       <StaticWebAsset Remove="@(_SelectedMonacoAlternateNls)" />
       <StaticWebAssetEndpoint Remove="@(_SelectedMonacoAlternateNlsEndpoints)" />

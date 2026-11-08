@@ -16,6 +16,7 @@
     <link href="_content/MudBlazor/MudBlazor.min.css" rel="stylesheet" />
     <link href="_content/VeloxDev.Razor/veloxdev.workflow.css" rel="stylesheet" />
     <link href="_content/CodeBeam.MudBlazor.Extensions/MudExtensions.min.css" rel="stylesheet" />
+    <link href="_content/MudBlazor.Extensions/mudBlazorExtensions.min.css" rel="stylesheet" />
     <link href="_content/XtermBlazor/XtermBlazor.min.css" rel="stylesheet" />
     <link rel="icon" type="image/x-icon" href=@Assets["favicon.ico"] />
     <link rel="icon" type="image/png" sizes="32x32" href=@Assets["brand/netratel-mark-32.png"] />
@@ -63,6 +64,8 @@
     <script src=@Assets["js/session-renewal.js"]></script>
 
     <!-- Blazor Framework Script -->
+    @* Dock popouts must capture Blazor's delegated event registrations before startup. *@
+    <script src="_content/MudBlazor.Extensions/js/mudExPopoutEvents.js"></script>
     <script src="_framework/blazor.web.js"></script>
     <script src="/js/notifications.js"></script>
     <script src="/js/global-search-hotkeys.js"></script>

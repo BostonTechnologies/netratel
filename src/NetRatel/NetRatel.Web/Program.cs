@@ -78,6 +78,7 @@ builder.Services.AddControllers();
 // Register MudBlazor and CodeBeam extension services.
 builder.Services.AddMudServices();
 MudExtensions.Services.ExtensionServiceCollectionExtensions.AddMudExtensions(builder.Services, _ => { });
+MudBlazor.Extensions.ServiceCollectionExtensions.AddMudExtensions(builder.Services);
 
 builder.Services.AddSingleton(new ClientApiOptions());
 builder.Services.AddScoped<INetclawApiService, NetclawApiService>();
@@ -115,6 +116,8 @@ builder.Services.AddScoped<TaskApiService>();
 builder.Services.AddScoped<ITaskExecutionStream, TaskExecutionStream>();
 builder.Services.AddScoped<FileSystemApiService>();
 builder.Services.AddScoped<GatewayFileSystemApiService>();
+builder.Services.AddScoped<FileBrowserContentService>();
+builder.Services.AddSingleton<FileBrowserContentRegistry>();
 builder.Services.AddSingleton<TimeProvider>(TimeProvider.System);
 builder.Services.AddSingleton<IFileBrowserDownloadTransferRegistry, FileBrowserDownloadTransferRegistry>();
 builder.Services.AddHostedService<FileBrowserDownloadTransferCleanupService>();

@@ -93,6 +93,34 @@ public sealed class GatewayFileSystemApiService(IHttpClientFactory factory, Time
     public Task<HttpResponseMessage> DownloadAsync(int tenantId, Guid agentId, string path, CancellationToken cancellationToken = default) =>
         _streaming.GetAsync($"/api/v2/agents/{tenantId}/{agentId:D}/filesystem/file?path={Uri.EscapeDataString(path)}", HttpCompletionOption.ResponseHeadersRead, cancellationToken);
 
+    public async Task<GatewayFileSystemStatResponse> StatAsync(int tenantId, Guid agentId, string path, CancellationToken cancellationToken = default)
+    {
+        using var response = await _control.GetAsync($"/api/v2/agents/{tenantId}/{agentId:D}/filesystem/stat?path={Uri.EscapeDataString(path)}", cancellationToken);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<GatewayFileSystemStatResponse>(cancellationToken)
+            ?? throw new InvalidOperationException("Remote stat returned no metadata.");
+    }
+
+    public async Task<GatewayFileSystemMutationResponse> MutateAsync(int tenantId, Guid agentId, GatewayFileSystemMutationRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        // The streaming client has no resilience replay handler. A mutation is
+        // sent once even if the remote response is lost after native commit.
+        using var response = await _streaming.PostAsJsonAsync($"/api/v2/agents/{tenantId}/{agentId:D}/filesystem/entries", request, cancellationToken);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<GatewayFileSystemMutationResponse>(cancellationToken)
+            ?? throw new InvalidOperationException("Remote mutation returned no outcomes. Refresh to reconcile.");
+    }
+
+    public async Task UploadCreateOnlyAsync(int tenantId, Guid agentId, string path, Stream source, CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Put,
+            $"/api/v2/agents/{tenantId}/{agentId:D}/filesystem/content?replace=false&path={Uri.EscapeDataString(path)}")
+        { Content = new StreamContent(source) };
+        using var response = await _streaming.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        response.EnsureSuccessStatusCode();
+    }
+
     public async Task<GatewayFileSystemWriteResponse> CreateDirectoryAsync(int tenantId, Guid agentId, string parentPath,
         string name, CancellationToken cancellationToken = default)
     {

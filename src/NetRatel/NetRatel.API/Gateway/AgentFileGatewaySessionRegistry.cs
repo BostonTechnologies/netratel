@@ -5,6 +5,7 @@ using Google.Protobuf;
 using Google.Protobuf.WellKnownTypes;
 using NetRatel.AgentGateway.Contracts.V1;
 using NetRatel.Application.Presence;
+using NetRatel.Shared.Contracts.FileSystem;
 
 namespace NetRatel.API.Gateway;
 
@@ -111,6 +112,18 @@ public interface IAgentFileGatewaySessionRegistry
         CancellationToken cancellationToken) =>
         WriteAsync(client, path, source, cancellationToken);
 
+    Task<long> MutateEntryAsync(ClientKey client, string operation, string path, string? destinationPath,
+        GatewayFileAccessPolicy accessPolicy, GatewayFileMoveCopyAccessPolicy? movePolicy, CancellationToken cancellationToken) =>
+        Task.FromException<long>(new AgentFileGatewayOperationException("capability_unavailable"));
+
+    Task<GatewayFileReadOperation> ReadRangeAsync(ClientKey client, string path, long offset, long length,
+        string expectedVersion, CancellationToken cancellationToken) =>
+        Task.FromException<GatewayFileReadOperation>(new AgentFileGatewayOperationException("capability_unavailable"));
+
+    Task WriteConditionalAsync(ClientKey client, string path, Stream source, bool createOnly, string expectedVersion,
+        CancellationToken cancellationToken) =>
+        Task.FromException(new AgentFileGatewayOperationException("capability_unavailable"));
+
     bool TryAccept(ClientKey client, FileRequestAccepted accepted);
 
     bool TryAddPage(ClientKey client, FileListPage page);
@@ -143,6 +156,7 @@ public sealed record GatewayFileMetadata(
     string MimeType)
 {
     public DateTimeOffset? CreatedUtc { get; init; }
+    public string ObservedVersion { get; init; } = string.Empty;
 }
 
 /// <summary>
@@ -182,10 +196,11 @@ public sealed class AgentFileGatewaySessionUnavailableException(ClientKey client
 /// A non-sensitive filesystem outcome reported by the admitted remote client.
 /// The code is safe to surface to an operator at the API edge.
 /// </summary>
-public sealed class AgentFileGatewayOperationException(string code)
+public sealed class AgentFileGatewayOperationException(string code, long affectedEntries = 0)
     : InvalidOperationException($"The remote file operation failed: {code}.")
 {
     public string Code { get; } = string.IsNullOrWhiteSpace(code) ? "operation_failed" : code;
+    public long AffectedEntries { get; } = affectedEntries;
 }
 
 public sealed class AgentFileGatewaySessionRegistry(IClientPresenceRouter presenceRouter)
@@ -341,6 +356,23 @@ public sealed class AgentFileGatewaySessionRegistry(IClientPresenceRouter presen
 
     public bool TryAccept(ClientKey client, FileRequestAccepted accepted) =>
         _sessions.TryGetValue(client, out var session) && session.TryAccept(accepted);
+
+    public Task<long> MutateEntryAsync(ClientKey client, string operation, string path, string? destinationPath,
+        GatewayFileAccessPolicy accessPolicy, GatewayFileMoveCopyAccessPolicy? movePolicy, CancellationToken cancellationToken) =>
+        GetSession(client).MutateEntryAsync(operation, path, destinationPath, accessPolicy, movePolicy, cancellationToken);
+
+    public Task<GatewayFileReadOperation> ReadRangeAsync(ClientKey client, string path, long offset, long length,
+        string expectedVersion, CancellationToken cancellationToken) =>
+        GetSession(client).ReadRangeAsync(path, offset, length, expectedVersion, cancellationToken);
+
+    public Task WriteConditionalAsync(ClientKey client, string path, Stream source, bool createOnly, string expectedVersion,
+        CancellationToken cancellationToken)
+    {
+        if (!RemoteFilePath.TryGetDirectoryParent(path, out var parent))
+            throw new AgentFileGatewayOperationException("protected_path");
+        return GetSession(client).WriteAsync(path, source, new([parent]), cancellationToken, new FileRequestDispatch
+        { CreateOnly = createOnly, ExpectedVersion = expectedVersion });
+    }
 
     public bool TryAddPage(ClientKey client, FileListPage page) =>
         _sessions.TryGetValue(client, out var session) && session.TryAddPage(page);
@@ -525,9 +557,10 @@ internal sealed class AgentFileGatewaySession(
     public async Task<GatewayFileReadOperation> ReadAsync(
         string path,
         GatewayFileAccessPolicy? accessPolicy,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        FileRequestDispatch? options = null)
     {
-        var pending = await BeginAsync("read", path, 0, accessPolicy, cancellationToken).ConfigureAwait(false);
+        var pending = await BeginAsync("read", path, null, 0, accessPolicy, null, cancellationToken, options).ConfigureAwait(false);
         try
         {
             await pending.Accepted.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -547,6 +580,46 @@ internal sealed class AgentFileGatewaySession(
             pending.ReadChunks!.Reader,
             pending.Completion.Task,
             (reason, ct) => CancelAsync(pending, reason, ct));
+    }
+
+    public Task<GatewayFileReadOperation> ReadRangeAsync(string path, long offset, long length,
+        string expectedVersion, CancellationToken cancellationToken)
+    {
+        RequireCapability("file-read-range-v1");
+        if (offset < 0 || length < 0 || offset > long.MaxValue - length || string.IsNullOrEmpty(expectedVersion))
+            throw new AgentFileGatewayOperationException("invalid_range");
+        return ReadAsync(path, null, cancellationToken, new FileRequestDispatch
+        { ReadOffset = offset, ReadLength = length, ExpectedVersion = expectedVersion });
+    }
+
+    public async Task<long> MutateEntryAsync(string operation, string path, string? destinationPath,
+        GatewayFileAccessPolicy accessPolicy, GatewayFileMoveCopyAccessPolicy? movePolicy, CancellationToken cancellationToken)
+    {
+        RequireCapability(operation switch
+        {
+            "create_file" => "file-create-v1", "move_entry" => "file-move-entry-v1",
+            "delete_recursive" => "file-delete-recursive-v1", _ => throw new AgentFileGatewayOperationException("invalid_dispatch")
+        });
+        var pending = await BeginAsync(operation, path, destinationPath, 0, accessPolicy, movePolicy, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await pending.Accepted.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            await pending.Completion.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+            return pending.AffectedEntries;
+        }
+        catch (OperationCanceledException)
+        {
+            await CancelAsync(pending, "operator_mutation_cancelled", CancellationToken.None).ConfigureAwait(false);
+            // Cancellation after dispatch cannot establish whether a native mutation committed.
+            throw new AgentFileGatewayOperationException("outcome_unknown", pending.AffectedEntries);
+        }
+        finally { _requests.TryRemove(pending.RequestId, out _); }
+    }
+
+    private void RequireCapability(string capability)
+    {
+        if (!negotiatedCapabilities.Contains(capability, StringComparer.Ordinal))
+            throw new AgentFileGatewayOperationException("capability_unavailable");
     }
 
     public Task<GatewayFileMetadata> StatAsync(string path, CancellationToken cancellationToken) =>
@@ -684,9 +757,11 @@ internal sealed class AgentFileGatewaySession(
         string path,
         Stream source,
         GatewayFileAccessPolicy? accessPolicy,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        FileRequestDispatch? options = null)
     {
-        var pending = await BeginAsync("write", path, 0, accessPolicy, cancellationToken).ConfigureAwait(false);
+        if (options is not null) RequireCapability("file-write-conditional-v1");
+        var pending = await BeginAsync("write", path, null, 0, accessPolicy, null, cancellationToken, options).ConfigureAwait(false);
         try
         {
             await pending.Accepted.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -868,7 +943,8 @@ internal sealed class AgentFileGatewaySession(
             lastModifiedUtc,
             metadata.MimeType)
         {
-            CreatedUtc = ReadOptionalTimestamp(metadata.CreatedUtc)
+            CreatedUtc = ReadOptionalTimestamp(metadata.CreatedUtc),
+            ObservedVersion = metadata.ObservedVersion
         });
     }
 
@@ -897,6 +973,7 @@ internal sealed class AgentFileGatewaySession(
             return false;
         }
 
+        pending.AffectedEntries = Math.Max(0, completed.AffectedEntries);
         pending.ReadChunks?.Writer.TryComplete();
         pending.Completion.TrySetResult();
         _requests.TryRemove(pending.RequestId, out _);
@@ -910,7 +987,7 @@ internal sealed class AgentFileGatewaySession(
             return false;
         }
 
-        FailAndRemove(pending, new AgentFileGatewayOperationException(failed.Code));
+        FailAndRemove(pending, new AgentFileGatewayOperationException(failed.Code, Math.Max(0, failed.AffectedEntries)));
         return true;
     }
 
@@ -972,7 +1049,8 @@ internal sealed class AgentFileGatewaySession(
         int pageSize,
         GatewayFileAccessPolicy? accessPolicy,
         GatewayFileMoveCopyAccessPolicy? moveCopyAccessPolicy,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        FileRequestDispatch? options = null)
     {
         if ((accessPolicy is { AllowedRoots.Count: > 0 } ||
                 moveCopyAccessPolicy is { SourceAllowedRoots.Count: > 0, DestinationAllowedRoots.Count: > 0 }) &&
@@ -997,6 +1075,16 @@ internal sealed class AgentFileGatewaySession(
 
         try
         {
+            var dispatch = options?.Clone() ?? new FileRequestDispatch();
+            dispatch.RequestId = pending.RequestId.ToString("D");
+            dispatch.AttemptId = pending.AttemptId.ToString("D");
+            dispatch.Operation = operation;
+            dispatch.Path = path;
+            dispatch.PageSize = checked((uint)pageSize);
+            dispatch.AllowedRoots.Add(accessPolicy?.AllowedRoots ?? []);
+            dispatch.DestinationPath = destinationPath ?? string.Empty;
+            dispatch.SourceAllowedRoots.Add(moveCopyAccessPolicy?.SourceAllowedRoots ?? []);
+            dispatch.DestinationAllowedRoots.Add(moveCopyAccessPolicy?.DestinationAllowedRoots ?? []);
             await WriteOutboundAsync(new GatewayFileFrame
             {
                 ProtocolVersion = "1.0",
@@ -1004,18 +1092,7 @@ internal sealed class AgentFileGatewaySession(
                 ClientId = client.AgentId.ToString("D"),
                 ConnectionEpoch = connectionEpoch,
                 ConnectionId = connectionId.ToString("D"),
-                Dispatch = new FileRequestDispatch
-                {
-                    RequestId = pending.RequestId.ToString("D"),
-                    AttemptId = pending.AttemptId.ToString("D"),
-                    Operation = operation,
-                    Path = path,
-                    PageSize = checked((uint)pageSize),
-                    AllowedRoots = { accessPolicy?.AllowedRoots ?? [] },
-                    DestinationPath = destinationPath ?? string.Empty,
-                    SourceAllowedRoots = { moveCopyAccessPolicy?.SourceAllowedRoots ?? [] },
-                    DestinationAllowedRoots = { moveCopyAccessPolicy?.DestinationAllowedRoots ?? [] }
-                }
+                Dispatch = dispatch
             }, cancellationToken).ConfigureAwait(false);
             return pending;
         }
@@ -1171,6 +1248,7 @@ internal sealed class AgentFileGatewaySession(
         public ulong NextReadChunkIndex { get; set; }
         public uint NextPageIndex { get; set; }
         public bool ListCompleted { get; set; }
+        public long AffectedEntries { get; set; }
     }
 }
 
