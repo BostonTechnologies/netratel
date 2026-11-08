@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http.Json;
 using System.Text;
 using Bunit;
 using AwesomeAssertions;
@@ -13,6 +14,37 @@ namespace NetRatel.Web.ComponentTests;
 
 public sealed class FileBrowserContentClassifierTests : AsyncBunitContext
 {
+    [Fact]
+    public async Task WholeFilePreviewDetectsChangesFromLegacyStatWithoutObservedVersion()
+    {
+        var calls = 0;
+        var modified = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var gateway = new GatewayFileSystemApiService(new PreviewFactory(request =>
+            request.RequestUri!.AbsolutePath.EndsWith("/stat", StringComparison.Ordinal)
+                ? new(HttpStatusCode.OK) { Content = JsonContent.Create(new GatewayFileSystemStatResponse(3, AgentId, "/notes.txt", false, 3,
+                    modified.AddSeconds(calls++), modified, "", false)) }
+                : new(HttpStatusCode.OK) { Content = new ByteArrayContent("old"u8.ToArray()) }));
+        using var registry = new FileBrowserContentRegistry(TimeProvider.System);
+        var content = new FileBrowserContentService(gateway, registry, new PreviewAuthentication(),
+            Microsoft.Extensions.Options.Options.Create(new FileBrowserOptions()));
+        var acquire = () => content.AcquireAsync(3, AgentId, "/notes.txt", CancellationToken.None);
+        await acquire.Should().ThrowAsync<InvalidOperationException>().WithMessage("*changed*");
+    }
+
+    private sealed class PreviewAuthentication : Microsoft.AspNetCore.Components.Authorization.AuthenticationStateProvider
+    {
+        public override Task<Microsoft.AspNetCore.Components.Authorization.AuthenticationState> GetAuthenticationStateAsync() =>
+            Task.FromResult(new Microsoft.AspNetCore.Components.Authorization.AuthenticationState(new System.Security.Claims.ClaimsPrincipal()));
+    }
+    private sealed class PreviewFactory(Func<HttpRequestMessage, HttpResponseMessage> respond) : IHttpClientFactory
+    {
+        public HttpClient CreateClient(string name) => new(new Handler(respond)) { BaseAddress = new("https://netratel.test") };
+        private sealed class Handler(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler
+        {
+            protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) => Task.FromResult(respond(request));
+        }
+    }
+
     [Fact]
     public void LargeLogsAreLabelledExcerptsAndEmptyOrBinaryFilesStayDistinct()
     {

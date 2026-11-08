@@ -22,11 +22,11 @@
         else if (Document.Kind == "docx")
         {
             @if (_documentError is not null) { <MudAlert Severity="Severity.Warning">@_documentError</MudAlert><pre>@Document.Text</pre> }
-            else { <iframe @ref="_documentFrame" title="Isolated local DOCX preview" sandbox="allow-scripts" style="width:100%;height:75vh;border:0"></iframe> }
+            else { <iframe id="@_documentId" title="Isolated local DOCX preview" sandbox="allow-scripts" style="width:100%;height:75vh;border:0"></iframe> }
         }
         else if (Document.Kind == "pdf")
         {
-            <div @ref="_documentFrame" aria-label="Local PDF preview" style="min-height:240px"></div>
+            <div id="@_documentId" aria-label="Local PDF preview" style="min-height:240px"></div>
         }
         else if (Document.Kind == "video" && Preview?.Url is { } video)
         {
@@ -72,7 +72,6 @@
     private string? _url;
     private readonly string _documentId = Guid.NewGuid().ToString("N");
     private readonly CancellationTokenSource _lifetime = new();
-    private ElementReference _documentFrame;
     private bool _documentStarted;
     private string? _documentError;
     private bool _disposed;
@@ -86,22 +85,33 @@
     {
         if (Document?.Kind is "image" or "pdf" && Preview?.Stream is { } stream && _url is null)
         {
-            stream.Position = 0;
-            var url = await Files.ReadDataUrlForStreamAsync(stream, Preview.ContentType, useBlob: true);
-            if (_disposed) { await Files.DisposeAsync(); return; }
-            _url = url;
+            try
+            {
+                stream.Position = 0;
+                var url = await Files.ReadDataUrlForStreamAsync(stream, Preview.ContentType, useBlob: true);
+                if (_disposed) { await Files.DisposeAsync(); return; }
+                _url = url;
+            }
+            catch (JSDisconnectedException exception)
+            {
+                Logger.LogDebug(exception, "Preview URL owner ended with its circuit");
+                _documentError = "Connection ended. Reopen the explorer after reconnecting.";
+            }
         }
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         if (_documentStarted || Document?.Kind is not ("docx" or "pdf")) return;
+        // Blazor may render while OnParametersSetAsync is still awaiting its
+        // capped BlobUrl. Start exactly once after that owned URL is ready.
+        if (Document.Kind == "pdf" && Preview?.Url is null && _url is null) return;
         _documentStarted = true;
         try
         {
             if (Document.Kind == "pdf")
             {
-                await Js.InvokeVoidAsync("netratelExplorer.renderPdf", _lifetime.Token, _documentFrame, Preview?.Url ?? _url, _documentId);
+                await Js.InvokeVoidAsync("netratelExplorer.renderPdf", _lifetime.Token, _documentId, Preview?.Url ?? _url, _documentId);
                 return;
             }
             if (Preview?.Stream is not { } source) return;
@@ -110,11 +120,18 @@
             await source.CopyToAsync(copy, _lifetime.Token);
             copy.Position = 0;
             using var reference = new DotNetStreamReference(copy, leaveOpen: true);
-            await Js.InvokeVoidAsync("netratelExplorer.renderDocx", _lifetime.Token, _documentFrame, reference, _documentId);
+            await Js.InvokeVoidAsync("netratelExplorer.renderDocx", _lifetime.Token, _documentId, reference, _documentId);
         }
         catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { return; }
         catch (JSException exception)
-        { if (!_disposed) { _documentError = "Local document rendering failed; showing its text. " + exception.Message; await InvokeAsync(StateHasChanged); } }
+        {
+            Logger.LogDebug(exception, "Local remote-file renderer could not initialize");
+            if (!_disposed)
+            {
+                _documentError = Document.Kind == "pdf" ? "PDF preview could not initialize. Reopen this file or use Download." : "Document rendering failed; showing its extracted text.";
+                await InvokeAsync(StateHasChanged);
+            }
+        }
     }
 
     public async ValueTask DisposeAsync()

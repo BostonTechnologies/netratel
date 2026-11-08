@@ -26,6 +26,7 @@
     private DotNetObjectReference<FullFileViewerDialog>? _callbacks;
     private async Task DownloadAsync()
     {
+        if (_download is not null) return;
         _callbacks ??= DotNetObjectReference.Create(this);
         _download = Guid.NewGuid().ToString("D");
         await Js.InvokeVoidAsync("netratelDownloads.start", $"/file-browser/transfers/download?tenantId={TenantId}&agentId={AgentId:D}&path={Uri.EscapeDataString(File.FullPath)}&transferId={_download}&expectedBytes={File.SizeBytes}", _download, _callbacks);

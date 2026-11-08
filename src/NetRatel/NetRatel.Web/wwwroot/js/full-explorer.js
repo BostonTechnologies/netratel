@@ -16,6 +16,7 @@
   };
   window.netratelExplorer = {
     async renderPdf(container, url, id) {
+      if (typeof container === 'string') container = window.MudExPopoutEvents?.byId(container) || document.getElementById(container);
       documents.get(id)?.dispose();
       if (!container?.isConnected || !url) throw new Error('The PDF preview was closed.');
       let cancelled = false;
@@ -55,22 +56,27 @@
       const render = async () => {
         if (destroyed || !pdf) return;
         const current = ++revision;
+        clearTimeout(deadline);
         rendering?.cancel();
+        const pageDeadline = setTimeout(() => {
+          if (current !== revision) return;
+          owner.dispose(); container.textContent = 'PDF page exceeded its 15-second work budget. Use Download.';
+        }, 15000);
+        deadline = pageDeadline;
         try {
           const selected = await pdf.getPage(page);
-          if (destroyed || current !== revision) return;
+          if (destroyed || current !== revision) { clearTimeout(pageDeadline); return; }
           const viewport = selected.getViewport({ scale });
           if (viewport.width * viewport.height > 16000000 || Math.max(viewport.width, viewport.height) > 16000)
             throw new Error('PDF page exceeds the 16 million pixel rendering limit. Use Download.');
           canvas.width = Math.ceil(viewport.width); canvas.height = Math.ceil(viewport.height);
           rendering = selected.render({ canvas, canvasContext: canvas.getContext('2d'), viewport, annotationMode: 0 });
-          clearTimeout(deadline);
-          deadline = setTimeout(() => { owner.dispose(); container.textContent = 'PDF page exceeded its 15-second work budget. Use Download.'; }, 15000);
           await rendering.promise;
-          clearTimeout(deadline);
+          clearTimeout(pageDeadline);
           if (!destroyed && current === revision) status.textContent = ` Page ${page} / ${pdf.numPages} · ${Math.round(scale * 100)}% `;
           selected.cleanup();
         } catch (error) {
+          clearTimeout(pageDeadline);
           if (!destroyed && current === revision && error.name !== 'RenderingCancelledException') status.textContent = error.message;
         }
       };
@@ -95,6 +101,7 @@
       }
     },
     async renderDocx(frame, stream, id) {
+      if (typeof frame === 'string') frame = window.MudExPopoutEvents?.byId(frame) || document.getElementById(frame);
       documents.get(id)?.dispose();
       let cancelled = false;
       documents.set(id, { dispose() { cancelled = true; documents.delete(id); } });

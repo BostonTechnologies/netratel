@@ -102,7 +102,8 @@ public sealed class FileBrowserContentService(GatewayFileSystemApiService gatewa
                 await memory.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
             }
             var current = await gateway.StatAsync(tenantId, agentId, path, cancellationToken);
-            if (stat.ObservedVersion != current.ObservedVersion || memory.Length != stat.SizeBytes)
+            if (current.IsDirectory || stat.ObservedVersion != current.ObservedVersion || memory.Length != stat.SizeBytes ||
+                stat.SizeBytes != current.SizeBytes || stat.LastModifiedUtc != current.LastModifiedUtc || stat.CreatedUtc != current.CreatedUtc)
                 throw new InvalidOperationException("The remote file changed. Refresh and open it again.");
             memory.Position = 0;
             return new(memory, null, stat, type ?? "application/octet-stream");

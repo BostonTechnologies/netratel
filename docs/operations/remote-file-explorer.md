@@ -22,7 +22,7 @@ Choose at most 128 top-level items per mutation. Roots, overlaps and directory m
 
 ## Navigation, layout and lifetime
 
-Use the path field/breadcrumbs, Go, Up and Refresh. Switch **Details / tiles**. Click selects; Ctrl/Command-click toggles; Shift-click selects a range; dragging a rectangle selects files. The grid supports arrows, Shift-arrows, Ctrl/Command-A, Enter, F2 rename, Delete with confirmation, and Escape. Toolbar/context actions provide alternatives. Rename preserves entered significant spaces.
+Use the path field/breadcrumbs, Go, Up, Volumes and Refresh. Typing a path is a navigation draft until Go/Enter opens it; commands use the displayed Browsing directory. Volumes is an overview, with upload/new/move/delete unavailable until a directory opens. Refresh preserves the committed directory. Switch **Details / tiles**. Click selects; Ctrl/Command-click toggles; Shift-click selects a range; dragging a rectangle selects files. The grid supports arrows, Shift-arrows, Ctrl/Command-A, Enter, F2 rename, Delete with confirmation, and Escape. Toolbar/context actions provide alternatives. Rename preserves entered significant spaces.
 
 Select one file for preview; double-click or **Open fullscreen** creates an independent viewer. **Return to Explorer** keeps directory/selection and restores scroll/focus. Full content is read-only; Basic retains its supported editing.
 
