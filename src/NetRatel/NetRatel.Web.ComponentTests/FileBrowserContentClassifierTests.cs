@@ -13,6 +13,19 @@ namespace NetRatel.Web.ComponentTests;
 
 public sealed class FileBrowserContentClassifierTests : AsyncBunitContext
 {
+    [Fact]
+    public void LargeLogsAreLabelledExcerptsAndEmptyOrBinaryFilesStayDistinct()
+    {
+        using var log = new MemoryStream(Encoding.UTF8.GetBytes(new string('x', RemotePreviewPolicy.MaximumTextCharacters + 20)));
+        var excerpt = RemotePreviewPolicy.Inspect("large.log", log, CancellationToken.None);
+        excerpt.Title.Should().Contain("excerpt");
+        excerpt.Text!.Length.Should().Be(RemotePreviewPolicy.MaximumTextCharacters);
+        using var empty = new MemoryStream();
+        RemotePreviewPolicy.Inspect("empty.txt", empty, CancellationToken.None).Title.Should().Be("Empty file");
+        using var binary = new MemoryStream([0, 1, 2]);
+        RemotePreviewPolicy.Inspect("unknown.bin", binary, CancellationToken.None).Kind.Should().Be("unsupported");
+    }
+
     [Theory]
     [InlineData("document.html")]
     [InlineData("drawing.svg")]
