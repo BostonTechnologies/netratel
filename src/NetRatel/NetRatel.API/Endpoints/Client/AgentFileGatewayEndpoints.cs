@@ -11,7 +11,7 @@ namespace NetRatel.API.Endpoints.Client;
 /// <summary>
 /// Agent-ID keyed V2 file endpoints.
 /// </summary>
-public static class AgentFileGatewayEndpoints
+public static partial class AgentFileGatewayEndpoints
 {
     private const int DefaultPageSize = 128;
     private const string Authority = "akka";
@@ -27,6 +27,10 @@ public static class AgentFileGatewayEndpoints
         group.MapPut("/file", WriteAsync).RequireAuthorization("FileWriter");
         group.MapPost("/directory", CreateDirectoryAsync).RequireAuthorization("FileWriter");
         group.MapDelete("/directory", DeleteDirectoryAsync).RequireAuthorization("FileDeleter");
+        group.MapGet("/stat", StatEntryAsync).RequireAuthorization("FileReader");
+        group.MapPost("/entries", MutateEntriesAsync).RequireAuthorization();
+        group.MapMethods("/content", ["GET", "HEAD"], ReadContentAsync).RequireAuthorization("FileReader");
+        group.MapPut("/content", WriteContentAsync).RequireAuthorization("FileWriter");
         return app;
     }
 
@@ -71,7 +75,17 @@ public static class AgentFileGatewayEndpoints
             {
                 CanWriteFiles = canWrite,
                 CanCreateDirectory = canWrite && capabilities.Contains("file-create-directory-v1", StringComparer.Ordinal),
-                CanDeleteDirectory = canDelete && capabilities.Contains("file-delete-directory-v1", StringComparer.Ordinal)
+                CanDeleteDirectory = canDelete && capabilities.Contains("file-delete-directory-v1", StringComparer.Ordinal),
+                Capabilities = new GatewayFileSystemCapabilities
+                {
+                    Stat = capabilities.Contains("file-stat-v1"),
+                    CreateFile = canWrite && capabilities.Contains("file-create-v1"),
+                    MoveEntry = canWrite && canDelete && capabilities.Contains("file-move-entry-v1"),
+                    DeleteFile = canDelete && capabilities.Contains("file-delete-v1"),
+                    DeleteRecursive = canDelete && capabilities.Contains("file-delete-recursive-v1"),
+                    ReadRange = capabilities.Contains("file-read-range-v1"),
+                    ConditionalUpload = canWrite && capabilities.Contains("file-write-conditional-v1")
+                }
             });
         }
         catch (AgentFileGatewaySessionUnavailableException)
@@ -334,10 +348,17 @@ public static class AgentFileGatewayEndpoints
         {
             "invalid_path" or "invalid_dispatch" => (StatusCodes.Status400BadRequest, "The remote path is invalid."),
             "invalid_folder_name" => (StatusCodes.Status400BadRequest, "Enter one valid folder name within an absolute remote parent path."),
+            "invalid_destination" or "overlapping_selection" => (StatusCodes.Status400BadRequest, "Choose distinct top-level sources and a destination outside the selected directories."),
+            "not_a_file" => (StatusCodes.Status409Conflict, "The selected path is a directory."),
             "file_not_found" or "directory_not_found" or "path_not_found" => (StatusCodes.Status404NotFound, "The requested remote path does not exist."),
             "access_denied" => (StatusCodes.Status403Forbidden, "The remote client denied access to the requested path."),
             "protected_path" => (StatusCodes.Status403Forbidden, "Filesystem roots, approved roots, and symbolic links cannot be deleted through folder operations."),
             "path_already_exists" => (StatusCodes.Status409Conflict, "A file or folder already exists at this path."),
+            "destination_already_exists" => (StatusCodes.Status409Conflict, "The destination already exists. No replacement was performed."),
+            "file_changed" => (StatusCodes.Status412PreconditionFailed, "The remote file changed. Refresh and open it again."),
+            "invalid_range" => (StatusCodes.Status416RangeNotSatisfiable, "The requested remote byte range is invalid."),
+            "cross_volume_unsupported" => (StatusCodes.Status409Conflict, "Cross-volume moves are not supported. This item was not moved."),
+            "file_listing_too_large" => (StatusCodes.Status413PayloadTooLarge, "This directory exceeds the 4,096-entry listing limit. Navigate to a child path directly."),
             "directory_not_empty" => (StatusCodes.Status409Conflict, "This folder is not empty. Only empty folders can be deleted."),
             "not_a_directory" => (StatusCodes.Status409Conflict, "The selected path is no longer a folder. Refresh the directory."),
             "capability_unavailable" => (StatusCodes.Status409Conflict, "This client does not support the requested folder operation. Update the client and try again."),

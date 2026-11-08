@@ -1,11 +1,85 @@
 using AwesomeAssertions;
 using NetRatel.Client.Services;
+using NetRatel.Client.Service.Gateway;
 using Xunit;
 
 namespace NetRatel.Tests.Client;
 
 public sealed class FileSystemServiceGatewayPathTests
 {
+    [Fact]
+    public async Task CreateOnlyStagingPreservesConflictsAndCreatesARealEmptyFile()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"netratel-create-only-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        var path = Path.Combine(root, "empty.txt");
+        try
+        {
+            using (var create = new AgentFileGatewayClient.ClientFileOperation(Guid.NewGuid(), Guid.NewGuid(), "write", path) { CreateOnly = true })
+            {
+                create.BeginWrite();
+                await create.CommitWriteAsync(CancellationToken.None);
+            }
+            new FileInfo(path).Length.Should().Be(0);
+            File.WriteAllText(path, "keep");
+            using var conflict = new AgentFileGatewayClient.ClientFileOperation(Guid.NewGuid(), Guid.NewGuid(), "write", path) { CreateOnly = true };
+            conflict.Invoking(operation => operation.BeginWrite()).Should().Throw<IOException>();
+            File.ReadAllText(path).Should().Be("keep");
+            Directory.EnumerateFiles(root, "*.tmp").Should().BeEmpty();
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public void NativeMovePreservesPosixNamesRefusesCollisionsAndMovesDirectories()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"netratel-move-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        var source = Path.Combine(root, "Reports ");
+        var destination = Path.Combine(root, "reports ");
+        Directory.CreateDirectory(source);
+        File.WriteAllText(Path.Combine(source, "keep.txt"), "keep");
+        try
+        {
+            NativeFileOperations.Move(source, destination);
+            Directory.Exists(source).Should().BeFalse();
+            File.ReadAllText(Path.Combine(destination, "keep.txt")).Should().Be("keep");
+            File.WriteAllText(source, "collision");
+            var move = () => NativeFileOperations.Move(destination, source);
+            move.Should().Throw<NativeFileOperationException>().Which.Code.Should().Be("destination_already_exists");
+            File.ReadAllText(source).Should().Be("collision");
+            Directory.Exists(destination).Should().BeTrue();
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public void RecursiveDeletionCancelsAfterProgressAndNeverTraversesLinks()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"netratel-delete-{Guid.NewGuid():N}");
+        var outside = Path.Combine(Path.GetTempPath(), $"netratel-keep-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        Directory.CreateDirectory(outside);
+        File.WriteAllText(Path.Combine(outside, "keep.txt"), "keep");
+        Directory.CreateSymbolicLink(Path.Combine(root, "link"), outside);
+        try
+        {
+            var removeLink = () => NativeFileOperations.DeleteTree(root, CancellationToken.None, _ => { });
+            removeLink.Should().Throw<NativeFileOperationException>().Which.Code.Should().Be("protected_path");
+            File.ReadAllText(Path.Combine(outside, "keep.txt")).Should().Be("keep");
+            Directory.Delete(Path.Combine(root, "link"));
+            File.WriteAllText(Path.Combine(root, "a.txt"), "a");
+            File.WriteAllText(Path.Combine(root, "b.txt"), "b");
+            using var cancellation = new CancellationTokenSource();
+            long affected = 0;
+            var remove = () => NativeFileOperations.DeleteTree(root, cancellation.Token, count => { affected = count; cancellation.Cancel(); });
+            remove.Should().Throw<OperationCanceledException>();
+            affected.Should().Be(1);
+            Directory.EnumerateFiles(root).Should().ContainSingle();
+        }
+        finally { Directory.Delete(root, true); Directory.Delete(outside, true); }
+    }
+
     [Fact]
     public void Enumeration_ReturnsOnlyImmediateEntriesAndTheirFilesystemTimestamps()
     {

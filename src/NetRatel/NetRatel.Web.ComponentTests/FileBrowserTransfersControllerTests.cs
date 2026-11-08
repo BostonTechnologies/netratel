@@ -14,6 +14,31 @@ namespace NetRatel.Web.ComponentTests;
 
 public sealed class FileBrowserTransfersControllerTests
 {
+    [Fact]
+    public void ContentLeasesBindOperatorAndVersionAndHaveIndependentLifetimes()
+    {
+        var clock = new LeaseClock();
+        var registry = new FileBrowserContentRegistry(clock);
+        var file = new NetRatel.Shared.Contracts.FileSystem.GatewayFileSystemStatResponse(3, AgentId,
+            "/fixtures/video.mp4", false, 1234, clock.GetUtcNow(), null, "v1:1234:1:1", true);
+        var inline = registry.Create("operator-a", file, "video/mp4");
+        var fullscreen = registry.Create("operator-a", file, "video/mp4");
+        registry.TryGet(inline.Id, "operator-b", out _).Should().BeFalse();
+        registry.TryGet(inline.Id, "operator-a", out var found).Should().BeTrue();
+        found.File.Should().Be(file);
+        registry.Release(inline.Id);
+        registry.TryGet(inline.Id, "operator-a", out _).Should().BeFalse();
+        registry.TryGet(fullscreen.Id, "operator-a", out _).Should().BeTrue();
+        clock.Now += TimeSpan.FromMinutes(16);
+        registry.TryGet(fullscreen.Id, "operator-a", out _).Should().BeFalse();
+    }
+
+    private sealed class LeaseClock : TimeProvider
+    {
+        public DateTimeOffset Now { get; set; } = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        public override DateTimeOffset GetUtcNow() => Now;
+    }
+
     private static readonly Guid AgentId = Guid.Parse("4886c6c0-e486-4f59-a006-40e4043a4a46");
     private const int GeneratedFileBytes = 16 * 1024 * 1024;
 

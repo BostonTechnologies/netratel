@@ -8,7 +8,7 @@ using System.Diagnostics;
 
 namespace NetRatel.Web.Controllers;
 
-[Authorize(Roles = "Operator")]
+[Authorize]
 [Route("file-browser/transfers")]
 public sealed class FileBrowserTransfersController(
     IUploadsApiClient uploads,

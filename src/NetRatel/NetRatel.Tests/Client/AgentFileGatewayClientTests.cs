@@ -19,6 +19,47 @@ namespace NetRatel.Tests.Client;
 public sealed class AgentFileGatewayClientTests
 {
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RangeReadSeeksOnTheNativeFileAndRejectsAChangedVersion(bool staleVersion)
+    {
+        using var directory = new TestDirectory();
+        var path = Path.Combine(directory.Path, "sparse.bin");
+        var tail = "native range"u8.ToArray();
+        const long offset = 32 * 1024 * 1024;
+        using (var file = File.Create(path))
+        {
+            file.SetLength(offset);
+            file.Seek(offset, SeekOrigin.Begin);
+            file.Write(tail);
+        }
+        var gateway = new DirectoryOperationGateway(directory.Path, path, "read", dispatch =>
+        {
+            dispatch.ReadOffset = offset;
+            dispatch.ReadLength = tail.Length;
+            dispatch.ExpectedVersion = staleVersion ? "stale" : NativeFileOperations.ObservedVersion(path);
+        });
+        using var host = await BuildHostAsync(gateway);
+        using var stopping = new CancellationTokenSource();
+        var run = NewClient(host).RunForPresenceSessionAsync(NewPresence(), "test-token", stopping.Token);
+        try
+        {
+            var result = await gateway.Result.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            if (staleVersion)
+            {
+                result.Failed.Code.Should().Be("file_changed");
+                gateway.Content.Should().BeEmpty();
+            }
+            else
+            {
+                result.Completed.Should().NotBeNull();
+                gateway.Content.Should().Equal(tail, "the native seek sends only the requested bytes, never the 32 MiB prefix");
+            }
+        }
+        finally { stopping.Cancel(); await run.WaitAsync(TimeSpan.FromSeconds(5)); }
+    }
+
+    [Theory]
     [InlineData("create_directory", "new", null)]
     [InlineData("delete_directory", "empty", null)]
     [InlineData("delete_directory", "nonempty", "directory_not_empty")]
@@ -411,9 +452,11 @@ public sealed class AgentFileGatewayClientTests
         return await builder.StartAsync();
     }
 
-    private sealed class DirectoryOperationGateway(string root, string path, string operation) : AgentFileGateway.AgentFileGatewayBase
+    private sealed class DirectoryOperationGateway(string root, string path, string operation,
+        Action<FileRequestDispatch>? configure = null) : AgentFileGateway.AgentFileGatewayBase
     {
         public TaskCompletionSource<AgentFileFrame> Result { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public List<byte> Content { get; } = [];
 
         public override async Task Connect(IAsyncStreamReader<AgentFileFrame> requests,
             IServerStreamWriter<GatewayFileFrame> responses, ServerCallContext context)
@@ -430,9 +473,27 @@ public sealed class AgentFileGatewayClientTests
                 RequestId = Guid.NewGuid().ToString("D"), AttemptId = Guid.NewGuid().ToString("D"),
                 Operation = operation, Path = path, AllowedRoots = { root }
             };
+            configure?.Invoke(dispatch.Dispatch);
             await responses.WriteAsync(dispatch, context.CancellationToken);
+            ulong sequence = 1;
             while (await requests.MoveNext(context.CancellationToken))
             {
+                if (operation == "read" && (requests.Current.RequestAccepted is not null || requests.Current.TransferChunk is not null))
+                {
+                    if (requests.Current.TransferChunk is { } chunk)
+                    {
+                        chunk.Content.Length.Should().BeLessThanOrEqualTo(FileTransferFrameBudget.PayloadBytes);
+                        chunk.Sha256.Should().Be(Convert.ToHexString(SHA256.HashData(chunk.Content.Span)).ToLowerInvariant());
+                        Content.AddRange(chunk.Content.ToByteArray());
+                    }
+                    var credit = Frame(++sequence);
+                    credit.Credit = new FileTransferCredit
+                    {
+                        RequestId = dispatch.Dispatch.RequestId, AttemptId = dispatch.Dispatch.AttemptId,
+                        AvailableBytes = FileTransferFrameBudget.PayloadBytes
+                    };
+                    await responses.WriteAsync(credit, context.CancellationToken);
+                }
                 if (requests.Current.Completed is not null || requests.Current.Failed is not null)
                     Result.TrySetResult(requests.Current.Clone());
             }

@@ -16,8 +16,8 @@ public static partial class RemoteFilePath
             return false;
         }
 
-        var candidate = value.Trim();
-        if (candidate.Contains('\0'))
+        var candidate = value.StartsWith("/", StringComparison.Ordinal) ? value : value.Trim();
+        if (candidate.Length > 4096 || candidate.Contains('\0') || candidate.StartsWith("//", StringComparison.Ordinal))
         {
             return false;
         }
@@ -85,8 +85,15 @@ public static partial class RemoteFilePath
     public static bool IsRoot(string? value) =>
         TryNormalize(value, out var path) && (path == "/" || (path.Length == 3 && path[1] == ':' && path[2] == '\\'));
 
+    public static bool IsWithin(string path, string parent)
+    {
+        var comparison = IsWindows(parent) ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        return string.Equals(path, parent, comparison) || path.StartsWith(
+            parent.TrimEnd(IsWindows(parent) ? '\\' : '/') + (IsWindows(parent) ? "\\" : "/"), comparison);
+    }
+
     public static bool IsWindows(string? value) =>
-        !string.IsNullOrWhiteSpace(value) && WindowsDrivePath().IsMatch(value.Trim());
+        !string.IsNullOrWhiteSpace(value) && WindowsDrivePath().IsMatch(value);
 
     public static string Join(string parent, string child)
     {
