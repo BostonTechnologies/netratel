@@ -3903,6 +3903,11 @@ class DistributionTests(unittest.TestCase):
             assets += ["--project-assets", str(asset)]
             distributions += ["--distribution", str(path)]
         output = self.root / "runtime.spdx.json"
+        browser = distribution / "wwwroot/js/viewers/fixture-renderer/1.2.3"
+        browser.mkdir(parents=True)
+        (browser / "package.json").write_text(json.dumps({"name": "fixture-renderer", "version": "1.2.3", "license": "MIT"}))
+        (browser / "LICENSE").write_text("Fixture license text")
+        (browser / "renderer.js").write_text("/* fixture runtime */")
         result = subprocess.run([sys.executable, str(ROOT / "tools/ci/generate-runtime-sbom.py"),
             *assets, *distributions, "--distribution-root", str(distribution), "--name", "NetRatel.Mcp.Http", "--version", "1.0.0", "--output", str(output)],
             capture_output=True, text=True)
@@ -3913,6 +3918,10 @@ class DistributionTests(unittest.TestCase):
         self.assertIn("./out/tooling/cli/NetRatel.Cli.dll", file_names)
         self.assertIn("./out/tooling/stdio/NetRatel.Mcp.dll", file_names)
         self.assertTrue({"Example.Http", "Example.Terminal", "Example.Protocol"}.issubset({item["name"] for item in document["packages"]}))
+        renderer = next(item for item in document["packages"] if item["name"] == "fixture-renderer")
+        self.assertEqual("1.2.3", renderer["versionInfo"])
+        self.assertEqual("pkg:npm/fixture-renderer@1.2.3", renderer["externalRefs"][0]["referenceLocator"])
+        self.assertIn("Fixture license text", (distribution / "THIRD-PARTY-NOTICES.txt").read_text())
         self.verifier.verify(document, self.root)
 
     def test_paginated_gh_json_is_parsed_without_slurp(self):

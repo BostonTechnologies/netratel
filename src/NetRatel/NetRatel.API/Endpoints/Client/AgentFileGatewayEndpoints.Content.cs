@@ -58,8 +58,12 @@ public static partial class AgentFileGatewayEndpoints
             if (range.Partial) http.Response.Headers.ContentRange = $"bytes {range.Offset}-{range.Offset + range.Length - 1}/{stat.SizeBytes}";
             while (hasChunk)
             {
-                await http.Response.Body.WriteAsync(chunks.Current, cancellationToken);
+                var current = chunks.Current;
                 hasChunk = await chunks.MoveNextAsync();
+                // Withhold the final bounded chunk until native completion is
+                // validated, so a late failure cannot look like a complete body.
+                if (!hasChunk) await operation.Completion;
+                await http.Response.Body.WriteAsync(current, cancellationToken);
             }
             await operation.Completion;
             completed = true;

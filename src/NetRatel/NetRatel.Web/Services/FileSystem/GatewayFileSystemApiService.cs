@@ -22,15 +22,12 @@ public sealed class GatewayFileSystemApiService(IHttpClientFactory factory, Time
         using var response = await _control.GetAsync(
             $"/api/v2/agents/{tenantId}/{agentId:D}/filesystem?path={Uri.EscapeDataString(path)}",
             cancellationToken).ConfigureAwait(false);
-        if (response.StatusCode == HttpStatusCode.Conflict)
+        if (!response.IsSuccessStatusCode)
         {
-            using var problem = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(cancellationToken), cancellationToken: cancellationToken);
-            if (problem.RootElement.TryGetProperty("code", out var code) && code.GetString() == "session_unavailable")
-            {
-                throw new GatewayFileCapabilityUnavailableException();
-            }
+            var problem = await response.Content.ReadFromJsonAsync<GatewayFileProblem>(cancellationToken);
+            if (problem?.Code == "session_unavailable") throw new GatewayFileCapabilityUnavailableException();
+            throw new HttpRequestException(problem?.Detail ?? "Remote listing failed. Refresh the directory.", null, response.StatusCode);
         }
-        response.EnsureSuccessStatusCode();
         return await response.Content.ReadFromJsonAsync<GatewayFileSystemListResponse>(cancellationToken: cancellationToken).ConfigureAwait(false)
             ?? throw new InvalidOperationException("The gateway file API returned an empty response.");
     }
@@ -101,6 +98,14 @@ public sealed class GatewayFileSystemApiService(IHttpClientFactory factory, Time
             ?? throw new InvalidOperationException("Remote stat returned no metadata.");
     }
 
+    public async Task<GatewayFileSystemListResponse> RootsAsync(int tenantId, Guid agentId, CancellationToken cancellationToken)
+    {
+        using var response = await _control.GetAsync($"/api/v2/agents/{tenantId}/{agentId:D}/filesystem/roots", cancellationToken);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<GatewayFileSystemListResponse>(cancellationToken)
+            ?? throw new InvalidOperationException("The client returned no root metadata.");
+    }
+
     public async Task<GatewayFileSystemMutationResponse> MutateAsync(int tenantId, Guid agentId, GatewayFileSystemMutationRequest request,
         CancellationToken cancellationToken = default)
     {
@@ -124,7 +129,7 @@ public sealed class GatewayFileSystemApiService(IHttpClientFactory factory, Time
     public async Task<GatewayFileSystemWriteResponse> CreateDirectoryAsync(int tenantId, Guid agentId, string parentPath,
         string name, CancellationToken cancellationToken = default)
     {
-        using var response = await _control.PostAsJsonAsync(
+        using var response = await _streaming.PostAsJsonAsync(
             $"/api/v2/agents/{tenantId}/{agentId:D}/filesystem/directory",
             new GatewayFileSystemCreateDirectoryRequest(parentPath, name), cancellationToken).ConfigureAwait(false);
         return await ReadMutationResponseAsync(response, cancellationToken).ConfigureAwait(false);
@@ -133,7 +138,7 @@ public sealed class GatewayFileSystemApiService(IHttpClientFactory factory, Time
     public async Task<GatewayFileSystemWriteResponse> DeleteDirectoryAsync(int tenantId, Guid agentId, string path,
         CancellationToken cancellationToken = default)
     {
-        using var response = await _control.DeleteAsync(
+        using var response = await _streaming.DeleteAsync(
             $"/api/v2/agents/{tenantId}/{agentId:D}/filesystem/directory?path={Uri.EscapeDataString(path)}",
             cancellationToken).ConfigureAwait(false);
         return await ReadMutationResponseAsync(response, cancellationToken).ConfigureAwait(false);

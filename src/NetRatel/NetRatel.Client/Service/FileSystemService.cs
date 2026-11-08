@@ -194,6 +194,9 @@ namespace NetRatel.Client.Services
                 var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
                 if (string.Equals(target, Path.TrimEndingDirectorySeparator(Path.GetPathRoot(target) ?? target), comparison))
                     return false;
+                if (DriveInfo.GetDrives().Any(drive => string.Equals(target,
+                    Path.TrimEndingDirectorySeparator(drive.RootDirectory.FullName), comparison)))
+                    return false;
 
                 FileSystemInfo requested = Directory.Exists(requestedPath)
                     ? new DirectoryInfo(requestedPath) : new FileInfo(requestedPath);

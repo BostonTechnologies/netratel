@@ -35,19 +35,21 @@ public sealed class FileSystemServiceGatewayPathTests
     {
         var root = Path.Combine(Path.GetTempPath(), $"netratel-move-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
-        var source = Path.Combine(root, "Reports ");
-        var destination = Path.Combine(root, "reports ");
+        var source = Path.Combine(root, OperatingSystem.IsWindows() ? "Reports" : "Reports ");
+        var destination = Path.Combine(root, OperatingSystem.IsWindows() ? "reports" : "reports ");
         Directory.CreateDirectory(source);
         File.WriteAllText(Path.Combine(source, "keep.txt"), "keep");
         try
         {
             NativeFileOperations.Move(source, destination);
-            Directory.Exists(source).Should().BeFalse();
+            if (OperatingSystem.IsWindows()) new DirectoryInfo(Directory.EnumerateDirectories(root).Single()).Name.Should().Be("reports");
+            else Directory.Exists(source).Should().BeFalse();
             File.ReadAllText(Path.Combine(destination, "keep.txt")).Should().Be("keep");
-            File.WriteAllText(source, "collision");
-            var move = () => NativeFileOperations.Move(destination, source);
+            var collision = Path.Combine(root, "collision");
+            File.WriteAllText(collision, "collision");
+            var move = () => NativeFileOperations.Move(destination, collision);
             move.Should().Throw<NativeFileOperationException>().Which.Code.Should().Be("destination_already_exists");
-            File.ReadAllText(source).Should().Be("collision");
+            File.ReadAllText(collision).Should().Be("collision");
             Directory.Exists(destination).Should().BeTrue();
         }
         finally { Directory.Delete(root, true); }

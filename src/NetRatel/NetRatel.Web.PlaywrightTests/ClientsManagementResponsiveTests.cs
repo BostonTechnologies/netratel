@@ -1560,6 +1560,7 @@ public sealed class ClientsManagementFixtureApp : ComponentBase
         AddStylesheet(builder, "/css/clients-presentation.css");
         AddStylesheet(builder, "/NetRatel.Web.styles.css");
         AddStylesheet(builder, "/_content/MudBlazor/MudBlazor.min.css");
+        AddStylesheet(builder, "/_content/MudBlazor.Extensions/mudBlazorExtensions.min.css");
         AddStylesheet(builder, "/_content/VeloxDev.Razor/veloxdev.workflow.css");
         builder.OpenElement(17, "script");
         builder.AddAttribute(18, "src", "/js/theme-preference.js");
@@ -1576,6 +1577,9 @@ public sealed class ClientsManagementFixtureApp : ComponentBase
         AddScript(builder, "/_content/BlazorMonaco/lib/monaco-editor/min/vs/loader.js");
         AddScript(builder, "/_content/BlazorMonaco/lib/monaco-editor/min/vs/editor/editor.main.js");
         AddScript(builder, "/_content/CodeBeam.MudBlazor.Extensions/MudExtensions.min.js");
+        AddScript(builder, "/download.js");
+        AddScript(builder, "/js/full-explorer.js");
+        AddScript(builder, "/_content/MudBlazor.Extensions/js/mudExPopoutEvents.js");
         builder.OpenElement(28, "script");
         builder.AddAttribute(29, "src", "/_framework/blazor.web.js");
         builder.CloseElement();
@@ -1796,6 +1800,8 @@ internal sealed class ClientsManagementFixtureHost : IAsyncDisposable
     {
         ".css" => "text/css",
         ".js" => "text/javascript",
+        ".mjs" => "text/javascript",
+        ".html" => "text/html",
         ".json" => "application/json",
         _ => "application/octet-stream"
     };

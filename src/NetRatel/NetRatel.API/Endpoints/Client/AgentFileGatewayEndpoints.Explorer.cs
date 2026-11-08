@@ -9,6 +9,21 @@ namespace NetRatel.API.Endpoints.Client;
 
 public static partial class AgentFileGatewayEndpoints
 {
+    private static async Task<IResult> RootsAsync(int tenantId, Guid agentId, HttpContext http,
+        IServiceProvider services, CancellationToken cancellationToken)
+    {
+        var authorization = await AuthorizeTargetAsync(tenantId, agentId, NetRatelPermissions.FileRead, http, services, cancellationToken);
+        if (authorization.Rejection is { } rejection) return rejection;
+        try
+        {
+            var roots = await services.GetRequiredService<IAgentFileGatewaySessionRegistry>().RootsAsync(new(tenantId, agentId), cancellationToken);
+            return Results.Ok(new GatewayFileSystemListResponse(tenantId, agentId, "", Authority,
+                roots.Select(entry => new GatewayFileSystemEntryDto(entry.Name, entry.FullPath, true, 0)).ToArray()));
+        }
+        catch (AgentFileGatewayOperationException exception) { return FileProblem(exception.Code); }
+        catch (AgentFileGatewaySessionUnavailableException) { return FileProblem("session_unavailable"); }
+    }
+
     private static async Task<IResult> StatEntryAsync(int tenantId, Guid agentId, [FromQuery] string path,
         HttpContext http, IServiceProvider services, CancellationToken cancellationToken)
     {

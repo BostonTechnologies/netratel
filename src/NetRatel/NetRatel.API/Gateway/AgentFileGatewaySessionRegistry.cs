@@ -35,6 +35,8 @@ public interface IAgentFileGatewaySessionRegistry
     GatewayFileGatewayAvailability? GetAvailability(ClientKey client) => null;
 
     Task<IReadOnlyList<GatewayFileEntry>> ListAsync(ClientKey client, string path, int pageSize, CancellationToken cancellationToken);
+    Task<IReadOnlyList<GatewayFileEntry>> RootsAsync(ClientKey client, CancellationToken cancellationToken) =>
+        Task.FromException<IReadOnlyList<GatewayFileEntry>>(new AgentFileGatewayOperationException("capability_unavailable"));
 
     Task<IReadOnlyList<GatewayFileEntry>> ListAsync(
         ClientKey client,
@@ -275,6 +277,8 @@ public sealed class AgentFileGatewaySessionRegistry(IClientPresenceRouter presen
 
     public Task<IReadOnlyList<GatewayFileEntry>> ListAsync(ClientKey client, string path, int pageSize, CancellationToken cancellationToken) =>
         GetSession(client).ListAsync(path, Math.Clamp(pageSize, 1, MaximumPageSize), cancellationToken);
+    public Task<IReadOnlyList<GatewayFileEntry>> RootsAsync(ClientKey client, CancellationToken cancellationToken) =>
+        GetSession(client).RootsAsync(cancellationToken);
 
     public Task<IReadOnlyList<GatewayFileEntry>> ListAsync(
         ClientKey client,
@@ -528,9 +532,19 @@ internal sealed class AgentFileGatewaySession(
         string path,
         int pageSize,
         GatewayFileAccessPolicy? accessPolicy,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken) =>
+        await ListCoreAsync("list", path, pageSize, accessPolicy, cancellationToken).ConfigureAwait(false);
+
+    public Task<IReadOnlyList<GatewayFileEntry>> RootsAsync(CancellationToken cancellationToken)
     {
-        var pending = await BeginAsync("list", path, pageSize, accessPolicy, cancellationToken).ConfigureAwait(false);
+        RequireCapability("file-roots-v1");
+        return ListCoreAsync("roots", "/", 128, null, cancellationToken);
+    }
+
+    private async Task<IReadOnlyList<GatewayFileEntry>> ListCoreAsync(string operation, string path, int pageSize,
+        GatewayFileAccessPolicy? accessPolicy, CancellationToken cancellationToken)
+    {
+        var pending = await BeginAsync(operation, path, pageSize, accessPolicy, cancellationToken).ConfigureAwait(false);
         try
         {
             await pending.Accepted.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -812,6 +826,14 @@ internal sealed class AgentFileGatewaySession(
             await CancelAsync(pending, "operator_upload_cancelled", CancellationToken.None).ConfigureAwait(false);
             throw;
         }
+        catch
+        {
+            // A disconnected HTTP body or a source limit can fail after the
+            // native writer has opened its staging file. End that writer before
+            // relinquishing this request; never replay a partly sent upload.
+            await CancelAsync(pending, "operator_upload_source_failed", CancellationToken.None).ConfigureAwait(false);
+            throw;
+        }
         finally
         {
             _requests.TryRemove(pending.RequestId, out _);
@@ -844,7 +866,7 @@ internal sealed class AgentFileGatewaySession(
 
     public bool TryAddPage(FileListPage page)
     {
-        if (!TryGet(page.RequestId, page.AttemptId, out var pending) || !string.Equals(pending.Operation, "list", StringComparison.Ordinal))
+        if (!TryGet(page.RequestId, page.AttemptId, out var pending) || pending.Operation is not ("list" or "roots"))
         {
             return false;
         }
@@ -863,7 +885,7 @@ internal sealed class AgentFileGatewaySession(
 
         foreach (var entry in page.Entries)
         {
-            if (string.IsNullOrWhiteSpace(entry.FullPath) || string.IsNullOrWhiteSpace(entry.Name))
+            if (string.IsNullOrWhiteSpace(entry.FullPath) || string.IsNullOrEmpty(entry.Name))
             {
                 return false;
             }
@@ -961,7 +983,7 @@ internal sealed class AgentFileGatewaySession(
             return false;
         }
 
-        if (string.Equals(pending.Operation, "list", StringComparison.Ordinal) && !pending.ListCompleted)
+        if (pending.Operation is "list" or "roots" && !pending.ListCompleted)
         {
             FailAndRemove(pending, "The agent completed a file list before sending its final page.");
             return false;

@@ -1,0 +1,6 @@
+.full-explorer { min-width: 0; }
+.full-explorer input[type=file] { max-width: 210px; }
+@media (max-width: 959px) {
+    .full-explorer { width: 100%; }
+    .full-explorer ::deep .mud-ex-fm { height: 45vh !important; }
+}

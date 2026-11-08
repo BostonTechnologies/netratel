@@ -71,3 +71,19 @@ for (const scenario of ["network-error", "unexpected-abort", "marked-session-los
     assert.equal(retryTimers.length, 0);
   });
 }
+
+test("closed document ignores late browser stream completion before creating a sandbox", async () => {
+  const explorerSource = fs.readFileSync(path.resolve(__dirname, "../../../src/NetRatel/NetRatel.Web/wwwroot/js/full-explorer.js"), "utf8");
+  const window = { addEventListener() {} };
+  let finishRead;
+  const stream = { arrayBuffer: () => new Promise(resolve => { finishRead = resolve; }) };
+  // Deliberately leave the DOM connected: disposal must fence the operation
+  // even when Blazor has not yet removed or moved its element.
+  const frame = { isConnected: true, srcdoc: "unchanged" };
+  vm.runInNewContext(explorerSource, { window });
+  const opening = window.netratelExplorer.renderDocx(frame, stream, "old-selection");
+  window.netratelExplorer.disposeDocument("old-selection");
+  finishRead(new ArrayBuffer(10));
+  await assert.rejects(opening, /preview was closed/);
+  assert.equal(frame.srcdoc, "unchanged");
+});

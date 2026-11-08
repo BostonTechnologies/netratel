@@ -59,6 +59,7 @@
     @* File-browser downloads invoke this bridge from interactive components. Load the
        fingerprinted asset before Blazor can dispatch those component events. *@
     <script id="netratel-downloads-script" src=@Assets["download.js"]></script>
+    <script src=@Assets["js/full-explorer.js"]></script>
 
     @* Cookie renewal must run in a new browser HTTP request, never on the circuit response. *@
     <script src=@Assets["js/session-renewal.js"]></script>

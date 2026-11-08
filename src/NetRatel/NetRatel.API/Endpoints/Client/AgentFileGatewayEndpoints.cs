@@ -28,6 +28,7 @@ public static partial class AgentFileGatewayEndpoints
         group.MapPost("/directory", CreateDirectoryAsync).RequireAuthorization("FileWriter");
         group.MapDelete("/directory", DeleteDirectoryAsync).RequireAuthorization("FileDeleter");
         group.MapGet("/stat", StatEntryAsync).RequireAuthorization("FileReader");
+        group.MapGet("/roots", RootsAsync).RequireAuthorization("FileReader");
         group.MapPost("/entries", MutateEntriesAsync).RequireAuthorization();
         group.MapMethods("/content", ["GET", "HEAD"], ReadContentAsync).RequireAuthorization("FileReader");
         group.MapPut("/content", WriteContentAsync).RequireAuthorization("FileWriter");
@@ -150,9 +151,14 @@ public static partial class AgentFileGatewayEndpoints
             response.StatusCode = StatusCodes.Status200OK;
             response.ContentType = "application/octet-stream";
             response.Headers.ContentDisposition = "attachment";
-            await foreach (var chunk in operation.Chunks.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+            await using var chunks = operation.Chunks.ReadAllAsync(cancellationToken).GetAsyncEnumerator(cancellationToken);
+            var hasChunk = await chunks.MoveNextAsync();
+            while (hasChunk)
             {
-                await response.Body.WriteAsync(chunk, cancellationToken).ConfigureAwait(false);
+                var current = chunks.Current;
+                hasChunk = await chunks.MoveNextAsync();
+                if (!hasChunk) await operation.Completion.ConfigureAwait(false);
+                await response.Body.WriteAsync(current, cancellationToken).ConfigureAwait(false);
                 await response.Body.FlushAsync(cancellationToken).ConfigureAwait(false);
             }
 
@@ -176,7 +182,8 @@ public static partial class AgentFileGatewayEndpoints
             {
                 await operation.CancelAsync("operator_download_cancelled", CancellationToken.None).ConfigureAwait(false);
             }
-            response.StatusCode = StatusCodes.Status499ClientClosedRequest;
+            if (response.HasStarted) context.Abort();
+            else response.StatusCode = StatusCodes.Status499ClientClosedRequest;
         }
         catch
         {
@@ -335,6 +342,7 @@ public static partial class AgentFileGatewayEndpoints
     {
         if (context.Response.HasStarted)
         {
+            context.Abort();
             return;
         }
 

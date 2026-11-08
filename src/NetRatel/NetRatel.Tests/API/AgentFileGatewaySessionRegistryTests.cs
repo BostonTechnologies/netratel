@@ -11,6 +11,31 @@ namespace NetRatel.Tests.API;
 public sealed class AgentFileGatewaySessionRegistryTests
 {
     [Fact]
+    public async Task FailedUploadSourceCancelsTheNativeWriterWithoutSendingACommit()
+    {
+        var client = new ClientKey(3, Guid.NewGuid());
+        var connection = Guid.NewGuid();
+        var registry = new AgentFileGatewaySessionRegistry(new CurrentPresenceRouter(client, connection, 2));
+        using var registration = registry.Register(client, connection, 2);
+        using var source = new FailedUploadSource();
+        var writing = registry.WriteAsync(client, "/data/upload.bin", source, CancellationToken.None);
+        var dispatch = (await registration.Reader.ReadAsync()).Dispatch;
+        registry.TryAccept(client, new FileRequestAccepted { RequestId = dispatch.RequestId, AttemptId = dispatch.AttemptId }).Should().BeTrue();
+        var outcome = () => writing;
+        await outcome.Should().ThrowAsync<IOException>().WithMessage("source disconnected");
+        var cancel = await registration.Reader.ReadAsync();
+        cancel.Cancel.RequestId.Should().Be(dispatch.RequestId);
+        cancel.Cancel.Reason.Should().Be("operator_upload_source_failed");
+        registration.Reader.TryRead(out _).Should().BeFalse();
+    }
+
+    private sealed class FailedUploadSource : MemoryStream
+    {
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default) =>
+            ValueTask.FromException<int>(new IOException("source disconnected"));
+    }
+
+    [Fact]
     public async Task ListAsync_PreservesCaseDistinctPosixNamesForContinuation()
     {
         var client = new ClientKey(3, Guid.NewGuid());

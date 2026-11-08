@@ -1,0 +1,46 @@
+@using NetRatel.Shared.Contracts.FileSystem
+@using Microsoft.JSInterop
+@implements IAsyncDisposable
+@inject IJSRuntime Js
+@inject ILogger<FullFileViewerDialog> Logger
+<MudDialog>
+    <TitleContent><MudText Typo="Typo.h6">@File.Name · @HostLabel</MudText></TitleContent>
+    <DialogContent>
+        <MudText Typo="Typo.caption">@File.FullPath · @File.SizeBytes bytes</MudText>
+        @if (_status is not null) { <MudAlert Severity="Severity.Info" Dense="true">@_status</MudAlert> }
+        <GovernedFilePreview TenantId="@TenantId" AgentId="@AgentId" File="@File" />
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="DownloadAsync" Disabled="@(_download is not null)">Download file</MudButton>
+        @if (_download is not null) { <MudButton OnClick="CancelAsync">Cancel download</MudButton> }
+        <MudButton OnClick="@(() => Dialog.Close())">Return to Explorer</MudButton>
+    </DialogActions>
+</MudDialog>
+@code {
+    [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = default!;
+    [Parameter] public int TenantId { get; set; }
+    [Parameter] public Guid AgentId { get; set; }
+    [Parameter] public string HostLabel { get; set; } = "Client";
+    [Parameter, EditorRequired] public GatewayFileSystemEntryDto File { get; set; } = default!;
+    private string? _download, _status;
+    private DotNetObjectReference<FullFileViewerDialog>? _callbacks;
+    private async Task DownloadAsync()
+    {
+        _callbacks ??= DotNetObjectReference.Create(this);
+        _download = Guid.NewGuid().ToString("D");
+        await Js.InvokeVoidAsync("netratelDownloads.start", $"/file-browser/transfers/download?tenantId={TenantId}&agentId={AgentId:D}&path={Uri.EscapeDataString(File.FullPath)}&transferId={_download}&expectedBytes={File.SizeBytes}", _download, _callbacks);
+    }
+    [JSInvokable] public Task OnDownloadStatus(string state, long bytes, long? expected, string? failure)
+    {
+        _status = $"Download {state}: {bytes:N0} bytes {failure}";
+        if (state is "completed" or "failed" or "cancelled") _download = null;
+        return InvokeAsync(StateHasChanged);
+    }
+    private async Task CancelAsync() { if (_download is not null) await Js.InvokeVoidAsync("netratelDownloads.cancel", _download); }
+    public async ValueTask DisposeAsync()
+    {
+        try { await CancelAsync(); }
+        catch (JSDisconnectedException exception) { Logger.LogDebug(exception, "Fullscreen viewer transfer owner ended with its circuit"); }
+        _callbacks?.Dispose();
+    }
+}

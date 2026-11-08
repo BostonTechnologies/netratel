@@ -45,6 +45,7 @@ public sealed class RemoteFilePathTests
     [Theory]
     [InlineData("/var/data", "new folder", "/var/data/new folder")]
     [InlineData("/var/data ", " reports ", "/var/data / reports ")]
+    [InlineData("/var/data", " ", "/var/data/ ")]
     [InlineData("/", "logs..archive", "/logs..archive")]
     [InlineData("C:/Data", "new folder", "C:\\Data\\new folder")]
     public void TryJoinDirectory_PreservesRemotePathRules(string parent, string name, string expected)

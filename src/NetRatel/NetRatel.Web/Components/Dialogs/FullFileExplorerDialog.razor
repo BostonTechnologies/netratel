@@ -1,0 +1,380 @@
+@using MudBlazor.Extensions.Components
+@using MudBlazor.Extensions.Core
+@using MudBlazor.Extensions.Core.Enums
+@using MudBlazor.Extensions.Core.FileManager
+@using NetRatel.Shared.Contracts.FileSystem
+@using NetRatel.Web.Components.Dialogs.FileBrowser
+@using NetRatel.Web.Services.FileSystem
+@using Microsoft.JSInterop
+@implements IAsyncDisposable
+@inject GatewayFileSystemApiService Gateway
+@inject ExplorerPreferenceService Preferences
+@inject IDialogService Dialogs
+@inject IJSRuntime Js
+@inject FileBrowserCircuitLifetime Circuit
+@inject ILogger<FullFileExplorerDialog> Logger
+
+<MudDialog ContentClass="full-explorer-content">
+    <TitleContent>
+        <MudStack Row="true" AlignItems="AlignItems.Center">
+            <MudText Typo="Typo.h6">Full Explorer · @HostLabel</MudText><MudSpacer />
+            <MudButton Size="Size.Small" OnClick="OpenBasicAsync">Open Basic</MudButton>
+            <MudIconButton Icon="@Icons.Material.Filled.Close" OnClick="CloseAsync" aria-label="Close Full Explorer" />
+        </MudStack>
+    </TitleContent>
+    <DialogContent>
+        <div @ref="_element" class="full-explorer" data-testid="full-explorer" @onkeydown="KeyboardAsync">
+            <MudStack Row="true" Spacing="1" AlignItems="AlignItems.Center" Wrap="Wrap.Wrap">
+                <MudTextField T="string" @bind-Value="_path" Label="Remote path" Variant="Variant.Outlined" Margin="Margin.Dense"
+                              OnKeyDown="PathKeyAsync" Style="min-width:220px;flex:1" />
+                <MudButton Disabled="@_busy" OnClick="NavigateAsync">Go</MudButton>
+                <MudButton Disabled="@_busy" OnClick="RefreshAsync" StartIcon="@Icons.Material.Filled.Refresh">Refresh</MudButton>
+                <MudButton Disabled="@_busy" OnClick="UpAsync">Up</MudButton>
+                <MudButton OnClick="@(() => _view = _view == MudExFileGridView.Details ? MudExFileGridView.Tiles : MudExFileGridView.Details)">Details / tiles</MudButton>
+            </MudStack>
+            <MudStack Row="true" Spacing="1" AlignItems="AlignItems.Center" Wrap="Wrap.Wrap">
+                <MudMenu Label="New" Disabled="@_busy" Dense="true">
+                    <MudMenuItem Disabled="@(_provider?.Listing?.CanCreateDirectory != true)" OnClick="@(() => ShowNew("folder"))">New folder</MudMenuItem>
+                    <MudMenuItem Disabled="@(_provider?.Listing?.Capabilities.CreateFile != true)" OnClick="@(() => ShowNew("file"))">New empty file</MudMenuItem>
+                </MudMenu>
+                <MudButton Disabled="@(_busy || !CanRename)" OnClick="BeginRename">Rename</MudButton>
+                <MudButton Disabled="@(_busy || !CanMove)" OnClick="@(() => _moving = true)">Move to…</MudButton>
+                <MudButton Disabled="@(_busy || !CanDelete)" Color="Color.Error" OnClick="@(() => DeleteAsync(_selected))">Delete</MudButton>
+                <MudButton Disabled="@(_busy || _selected.Count != 1 || _selected[0].IsDirectory)" OnClick="DownloadAsync">Download file</MudButton>
+                <MudCheckBox T="bool" @bind-Value="_replaceUpload" Label="Replace selected file on upload" Disabled="@(SelectedFile is null || _provider?.Listing?.Capabilities.DeleteFile != true)" />
+                <label class="mud-button-root mud-button-text mud-button-text-primary" style="cursor:pointer">
+                    Upload <input type="file" @ref="_upload" @onchange="UploadAsync" disabled="@(_busy || _provider?.Listing?.Capabilities.ConditionalUpload != true)" aria-label="Upload remote file" />
+                </label>
+                <MudSpacer />
+                <MudButton Size="Size.Small" OnClick="SaveLayoutAsync">Save layout</MudButton>
+                <MudButton Size="Size.Small" OnClick="ResetLayoutAsync">Reset layout</MudButton>
+                <MudButton Size="Size.Small" OnClick="FloatAsync">Float preview</MudButton>
+                <MudButton Size="Size.Small" OnClick="PopoutAsync">Pop out / rejoin</MudButton>
+            </MudStack>
+            @if (_newKind is not null)
+            {
+                <div @onkeydown:stopPropagation="true">
+                    <MudTextField T="string" @bind-Value="_newName" Label="@($"New {_newKind} name (create only)")" AutoFocus="true" />
+                    <MudButton OnClick="CreateAsync" Disabled="@_busy">Create</MudButton><MudButton OnClick="@(() => _newKind = null)">Cancel</MudButton>
+                </div>
+            }
+            @if (_moving)
+            {
+                <div @onkeydown:stopPropagation="true">
+                    <MudTextField T="string" @bind-Value="_moveTarget" Label="Destination directory on this client" />
+                    <MudButton OnClick="MoveToPathAsync" Disabled="@_busy">Move selection</MudButton><MudButton OnClick="@(() => _moving = false)">Cancel</MudButton>
+                </div>
+            }
+            @if (_error is not null) { <MudAlert Severity="Severity.Warning" Dense="true">@_error</MudAlert> }
+            @if (_busy && _operation is not null) { <MudButton Color="Color.Warning" OnClick="CancelOperation">Cancel operation</MudButton> }
+            @if (_provider?.Listing is { Capabilities.Stat: false })
+            { <MudAlert Severity="Severity.Info">This client lacks the metadata capability required by Full previews. Update the client or open Basic.</MudAlert> }
+            <MudMenu @ref="_contextMenu" Dense="true" PositionAtCursor="true" Style="display:none">
+                <MudMenuItem Disabled="@(!CanRename)" OnClick="BeginRename">Rename</MudMenuItem>
+                <MudMenuItem Disabled="@(!CanMove)" OnClick="@(() => _moving = true)">Move to…</MudMenuItem>
+                <MudMenuItem Disabled="@(!CanDelete)" OnClick="@(() => DeleteAsync(_selected))">Delete</MudMenuItem>
+                <MudMenuItem Disabled="@(SelectedFile is null)" OnClick="DownloadAsync">Download file</MudMenuItem>
+            </MudMenu>
+            @if (_transferState is not null)
+            {
+                <MudAlert Severity="Severity.Info" Dense="true">@_transferState <MudButton OnClick="CancelTransfersAsync">Cancel transfer</MudButton></MudAlert>
+            }
+            @if (_provider is not null && _preferencesLoaded && _assetsReady)
+            {
+                <MudExFileManager @ref="_manager" Manager="@_provider" Panels="@(MudExFileManagerPanels.Tree | MudExFileManagerPanels.Files)"
+                                  ShowActions="false" AllowDragDrop="false" AllowPopout="false" FileGridView="MudExFileGridView.Details"
+                                  Height="@("65vh")" InitialLayoutJson="@_layout" CurrentDirectoryChanged="DirectoryChangedAsync"
+                                  SelectedNodesChanged="SelectionAsync" OnFileOpened="OpenFileAsync">
+                    <FileAreaTemplate Context="entries">
+                        <MudExFileGrid @ref="_grid" Items="@entries" @bind-View="_view" SelectedItems="@_selected"
+                                       SelectedItemsChanged="GridSelectionAsync" AllowMultiSelect="true" AllowRubberBand="true"
+                                       AllowRename="false" AllowContextMenu="false" AllowDragDrop="@CanMoveAvailable" OnOpened="OpenEntryAsync"
+                                       OnDeleteRequested="DeleteAsync" OnMoveRequested="MoveDropAsync" Virtualize="true">
+                            <ItemTemplate Context="node">
+                                @if (ReferenceEquals(node, _renameNode))
+                                {
+                                    <div @onclick:stopPropagation="true" @onkeydown:stopPropagation="true">
+                                        <input @bind="_renameName" @bind:event="oninput" @onkeydown="RenameKeyAsync" autofocus aria-label="New remote name" />
+                                        <MudButton Size="Size.Small" OnClick="CommitRenameAsync">Save</MudButton><MudButton Size="Size.Small" OnClick="@(() => _renameNode = null)">Cancel</MudButton>
+                                    </div>
+                                }
+                                else
+                                {
+                                    <span title="@node.FullPath" @oncontextmenu="@(args => ContextAsync(node, args))" @oncontextmenu:preventDefault="true" @oncontextmenu:stopPropagation="true"><MudIcon Size="Size.Small" Icon="@(node.IsDirectory ? Icons.Material.Filled.Folder : Icons.Material.Filled.InsertDriveFile)" /> @node.Name</span>
+                                }
+                            </ItemTemplate>
+                            <ContextMenuContent>
+                                <MudMenuItem Disabled="@(!CanRename)" OnClick="BeginRename">Rename</MudMenuItem>
+                                <MudMenuItem Disabled="@(!CanMove)" OnClick="@(() => _moving = true)">Move to…</MudMenuItem>
+                                <MudMenuItem Disabled="@(_selected.Count != 1 || _selected[0].IsDirectory)" OnClick="DownloadAsync">Download file</MudMenuItem>
+                            </ContextMenuContent>
+                        </MudExFileGrid>
+                    </FileAreaTemplate>
+                    <ChildContent>
+                        <MudExDockItem Id="remote-preview" Title="Preview" Direction="DockDirection.Right" InitialWidth="380" CanClose="false" CanPopout="true" Renderer="DockRendererMode.Always">
+                            @PreviewContent()
+                        </MudExDockItem>
+                        <MudExDockItem Id="remote-details" Title="Details" StackWith="remote-preview" CanClose="false" CanPopout="true" Renderer="DockRendererMode.Always">
+                            @DetailsContent()
+                        </MudExDockItem>
+                    </ChildContent>
+                </MudExFileManager>
+                <MudHidden Breakpoint="Breakpoint.MdAndUp">
+                    <MudTabs><MudTabPanel Text="Preview">@PreviewContent()</MudTabPanel><MudTabPanel Text="Details">@DetailsContent()</MudTabPanel></MudTabs>
+                </MudHidden>
+                <MudText Typo="Typo.caption">@_selected.Count selected · immediate directory only · listing limit 4,096 · Full is read-only for file contents</MudText>
+            }
+        </div>
+    </DialogContent>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private IMudDialogInstance Dialog { get; set; } = default!;
+    [Parameter] public int TenantId { get; set; }
+    [Parameter] public Guid AgentId { get; set; }
+    [Parameter] public string HostLabel { get; set; } = "Client";
+    [Parameter] public string InitialPath { get; set; } = "/";
+    private readonly CancellationTokenSource _lifetime = new();
+    private CancellationTokenSource? _operation;
+    private CancellationTokenRegistration _connection;
+    private (int TenantId, Guid AgentId) _context;
+    private CancellationToken CommandToken => _operation?.Token ?? _lifetime.Token;
+    private RemoteFileStructureManager? _provider;
+    private MudExFileManager? _manager;
+    private MudExFileGrid? _grid;
+    private MudMenu? _contextMenu;
+    private MudExFileGridView _view = MudExFileGridView.Details;
+    private IReadOnlyList<MudExFileStructureNode> _selected = [];
+    private MudExFileStructureNode? _renameNode;
+    private string _renameName = "", _path = "/", _newName = "", _moveTarget = "";
+    private string? _newKind, _error, _layout, _scope, _transferState, _uploadId, _downloadId;
+    private bool _busy, _moving, _initialized, _preferencesLoaded, _replaceUpload, _assetsReady;
+    private ElementReference _element, _upload;
+    private DotNetObjectReference<FullFileExplorerDialog>? _callbacks;
+    private bool CanMoveAvailable => _provider?.Listing?.Capabilities.MoveEntry == true;
+    private bool CanMove => CanMoveAvailable && _selected.Count is > 0 and <= 128 && _selected.All(node => !RemoteFilePath.IsRoot(node.FullPath));
+    private bool CanRename => CanMoveAvailable && _selected.Count == 1;
+    private bool CanDelete => _selected.Count is > 0 and <= 128 && _selected.All(node => !RemoteFilePath.IsRoot(node.FullPath)) && _selected.All(node => node.IsDirectory
+        ? _provider?.Listing?.Capabilities.DeleteRecursive == true : _provider?.Listing?.Capabilities.DeleteFile == true);
+    private GatewayFileSystemEntryDto? SelectedFile => _selected is [{ IsDirectory: false } node] && _provider?.TryEntry(node, out var file) == true ? file : null;
+
+    protected override Task OnInitializedAsync()
+    {
+        _context = (TenantId, AgentId);
+        _connection = Circuit.Token.Register(() => _lifetime.Cancel());
+        _path = RemoteFilePath.TryNormalizeDirectory(InitialPath, out var normalized) ? normalized : "/";
+        _provider = new(Gateway, TenantId, AgentId, _path, _lifetime.Token);
+        _layout = DefaultLayout;
+        return Task.CompletedTask;
+    }
+    protected override void OnParametersSet()
+    {
+        if (_context != (TenantId, AgentId)) { _lifetime.Cancel(); Dialog.Close(); }
+    }
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_lifetime.IsCancellationRequested) return;
+        if (!_preferencesLoaded)
+        {
+            _preferencesLoaded = true;
+            try { await Js.InvokeVoidAsync("netratelExplorer.initializeMudEx"); _assetsReady = true; }
+            catch (JSException) { _error = "Full Explorer assets could not initialize. Open Basic or reload this page."; await InvokeAsync(StateHasChanged); return; }
+            _callbacks = DotNetObjectReference.Create(this);
+            _scope = await Preferences.ScopeAsync(TenantId);
+            await Js.InvokeVoidAsync("netratelExplorer.attach", _element, _callbacks);
+            _layout = await Js.InvokeAsync<string?>("netratelExplorer.get", _scope, "layout") ?? DefaultLayout;
+            await InvokeAsync(StateHasChanged);
+            return;
+        }
+        if (_initialized || _manager is null) return;
+        _initialized = true;
+        await NavigateAsync();
+    }
+    private async Task NavigateAsync()
+    {
+        if (_provider is null || _manager is null || !RemoteFilePath.TryNormalizeDirectory(_path, out var path)) { _error = "Enter an absolute remote path."; return; }
+        try { await _manager.NavigateToAsync(_provider.Directory(path)); }
+        catch (Exception exception) when (exception is InvalidOperationException or HttpRequestException) { _error = exception.Message; }
+    }
+    private async Task DirectoryChangedAsync(MudExFileStructureNode? node)
+    {
+        if (node is not null && ReferenceEquals(node, _manager?.CurrentDirectory))
+        { _path = node.FullPath; _provider!.CurrentPath = _path; }
+        _selected = [];
+        _renameNode = null;
+        await Js.InvokeVoidAsync("netratelExplorer.update", _element, TenantId, AgentId.ToString("D"), _path,
+            _provider?.Listing?.Capabilities.ConditionalUpload == true);
+        await InvokeAsync(StateHasChanged);
+    }
+    private Task SelectionAsync(IReadOnlyCollection<MudExFileStructureNode> selection)
+    { _selected = selection.ToArray(); _replaceUpload = false; return InvokeAsync(StateHasChanged); }
+    private async Task ContextAsync(MudExFileStructureNode node, MouseEventArgs args)
+    {
+        if (!_selected.Contains(node)) await GridSelectionAsync([node]);
+        if (_contextMenu is not null) await _contextMenu.OpenMenuAsync(args);
+    }
+    private Task GridSelectionAsync(IReadOnlyCollection<MudExFileStructureNode> selection) => _manager!.SelectAsync(selection);
+    private Task OpenEntryAsync(MudExFileStructureNode node) => _manager!.OpenAsync(node);
+    private async Task OpenFileAsync(MudExFileStructureNode node)
+    {
+        await Js.InvokeVoidAsync("netratelExplorer.holdFocus", _element);
+        var parameters = new DialogParameters<FullFileViewerDialog>
+        { { value => value.TenantId, TenantId }, { value => value.AgentId, AgentId }, { value => value.HostLabel, HostLabel }, { value => value.File, _provider!.Entry(node) } };
+        var viewer = await Dialogs.ShowAsync<FullFileViewerDialog>(node.Name, parameters,
+            new DialogOptions { FullScreen = true, CloseOnEscapeKey = true });
+        await viewer.Result;
+        await Js.InvokeVoidAsync("netratelExplorer.focus", _element);
+    }
+    private async Task RefreshAsync()
+    {
+        if (_manager is null || _provider is null) return;
+        _selected = [];
+        _renameNode = null;
+        _provider.Invalidate();
+        await _manager.RefreshAsync();
+        await NavigateAsync();
+    }
+    private Task UpAsync() { if (RemoteFilePath.TryGetDirectoryParent(_path, out var parent)) _path = parent; return NavigateAsync(); }
+    private Task PathKeyAsync(KeyboardEventArgs args) => args.Key == "Enter" ? NavigateAsync() : Task.CompletedTask;
+    private void ShowNew(string kind) { _newKind = kind; _newName = ""; }
+    private Task CreateAsync() => RunAsync(async () =>
+    {
+        if (_newKind == "file") await _provider!.CreateFileAsync(_path, _newName, CommandToken);
+        else await _provider!.CreateDirectoryAsync(_provider.Directory(_path), _newName, CommandToken);
+        _newKind = null;
+    });
+    private void BeginRename() { if (CanRename) { _renameNode = _selected[0]; _renameName = _renameNode.Name; } }
+    private Task KeyboardAsync(KeyboardEventArgs args) { if (args.Key == "F2" && _renameNode is null) BeginRename(); return Task.CompletedTask; }
+    private Task RenameKeyAsync(KeyboardEventArgs args)
+    { if (args.Key == "Escape") _renameNode = null; return args.Key == "Enter" ? CommitRenameAsync() : Task.CompletedTask; }
+    private Task CommitRenameAsync() => _renameNode is { } node ? RunAsync(async () =>
+        { await _provider!.RenameAsync(node, _renameName, CommandToken); _renameNode = null; }) : Task.CompletedTask;
+    private Task MoveToPathAsync() => RunAsync(async () =>
+    { await _provider!.MoveAsync(_selected, _provider.Directory(_moveTarget), CommandToken); _moving = false; });
+    private Task MoveDropAsync(MudExFileGridMoveRequest request) => RunAsync(() => _provider!.MoveAsync(request.Nodes,
+        request.Target ?? _provider.Directory(_path), CommandToken));
+    private async Task DeleteAsync(IReadOnlyCollection<MudExFileStructureNode> nodes)
+    {
+        if (_busy || nodes.Count == 0) return;
+        if (nodes.Count > 128) { _error = "Choose at most 128 top-level items per operation."; return; }
+        if (nodes.Any(node => node.IsDirectory ? _provider?.Listing?.Capabilities.DeleteRecursive != true : _provider?.Listing?.Capabilities.DeleteFile != true))
+        { _error = "The current client capability and effective permissions do not allow this deletion."; return; }
+        var recursive = nodes.Any(node => node.IsDirectory);
+        if (await Dialogs.ShowMessageBoxAsync($"Delete on {HostLabel}",
+            $"Delete {nodes.Count} selected top-level item(s)?{(recursive ? " All descendants of selected folders are included." : "")}\n" + string.Join("\n", nodes.Take(8).Select(node => node.FullPath)),
+            yesText: recursive ? "Delete recursively" : "Delete", cancelText: "Cancel") != true) return;
+        await RunAsync(() => _provider!.DeleteAsync(nodes, CommandToken));
+    }
+    private async Task RunAsync(Func<Task> operation)
+    {
+        if (_busy) return;
+        _busy = true; _error = null;
+        _operation = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+        try { await operation(); }
+        catch (Exception exception) when (exception is HttpRequestException or InvalidOperationException or RemoteFileBatchException or OperationCanceledException or JSException)
+        { _error = exception.Message; }
+        finally
+        {
+            try
+            {
+                if (_provider?.RefreshFailures.Count > 0) _error = $"{_error} Refresh required: {string.Join("; ", _provider.RefreshFailures)}";
+                if (!_lifetime.IsCancellationRequested) await RefreshAsync();
+            }
+            catch (Exception exception) when (exception is HttpRequestException or InvalidOperationException or OperationCanceledException)
+            { _error = $"{_error} Refresh failed: {exception.Message}"; }
+            finally { _operation.Dispose(); _operation = null; _busy = false; }
+        }
+    }
+    private async Task CancelOperation() { _operation?.Cancel(); await CancelTransfersAsync(); }
+    private async Task DownloadAsync()
+    {
+        if (SelectedFile is not { } file) return;
+        _downloadId = Guid.NewGuid().ToString("D");
+        _transferState = "Preparing download…";
+        await Js.InvokeVoidAsync("netratelDownloads.start", $"/file-browser/transfers/download?tenantId={TenantId}&agentId={AgentId:D}&path={Uri.EscapeDataString(file.FullPath)}&transferId={_downloadId}&expectedBytes={file.SizeBytes}", _downloadId, _callbacks);
+    }
+    private async Task UploadAsync() => await RunAsync(async () =>
+    {
+        string? replacement = null, version = null;
+        if (_replaceUpload && SelectedFile is { } selected)
+        {
+            if (await Dialogs.ShowMessageBoxAsync($"Replace on {HostLabel}", $"Replace '{selected.FullPath}' with the selected upload?", yesText: "Replace file", cancelText: "Cancel") != true) return;
+            var stat = await Gateway.StatAsync(TenantId, AgentId, selected.FullPath, _lifetime.Token);
+            replacement = selected.FullPath; version = stat.ObservedVersion;
+        }
+        _uploadId = Guid.NewGuid().ToString("D");
+        try
+        {
+            await Js.InvokeVoidAsync("netratelExplorer.upload", _upload, TenantId, AgentId.ToString("D"), _path, _uploadId, _callbacks, replacement, version);
+            _transferState = "Upload completed";
+        }
+        catch { _transferState = "Upload ended. Inspect the remote directory before retrying."; throw; }
+        finally { _uploadId = null; }
+    });
+    [JSInvokable] public Task OnUploadProgress(long bytes, long total) { _transferState = $"Uploading {bytes:N0} / {total:N0} bytes"; return InvokeAsync(StateHasChanged); }
+    [JSInvokable] public Task<bool> OnExternalUploadStarted()
+    { if (_busy) return Task.FromResult(false); _busy = true; _error = null; return Task.FromResult(true); }
+    [JSInvokable] public async Task OnExternalUploadCompleted(string? error)
+    { _busy = false; _error = error; _transferState = error is null ? "Upload completed" : "Upload ended. Inspect the remote directory before retrying."; await RefreshAsync(); await InvokeAsync(StateHasChanged); }
+    [JSInvokable] public Task OnDownloadStatus(string state, long bytes, long? expected, string? failure)
+    { _transferState = $"Download {state}: {bytes:N0} bytes {failure}"; if (state is "completed" or "failed" or "cancelled") _downloadId = null; return InvokeAsync(StateHasChanged); }
+    private async Task CancelTransfersAsync()
+    {
+        await Js.InvokeVoidAsync("netratelExplorer.cancelUploads", _element);
+        if (_uploadId is not null) await Js.InvokeVoidAsync("netratelFileTransfers.cancel", _uploadId);
+        if (_downloadId is not null) await Js.InvokeVoidAsync("netratelDownloads.cancel", _downloadId);
+    }
+    private async Task SaveLayoutAsync()
+    {
+        if (_manager?.Dock is not { } dock || _scope is null) return;
+        await dock.ReturnPanelAsync("remote-preview"); await dock.ReturnPanelAsync("remote-details");
+        await Js.InvokeVoidAsync("netratelExplorer.set", _scope, "layout", await dock.SaveLayoutAsync());
+    }
+    private async Task ResetLayoutAsync() { if (_manager is not null) await _manager.RestoreLayoutAsync(DefaultLayout); }
+    private async Task FloatAsync() { if (_manager?.Dock is { } dock) await dock.FloatPanelAsync("remote-preview"); }
+    private async Task PopoutAsync()
+    {
+        if (_manager?.Dock is not { } dock) return;
+        if (await dock.IsPopoutAsync("remote-preview")) await dock.ReturnPanelAsync("remote-preview");
+        else if (!await dock.PopoutPanelAsync("remote-preview")) _error = "The popup was blocked. Allow popups for this instance and try again.";
+    }
+    private async Task OpenBasicAsync()
+    {
+        await Preferences.RememberAsync(TenantId, false);
+        await RejoinAsync();
+        Dialog.Close();
+        await Dialogs.ShowAsync<ClientFileSystemViewer>("Basic Explorer", new DialogParameters<ClientFileSystemViewer>
+        { { value => value.TenantId, TenantId }, { value => value.AgentId, AgentId }, { value => value.HostLabel, HostLabel }, { value => value.InitialPath, _path } },
+            new DialogOptions { FullScreen = true, CloseOnEscapeKey = true });
+    }
+    private async Task CloseAsync() { await RejoinAsync(); Dialog.Close(); }
+    private async Task RejoinAsync()
+    {
+        if (_manager?.Dock is { } dock) { await dock.ReturnPanelAsync("remote-preview"); await dock.ReturnPanelAsync("remote-details"); }
+    }
+    public async ValueTask DisposeAsync()
+    {
+        _connection.Dispose();
+        _lifetime.Cancel();
+        try
+        {
+            await CancelTransfersAsync();
+            await Js.InvokeVoidAsync("netratelExplorer.detach", _element);
+        }
+        catch (JSDisconnectedException exception) { Logger.LogDebug(exception, "Explorer circuit ended after cancellation of owned work"); }
+        _callbacks?.Dispose();
+        _lifetime.Dispose();
+    }
+    private RenderFragment PreviewContent() => @<div style="height:100%;overflow:auto">
+        @if (SelectedFile is { } file)
+        { <MudButton Size="Size.Small" OnClick="@(() => OpenFileAsync(_selected[0]))">Open fullscreen</MudButton><GovernedFilePreview @key="(TenantId, AgentId, file.FullPath)" TenantId="@TenantId" AgentId="@AgentId" File="@file" /> }
+        else { <MudText Class="pa-4">Select one file to preview.</MudText> }
+    </div>;
+    private RenderFragment DetailsContent() => @<div class="pa-4">
+        @foreach (var node in _selected.Take(128))
+        { if (_provider!.TryEntry(node, out var entry)) { <MudText>@entry.FullPath</MudText><MudText Typo="Typo.caption">@entry.SizeBytes bytes · modified @entry.LastModifiedUtc · created @(entry.CreatedUtc?.ToString() ?? "unknown")</MudText> } }
+    </div>;
+    private const string DefaultLayout = """
+    {"grid":{"width":1400,"height":800,"orientation":"HORIZONTAL","root":{"type":"branch","size":800,"data":[{"type":"leaf","size":240,"data":{"id":"1","views":["tree"],"activeView":"tree"}},{"type":"leaf","size":780,"data":{"id":"2","views":["files"],"activeView":"files"}},{"type":"leaf","size":380,"data":{"id":"3","views":["remote-preview","remote-details"],"activeView":"remote-preview"}}]}},"panels":{"tree":{"id":"tree","title":"Folders","renderer":"always"},"files":{"id":"files","title":"Files","renderer":"always"},"remote-preview":{"id":"remote-preview","title":"Preview","renderer":"always"},"remote-details":{"id":"remote-details","title":"Details","renderer":"always"}},"activeGroup":"2"}
+    """;
+}

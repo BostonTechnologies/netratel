@@ -18,7 +18,7 @@ public sealed class FileBrowserTransfersControllerTests
     public void ContentLeasesBindOperatorAndVersionAndHaveIndependentLifetimes()
     {
         var clock = new LeaseClock();
-        var registry = new FileBrowserContentRegistry(clock);
+        using var registry = new FileBrowserContentRegistry(clock);
         var file = new NetRatel.Shared.Contracts.FileSystem.GatewayFileSystemStatResponse(3, AgentId,
             "/fixtures/video.mp4", false, 1234, clock.GetUtcNow(), null, "v1:1234:1:1", true);
         var inline = registry.Create("operator-a", file, "video/mp4");
@@ -27,8 +27,15 @@ public sealed class FileBrowserTransfersControllerTests
         registry.TryGet(inline.Id, "operator-a", out var found).Should().BeTrue();
         found.File.Should().Be(file);
         registry.Release(inline.Id);
+        inline.Lifetime.IsCancellationRequested.Should().BeTrue("closing a preview aborts its active range requests");
+        fullscreen.Lifetime.IsCancellationRequested.Should().BeFalse("another consumer owns an independent lease");
         registry.TryGet(inline.Id, "operator-a", out _).Should().BeFalse();
         registry.TryGet(fullscreen.Id, "operator-a", out _).Should().BeTrue();
+        using var circuit = new CancellationTokenSource();
+        var connected = registry.Create("operator-a", file, "video/mp4", circuit.Token);
+        circuit.Cancel();
+        connected.Lifetime.IsCancellationRequested.Should().BeTrue();
+        registry.TryGet(connected.Id, "operator-a", out _).Should().BeFalse();
         clock.Now += TimeSpan.FromMinutes(16);
         registry.TryGet(fullscreen.Id, "operator-a", out _).Should().BeFalse();
     }

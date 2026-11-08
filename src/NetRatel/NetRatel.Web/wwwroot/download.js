@@ -73,7 +73,7 @@ window.netratelDownloads = {
 window.netratelFileTransfers = {
   pick: (input) => input.click(),
   uploads: new Map(),
-  upload: (input, url, id, callbacks) => new Promise((resolve, reject) => {
+  upload: (input, url, id, callbacks, headers = {}) => new Promise((resolve, reject) => {
     const file = input.files && input.files[0];
     if (!file) { reject(new Error("Choose a file to upload.")); return; }
     const transfer = { request: null, cancelled: false, settled: false, finish: null };
@@ -93,6 +93,7 @@ window.netratelFileTransfers = {
       const request = new XMLHttpRequest();
       transfer.request = request;
       request.open("PUT", url, true);
+      for (const [name, value] of Object.entries(headers)) request.setRequestHeader(name, value);
       request.upload.onprogress = (event) => {
         if (event.lengthComputable) {
           notify("OnUploadProgress", event.loaded, event.total);

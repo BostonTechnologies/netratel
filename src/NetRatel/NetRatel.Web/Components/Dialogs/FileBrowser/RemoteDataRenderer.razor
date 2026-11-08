@@ -1,0 +1,128 @@
+@using MudBlazor.Extensions.Core
+@using MudBlazor.Extensions.Components
+@using MudBlazor.Extensions.Services
+@using NetRatel.Web.Services.FileSystem
+@using Microsoft.JSInterop
+@implements IMudExFileDisplay
+@implements IAsyncDisposable
+@inject MudExFileService Files
+@inject IJSRuntime Js
+@inject ILogger<RemoteDataRenderer> Logger
+
+<div class="remote-data-renderer" style="height:100%;overflow:auto;padding:12px">
+    @if (Document is not null)
+    {
+        <MudText Typo="Typo.caption">@Document.Title</MudText>
+        @if (Document.Kind == "image" && _url is not null)
+        {
+            <MudButton Size="Size.Small" OnClick="@(() => _imageActual = !_imageActual)">Fit / actual size</MudButton>
+            <img src="@_url" alt="@FileDisplayInfos?.FileName" style="@(_imageActual ? "max-width:none" : "max-width:100%;max-height:85vh;object-fit:contain")" />
+        }
+        else if (Document.Kind == "docx")
+        {
+            @if (_documentError is not null) { <MudAlert Severity="Severity.Warning">@_documentError</MudAlert><pre>@Document.Text</pre> }
+            else { <iframe @ref="_documentFrame" title="Isolated local DOCX preview" sandbox="allow-scripts" style="width:100%;height:75vh;border:0"></iframe> }
+        }
+        else if (Document.Kind == "pdf")
+        {
+            <div @ref="_documentFrame" aria-label="Local PDF preview" style="min-height:240px"></div>
+        }
+        else if (Document.Kind == "video" && Preview?.Url is { } video)
+        {
+            <video src="@video" controls preload="metadata" style="max-width:100%;max-height:75vh"></video>
+        }
+        else if (Document.Kind == "audio" && Preview?.Url is { } audio)
+        {
+            <audio src="@audio" controls preload="metadata"></audio>
+        }
+        else if (Document.Kind == "map")
+        {
+            <svg viewBox="0 0 360 180" role="img" aria-label="GPX trace" style="width:100%;min-height:200px"><polyline points="@Document.Text" fill="none" stroke="currentColor" stroke-width="0.5" /></svg>
+        }
+        else if (Document.Kind == "mesh")
+        {
+            <svg viewBox="0 0 360 180" role="img" aria-label="OBJ wireframe" style="width:100%;min-height:200px">
+                @foreach (var edge in Document.Rows ?? []) { <polyline points="@edge[0]" fill="none" stroke="currentColor" stroke-width="0.4" /> }
+            </svg>
+        }
+        else if (Document.Rows is { } rows)
+        {
+            <table class="mud-table-root"><tbody>
+                @foreach (var row in rows)
+                {
+                    <tr class="mud-table-row">@foreach (var cell in row) { <td class="mud-table-cell">@cell</td> }</tr>
+                }
+            </tbody></table>
+        }
+        else
+        {
+            <pre style="white-space:pre-wrap;overflow-wrap:anywhere;tab-size:4">@Document.Text</pre>
+        }
+    }
+</div>
+
+@code {
+    [Parameter] public IMudExFileDisplayInfos? FileDisplayInfos { get; set; }
+    [Parameter] public RemotePreviewDocument? Document { get; set; }
+    [Parameter] public FileBrowserPreview? Preview { get; set; }
+    public string Name => "Governed local preview";
+    public bool StartsActive => true;
+    public int RenderPriority => 10_000;
+    private string? _url;
+    private readonly string _documentId = Guid.NewGuid().ToString("N");
+    private readonly CancellationTokenSource _lifetime = new();
+    private ElementReference _documentFrame;
+    private bool _documentStarted;
+    private string? _documentError;
+    private bool _disposed;
+    private bool _imageActual;
+
+    public Task<bool> CanHandleFileAsync(IMudExFileDisplayInfos infos, IMudExFileService service) => Task.FromResult(true);
+    public Task<IDictionary<string, object>> FileMetaInformationAsync(IMudExFileDisplayInfos infos) =>
+        Task.FromResult<IDictionary<string, object>>(new Dictionary<string, object>());
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (Document?.Kind is "image" or "pdf" && Preview?.Stream is { } stream && _url is null)
+        {
+            stream.Position = 0;
+            var url = await Files.ReadDataUrlForStreamAsync(stream, Preview.ContentType, useBlob: true);
+            if (_disposed) { await Files.DisposeAsync(); return; }
+            _url = url;
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_documentStarted || Document?.Kind is not ("docx" or "pdf")) return;
+        _documentStarted = true;
+        try
+        {
+            if (Document.Kind == "pdf")
+            {
+                await Js.InvokeVoidAsync("netratelExplorer.renderPdf", _lifetime.Token, _documentFrame, Preview?.Url ?? _url, _documentId);
+                return;
+            }
+            if (Preview?.Stream is not { } source) return;
+            await using var copy = new MemoryStream();
+            source.Position = 0;
+            await source.CopyToAsync(copy, _lifetime.Token);
+            copy.Position = 0;
+            using var reference = new DotNetStreamReference(copy, leaveOpen: true);
+            await Js.InvokeVoidAsync("netratelExplorer.renderDocx", _lifetime.Token, _documentFrame, reference, _documentId);
+        }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { return; }
+        catch (JSException exception)
+        { if (!_disposed) { _documentError = "Local document rendering failed; showing its text. " + exception.Message; await InvokeAsync(StateHasChanged); } }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _disposed = true;
+        _lifetime.Cancel();
+        _lifetime.Dispose();
+        try { await Js.InvokeVoidAsync("netratelExplorer.disposeDocument", _documentId); }
+        catch (JSDisconnectedException exception) { Logger.LogDebug(exception, "Preview browser owner ended with its circuit"); }
+        await Files.DisposeAsync();
+    }
+}
