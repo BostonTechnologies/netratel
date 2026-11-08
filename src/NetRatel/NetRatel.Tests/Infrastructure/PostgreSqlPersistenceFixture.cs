@@ -19,7 +19,12 @@ public sealed class FlowPostgreSqlPersistenceCollection : ICollectionFixture<Pos
 /// <summary>Shares one real PostgreSQL server while giving every regression an isolated database.</summary>
 public sealed class PostgreSqlPersistenceFixture : IAsyncLifetime
 {
-    private readonly PostgreSqlContainer _container = new PostgreSqlBuilder("postgres:16-alpine").Build();
+    // These databases live only for this running fixture. Avoid the Docker
+    // writable layer's per-migration I/O without changing PostgreSQL's commit,
+    // WAL or fsync settings, or reusing data between regressions.
+    private readonly PostgreSqlContainer _container = new PostgreSqlBuilder("postgres:16-alpine")
+        .WithTmpfsMount("/var/lib/postgresql/data")
+        .Build();
 
     public ValueTask InitializeAsync() => new(_container.StartAsync());
 
