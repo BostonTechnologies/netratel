@@ -1,18 +1,29 @@
 (() => {
   const contexts = new WeakMap();
   const documents = new Map();
-  window.addEventListener('pagehide', () => { for (const owner of documents.values()) owner.dispose(); documents.clear(); });
+  const pendingUploads = new Map();
+  window.addEventListener('pagehide', () => {
+    for (const owner of documents.values()) owner.dispose(); documents.clear();
+    for (const [id, controller] of pendingUploads) { controller.abort(); window.netratelFileTransfers?.cancel(id); }
+    pendingUploads.clear();
+  });
   const layoutValid = value => value && typeof value === 'object' && value.grid && value.panels &&
     Object.keys(value.panels).every(id => ['tree', 'files', 'remote-preview', 'remote-details'].includes(id));
   const join = (parent, name) => `${parent.replace(/[\\/]$/, '')}${/^[A-Za-z]:/.test(parent) ? '\\' : '/'}${name}`;
-  const uploadFile = async (file, tenant, agent, path, id, callbacks, replacement = null, version = null) => {
+  const uploadFile = async (file, tenant, agent, path, id, callbacks, replacement = null, version = null, owner = null) => {
     if (file.size > 16 * 1024 ** 3) throw new Error('Upload exceeds the 16 GiB transfer limit.');
-    const response = await fetch('/file-browser/transfers/antiforgery', { credentials: 'same-origin', cache: 'no-store' });
-    if (!response.ok) throw new Error('Upload authorization is unavailable.');
-    const { token } = await response.json();
-    const target = replacement || join(path, file.name);
-    const url = `/file-browser/transfers/upload-entry?tenantId=${tenant}&agentId=${encodeURIComponent(agent)}&path=${encodeURIComponent(target)}&replace=${!!replacement}&expectedVersion=${encodeURIComponent(version || '')}`;
-    await window.netratelFileTransfers.upload({ files: [file] }, url, id, callbacks, { RequestVerificationToken: token });
+    const preparation = new AbortController();
+    pendingUploads.set(id, preparation);
+    try {
+      const response = await fetch('/file-browser/transfers/antiforgery', { credentials: 'same-origin', cache: 'no-store', signal: preparation.signal });
+      if (!response.ok) throw new Error('Upload authorization is unavailable.');
+      const { token } = await response.json();
+      preparation.signal.throwIfAborted();
+      if (owner && !owner.active) throw new Error('Upload cancelled before dispatch.');
+      const target = replacement || join(path, file.name);
+      const url = `/file-browser/transfers/upload-entry?tenantId=${tenant}&agentId=${encodeURIComponent(agent)}&path=${encodeURIComponent(target)}&replace=${!!replacement}&expectedVersion=${encodeURIComponent(version || '')}`;
+      await window.netratelFileTransfers.upload({ files: [file] }, url, id, callbacks, { RequestVerificationToken: token });
+    } finally { pendingUploads.delete(id); }
   };
   window.netratelExplorer = {
     async renderPdf(container, url, id) {
@@ -174,7 +185,7 @@
     },
     attach(root, callbacks) {
       if (contexts.has(root)) return;
-      const context = { callbacks, uploads: new Set(), config: null, focus: null };
+      const context = { callbacks, uploads: new Set(), config: null, focus: null, active: true };
       context.media = matchMedia('(max-width: 959px)');
       context.resize = () => callbacks.invokeMethodAsync('OnViewportChanged', context.media.matches).catch(error => console.debug('Explorer resize owner ended:', error.name));
       context.media.addEventListener('change', context.resize);
@@ -193,17 +204,19 @@
         if (!config?.canUpload) return;
         const files = Array.from(event.dataTransfer.files);
         if (!files.length || files.length > 128) return;
-        if (!await callbacks.invokeMethodAsync('OnExternalUploadStarted')) return;
+        try { if (!await callbacks.invokeMethodAsync('OnExternalUploadStarted') || !context.active) return; }
+        catch (error) { console.debug('Upload owner ended before dispatch:', error.name); return; }
         let failure = null;
         try {
           for (const file of files) {
+            if (!context.active) break;
             const id = crypto.randomUUID();
             context.uploads.add(id);
-            try { await uploadFile(file, config.tenant, config.agent, config.path, id, callbacks); }
+            try { await uploadFile(file, config.tenant, config.agent, config.path, id, callbacks, null, null, context); }
             finally { context.uploads.delete(id); }
           }
         } catch (error) { failure = error.message; }
-        finally { await callbacks.invokeMethodAsync('OnExternalUploadCompleted', failure); }
+        finally { if (context.active) await callbacks.invokeMethodAsync('OnExternalUploadCompleted', failure).catch(error => console.debug('Upload owner ended:', error.name)); }
       };
       context.handlers = { click: command, keydown: command, dragover: drag, drop };
       context.observer = new MutationObserver(() => { if (!root.isConnected) window.netratelExplorer.detach(root); });
@@ -216,10 +229,12 @@
       if (context) context.config = { tenant, agent, path, canUpload };
     },
     upload: async (input, tenant, agent, path, id, callbacks, replacement = null, version = null) => {
-      const file = input.files?.[0];
+      const file = input?.files?.[0];
       if (!file) return;
-      try { await uploadFile(file, tenant, agent, path, id, callbacks, replacement, version); }
-      finally { input.value = ''; }
+      const owner = contexts.get(input.closest?.('[data-testid="full-explorer"]'));
+      owner?.uploads.add(id);
+      try { await uploadFile(file, tenant, agent, path, id, callbacks, replacement, version, owner); }
+      finally { owner?.uploads.delete(id); input.value = ''; }
     },
     holdFocus(root) {
       const context = contexts.get(root);
@@ -237,15 +252,17 @@
       element?.focus({ preventScroll: true });
     },
     cancelUploads(root) {
-      for (const id of contexts.get(root)?.uploads || []) window.netratelFileTransfers.cancel(id);
+      for (const id of contexts.get(root)?.uploads || []) window.netratelExplorer.cancelUpload(id);
     },
+    cancelUpload(id) { pendingUploads.get(id)?.abort(); window.netratelFileTransfers.cancel(id); },
     detach(root) {
       const context = contexts.get(root);
       if (!context) return;
+      context.active = false;
       for (const [name, handler] of Object.entries(context.handlers)) root.removeEventListener(name, handler, true);
       context.observer.disconnect();
       context.media.removeEventListener('change', context.resize);
-      for (const id of context.uploads) window.netratelFileTransfers.cancel(id);
+      for (const id of context.uploads) window.netratelExplorer.cancelUpload(id);
       contexts.delete(root);
     }
   };

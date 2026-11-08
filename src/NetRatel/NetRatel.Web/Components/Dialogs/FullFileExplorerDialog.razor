@@ -337,7 +337,7 @@
     private async Task CancelTransfersAsync()
     {
         await Js.InvokeVoidAsync("netratelExplorer.cancelUploads", _element);
-        if (_uploadId is not null) await Js.InvokeVoidAsync("netratelFileTransfers.cancel", _uploadId);
+        if (_uploadId is not null) await Js.InvokeVoidAsync("netratelExplorer.cancelUpload", _uploadId);
         if (_downloadId is not null) await Js.InvokeVoidAsync("netratelDownloads.cancel", _downloadId);
     }
     private async Task SaveLayoutAsync()

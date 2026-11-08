@@ -87,3 +87,15 @@ test("closed document ignores late browser stream completion before creating a s
   await assert.rejects(opening, /preview was closed/);
   assert.equal(frame.srcdoc, "unchanged");
 });
+
+test("cancelled upload preparation never creates a late native write", async () => {
+  const explorerSource = fs.readFileSync(path.resolve(__dirname, "../../../src/NetRatel/NetRatel.Web/wwwroot/js/full-explorer.js"), "utf8");
+  let writes = 0;
+  const window = { addEventListener() {}, netratelFileTransfers: { cancel() {}, upload() { writes++; return Promise.resolve(); } } };
+  const fetch = (_, options) => new Promise((resolve, reject) => options.signal.addEventListener('abort', () => reject(new Error('preparation aborted'))));
+  vm.runInNewContext(explorerSource, { window, AbortController, fetch });
+  const opening = window.netratelExplorer.upload({ files: [{ size: 1, name: 'new.txt' }], value: 'selected' }, 3, 'agent', '/fixtures', 'cancel-before-write', null);
+  window.netratelExplorer.cancelUpload('cancel-before-write');
+  await assert.rejects(opening, /preparation aborted/);
+  assert.equal(writes, 0);
+});
