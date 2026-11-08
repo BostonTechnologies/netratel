@@ -104,6 +104,14 @@ public sealed class FullExplorerAcceptanceTests(ClientsManagementBrowserFixture 
         Assert.DoesNotContain("Stale selection must never appear", await workspace.InnerTextAsync());
         await workspace.GetByText("document.docx", new() { Exact = true }).ClickAsync();
         await page.FrameLocator("iframe[title='Isolated local DOCX preview']:visible").GetByText("Synthetic DOCX", new() { Exact = true }).WaitForAsync();
+        if (width > 1000)
+        {
+            var documentPopup = await page.RunAndWaitForPopupAsync(() => page.GetByRole(AriaRole.Button, new() { Name = "Pop out / rejoin", Exact = true }).ClickAsync());
+            await documentPopup.FrameLocator("iframe[title='Isolated local DOCX preview']").GetByText("Synthetic DOCX", new() { Exact = true }).WaitForAsync();
+            await page.GetByRole(AriaRole.Button, new() { Name = "Pop out / rejoin", Exact = true }).ClickAsync();
+            await page.FrameLocator("iframe[title='Isolated local DOCX preview']:visible").GetByText("Synthetic DOCX", new() { Exact = true }).WaitForAsync();
+            Assert.True(documentPopup.IsClosed);
+        }
         await workspace.GetByText("document.pdf", new() { Exact = true }).ClickAsync();
         try { await workspace.Locator("span[role='status']:visible").Filter(new() { HasText = "Page 1 / 1 · 100%" }).First.WaitForAsync(); }
         catch { Console.WriteLine("PDF workspace state: " + await workspace.InnerTextAsync()); throw; }
