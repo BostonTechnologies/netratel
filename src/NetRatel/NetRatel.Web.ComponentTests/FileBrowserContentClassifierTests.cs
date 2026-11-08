@@ -141,6 +141,13 @@ public sealed class FileBrowserContentClassifierTests : AsyncBunitContext
         }
         var directory = RemotePreviewPolicy.Inspect("archive.zip", source, CancellationToken.None);
         directory.Rows![0][0].Should().Be("../../outside.txt");
+        var hiddenEntries = source.ToArray();
+        var end = hiddenEntries.AsSpan().LastIndexOf(new byte[] { 0x50, 0x4b, 0x05, 0x06 });
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian(hiddenEntries.AsSpan(end + 8), 0);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt16LittleEndian(hiddenEntries.AsSpan(end + 10), 0);
+        using var hiddenSource = new MemoryStream(hiddenEntries);
+        var inspectHidden = () => RemotePreviewPolicy.Inspect("archive.zip", hiddenSource, CancellationToken.None);
+        inspectHidden.Should().Throw<InvalidDataException>();
         using var expanded = new MemoryStream();
         using (var archive = new System.IO.Compression.ZipArchive(expanded, System.IO.Compression.ZipArchiveMode.Create, true))
         {

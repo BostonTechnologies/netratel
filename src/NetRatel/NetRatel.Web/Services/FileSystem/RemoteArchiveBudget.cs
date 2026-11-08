@@ -67,6 +67,7 @@ internal static class RemoteArchiveBudget
             }
             if (entryBytes != expandedLength) throw new InvalidDataException("Archive expanded length does not match its metadata.");
         }
+        if (next != centralStart + centralLength) throw new InvalidDataException("Archive directory entry count does not match its byte length.");
         source.Position = 0;
 
         void ReadAt(long position, byte[] bytes)
