@@ -76,8 +76,8 @@ jobs:
         run: dotnet build NetRatel.sln --configuration Release --no-restore
       - name: Prepare fast regression containers
         run: bash tools/ci/prepare-fast-test-containers.sh
-      - name: Run fast regressions (Core, API, Components)
-        run: bash tools/ci/run-fast-regressions.sh TestResults/fast
+      - name: Run fast regressions (Core, Components)
+        run: bash tools/ci/run-fast-regressions.sh TestResults/fast core-components
       - name: Retain fast regression receipts
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -87,10 +87,36 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+  api:
+    name: API and PostgreSQL regressions
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+        with:
+          global-json-file: global.json
+      - name: Restore API regression project
+        run: dotnet restore src/NetRatel/NetRatel.API.IntegrationTests/NetRatel.API.IntegrationTests.csproj
+      - name: Build Release API regression project
+        run: dotnet build src/NetRatel/NetRatel.API.IntegrationTests/NetRatel.API.IntegrationTests.csproj --configuration Release --no-restore
+      - name: Prepare fast regression containers
+        run: bash tools/ci/prepare-fast-test-containers.sh
+      - name: Run fast regressions (API)
+        run: bash tools/ci/run-fast-regressions.sh TestResults/fast api
+      - name: Retain fast regression receipts
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: api-test-results
+          path: TestResults/fast
+          if-no-files-found: warn
+          retention-days: 14
+
   pr-validation:
     name: PR validation
     if: always()
-    needs: [disclosure, contracts, dotnet]
+    needs: [disclosure, contracts, dotnet, api]
     runs-on: ubuntu-latest
     steps:
       - name: Require source checks, build and fast regressions
@@ -98,7 +124,9 @@ jobs:
           DISCLOSURE_RESULT: ${{ needs.disclosure.result }}
           CONTRACTS_RESULT: ${{ needs.contracts.result }}
           DOTNET_RESULT: ${{ needs.dotnet.result }}
+          API_RESULT: ${{ needs.api.result }}
         run: |
           [[ "$DISCLOSURE_RESULT" == success ]]
           [[ "$CONTRACTS_RESULT" == success ]]
           [[ "$DOTNET_RESULT" == success ]]
+          [[ "$API_RESULT" == success ]]

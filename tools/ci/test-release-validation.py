@@ -561,15 +561,18 @@ class FastTestContainerPreparationTests(unittest.TestCase):
         for relative in (".github/workflows/public-pr-validation.yml", ".github/workflows/release-build.yml"):
             workflow = (ROOT / relative).read_text()
             with self.subTest(workflow=relative):
-                prepare = workflow.index("- name: Prepare fast regression containers")
-                self.assertEqual(1, workflow.count("bash tools/ci/prepare-fast-test-containers.sh"))
-                self.assertLess(workflow.index("- name: Build Release solution"), prepare)
-                self.assertLess(prepare, workflow.index("- name: Run fast regressions (Core, API, Components)"))
                 jobs = dict(re.findall(r"(?ms)^  ([a-z-]+):\n(.*?)(?=^  [a-z-]+:|\Z)",
                                        workflow.split("\njobs:\n", 1)[1]))
                 job, budget = ("dotnet", 20) if "public-pr-validation" in relative else ("validate", 25)
-                self.assertIn(f"timeout-minutes: {budget}", jobs[job])
-                self.assertNotIn("continue-on-error", workflow[prepare:workflow.index("- name: Retain fast regression receipts")])
+                selected_jobs = (job, "api") if job == "dotnet" else (job,)
+                self.assertEqual(len(selected_jobs), workflow.count("bash tools/ci/prepare-fast-test-containers.sh"))
+                for selected_job in selected_jobs:
+                    source = jobs[selected_job]
+                    prepare = source.index("- name: Prepare fast regression containers")
+                    self.assertLess(source.index("- name: Build Release"), prepare)
+                    self.assertLess(prepare, source.index("- name: Run fast regressions"))
+                    self.assertIn(f"timeout-minutes: {budget}", source)
+                    self.assertNotIn("continue-on-error", source)
 
 
 class CorePartitionCoverageTests(unittest.TestCase):
@@ -855,7 +858,8 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
         for relative in (".github/workflows/public-pr-validation.yml", ".github/workflows/release-build.yml"):
             workflow = (ROOT / relative).read_text(encoding="utf-8")
             with self.subTest(workflow=relative):
-                self.assertEqual(1, workflow.count("bash tools/ci/run-fast-regressions.sh"))
+                self.assertEqual(2 if "public-pr-validation" in relative else 1,
+                                 workflow.count("bash tools/ci/run-fast-regressions.sh"))
                 for manual_command in (
                     "run-physical-disk-incident-proof.sh", "run-pairing-acceptance.sh",
                     "run-gateway-native-proof.sh", "smoke-local-first-compose.sh",
@@ -865,6 +869,14 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
                 ):
                     self.assertNotIn(manual_command, workflow)
         public = (ROOT / ".github/workflows/public-pr-validation.yml").read_text()
+        jobs = dict(re.findall(r"(?ms)^  ([a-z-]+):\n(.*?)(?=^  [a-z-]+:|\Z)", public.split("\njobs:\n", 1)[1]))
+        self.assertIn("run-fast-regressions.sh TestResults/fast core-components", jobs["dotnet"])
+        self.assertIn("run-fast-regressions.sh TestResults/fast api", jobs["api"])
+        self.assertIn("dotnet restore src/NetRatel/NetRatel.API.IntegrationTests/NetRatel.API.IntegrationTests.csproj", jobs["api"])
+        self.assertIn("dotnet build src/NetRatel/NetRatel.API.IntegrationTests/NetRatel.API.IntegrationTests.csproj --configuration Release --no-restore", jobs["api"])
+        self.assertIn("needs: [disclosure, contracts, dotnet, api]", jobs["pr-validation"])
+        self.assertIn("API_RESULT: ${{ needs.api.result }}", jobs["pr-validation"])
+        self.assertIn('[[ "$API_RESULT" == success ]]', jobs["pr-validation"])
         self.assertIn("types: [opened, synchronize, reopened]", public)
         self.assertNotIn("converted_to_draft", public)
         self.assertNotIn("ready_for_review", public)
@@ -1001,12 +1013,13 @@ if args[0] != 'test':
 filename = args[args.index('--report-trx-filename') + 1]
 group = filename.removeprefix('fast-').removesuffix('.trx')
 failure = os.environ['NETRATEL_FAST_TEST_FAILURE']
-if failure in ('command', 'summary') and group == 'NetRatel.Tests.Remaining':
+failure_group = os.environ['NETRATEL_FAST_TEST_FAILURE_GROUP']
+if failure in ('command', 'summary') and group == failure_group:
     sys.exit(7)
 cases = [infra] if group.endswith('.Infrastructure') else [remaining]
-if failure == 'zero' and group == 'NetRatel.Tests.Remaining':
+if failure == 'zero' and group == failure_group:
     cases = []
-if failure == 'coverage' and group == 'NetRatel.Tests.Remaining':
+if failure == 'coverage' and group == failure_group:
     cases = [('NetRatel.Tests.API.SampleTests', 'Other', 'undiscovered case')]
 run = ET.Element('TestRun')
 definitions = ET.SubElement(run, 'TestDefinitions')
@@ -1024,8 +1037,14 @@ ET.SubElement(summary, 'Counters', {key: str(value) for key, value in counters.i
 report = pathlib.Path(args[args.index('--results-directory') + 1]) / filename
 ET.ElementTree(run).write(report)
 '''.replace("COUNTER_NAMES", repr(verifier.COUNTER_NAMES))
-        for failure in ("none", "command", "zero", "summary", "coverage"):
-            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temporary:
+        scenarios = [(selection, failure) for selection in ("all", "core-components", "api")
+                     for failure in ("none", "command", "zero", "summary", "coverage")
+                     if not (selection == "api" and failure == "coverage")]
+        for selection, failure in scenarios:
+            with self.subTest(selection=selection, failure=failure), tempfile.TemporaryDirectory() as temporary:
+                selected_groups = groups if selection == "all" else groups[:3] if selection == "core-components" else groups[3:]
+                selected_projects = [dict(zip(groups, expected_projects))[group] for group in selected_groups]
+                failure_group = "NetRatel.API.IntegrationTests" if selection == "api" else "NetRatel.Tests.Remaining"
                 directory = Path(temporary)
                 fake_bin = directory / "bin"
                 fake_bin.mkdir()
@@ -1042,19 +1061,21 @@ ET.ElementTree(run).write(report)
                     "PATH": str(fake_bin) + os.pathsep + os.environ.get("PATH", ""),
                     "NETRATEL_FAST_TEST_COMMAND_LOG": str(command_log),
                     "NETRATEL_FAST_TEST_FAILURE": failure,
+                    "NETRATEL_FAST_TEST_FAILURE_GROUP": failure_group,
                     "GITHUB_STEP_SUMMARY": str(directory if failure == "summary" else directory / "summary.md"),
                 }
                 completed = subprocess.run(
-                    ["bash", str(helper), str(results)], cwd=ROOT,
+                    ["bash", str(helper), str(results), selection], cwd=ROOT,
                     env=environment, check=False, capture_output=True, text=True,
                 )
                 commands = [json.loads(line) for line in command_log.read_text().splitlines()]
                 discovery = [args for args in commands if args[0] != "test"]
                 execution = [args for args in commands if args[0] == "test"]
-                self.assertEqual(1, len(discovery), completed.stdout + completed.stderr)
-                self.assertIn("-noColor", discovery[0], "Native CI color resets would corrupt discovery JSON.")
-                self.assertEqual(4, len(execution), completed.stdout + completed.stderr)
-                self.assertCountEqual(expected_projects, [args[args.index("--project") + 1] for args in execution])
+                self.assertEqual(0 if selection == "api" else 1, len(discovery), completed.stdout + completed.stderr)
+                if discovery:
+                    self.assertIn("-noColor", discovery[0], "Native CI color resets would corrupt discovery JSON.")
+                self.assertEqual(len(selected_groups), len(execution), completed.stdout + completed.stderr)
+                self.assertCountEqual(selected_projects, [args[args.index("--project") + 1] for args in execution])
                 for args in execution:
                     self.assertIn("--no-build", args)
                     self.assertEqual("1", args[args.index("--max-parallel-test-modules") + 1])
@@ -1067,25 +1088,35 @@ ET.ElementTree(run).write(report)
                     self.assertEqual(["category=compose", "category=hosted", "category=manual-integration"], args[filter_start:filter_start + 3])
                 if failure == "none":
                     self.assertEqual(0, completed.returncode, completed.stdout + completed.stderr)
-                    coverage = json.loads((results / "core-partition-coverage.json").read_text())
-                    self.assertEqual(2, coverage["executedRows"])
-                    for group in groups:
+                    if selection == "api":
+                        self.assertFalse((results / "core-partition-coverage.json").exists())
+                    else:
+                        coverage = json.loads((results / "core-partition-coverage.json").read_text())
+                        self.assertEqual(2, coverage["executedRows"])
+                    for group in selected_groups:
                         self.assertEqual(1, verifier.validate_success_report(results / f"fast-{group}.trx")["executed"])
                 elif failure in ("command", "summary"):
                     self.assertEqual(7, completed.returncode)
-                    self.assertFalse((results / "fast-NetRatel.Tests.Remaining.trx").exists())
+                    self.assertFalse((results / f"fast-{failure_group}.trx").exists())
                 else:
                     self.assertNotEqual(0, completed.returncode)
                     expected = "selected zero test cases" if failure == "zero" else "missing or duplicated"
                     self.assertIn(expected, completed.stdout + completed.stderr)
-                for group in groups:
+                for group in selected_groups:
                     self.assertTrue((results / f"fast-{group}.log").exists())
                 if failure != "summary":
                     summary = (directory / "summary.md").read_text()
-                    for group in groups:
+                    for group in selected_groups:
                         self.assertIn(group + ":", summary)
                 else:
                     self.assertIn("failed(7)", completed.stdout)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            results = Path(temporary) / "results"
+            completed = subprocess.run(["bash", str(helper), str(results), "unknown"],
+                                       cwd=ROOT, capture_output=True, text=True)
+            self.assertEqual(2, completed.returncode)
+            self.assertFalse(results.exists(), "Reject an invalid group before any test work.")
 
     def test_release_compose_oidc_checks_current_presence_and_bounds_command_conflict_diagnostics(self):
         source = (ROOT / "tools/ci/smoke-oidc-compose.sh").read_text(encoding="utf-8")

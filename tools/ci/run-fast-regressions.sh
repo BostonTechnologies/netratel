@@ -3,8 +3,9 @@ set -euo pipefail
 
 # Run prebuilt default regressions only. Deep functional suites are opt-in.
 results_directory="${1:-TestResults/fast}"
-if [[ "$#" -gt 1 ]]; then
-  echo "Usage: $0 [results-directory]" >&2
+selection="${2:-all}"
+if [[ "$#" -gt 2 || ! "$selection" =~ ^(all|core-components|api)$ ]]; then
+  echo "Usage: $0 [results-directory] [all|core-components|api]" >&2
   exit 2
 fi
 mkdir -p "$results_directory"
@@ -53,24 +54,28 @@ run_assembly() {
   fi
 }
 
-# Native xUnit discovery uses the same prebuilt binary and the same category
-# exclusions as MTP execution. It runs no cases and supplies a growing coverage
-# manifest, including theories, rather than a fixed expected pass count.
-dotnet src/NetRatel/NetRatel.Tests/bin/Release/net10.0/NetRatel.Tests.dll \
-  -noColor -list full/json -preEnumerateTheories \
-  -trait- category=compose -trait- category=hosted -trait- category=manual-integration \
-  > "$results_directory/core-discovery.json"
-
-# UI polling has short deadlines. Keep this group free of backend CPU/DB load.
-component_assembly="NetRatel.Web.ComponentTests"
-run_assembly "$component_assembly" "$component_assembly" > "$results_directory/fast-$component_assembly.log" 2>&1 &
-component_pid="$!"
+# PR/main run API on its own runner to avoid contention with Core's migrations.
+# Tag validation retains the complete default selection in this same helper.
 result=0
-if wait "$component_pid"; then
-  cat "$results_directory/fast-$component_assembly.log"
-else
-  result="$?"
-  cat "$results_directory/fast-$component_assembly.log"
+if [[ "$selection" != api ]]; then
+  # Native xUnit discovery uses the same prebuilt binary and the same category
+  # exclusions as MTP execution. It runs no cases and supplies a growing coverage
+  # manifest, including theories, rather than a fixed expected pass count.
+  dotnet src/NetRatel/NetRatel.Tests/bin/Release/net10.0/NetRatel.Tests.dll \
+    -noColor -list full/json -preEnumerateTheories \
+    -trait- category=compose -trait- category=hosted -trait- category=manual-integration \
+    > "$results_directory/core-discovery.json"
+
+  # UI polling has short deadlines. Keep this group free of backend CPU/DB load.
+  component_assembly="NetRatel.Web.ComponentTests"
+  run_assembly "$component_assembly" "$component_assembly" > "$results_directory/fast-$component_assembly.log" 2>&1 &
+  component_pid="$!"
+  if wait "$component_pid"; then
+    cat "$results_directory/fast-$component_assembly.log"
+  else
+    result="$?"
+    cat "$results_directory/fast-$component_assembly.log"
+  fi
 fi
 
 pids=(); groups=()
@@ -86,13 +91,17 @@ launch() {
 # queue while preserving every existing case and category exclusion. Divide
 # the original Core collection-thread allowance across the two processes;
 # retaining the full allowance in each doubled concurrent migration load.
-launch NetRatel.Tests NetRatel.Tests.Infrastructure \
-  --max-threads 0.5x \
-  --filter-namespace NetRatel.Tests.Infrastructure 'NetRatel.Tests.Infrastructure.*'
-launch NetRatel.Tests NetRatel.Tests.Remaining \
-  --max-threads 0.5x \
-  --filter-not-namespace NetRatel.Tests.Infrastructure 'NetRatel.Tests.Infrastructure.*'
-launch NetRatel.API.IntegrationTests NetRatel.API.IntegrationTests
+if [[ "$selection" != api ]]; then
+  launch NetRatel.Tests NetRatel.Tests.Infrastructure \
+    --max-threads 0.5x \
+    --filter-namespace NetRatel.Tests.Infrastructure 'NetRatel.Tests.Infrastructure.*'
+  launch NetRatel.Tests NetRatel.Tests.Remaining \
+    --max-threads 0.5x \
+    --filter-not-namespace NetRatel.Tests.Infrastructure 'NetRatel.Tests.Infrastructure.*'
+fi
+if [[ "$selection" != core-components ]]; then
+  launch NetRatel.API.IntegrationTests NetRatel.API.IntegrationTests
+fi
 
 # Wait for every group and keep each command/receipt failure. Separate logs keep
 # concurrent test output readable and retain diagnostics with the TRX artifacts.
@@ -108,7 +117,7 @@ for index in "${!groups[@]}"; do
     fi
   fi
 done
-if (( result == 0 )); then
+if (( result == 0 )) && [[ "$selection" != api ]]; then
   python3 tools/ci/verify-core-partitions.py --discovery "$results_directory/core-discovery.json" \
     --infrastructure "$results_directory/fast-NetRatel.Tests.Infrastructure.trx" \
     --remaining "$results_directory/fast-NetRatel.Tests.Remaining.trx" \
