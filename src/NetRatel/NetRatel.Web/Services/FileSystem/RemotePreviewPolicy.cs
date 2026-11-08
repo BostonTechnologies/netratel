@@ -98,11 +98,26 @@ public static class RemotePreviewPolicy
         using var archive = new ZipArchive(stream, ZipArchiveMode.Read, leaveOpen: true);
         if (archive.Entries.Count > MaximumArchiveEntries) throw new InvalidDataException("Archive preview entry limit exceeded (2,048).");
         long expanded = 0;
+        long observedExpanded = 0;
+        var expansionBuffer = new byte[16 * 1024];
         foreach (var entry in archive.Entries)
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (entry.Length > MaximumExpandedBytes - expanded) throw new InvalidDataException("Archive expanded-size limit exceeded (32 MiB).");
             expanded += entry.Length;
+            // ZIP headers can lie about expanded length. Validate observed
+            // decompression before handing bounded bytes to a browser/parser.
+            using var content = entry.Open();
+            long observedEntry = 0;
+            int read;
+            while ((read = content.Read(expansionBuffer)) != 0)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                observedEntry += read;
+                observedExpanded += read;
+                if (observedExpanded > MaximumExpandedBytes) throw new InvalidDataException("Archive observed expanded-size limit exceeded (32 MiB).");
+            }
+            if (observedEntry != entry.Length) throw new InvalidDataException("Archive expanded length does not match its metadata.");
         }
         if (extension == ".zip") return new("table", "ZIP directory · no extraction / nested expansion", Rows:
             archive.Entries.Select(entry => new[] { entry.FullName, $"{entry.Length:N0} bytes" }).ToArray());
@@ -214,7 +229,7 @@ public static class RemotePreviewPolicy
         var bytes = memory.ToArray();
         try
         {
-            using var certificate = bytes.AsSpan().StartsWith("-----BEGIN CERTIFICATE-----"u8)
+            using var certificate = bytes.AsSpan().StartsWith("-----BEGIN "u8)
                 ? X509Certificate2.CreateFromPem(Encoding.UTF8.GetString(bytes)) : X509CertificateLoader.LoadCertificate(bytes);
             return new("table", "Certificate metadata · no chain/network trust check", Rows: new string[][]
             {

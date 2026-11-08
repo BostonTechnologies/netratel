@@ -105,6 +105,14 @@ public sealed class FileBrowserContentClassifierTests : AsyncBunitContext
         }
         var inspect = () => RemotePreviewPolicy.Inspect("archive.zip", expanded, CancellationToken.None);
         inspect.Should().Throw<InvalidDataException>().WithMessage("*expanded-size*");
+        var forged = expanded.ToArray();
+        var local = forged.AsSpan().IndexOf(new byte[] { 0x50, 0x4b, 0x03, 0x04 });
+        var central = forged.AsSpan().IndexOf(new byte[] { 0x50, 0x4b, 0x01, 0x02 });
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(forged.AsSpan(local + 22), 1);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(forged.AsSpan(central + 24), 1);
+        using var forgedSource = new MemoryStream(forged);
+        var inspectForged = () => RemotePreviewPolicy.Inspect("archive.zip", forgedSource, CancellationToken.None);
+        inspectForged.Should().Throw<InvalidDataException>();
     }
 
     [Fact]

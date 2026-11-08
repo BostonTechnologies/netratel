@@ -145,6 +145,7 @@
       await import('/_content/MudBlazor.Extensions/js/mudBlazorExtensions.all.min.js');
       if (!window.BlazorJS || !window.MudBlazorExtensions) throw new Error('Pinned MudEx runtime did not initialize.');
     },
+    isNarrow() { return matchMedia('(max-width: 959px)').matches; },
     get(scope, name) {
       try {
         const raw = localStorage.getItem(`${scope}.${name}`);
@@ -167,6 +168,9 @@
     attach(root, callbacks) {
       if (contexts.has(root)) return;
       const context = { callbacks, uploads: new Set(), config: null, focus: null };
+      context.media = matchMedia('(max-width: 959px)');
+      context.resize = () => callbacks.invokeMethodAsync('OnViewportChanged', context.media.matches).catch(error => console.debug('Explorer resize owner ended:', error.name));
+      context.media.addEventListener('change', context.resize);
       const command = event => {
         if (event.target.closest('input,textarea,[contenteditable=true]')) return;
         if (event.metaKey && !event.ctrlKey) Object.defineProperty(event, 'ctrlKey', { value: true });
@@ -233,6 +237,7 @@
       if (!context) return;
       for (const [name, handler] of Object.entries(context.handlers)) root.removeEventListener(name, handler, true);
       context.observer.disconnect();
+      context.media.removeEventListener('change', context.resize);
       for (const id of context.uploads) window.netratelFileTransfers.cancel(id);
       contexts.delete(root);
     }

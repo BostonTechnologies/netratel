@@ -47,7 +47,7 @@ OfficeLive and unrestricted MudEx fallback are disabled. All enabled dependencie
 | PPTX, ODT/ODS/ODP, EPUB XHTML | Local XML text, at most 256 parts / 512 Ki decoded characters | Text inspection without slide/page/book layout; legacy PPT/DOC, DRM/encrypted content: Download |
 | UTF-8/BOM text, source, JSON/XML, Markdown/HTML/SVG, logs, diff/patch, EML, SRT/VTT | Escaped source; first 512 Ki characters | No active markup/includes/email images/patch application/subtitle attachment; unknown binary: Download |
 | CSV | Quoted-field table; 1,000 rows / 100 columns | Unsupported encoding/malformed records: error/Download |
-| ZIP | Entry directory; 2,048 entries / 32 MiB declared expanded bytes | No extraction/nested expansion; TAR/RAR/7z unsupported |
+| ZIP | Entry directory; 2,048 entries / 32 MiB declared and observed expanded bytes | No extraction/nested expansion; TAR/RAR/7z unsupported |
 | MP4/WebM, MP3/Ogg/WAV | HTML media with authenticated ranges and browser codec support | Needs range capability; unsupported container/codec: Download |
 | HAR | First 1,000 request method/URL/status records | No traffic replay; malformed input: error |
 | OBJ | Wireframe; positive indices, 2,000 vertices / 4,000 edges | No textures/material/network assets; other 3D: Download |

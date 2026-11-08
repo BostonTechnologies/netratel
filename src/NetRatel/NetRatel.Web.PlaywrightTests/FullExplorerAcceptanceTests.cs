@@ -20,12 +20,13 @@ public sealed class FullExplorerAcceptanceTests(ClientsManagementBrowserFixture 
     [InlineData(390, 844)]
     public async Task CardChoiceUsesTheRemoteAdapterAndGovernedViewer(int width, int height)
     {
+        ExplorerFixtureFactory? remote = null;
         // This is UI/Blazor lifecycle evidence. Native filesystem/range behavior
         // is separately exercised by the existing admitted-gateway test server.
         await using var fixture = await ClientsManagementFixtureHost.StartAsync(services =>
         {
             MudBlazor.Extensions.ServiceCollectionExtensions.AddMudExtensions(services, configuration => configuration.WithoutAutomaticCssLoading(), typeof(RemoteDataRenderer).Assembly);
-            services.AddSingleton<IHttpClientFactory>(provider => new ExplorerFixtureFactory(provider.GetRequiredService<ClientDirectoryFixtureData>()));
+            services.AddSingleton<IHttpClientFactory>(provider => remote = new ExplorerFixtureFactory(provider.GetRequiredService<ClientDirectoryFixtureData>()));
             services.AddScoped<GatewayFileSystemApiService>();
             services.AddScoped<FileSystemApiService>();
             services.AddScoped<ExplorerPreferenceService>();
@@ -92,13 +93,23 @@ public sealed class FullExplorerAcceptanceTests(ClientsManagementBrowserFixture 
             await workspace.GetByRole(AriaRole.Tab, new() { Name = "Preview", Exact = true }).ClickAsync();
             Assert.True(await page.EvaluateAsync<bool>("document.documentElement.scrollWidth <= innerWidth + 8"));
         }
+        await workspace.GetByText("slow.txt", new() { Exact = true }).ClickAsync();
+        try
+        {
+            await remote!.SlowStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await workspace.GetByText("notes.txt", new() { Exact = true }).ClickAsync();
+        }
+        finally { remote!.ReleaseSlow.TrySetResult(); }
+        await workspace.GetByText("Synthetic remote text", new() { Exact = true }).First.WaitForAsync();
+        Assert.DoesNotContain("Stale selection must never appear", await workspace.InnerTextAsync());
         await workspace.GetByText("document.docx", new() { Exact = true }).ClickAsync();
         await page.FrameLocator("iframe[title='Isolated local DOCX preview']:visible").GetByText("Synthetic DOCX", new() { Exact = true }).WaitForAsync();
         await workspace.GetByText("document.pdf", new() { Exact = true }).ClickAsync();
-        await workspace.GetByText("Page 1 / 1 · 100%", new() { Exact = false }).First.WaitForAsync();
+        try { await workspace.Locator("span[role='status']:visible").Filter(new() { HasText = "Page 1 / 1 · 100%" }).First.WaitForAsync(); }
+        catch { Console.WriteLine("PDF workspace state: " + await workspace.InnerTextAsync()); throw; }
         Assert.True(await workspace.Locator("canvas[aria-label='PDF page']").First.EvaluateAsync<bool>("canvas => canvas.width > 0 && canvas.height > 0"));
         await workspace.GetByRole(AriaRole.Button, new() { Name = "Zoom in", Exact = true }).First.ClickAsync();
-        await workspace.GetByText("Page 1 / 1 · 125%", new() { Exact = false }).First.WaitForAsync();
+        await workspace.Locator("span[role='status']:visible").Filter(new() { HasText = "Page 1 / 1 · 125%" }).First.WaitForAsync();
         await workspace.GetByText("notes.txt", new() { Exact = true }).ClickAsync();
         await workspace.GetByText("Synthetic remote text", new() { Exact = true }).First.WaitForAsync();
         Assert.Empty(externalContent);
@@ -154,14 +165,17 @@ public sealed class FullExplorerAcceptanceTests(ClientsManagementBrowserFixture 
 
     private sealed class ExplorerFixtureFactory(ClientDirectoryFixtureData directory) : IHttpClientFactory
     {
-        public HttpClient CreateClient(string name) => new(new Handler(directory)) { BaseAddress = new("https://netratel.test") };
-        private sealed class Handler(ClientDirectoryFixtureData directory) : HttpMessageHandler
+        public TaskCompletionSource SlowStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource ReleaseSlow { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public HttpClient CreateClient(string name) => new(new Handler(this, directory)) { BaseAddress = new("https://netratel.test") };
+        private sealed class Handler(ExplorerFixtureFactory owner, ClientDirectoryFixtureData directory) : HttpMessageHandler
         {
             private static readonly DateTimeOffset Modified = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
             private static readonly Dictionary<string, byte[]> Corpus = new()
             {
                 ["/notes.txt"] = Encoding.UTF8.GetBytes("Synthetic remote text"),
                 ["/active.html"] = Encoding.UTF8.GetBytes(ActiveMarkup),
+                ["/slow.txt"] = Encoding.UTF8.GetBytes("Stale selection must never appear"),
                 ["/document.docx"] = Docx(), ["/document.pdf"] = Pdf()
             };
             protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
@@ -180,7 +194,10 @@ public sealed class FullExplorerAcceptanceTests(ClientsManagementBrowserFixture 
                 else if (uri.AbsolutePath.EndsWith("/stat", StringComparison.Ordinal))
                     body = new GatewayFileSystemStatResponse(tenant, agent, path, false, content.Length, Modified, Modified, "v1:fixture", false);
                 else if (uri.AbsolutePath.EndsWith("/file", StringComparison.Ordinal))
+                {
+                    if (path == "/slow.txt") { owner.SlowStarted.TrySetResult(); return LateResponseAsync(); }
                     return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(content) });
+                }
                 else
                     body = new GatewayFileSystemListResponse(tenant, agent, path, "akka",
                         Corpus.Select(item => new GatewayFileSystemEntryDto(item.Key[1..], item.Key, false, item.Value.Length) { LastModifiedUtc = Modified }).ToArray())
@@ -189,6 +206,13 @@ public sealed class FullExplorerAcceptanceTests(ClientsManagementBrowserFixture 
                         Capabilities = new() { Stat = true, CreateFile = true, MoveEntry = true, DeleteFile = true, DeleteRecursive = true, ConditionalUpload = true }
                     };
                 return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = JsonContent.Create(body) });
+                async Task<HttpResponseMessage> LateResponseAsync()
+                {
+                    // Deliberately ignore cancellation to prove that a late
+                    // physical completion cannot replace a newer selection.
+                    await owner.ReleaseSlow.Task;
+                    return new(HttpStatusCode.OK) { Content = new ByteArrayContent(content) };
+                }
             }
         }
     }

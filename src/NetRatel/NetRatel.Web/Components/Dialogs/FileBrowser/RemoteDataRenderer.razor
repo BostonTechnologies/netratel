@@ -13,6 +13,7 @@
     @if (Document is not null)
     {
         <MudText Typo="Typo.caption">@Document.Title</MudText>
+        @if (_documentError is not null && Document.Kind != "docx") { <MudAlert Severity="Severity.Warning">@_documentError</MudAlert> }
         @if (Document.Kind == "image" && _url is not null)
         {
             <MudButton Size="Size.Small" OnClick="@(() => _imageActual = !_imageActual)">Fit / actual size</MudButton>
@@ -121,8 +122,11 @@
         _disposed = true;
         _lifetime.Cancel();
         _lifetime.Dispose();
-        try { await Js.InvokeVoidAsync("netratelExplorer.disposeDocument", _documentId); }
+        try
+        {
+            await Js.InvokeVoidAsync("netratelExplorer.disposeDocument", _documentId);
+            await Files.DisposeAsync();
+        }
         catch (JSDisconnectedException exception) { Logger.LogDebug(exception, "Preview browser owner ended with its circuit"); }
-        await Files.DisposeAsync();
     }
 }

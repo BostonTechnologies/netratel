@@ -112,7 +112,7 @@
                     </FileAreaTemplate>
                     <ChildContent>
                         <MudExDockItem Id="remote-preview" Title="Preview" Direction="DockDirection.Right" InitialWidth="380" CanClose="false" CanPopout="true" Renderer="DockRendererMode.Always">
-                            @PreviewContent()
+                            @PreviewContent(false)
                         </MudExDockItem>
                         <MudExDockItem Id="remote-details" Title="Details" StackWith="remote-preview" CanClose="false" CanPopout="true" Renderer="DockRendererMode.Always">
                             @DetailsContent()
@@ -120,7 +120,7 @@
                     </ChildContent>
                 </MudExFileManager>
                 <MudHidden Breakpoint="Breakpoint.MdAndUp">
-                    <MudTabs><MudTabPanel Text="Preview">@PreviewContent()</MudTabPanel><MudTabPanel Text="Details">@DetailsContent()</MudTabPanel></MudTabs>
+                    <MudTabs><MudTabPanel Text="Preview">@PreviewContent(true)</MudTabPanel><MudTabPanel Text="Details">@DetailsContent()</MudTabPanel></MudTabs>
                 </MudHidden>
                 <MudText Typo="Typo.caption">@_selected.Count selected · immediate directory only · listing limit 4,096 · Full is read-only for file contents</MudText>
             }
@@ -148,7 +148,7 @@
     private MudExFileStructureNode? _renameNode;
     private string _renameName = "", _path = "/", _newName = "", _moveTarget = "";
     private string? _newKind, _error, _layout, _scope, _transferState, _uploadId, _downloadId;
-    private bool _busy, _moving, _initialized, _preferencesLoaded, _replaceUpload, _assetsReady;
+    private bool _busy, _moving, _initialized, _preferencesLoaded, _replaceUpload, _assetsReady, _narrow;
     private ElementReference _element, _upload;
     private DotNetObjectReference<FullFileExplorerDialog>? _callbacks;
     private bool CanMoveAvailable => _provider?.Listing?.Capabilities.MoveEntry == true;
@@ -180,6 +180,7 @@
             try { await Js.InvokeVoidAsync("netratelExplorer.initializeMudEx"); _assetsReady = true; }
             catch (JSException) { _error = "Full Explorer assets could not initialize. Open Basic or reload this page."; await InvokeAsync(StateHasChanged); return; }
             _callbacks = DotNetObjectReference.Create(this);
+            _narrow = await Js.InvokeAsync<bool>("netratelExplorer.isNarrow");
             _scope = await Preferences.ScopeAsync(TenantId);
             await Js.InvokeVoidAsync("netratelExplorer.attach", _element, _callbacks);
             _layout = await Js.InvokeAsync<string?>("netratelExplorer.get", _scope, "layout") ?? DefaultLayout;
@@ -312,6 +313,7 @@
         finally { _uploadId = null; }
     });
     [JSInvokable] public Task OnUploadProgress(long bytes, long total) { _transferState = $"Uploading {bytes:N0} / {total:N0} bytes"; return InvokeAsync(StateHasChanged); }
+    [JSInvokable] public Task OnViewportChanged(bool narrow) { _narrow = narrow; return InvokeAsync(StateHasChanged); }
     [JSInvokable] public Task<bool> OnExternalUploadStarted()
     { if (_busy) return Task.FromResult(false); _busy = true; _error = null; return Task.FromResult(true); }
     [JSInvokable] public async Task OnExternalUploadCompleted(string? error)
@@ -365,10 +367,10 @@
         _callbacks?.Dispose();
         _lifetime.Dispose();
     }
-    private RenderFragment PreviewContent() => @<div style="height:100%;overflow:auto">
-        @if (SelectedFile is { } file)
+    private RenderFragment PreviewContent(bool narrow) => @<div style="height:100%;overflow:auto">
+        @if (_narrow == narrow && SelectedFile is { } file)
         { <MudButton Size="Size.Small" OnClick="@(() => OpenFileAsync(_selected[0]))">Open fullscreen</MudButton><GovernedFilePreview @key="(TenantId, AgentId, file.FullPath)" TenantId="@TenantId" AgentId="@AgentId" File="@file" /> }
-        else { <MudText Class="pa-4">Select one file to preview.</MudText> }
+        else if (_narrow == narrow) { <MudText Class="pa-4">Select one file to preview.</MudText> }
     </div>;
     private RenderFragment DetailsContent() => @<div class="pa-4">
         @foreach (var node in _selected.Take(128))
