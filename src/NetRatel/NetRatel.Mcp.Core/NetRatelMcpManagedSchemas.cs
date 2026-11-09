@@ -125,13 +125,18 @@ public static partial class NetRatelMcpToolDefinitions
     private static JsonArray MonitoringExamples(bool preview)
     {
         var result = new JsonArray();
-        foreach (var (kind, breach, recovery) in new[] { (MonitoringMetricKind.CpuUsagePercent, 95, 90), (MonitoringMetricKind.DiskFreePercent, 20, 25), (MonitoringMetricKind.DiskFreePercent, 10, 15) })
+        foreach (var (kind, breach, recovery, severity) in new[]
+        {
+            (MonitoringMetricKind.CpuUsagePercent, 95, 90, MonitoringSeverity.Warning),
+            (MonitoringMetricKind.DiskFreePercent, 20, 25, MonitoringSeverity.Warning),
+            (MonitoringMetricKind.DiskFreePercent, 10, 15, MonitoringSeverity.Critical)
+        })
         {
             var targets = new MonitoringTargetSelectionDto(MonitoringTargetMode.Selected, [], [Guid.Parse("11111111-1111-4111-8111-111111111111")]);
             var condition = new MonitoringConditionDto(kind, MonitoringNumericUnit.Percent, breach, recovery, null, null, []);
             object data = preview ? new MonitoringTargetPreviewRequest(targets, condition, TimeSpan.FromMinutes(2)) :
                 new MonitoringRuleWriteDto(new(7, Guid.Parse("22222222-2222-4222-8222-222222222222"), 1, 1,
-                    kind == MonitoringMetricKind.CpuUsagePercent ? "CPU warning" : "Disk free warning", true, MonitoringSeverity.Warning,
+                    kind == MonitoringMetricKind.CpuUsagePercent ? "CPU warning" : severity == MonitoringSeverity.Critical ? "Disk free critical" : "Disk free warning", true, severity,
                     targets, condition, TimeSpan.FromMinutes(3), TimeSpan.FromSeconds(30), TimeSpan.FromMinutes(2)), 40, "Reviewed monitoring policy");
             result.Add(JsonSerializer.SerializeToNode(data, data.GetType(), ManagedOperationCatalog.JsonOptions));
         }
