@@ -1,6 +1,6 @@
 # Basic and Full remote file explorers
 
-The client-card folder button opens **Basic Explorer** until you explicitly choose **Full Explorer** in its adjacent menu. Disk-row entry uses the same preference and preserves the starting disk path. Both choices remain available. Preferences/layout are local to this origin, signed-in user and tenant, without file paths, content or credentials.
+The single client-card folder button always opens a menu: **Basic Explorer**, then **Full Explorer**. Choose either to open it once for that client and starting disk path. An explicit choice is remembered for disk-row entry; a remembered preference never bypasses the card's menu. Preferences/layout are local to this origin, signed-in user and tenant, without file paths, content or credentials.
 
 Basic retains listing/navigation, folder creation, empty-folder deletion, streaming upload/download and bounded text preview/edit/save, including retained V1 compatibility. Full supplies a fullscreen folder tree, sortable details/tiles, Preview/Details dock and read-only fullscreen content viewer. All operations run on the selected persisted native agent through the existing file channel. The Web disk is never the remote provider.
 
@@ -11,6 +11,8 @@ Every request checks tenant/agent identity and effective `file.read`, `file.writ
 Full intersects permissions with negotiated capabilities: `file-roots-v1`, `file-stat-v1`, `file-create-v1`, `file-move-entry-v1`, `file-delete-recursive-v1`, `file-read-range-v1`, `file-write-conditional-v1`, and existing folder/read/write/delete capabilities. Unsupported commands are disabled. Older clients retain Basic and supported Full browsing; new previews/commands need the corresponding capability. Update the native client for the complete workspace.
 
 Directory loading is lazy, immediate-child only, without a recursive scan or per-entry stat/content fan-out. A directory over 4,096 entries produces a visible limit error. Sorting, filtering and virtualization cover the loaded directory; they do not provide remote pagination. Root discovery returns native volumes without traversing them. UNC is unsupported.
+
+Tree, path, breadcrumb, Up and grid-directory navigation update the Files pane when the authoritative listing completes. Loading and failed/unavailable listings have separate messages; only a successfully enumerated empty directory displays the empty state. Late completions for another directory or invalidated generation cannot replace the current listing or its permissions. Creating a folder/file, uploading and renaming/moving re-list affected parents and reconcile both panes. The earlier report of post-create invisibility was not independently reproduced; creation visibility remains a regression and owner retest case.
 
 - **New folder / New empty file** is create-only, including genuine zero-byte creation.
 - **Upload** streams browser files, including zero bytes, with a 16 GiB application limit per Full upload; upstream proxy/ingress limits also apply. The streaming API route has its own body limit without increasing global API, gRPC or SignalR limits. Existing names conflict by default. Select one file, enable replacement and confirm its path to replace it; the observed version is checked before staged commit.
@@ -24,7 +26,13 @@ Choose at most 128 top-level items per mutation. Roots, overlaps and directory m
 
 Use the path field/breadcrumbs, Go, Up, Volumes and Refresh. Typing a path is a navigation draft until Go/Enter opens it; commands use the displayed Browsing directory. Volumes is an overview, with upload/new/move/delete unavailable until a directory opens. Refresh preserves the committed directory. Switch **Details / tiles**. Click selects; Ctrl/Command-click toggles; Shift-click selects a range; dragging a rectangle selects files. The grid supports arrows, Shift-arrows, Ctrl/Command-A, Enter, F2 rename, Delete with confirmation, and Escape. Toolbar/context actions provide alternatives. Rename preserves entered significant spaces.
 
+Details keeps row virtualization. Tiles renders the bounded loaded directory, up to 4,096 entries, without placing a list virtualizer inside the wrapping tile grid. Tile names use two visible lines with the full path available as a tooltip. Switching modes, resizing and sorting reuse the loaded entries without another remote enumeration.
+
 Select one file for preview; double-click or **Open fullscreen** creates an independent viewer. **Return to Explorer** keeps directory/selection and restores scroll/focus. Full content is read-only; Basic retains its supported editing.
+
+Malformed, unsupported and over-budget preview content produces a local warning while Explorer stays usable. **Download file** remains available when permitted. Selection changes and closing viewers release their owned streams/range leases independently. A rejected image does not establish the cause of a separate HTTP 400 response.
+
+PDF controls group Previous/Next and Zoom out/in, show page count and zoom, wrap in narrow panes and provide native keyboard buttons with visible focus. Navigation is disabled at page boundaries; zoom is limited to 25–300%. All controls are disabled while loading or after renderer failure. Inline and fullscreen PDF viewers maintain independent page/zoom state.
 
 Drag dock headers to stack/move and dividers to resize. Use Float preview, Pop out / rejoin, Save layout and Reset layout. Permit popups for this instance. Saving first rejoins external panels. Narrow screens use separate Preview/Details tabs. Closing ends owned work/resources; a circuit disconnect cancels native work/content leases. Reopen Full after reconnection.
 
@@ -81,8 +89,9 @@ $file.SetLength(32MB)
 $file.Dispose()
 ```
 
-1. Open Basic from card/disk row. Check path/list/refresh, text edit/save, transfers and empty-folder operations. Choose Full and check the remembered choice after reload.
+1. Click the single card folder button and check both menu choices, keyboard activation/Escape/focus and unavailable-client guards. Choose Basic and check path/list/refresh, text edit/save, transfers and empty-folder operations. Choose Full, reload and confirm the card still offers its menu while disk-row entry remembers the explicit choice.
 2. In the disposable root, create empty file/folder, upload zero bytes, attempt a collision, confirm replacement, rename/move and confirm recursive deletion. Check Linux case/significant-space names and Windows case-only rename. Use test accounts/older clients to check read-only/denied/compatibility behavior.
 3. Transfer the generated file and compare SHA-256 (`sha256sum` on Linux; `Get-FileHash` in PowerShell). Cancel and inspect absent staging files. Interrupt a disposable mutation, inspect partial/unknown outcomes and refresh before retry.
-4. Preview synthetic image, DOCX/XLSX/PPTX, PDF/media; seek late and inspect 206/native offsets. Try malformed/oversized/active markup, rapid selection, fullscreen return, popout/rejoin, resize/stack/float/save/reset and narrow screens. Network inspection should show local assets and no external tenant-content requests.
-5. Inspect existing API/client logs and OTEL file-authority operations/failure counters with tenant/agent/request/attempt/epoch context, without logging contents/credentials. Verify cross-tenant/user denial. Owner Windows/macOS/native process, deployment and codec acceptance remains separate from fixture/build/distribution verification.
+4. Navigate populated tree folders without Refresh; try a genuinely empty folder, denied/offline listing and rapid A→B selection. Check automatic tree/grid visibility after create/upload/rename/move. Use an overflowing mixed Tiles listing with long names and a listing near 4,096 entries; check idle geometry, full scrolling, sorting, selection, repeated mode switches and dock/viewport resizing.
+5. Preview synthetic image, DOCX/XLSX/PPTX, PDF/media; seek late and inspect 206/native offsets. Reject malformed/over-budget WebP/image/archive content, then open a valid preview and navigate on the same circuit. Check one-page/multipage PDF page/zoom boundaries, loading/error controls, keyboard focus, narrow/fullscreen views and Return to Explorer. Exercise popout/rejoin, resize/stack/float/save/reset. Network inspection should show local assets and no external tenant-content requests.
+6. Inspect existing API/client logs and OTEL file-authority operations/failure counters with tenant/agent/request/attempt/epoch context, without logging contents/credentials. Verify cross-tenant/user denial. Owner Windows/macOS/native process, deployment and codec acceptance remains separate from fixture/build/distribution verification.

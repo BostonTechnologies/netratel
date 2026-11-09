@@ -7,7 +7,7 @@ on:
         description: Run only this optional suite (client measurements use matching hosted OS runners)
         type: choice
         required: true
-        options: [pairing, gateway, mcp-campaign, stdio-assessment, browser, deployment, release-images, native-client, upgrade-local, upgrade-oidc, client-measurement, client-trim-windows, client-trim-macos, client-control-macos, client-pty-debug-macos, windows-mcp, migrations-image, api-image, api-rid, cli-tool]
+        options: [pairing, gateway, mcp-campaign, stdio-assessment, browser, filesystem, deployment, release-images, native-client, upgrade-local, upgrade-oidc, client-measurement, client-trim-windows, client-trim-macos, client-control-macos, client-pty-debug-macos, windows-mcp, migrations-image, api-image, api-rid, cli-tool]
       source_ref:
         description: Source ref to test (published-image and upgrade suites use release_tag)
         default: main
@@ -65,7 +65,7 @@ permissions:
 jobs:
   selected-suite:
     name: Manual ${{ inputs.suite }} (Linux)
-    if: inputs.suite != 'client-measurement' && inputs.suite != 'client-trim-windows' && inputs.suite != 'client-trim-macos' && inputs.suite != 'client-control-macos' && inputs.suite != 'client-pty-debug-macos' && inputs.suite != 'windows-mcp' && inputs.suite != 'migrations-image' && inputs.suite != 'api-image' && inputs.suite != 'api-rid' && inputs.suite != 'cli-tool'
+    if: inputs.suite != 'client-measurement' && inputs.suite != 'filesystem' && inputs.suite != 'client-trim-windows' && inputs.suite != 'client-trim-macos' && inputs.suite != 'client-control-macos' && inputs.suite != 'client-pty-debug-macos' && inputs.suite != 'windows-mcp' && inputs.suite != 'migrations-image' && inputs.suite != 'api-image' && inputs.suite != 'api-rid' && inputs.suite != 'cli-tool'
     runs-on: ubuntu-latest
     timeout-minutes: ${{ (inputs.suite == 'native-client' || inputs.suite == 'deployment' || inputs.suite == 'upgrade-local' || inputs.suite == 'upgrade-oidc') && 45 || inputs.suite == 'release-images' && 60 || 40 }}
     env:
@@ -525,6 +525,50 @@ jobs:
             TestResults
             src/NetRatel/NetRatel.Web.PlaywrightTests/bin/Release/net10.0/TestResults/playwright
           if-no-files-found: warn
+          retention-days: 14
+
+  filesystem:
+    name: Native filesystem (${{ matrix.runner }})
+    if: inputs.suite == 'filesystem'
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source_ref }}
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+        with:
+          global-json-file: global.json
+      - name: Build the existing native gateway tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p TestResults/filesystem
+          git rev-parse HEAD > TestResults/filesystem/source-sha.txt
+          dotnet --info > TestResults/filesystem/native-runtime.txt
+          dotnet restore src/NetRatel/NetRatel.Tests/NetRatel.Tests.csproj
+          dotnet build src/NetRatel/NetRatel.Tests/NetRatel.Tests.csproj --configuration Release --no-restore
+      - name: Execute disposable native filesystem and gateway regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet test --project src/NetRatel/NetRatel.Tests/NetRatel.Tests.csproj \
+            --configuration Release --no-build --no-restore --max-parallel-test-modules 1 \
+            --filter-class NetRatel.Tests.Client.AgentFileGatewayClientTests NetRatel.Tests.Client.FileSystemServiceGatewayPathTests \
+            --minimum-expected-tests 1 --results-directory TestResults/filesystem \
+            --report-trx --report-trx-filename native.trx
+          python3 tools/ci/verify-mtp-trx.py TestResults/filesystem/native.trx
+      - name: Retain native execution evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: filesystem-${{ matrix.runner }}
+          path: TestResults/filesystem
+          if-no-files-found: error
           retention-days: 14
 
   windows-mcp:

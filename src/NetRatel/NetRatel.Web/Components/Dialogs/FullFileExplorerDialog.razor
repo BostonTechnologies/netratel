@@ -23,7 +23,7 @@
         </MudStack>
     </TitleContent>
     <DialogContent>
-        <div @ref="_element" class="full-explorer" data-testid="full-explorer" @onkeydown="KeyboardAsync">
+        <div @ref="_element" class="full-explorer" data-testid="full-explorer" data-narrow="@(_narrow ? "true" : "false")" @onkeydown="KeyboardAsync">
             <MudStack Row="true" Spacing="1" AlignItems="AlignItems.Center" Wrap="Wrap.Wrap">
                 <MudTextField T="string" @bind-Value="_path" Label="Remote path" Variant="Variant.Outlined" Margin="Margin.Dense"
                               OnKeyDown="PathKeyAsync" Style="min-width:220px;flex:1" />
@@ -86,13 +86,22 @@
                 <MudExFileManager @ref="_manager" Manager="@_provider" Panels="@(MudExFileManagerPanels.Tree | MudExFileManagerPanels.Files)"
                                   ShowActions="false" AllowDragDrop="false" AllowPopout="false" FileGridView="MudExFileGridView.Details"
                                   ShowFileViewSwitcher="false" ToggleableTreeViewModes="@(Array.Empty<TreeViewMode>())" FilePreviewContent="MudExFileManagerPreviewContent.Icon"
-                                  Height="@("65vh")" InitialLayoutJson="@_layout" CurrentDirectoryChanged="DirectoryChangedAsync"
+                                  Height="@(_narrow ? "45vh" : "65vh")" InitialLayoutJson="@_layout" CurrentDirectoryChanged="DirectoryChangedAsync"
                                   SelectedNodesChanged="SelectionAsync" OnFileOpened="OpenFileAsync">
                     <FileAreaTemplate Context="entries">
+                        @if (_manager?.CurrentDirectory is { } directory && _provider.DirectoryListing(directory) is { Status: not RemoteDirectoryLoadStatus.Loaded } listing)
+                        {
+                            @if (listing.Status == RemoteDirectoryLoadStatus.Unavailable)
+                            { <MudAlert Severity="Severity.Warning" data-testid="explorer-listing-unavailable">@listing.Error</MudAlert> }
+                            else
+                            { <div role="status" data-testid="explorer-listing-loading"><MudProgressCircular Indeterminate="true" Size="Size.Small" /> Loading directory…</div> }
+                        }
+                        else
+                        {
                         <MudExFileGrid @ref="_grid" Items="@entries" @bind-View="_view" SelectedItems="@_selected"
                                        SelectedItemsChanged="GridSelectionAsync" AllowMultiSelect="true" AllowRubberBand="true"
                                        AllowRename="false" AllowContextMenu="false" AllowDragDrop="@CanMoveAvailable" OnOpened="OpenEntryAsync"
-                                       OnDeleteRequested="DeleteAsync" OnMoveRequested="MoveDropAsync" Virtualize="true">
+                                       OnDeleteRequested="DeleteAsync" OnMoveRequested="MoveDropAsync" Virtualize="@(_view == MudExFileGridView.Details)">
                             <ItemTemplate Context="node">
                                 @if (ReferenceEquals(node, _renameNode))
                                 {
@@ -103,7 +112,7 @@
                                 }
                                 else
                                 {
-                                    <span title="@node.FullPath" @oncontextmenu="@(args => ContextAsync(node, args))" @oncontextmenu:preventDefault="true" @oncontextmenu:stopPropagation="true"><MudIcon Size="Size.Small" Icon="@(node.IsDirectory ? Icons.Material.Filled.Folder : Icons.Material.Filled.InsertDriveFile)" /> @node.Name</span>
+                                    <span class="remote-entry-name" title="@node.FullPath" @oncontextmenu="@(args => ContextAsync(node, args))" @oncontextmenu:preventDefault="true" @oncontextmenu:stopPropagation="true"><MudIcon Size="Size.Small" Icon="@(node.IsDirectory ? Icons.Material.Filled.Folder : Icons.Material.Filled.InsertDriveFile)" /> @node.Name</span>
                                 }
                             </ItemTemplate>
                             <ContextMenuContent>
@@ -112,6 +121,7 @@
                                 <MudMenuItem Disabled="@(_selected.Count != 1 || _selected[0].IsDirectory)" OnClick="DownloadAsync">Download file</MudMenuItem>
                             </ContextMenuContent>
                         </MudExFileGrid>
+                        }
                     </FileAreaTemplate>
                     <ChildContent>
                         <MudExDockItem Id="remote-preview" Title="Preview" Direction="DockDirection.Right" InitialWidth="380" CanClose="false" CanPopout="true" Renderer="DockRendererMode.Always">
@@ -156,7 +166,8 @@
     private bool _busy, _moving, _initialized, _preferencesLoaded, _replaceUpload, _assetsReady, _narrow;
     private ElementReference _element, _upload;
     private DotNetObjectReference<FullFileExplorerDialog>? _callbacks;
-    private bool HasDirectory => !_lifetime.IsCancellationRequested && _currentPath is not null && _manager?.CurrentDirectory?.FullPath == _currentPath;
+    private bool HasDirectory => !_lifetime.IsCancellationRequested && _currentPath is not null && _manager?.CurrentDirectory is { } directory &&
+        directory.FullPath == _currentPath && _provider?.DirectoryListing(directory).Status == RemoteDirectoryLoadStatus.Loaded;
     private bool CanMoveAvailable => HasDirectory && _provider?.Listing?.Capabilities.MoveEntry == true;
     private bool CanMove => CanMoveAvailable && _selected.Count is > 0 and <= 128 && _selected.All(node => !RemoteFilePath.IsRoot(node.FullPath));
     private bool CanRename => CanMoveAvailable && _selected.Count == 1;
@@ -170,6 +181,7 @@
         _connection = Circuit.Token.Register(() => _lifetime.Cancel());
         _path = RemoteFilePath.TryNormalizeDirectory(InitialPath, out var normalized) ? normalized : "/";
         _provider = new(Gateway, TenantId, AgentId, _path, _lifetime.Token);
+        _provider.ListingChanged += ListingChangedAsync;
         _layout = DefaultLayout;
         return Task.CompletedTask;
     }
@@ -201,10 +213,21 @@
     {
         if (_busy || _lifetime.IsCancellationRequested) return;
         if (_provider is null || _manager is null || !RemoteFilePath.TryNormalizeDirectory(_path, out var path)) { _error = "Enter an absolute remote path."; return; }
+        _error = null;
         try { await _manager.NavigateToAsync(_provider.Directory(path)); }
         catch (Exception exception) when (exception is InvalidOperationException or HttpRequestException or OperationCanceledException)
         { _error = exception.Message; _currentPath = null; _selected = []; }
     }
+    private Task ListingChangedAsync() => _lifetime.IsCancellationRequested ? Task.CompletedTask : InvokeAsync(async () =>
+    {
+        if (_lifetime.IsCancellationRequested) return;
+        // Completion may originate from the tree's lazy loader rather than a
+        // navigation callback. Re-render the actual manager with the committed
+        // canonical children and update upload authority for this directory only.
+        await Js.InvokeVoidAsync("netratelExplorer.update", _element, TenantId, AgentId.ToString("D"), _currentPath ?? "",
+            HasDirectory && _provider?.Listing?.Capabilities.ConditionalUpload == true);
+        StateHasChanged();
+    });
     private async Task DirectoryChangedAsync(MudExFileStructureNode? node)
     {
         if (_lifetime.IsCancellationRequested || !ReferenceEquals(node, _manager?.CurrentDirectory)) return;
@@ -372,6 +395,7 @@
     {
         _connection.Dispose();
         _lifetime.Cancel();
+        if (_provider is not null) _provider.ListingChanged -= ListingChangedAsync;
         try
         {
             await CancelTransfersAsync();

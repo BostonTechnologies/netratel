@@ -125,21 +125,15 @@
                                         </MudMenu>
                                     </MudTooltip>
                                     <MudTooltip Text="@client.FilesystemUnavailableReason">
-                                        <MudIconButton Icon="@Icons.Material.Filled.FolderOpen" Color="Color.Secondary"
-                                                       Size="Size.Small"
-                                                       Disabled="@(!client.CanUseFilesystem)"
-                                                       OnClick="@(() => OpenFileBrowserAsync(client, primaryDisk?.Scope ?? "/"))"
-                                                       aria-label="Open file browser" />
-                                    </MudTooltip>
-                                    <MudMenu Dense="true" Disabled="@(!client.CanUseFilesystem)">
-                                      <ActivatorContent Context="explorerMenu">
-                                        <MudIconButton Icon="@Icons.Material.Filled.ArrowDropDown" Size="Size.Small" Disabled="@(!client.CanUseFilesystem)" OnClick="@explorerMenu.ToggleAsync" aria-label="Choose file explorer" />
-                                      </ActivatorContent>
+                                    <MudMenu Dense="true" Disabled="@(!client.CanUseFilesystem)"
+                                             Icon="@Icons.Material.Filled.FolderOpen" Color="Color.Secondary" Size="Size.Small" AriaLabel="Open file browser"
+                                             AnchorOrigin="Origin.BottomCenter" TransformOrigin="Origin.TopCenter">
                                       <ChildContent>
                                         <MudMenuItem OnClick="@(() => OpenFileBrowserAsync(client, primaryDisk?.Scope ?? "/", false))">Basic Explorer</MudMenuItem>
                                         <MudMenuItem OnClick="@(() => OpenFileBrowserAsync(client, primaryDisk?.Scope ?? "/", true))">Full Explorer</MudMenuItem>
                                       </ChildContent>
                                     </MudMenu>
+                                    </MudTooltip>
                                     <MudTooltip Text="@LogsTooltip(client)">
                                         <MudIconButton Icon="@Icons.Material.Filled.FormatListBulleted" Color="Color.Info"
                                                        Size="Size.Small"
