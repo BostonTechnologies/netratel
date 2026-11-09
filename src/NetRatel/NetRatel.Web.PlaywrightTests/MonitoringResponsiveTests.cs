@@ -396,9 +396,9 @@ public sealed class MonitoringResponsiveTests(ClientsManagementBrowserFixture br
         await page.GetByTestId("monitoring-new-rule").ClickAsync();
         var name = page.GetByTestId("monitoring-rule-name");
         await name.FillAsync("Direct group CPU"); await name.PressAsync("Enter");
-        await page.GetByRole(AriaRole.Button, new() { Name = "Next page", Exact = true }).ClickAsync();
-        await page.GetByRole(AriaRole.Button, new() { Name = "First page", Exact = true }).ClickAsync();
-        await page.GetByRole(AriaRole.Tab, new() { Name = "Groups", Exact = true }).ClickAsync();
+        await page.GetByTestId("monitoring-target-picker").GetByTestId("monitoring-next-clients").ClickAsync();
+        await page.GetByTestId("monitoring-target-picker").GetByRole(AriaRole.Button, new() { Name = "First page", Exact = true }).ClickAsync();
+        await page.GetByTestId("monitoring-target-picker").GetByRole(AriaRole.Tab, new() { Name = "Groups", Exact = true }).ClickAsync();
         await page.GetByTestId("monitoring-target-picker").GetByLabel("SQL servers").CheckAsync();
         await page.GetByTestId("monitoring-metric").SelectOptionAsync("ServiceExpectedState");
         await page.GetByTestId("monitoring-inventory-client").SelectOptionAsync("11111111-1111-1111-1111-111111111111");

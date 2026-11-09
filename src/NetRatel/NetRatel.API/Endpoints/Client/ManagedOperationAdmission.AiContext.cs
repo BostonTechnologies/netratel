@@ -45,7 +45,7 @@ internal sealed partial class ManagedOperationAdmission
         {
             var data = request.GetProperty("data").Deserialize<InvestigationCreateRequest>(ManagedOperationCatalog.JsonOptions)!;
             agentIds = data.AgentIds;
-            includesAlert = data.OccurrenceId is not null;
+            includesAlert = data.OccurrenceId is not null || data.PreparedAlert is not null;
         }
         else if (descriptor.IdProperty == "investigationId")
         {
@@ -53,11 +53,11 @@ internal sealed partial class ManagedOperationAdmission
             var investigationId = request.GetProperty("investigationId").GetGuid();
             var context = await db.Set<AiInvestigationRecord>().AsNoTracking()
                 .Where(row => row.TenantId == tenantId && row.Id == investigationId)
-                .Select(row => new { row.AgentIds, row.OccurrenceId }).SingleOrDefaultAsync(ct).ConfigureAwait(false);
+                .Select(row => new { row.AgentIds, row.OccurrenceId, Prepared = db.AiInvestigationEvents.Any(item => item.InvestigationId == row.Id && item.Type == "prepared_alert") }).SingleOrDefaultAsync(ct).ConfigureAwait(false);
             if (context is null)
                 return Denied("target_not_found");
             agentIds = context.AgentIds;
-            includesAlert = context.OccurrenceId is not null;
+            includesAlert = context.OccurrenceId is not null || context.Prepared;
         }
         else
         {

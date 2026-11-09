@@ -72,18 +72,34 @@ public sealed class ManagedAiContextAdmissionTests
     }
 
     [Theory]
-    [InlineData("create")]
-    [InlineData("get")]
-    public async Task Alert_linked_context_requires_monitoring_read_before_review(string operation)
+    [InlineData("create", true)]
+    [InlineData("get", true)]
+    [InlineData("create", false)]
+    [InlineData("get", false)]
+    public async Task Alert_linked_context_requires_monitoring_read_before_review(string operation, bool hasOccurrence)
     {
         await using var scenario = await Scenario.CreateAsync(operation);
-        scenario.Investigation.OccurrenceId = Guid.NewGuid();
+        var reference = new MonitoringInvestigationReference(Guid.NewGuid(), "cpu");
+        if (hasOccurrence) scenario.Investigation.OccurrenceId = Guid.NewGuid();
+        else scenario.Db.AiInvestigationEvents.Add(new AiInvestigationEventRecord
+        {
+            InvestigationId = scenario.Investigation.Id, Sequence = 1, Type = "prepared_alert", CreatedAtUtc = DateTimeOffset.UtcNow,
+            Text = JsonSerializer.Serialize(new PreparedInvestigationDto(reference, "Unsent fixture draft", scenario.Investigation.RequestId, DateTimeOffset.UtcNow))
+        });
         await scenario.Db.SaveChangesAsync();
         scenario.Access.Permissions.Remove(NetRatelPermissions.MonitoringRead);
+        var request = scenario.Request();
+        if (!hasOccurrence && operation == "create")
+        {
+            var prepared = JsonNode.Parse(request.GetRawText())!;
+            prepared["data"]!["preparedAlert"] = JsonSerializer.SerializeToNode(reference, ManagedOperationCatalog.JsonOptions);
+            request = JsonSerializer.SerializeToElement(prepared);
+        }
 
-        var result = await scenario.Admission.EvaluateAsync(scenario.Descriptor, scenario.Request(), scenario.Http, default);
+        var result = await scenario.Admission.EvaluateAsync(scenario.Descriptor, request, scenario.Http, default);
 
         result.FailureCode.Should().Be("permission_denied");
+        (await scenario.Db.McpOperatorAcceptedAudits.CountAsync()).Should().Be(0);
     }
 
     [Fact]

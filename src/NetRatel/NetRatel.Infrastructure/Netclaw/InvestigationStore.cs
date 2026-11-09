@@ -13,7 +13,7 @@ public sealed partial class InvestigationStore(OrchestratorDbContext db, TimePro
     public async Task<IReadOnlyList<InvestigationSummaryDto>> ListAsync(int tenantId, int skip, CancellationToken ct, bool includeAlerts = true)
     {
         if (skip < 0 || skip > 100000) throw new ArgumentException("Invalid history offset.");
-        var rows = await db.Set<AiInvestigationRecord>().AsNoTracking().Where(x => x.TenantId == tenantId && x.AgentIds.Length > 0 && (includeAlerts || x.OccurrenceId == null))
+        var rows = await db.Set<AiInvestigationRecord>().AsNoTracking().Where(x => x.TenantId == tenantId && x.AgentIds.Length > 0 && (includeAlerts || x.OccurrenceId == null && !db.AiInvestigationEvents.Any(item => item.InvestigationId == x.Id && item.Type == "prepared_alert")))
             .OrderByDescending(x => x.LastActivityUtc).ThenBy(x => x.Id).Skip(skip).Take(100).ToListAsync(ct);
         return rows.Select(Summary).ToArray();
     }
@@ -157,7 +157,7 @@ public sealed partial class InvestigationStore(OrchestratorDbContext db, TimePro
     }
 
     public Task<bool> HasAlertAsync(int tenantId, Guid id, CancellationToken ct) => db.Set<AiInvestigationRecord>().AsNoTracking()
-        .AnyAsync(x => x.TenantId == tenantId && x.Id == id && x.OccurrenceId != null, ct);
+        .AnyAsync(x => x.TenantId == tenantId && x.Id == id && (x.OccurrenceId != null || db.AiInvestigationEvents.Any(item => item.InvestigationId == x.Id && item.Type == "prepared_alert")), ct);
 
     public async Task ArchiveAsync(int tenantId, Guid id, InvestigationArchiveRequest request, string actor, CancellationToken ct)
     {

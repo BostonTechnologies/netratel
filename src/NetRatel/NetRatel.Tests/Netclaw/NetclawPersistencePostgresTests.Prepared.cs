@@ -7,13 +7,20 @@ using NetRatel.Infrastructure.Persistence;
 using NetRatel.Shared.Contracts.Monitoring;
 using NetRatel.Shared.Contracts.Netclaw;
 using Xunit;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.HttpResults;
+using NetRatel.API.Endpoints;
+using NetRatel.Infrastructure.Identity.Authorization;
+using System.Security.Claims;
 
 namespace NetRatel.Tests.Netclaw;
 
 public sealed partial class NetclawPersistencePostgresTests
 {
-    [Fact]
-    public async Task Prepared_alert_is_durable_unsent_context_and_first_Start_is_idempotent()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Prepared_alert_is_durable_unsent_context_and_first_Start_is_idempotent(bool attachOccurrence)
     {
         var options = await DatabaseAsync(); var agent = Guid.NewGuid(); var ruleId = Guid.NewGuid();
         var now = DateTimeOffset.UtcNow;
@@ -23,7 +30,7 @@ public sealed partial class NetclawPersistencePostgresTests
         var evidence = new MonitoringEvidenceDto(new(1, 1), Guid.NewGuid(), now, now, MonitoringEvidenceQuality.Fresh, MonitoringClassification.Breach, 97, 0, null);
         var occurrence = new MonitoringOccurrenceDto(Guid.NewGuid(), Guid.NewGuid(), now, now.AddMinutes(-3), rule, evidence, MonitoringFlowDispatchDisposition.NoFlowSelected);
         var state = new MonitoringSeriesState(new(17, ruleId, agent, "cpu"), 1, 1, MonitoringPhase.Firing, MonitoringEvidenceQuality.Fresh, LatestEvidence: evidence, Occurrence: occurrence, ApplicableBypassIds: []);
-        var request = new InvestigationCreateRequest(Guid.NewGuid(), "CPU warning · demo-host", [agent], occurrence.OccurrenceId) { PreparedAlert = new(ruleId, "cpu") };
+        var request = new InvestigationCreateRequest(Guid.NewGuid(), "CPU warning · demo-host", [agent], attachOccurrence ? occurrence.OccurrenceId : null) { PreparedAlert = new(ruleId, "cpu") };
         Guid id;
         await using (var db = new OrchestratorDbContext(options))
         {
@@ -40,6 +47,12 @@ public sealed partial class NetclawPersistencePostgresTests
             Assert.Null(snapshot.ActiveMessageId); Assert.NotNull(snapshot.Prepared); Assert.False(snapshot.Prepared.Started);
             Assert.Contains("97% CPU", snapshot.Prepared.Message); Assert.Contains("UTC", snapshot.Prepared.Message);
             Assert.DoesNotContain(snapshot.Events, item => item.Type == "operator");
+            Assert.Single(await db.AiInvestigations.ToListAsync());
+            Assert.True(await store.HasAlertAsync(17, id, default));
+            Assert.Empty(await store.ListAsync(17, 0, default, includeAlerts: false));
+            var readOnly = new PreparedReadAccess(); var http = new DefaultHttpContext();
+            Assert.IsType<ForbidHttpResult>(await NetclawEndpoints.GetAsync(17, id, 0, http, readOnly, store, null!, default));
+            Assert.IsType<ForbidHttpResult>(await NetclawEndpoints.CreateAsync(17, request with { RequestId = Guid.NewGuid() }, http, readOnly, store, default));
             Assert.Single(await db.AiInvestigations.ToListAsync());
             await Assert.ThrowsAsync<InvestigationConflictException>(() => store.CreateAsync(17, request with { PreparedAlert = new(ruleId, "tampered") }, "operator", default));
             await Assert.ThrowsAsync<KeyNotFoundException>(() => store.CreateAsync(17, request with { RequestId = Guid.NewGuid(), OccurrenceId = Guid.NewGuid() }, "operator", default));
@@ -59,4 +72,12 @@ public sealed partial class NetclawPersistencePostgresTests
             await Assert.ThrowsAsync<InvestigationConflictException>(() => store.AcceptMessageAsync(17, id, start with { Text = "Changed unknown outcome" }, "operator", null, false, default));
         }
     }
+    private sealed class PreparedReadAccess : IEffectiveAccessService
+    {
+        public Task<bool> AuthorizeAsync(ClaimsPrincipal principal, string permission, int? tenantId, CancellationToken cancellationToken = default) =>
+            Task.FromResult(tenantId == 17 && permission != NetRatelPermissions.MonitoringRead);
+        public Task<EffectiveAccessSnapshot> GetSnapshotAsync(ClaimsPrincipal principal, int? tenantId, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task ReconcileBuiltInRolesAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+    }
+
 }

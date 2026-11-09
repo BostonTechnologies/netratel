@@ -32,7 +32,8 @@ Synthetic, disposable fixtures only. This checklist covers issues
   message ID. Browser fixtures prove new-tab opening, a device absent from the
   first search page, retained composer edits, zero sends before Start, one first
   send, popup-blocked fallback and lost-create-response reconciliation. PostgreSQL
-  verifies persisted context, duplicate Start rejection and cross-tenant/tampered IDs.
+  verifies persisted context, duplicate Start rejection, cross-tenant/tampered IDs
+  and MonitoringRead denial with or without an occurrence association.
 
 Owning checks: `MonitoringApiTests`, `ManagedOperationsMcpTests`,
 `MonitoringPageTests`, `MonitoringManagementTests`, `BrowserInteropCleanupTests`,

@@ -68,7 +68,7 @@ public static class NetclawEndpoints
         var includeAlerts = await AllowedAsync(tenantId, NetRatelPermissions.MonitoringRead, http, access, ct);
         var ids = observation.Sessions.Select(session => session.InvestigationId).ToArray();
         var readable = await db.Set<AiInvestigationRecord>().AsNoTracking()
-            .Where(row => row.TenantId == tenantId && ids.Contains(row.Id) && (includeAlerts || row.OccurrenceId == null))
+            .Where(row => row.TenantId == tenantId && ids.Contains(row.Id) && (includeAlerts || row.OccurrenceId == null && !db.AiInvestigationEvents.Any(item => item.InvestigationId == row.Id && item.Type == "prepared_alert")))
             .Select(row => row.Id).ToListAsync(ct);
         return Results.Ok(observation with { Sessions = observation.Sessions.Where(session => readable.Contains(session.InvestigationId)).ToArray() });
     }
@@ -145,7 +145,7 @@ public static class NetclawEndpoints
     {
         if (!await AllowedAsync(tenantId, NetRatelPermissions.TelemetryRead, http, access, ct)) return Results.Forbid();
         var snapshot = await store.LoadAsync(tenantId, investigationId, after ?? 0, ct);
-        if (snapshot.Investigation.OccurrenceId is not null && !await AllowedAsync(tenantId, NetRatelPermissions.MonitoringRead, http, access, ct)) return Results.Forbid();
+        if (await store.HasAlertAsync(tenantId, investigationId, ct) && !await AllowedAsync(tenantId, NetRatelPermissions.MonitoringRead, http, access, ct)) return Results.Forbid();
         return Results.Ok(snapshot with { Draft = snapshot.Investigation.State == InvestigationState.Processing ? worker.Draft(investigationId) : null });
     }
 
