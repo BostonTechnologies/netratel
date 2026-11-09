@@ -95,7 +95,7 @@ jobs:
           ref: ${{ inputs.companion_ref }}
           path: work/rateldesk
           fetch-depth: 0
-      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6
         with:
           global-json-file: global.json
       - name: Set up pairing browser runtime
@@ -540,7 +540,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.source_ref }}
-      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6
         with:
           global-json-file: global.json
       - name: Build the existing native gateway tests
@@ -583,7 +583,7 @@ jobs:
         with:
           ref: ${{ inputs.source_ref }}
           fetch-depth: 0
-      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6
         with:
           global-json-file: global.json
       - name: Record selected archive source
@@ -662,7 +662,7 @@ jobs:
         with:
           ref: ${{ github.workflow_sha }}
           path: client-measurement-tooling
-      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6
         with:
           global-json-file: global.json
       - name: Compare actual native PTY Debug baseline and candidate
@@ -796,7 +796,7 @@ jobs:
         with:
           ref: ${{ inputs.source_ref }}
           fetch-depth: 0
-      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6
         with:
           global-json-file: global.json
       - name: Compare actual same-source images and isolated migrations
@@ -840,7 +840,7 @@ jobs:
         with:
           ref: ${{ inputs.source_ref }}
           fetch-depth: 0
-      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6
         with:
           global-json-file: global.json
       - name: Compare actual image exports and run selected native/local upgrade probes
@@ -901,7 +901,7 @@ jobs:
         with:
           ref: ${{ inputs.source_ref }}
           path: cli-tool-source
-      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6
         with:
           global-json-file: cli-tool-source/global.json
       - name: Check artifact provenance failure cases
