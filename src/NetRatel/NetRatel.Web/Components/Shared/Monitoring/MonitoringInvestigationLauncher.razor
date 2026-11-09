@@ -1,0 +1,85 @@
+@using Microsoft.JSInterop
+@using NetRatel.Shared.Contracts.Monitoring
+@using NetRatel.Shared.Contracts.Netclaw
+@using NetRatel.Web.Services
+@implements IAsyncDisposable
+@inject IServiceProvider Services
+@inject IJSRuntime JS
+@inject ILogger<MonitoringInvestigationLauncher> Logger
+
+<span class="monitoring-investigation-launcher" @onclick:stopPropagation>
+    <MudTooltip Text="AI investigation — opens in a new tab"><button @ref="_button" type="button" class="mud-button-root mud-icon-button mud-icon-button-size-small" disabled="@(_launching || !_ready || Row.Series.AgentId == Guid.Empty)" aria-label="@($"AI investigation for {ClientLabel} — opens in a new tab")" @onclick="Launch" data-testid="monitoring-ai-investigation"><MudIcon Icon="@Icons.Material.Outlined.Psychology" Size="Size.Small" /></button></MudTooltip>
+    @if (_url is not null) { <a href="@_url" target="_blank" rel="noopener noreferrer" data-testid="monitoring-open-investigation">Open created investigation</a> }
+    @if (_error is not null) { <span role="alert">@_error</span> }
+</span>
+
+@code {
+    [Parameter, EditorRequired] public MonitoringSeriesState Row { get; set; } = default!;
+    [Parameter] public string ClientLabel { get; set; } = "Client";
+    private ElementReference _button;
+    private IJSObjectReference? _module, _listener;
+    private bool _launching, _ready, _disposed;
+    private string? _error, _url;
+    private string _context = "", _attached = "";
+    private long _generation;
+    protected override void OnParametersSet()
+    {
+        var context = $"{Row.Series.TenantId}/{Row.Series.AgentId:D}/{Row.Series.RuleId:D}/{Row.Series.ResourceKey}/{Row.Occurrence?.OccurrenceId:D}";
+        if (_context == context) return;
+        _context = context; ++_generation; _ready = false; _url = _error = null;
+    }
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_disposed || _attached == _context) return;
+        try
+        {
+            _module ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/monitoring-investigation.js");
+            await NetRatel.Web.Services.BrowserInteropCleanup.ReleaseAsync(Logger, _listener);
+            _listener = await _module.InvokeAsync<IJSObjectReference>("attach", _button, _context);
+            _attached = _context; _ready = true; StateHasChanged();
+        }
+        catch (Exception error) when (error is JSException or JSDisconnectedException or OperationCanceledException) { Logger.LogDebug("Optional browser operation failed ({FailureType}).", error.GetType().Name); }
+    }
+    private async Task Launch()
+    {
+        if (_launching || !_ready || _disposed || Row.Series.AgentId == Guid.Empty || _module is null) return;
+        _launching = true; _error = null;
+        var row = Row; var context = _context; var generation = _generation; var module = _module;
+        try
+        {
+            var requestId = await module.InvokeAsync<Guid>("reservation", context);
+            var api = Services.GetRequiredService<INetclawApiService>();
+            var permissions = await api.TenantsAsync();
+            if (!permissions.Any(tenant => tenant.TenantId == row.Series.TenantId && tenant.CanInvestigate)) throw new HttpRequestException("Investigation access is required for this tenant.");
+            // Repeating this identical POST reconciles an uncertain create by its
+            // persisted request ID. It never sends a message or invents a new ID.
+            const string title = "Monitoring alert investigation";
+            var request = new InvestigationCreateRequest(requestId, title, [row.Series.AgentId], row.Occurrence?.OccurrenceId)
+            { PreparedAlert = new(row.Series.RuleId, row.Series.ResourceKey) };
+            var snapshot = await api.CreateAsync(row.Series.TenantId, request);
+            if (snapshot.Investigation.TenantId != row.Series.TenantId || snapshot.Investigation.AgentIds.Count != 1 ||
+                snapshot.Investigation.AgentIds[0] != row.Series.AgentId || snapshot.Investigation.OccurrenceId != row.Occurrence?.OccurrenceId || snapshot.Prepared?.Alert != request.PreparedAlert)
+                throw new HttpRequestException("The saved investigation could not be verified. Retry this same alert to reconcile it.");
+            var url = $"/ai/ops?tenantId={row.Series.TenantId}&investigation={snapshot.Investigation.Id:D}";
+            await module.InvokeAsync<bool>("complete", context, url);
+            if (!_disposed && generation == _generation) _url = url;
+        }
+        catch (Exception error) when (error is HttpRequestException or OperationCanceledException or JSException or JSDisconnectedException)
+        {
+            if (!_disposed && generation == _generation) _error = "Investigation creation was not confirmed. Click again to reconcile the same request; no message has been sent.";
+            try { await module.InvokeVoidAsync("fail", context); } catch (Exception cleanup) when (cleanup is JSException or JSDisconnectedException or OperationCanceledException) { Logger.LogDebug("Reserved tab cleanup failed ({FailureType}).", cleanup.GetType().Name); }
+        }
+        finally
+        {
+            _launching = false;
+            if (_disposed) { await NetRatel.Web.Services.BrowserInteropCleanup.ReleaseAsync(Logger, null, module); _module = null; }
+        }
+    }
+    public async ValueTask DisposeAsync()
+    {
+        _disposed = true; ++_generation;
+        await NetRatel.Web.Services.BrowserInteropCleanup.ReleaseAsync(Logger, _listener, _launching ? null : _module);
+        _listener = null;
+        if (!_launching) _module = null;
+    }
+}

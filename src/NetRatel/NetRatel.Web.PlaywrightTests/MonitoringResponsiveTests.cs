@@ -117,10 +117,10 @@ public sealed class MonitoringResponsiveTests(ClientsManagementBrowserFixture br
         await page.GetByTestId("monitoring-state-all").ClickAsync();
         await Assertions.Expect(page.GetByTestId("monitoring-series-row").Last).ToHaveAttributeAsync("data-health", "Unknown");
 
-        var serviceButton = page.GetByTestId("monitoring-services").First.Locator("button");
+        var serviceButton = page.GetByTestId("client-tools-launcher").First.Locator(".mud-fab-menu-container > button");
         await page.EvaluateAsync("""
             () => {
-                const launcher=document.querySelector('[data-testid="monitoring-services"] button');
+                const launcher=document.querySelector('[data-testid="client-tools-launcher"] .mud-fab-menu-container > button');
                 window.__monitoringServicesFocus={launcher, events:[],nativeRestoreDepth:0,opened:false,manualRestoresBeforeRemoval:[]};
                 const describe=e=>({tag:e?.tagName,id:e?.id,testId:e?.dataset?.testid,label:e?.getAttribute?.('aria-label'),text:e?.textContent?.trim().slice(0,60),connected:e?.isConnected});
                 for(const name of ['saveFocus','restoreFocus','focus']) {
@@ -147,6 +147,7 @@ public sealed class MonitoringResponsiveTests(ClientsManagementBrowserFixture br
             """);
         await serviceButton.FocusAsync(); await Assertions.Expect(serviceButton).ToBeFocusedAsync();
         await page.Keyboard.PressAsync("Enter");
+        await page.GetByRole(AriaRole.Menuitem, new() { NameRegex = new System.Text.RegularExpressions.Regex("^Services for ") }).First.ClickAsync();
         await page.GetByTestId("client-services-dialog").WaitForAsync(); await page.GetByTestId("service-row").First.WaitForAsync();
         await page.GetByTestId("client-services-dialog").EvaluateAsync("e => {const trace=window.__monitoringServicesFocus;trace.dialogId=e.closest('.mud-dialog').id;trace.opened=true}");
         await page.WaitForFunctionAsync("""
@@ -176,7 +177,7 @@ public sealed class MonitoringResponsiveTests(ClientsManagementBrowserFixture br
             var trace = await page.EvaluateAsync<string>("""
                 () => { const trace=window.__monitoringServicesFocus,e=document.activeElement;
                     return JSON.stringify({active:{tag:e?.tagName,id:e?.id,testId:e?.dataset?.testid,label:e?.getAttribute?.('aria-label')},
-                      launcherConnected:trace.launcher.isConnected,launcherIsOriginal:trace.launcher===document.querySelector('[data-testid="monitoring-services"] button'),
+                      launcherConnected:trace.launcher.isConnected,launcherIsOriginal:trace.launcher===document.querySelector('[data-testid="client-tools-launcher"] .mud-fab-menu-container > button'),
                       dialogCount:document.querySelectorAll('.mud-dialog').length,manualRestoresBeforeRemoval:trace.manualRestoresBeforeRemoval,events:trace.events},null,2); }
                 """);
             await File.WriteAllTextAsync(Path.Combine(evidenceRoot, $"monitoring-services-focus-{width}-{height}-{theme}-dpr{scale}.json"), trace);
@@ -261,6 +262,7 @@ public sealed class MonitoringResponsiveTests(ClientsManagementBrowserFixture br
         Assert.Equal(1, _api.Writes);
         await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, $"beta3-monitoring-rule-drawer-{width}-{theme}.png"), Animations = ScreenshotAnimations.Disabled });
         await page.GetByTestId("monitoring-cancel").ClickAsync();
+        await page.GetByTestId("manage-tab-groups").ClickAsync();
         await page.GetByTestId("monitoring-new-group").ClickAsync();
         await page.GetByTestId("monitoring-group-name").FillAsync("Beta.3 bounded group draft");
         await page.GetByTestId("monitoring-client-choice").First.CheckAsync();
@@ -419,7 +421,7 @@ public sealed class MonitoringResponsiveTests(ClientsManagementBrowserFixture br
         testOutputHelper.WriteLine(await error.EvaluateAsync<string>("e => JSON.stringify({viewport:[innerWidth,innerHeight],error:e.getBoundingClientRect().toJSON(),save:document.querySelector('[data-testid=monitoring-save]').getBoundingClientRect().toJSON()})"));
         await Assertions.Expect(page.GetByTestId("monitoring-reason")).ToBeFocusedAsync();
         await Assertions.Expect(name).ToHaveValueAsync("Direct group CPU");
-        Assert.EndsWith("/monitoring?tenantId=1", page.Url);
+        Assert.Contains("tenantId=1", page.Url); Assert.Contains("view=manage", page.Url);
         await Assertions.Expect(page.GetByTestId("monitoring-tab-manage")).ToHaveAttributeAsync("aria-selected", "true");
         var reason = page.GetByTestId("monitoring-reason");
         await reason.FillAsync("first line"); await reason.PressAsync("Enter"); await reason.PressAsync("x");
@@ -436,7 +438,7 @@ public sealed class MonitoringResponsiveTests(ClientsManagementBrowserFixture br
         await Assertions.Expect(page.GetByTestId("monitoring-save-success")).ToContainTextAsync("saved successfully");
         var saved = _api.Configuration(1).Rules.Single(rule => rule.Name == "Direct group CPU");
         Assert.Empty(saved.Targets.AgentIds); Assert.Single(saved.Targets.GroupIds); Assert.Equal(_api.FlowVersion, saved.PublishedFlowVersionId);
-        var edit = page.Locator(".monitoring-definition").Filter(new() { HasText = "Direct group CPU" }).GetByTestId("monitoring-edit-rule");
+        var edit = page.Locator("[data-testid=manage-table-rules] tbody tr").Filter(new() { HasText = "Direct group CPU" }).GetByTestId("monitoring-edit-rule");
         await edit.ClickAsync();
         await Assertions.Expect(name).ToHaveValueAsync(saved.Name);
         await Assertions.Expect(page.GetByTestId("monitoring-breach")).ToHaveValueAsync("90");
@@ -449,14 +451,15 @@ public sealed class MonitoringResponsiveTests(ClientsManagementBrowserFixture br
         Assert.Equal(occurrence, _api.Active.Occurrence); Assert.Equal(0, _api.PreviewCalls);
         await edit.ClickAsync();
         await Assertions.Expect(page.GetByTestId("monitoring-flow")).ToHaveValueAsync(_api.SecondFlowVersion.ToString());
-        Assert.EndsWith("/monitoring?tenantId=1", page.Url);
+        Assert.Contains("tenantId=1", page.Url); Assert.Contains("view=manage", page.Url);
         var evidence = EvidenceRoot(); Directory.CreateDirectory(evidence);
         await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, $"monitoring-direct-save-{width}-{height}.png") });
         await page.GetByTestId("monitoring-cancel").ClickAsync();
+        await page.GetByTestId("manage-tab-bypasses").ClickAsync();
         await page.GetByTestId("monitoring-new-bypass").ClickAsync();
         await page.GetByTestId("monitoring-more-scope").ClickAsync();
         await Assertions.Expect(page.GetByTestId("monitoring-editor")).ToBeVisibleAsync();
-        Assert.EndsWith("/monitoring?tenantId=1", page.Url);
+        Assert.Contains("tenantId=1", page.Url); Assert.Contains("view=manage", page.Url);
         Assert.False(await page.Locator("#blazor-error-ui").IsVisibleAsync());
     }
     private static async Task SetTheme(IPage page, string theme)
@@ -492,6 +495,7 @@ internal sealed class FixtureMonitoringApi : IMonitoringApiService
     public MonitoringSeriesState Active { get; private set; }
     public int Writes { get; private set; }
     public bool PagingDataset { get; set; }
+    public bool ManagementDataset { get; set; }
     public Guid PagingAgent => _estate[260].AgentId;
     public List<MonitoringQueryDto> QueryReads { get; } = [];
     private ulong _revision = 1;
@@ -538,8 +542,17 @@ internal sealed class FixtureMonitoringApi : IMonitoringApiService
     }
     public Task<IReadOnlyList<MonitoringTenantDto>> GetTenantsAsync(CancellationToken token = default) => Task.FromResult<IReadOnlyList<MonitoringTenantDto>>([new(1, "SQL tenant"), new(2, "Other tenant")]);
     public Task<MonitoringPermissionsDto> GetPermissionsAsync(int tenantId, CancellationToken token = default) => Task.FromResult(new MonitoringPermissionsDto(tenantId, true, true, true, true, true, true));
-    public MonitoringConfigurationDto Configuration(int tenantId) => new(tenantId, _revision,
-        tenantId == 1 ? new[] { _cpu, _disk, _service }.Concat(_savedRules).ToImmutableArray() : [], tenantId == 1 ? [_group] : [], tenantId == 1 ? _bypasses : [], DateTimeOffset.UtcNow);
+    public MonitoringConfigurationDto Configuration(int tenantId)
+    {
+        if (ManagementDataset && tenantId == 1)
+        {
+            var groups = Enumerable.Range(0, 107).Select(index => _group with { GroupId = Guid.Parse($"{index + 1:x8}-1111-4111-8111-111111111111"), Name = $"Group {index:000}" }).ToImmutableArray();
+            var rules = Enumerable.Range(0, 107).Select(index => _cpu with { RuleId = Guid.Parse($"{index + 1:x8}-2222-4222-8222-222222222222"), Name = $"Rule {index:000}" }).ToImmutableArray();
+            var bypasses = Enumerable.Range(0, 107).Select(index => new MonitoringBypassDto(Guid.Parse($"{index + 1:x8}-3333-4333-8333-333333333333"), 1, null, null, null, Guid.Parse("44444444-4444-4444-8444-444444444444"), $"Maintenance {index:000}", DateTimeOffset.UtcNow.AddMinutes(-index), null)).ToImmutableArray();
+            return new(1, _revision, rules, groups, bypasses, DateTimeOffset.UtcNow);
+        }
+        return new(tenantId, _revision, tenantId == 1 ? new[] { _cpu, _disk, _service }.Concat(_savedRules).ToImmutableArray() : [], tenantId == 1 ? [_group] : [], tenantId == 1 ? _bypasses : [], DateTimeOffset.UtcNow);
+    }
     public Task<MonitoringConfigurationDto> GetConfigurationAsync(int tenantId, CancellationToken token = default)
     {
         if (tenantId == 1 && DelayedTenantOne is not null) { DelayedReadToken = token; return DelayedTenantOne.Task; }

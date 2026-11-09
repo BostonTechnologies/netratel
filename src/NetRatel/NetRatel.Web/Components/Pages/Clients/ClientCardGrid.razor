@@ -279,79 +279,12 @@
         Snackbar.Add("Host copied.", Severity.Success);
     }
 
-    private async Task OpenSoftwareInventoryAsync(ClientPresentationModel client)
-    {
-        var parameters = new DialogParameters<SoftwareInventoryDialog>
-        {
-            { dialog => dialog.TenantId, client.TenantId }, { dialog => dialog.AgentId, client.AgentId },
-            { dialog => dialog.HostLabel, client.HostName ?? client.DisplayName }
-        };
-        await DialogService.ShowAsync<SoftwareInventoryDialog>("Software Inventory", parameters,
-            new DialogOptions { FullScreen = true, FullWidth = true, CloseOnEscapeKey = true, CloseOnNavigation = true });
-    }
-
-    private async Task OpenTelemetryDialogAsync(ClientPresentationModel client, GatewayTelemetrySummary? telemetry)
-    {
-        var parameters = new DialogParameters<GatewayTelemetryDialog>
-        {
-            { dialog => dialog.TenantId, client.TenantId }, { dialog => dialog.AgentId, client.AgentId },
-            { dialog => dialog.HostLabel, client.HostName ?? client.DisplayName }, { dialog => dialog.TenantLabel, client.TenantName ?? $"Tenant {client.TenantId}" },
-            { dialog => dialog.InitialSnapshot, telemetry }
-        };
-        await DialogService.ShowAsync<GatewayTelemetryDialog>("Telemetry", parameters,
-            new DialogOptions { FullScreen = true, FullWidth = true, CloseOnEscapeKey = true, CloseButton = false });
-    }
-
-    private async Task OpenFileBrowserAsync(ClientPresentationModel client, string initialPath, bool? explicitFull = null)
-    {
-        var preference = Services.GetService<ExplorerPreferenceService>();
-        var full = explicitFull ?? (preference is not null && await preference.IsFullAsync(client.TenantId));
-        if (explicitFull.HasValue && preference is not null) await preference.RememberAsync(client.TenantId, full);
-        if (full)
-        {
-            await DialogService.ShowAsync<FullFileExplorerDialog>("Full Explorer", new DialogParameters<FullFileExplorerDialog>
-            {
-                { dialog => dialog.TenantId, client.TenantId }, { dialog => dialog.AgentId, client.AgentId },
-                { dialog => dialog.HostLabel, client.HostName ?? client.DisplayName }, { dialog => dialog.InitialPath, initialPath }
-            }, new DialogOptions { FullScreen = true, CloseOnEscapeKey = true, CloseButton = false });
-            return;
-        }
-        var parameters = new DialogParameters<ClientFileSystemViewer>
-        {
-            { dialog => dialog.TenantId, client.TenantId }, { dialog => dialog.AgentId, client.AgentId },
-            { dialog => dialog.HostLabel, client.HostName ?? client.DisplayName }, { dialog => dialog.InitialPath, initialPath }
-        };
-        await DialogService.ShowAsync<ClientFileSystemViewer>("File Browser", parameters,
-            new DialogOptions { FullScreen = true, CloseOnEscapeKey = true, CloseButton = false });
-    }
-
-    private async Task OpenTerminalAsync(ClientPresentationModel client, string shell)
-    {
-        var parameters = new DialogParameters<ClientTerminalSessionDialog>
-        {
-            { dialog => dialog.TenantId, client.TenantId }, { dialog => dialog.AgentId, client.AgentId }, { dialog => dialog.HostLabel, client.DisplayName },
-            { dialog => dialog.Shell, shell }
-        };
-        await DialogService.ShowAsync<ClientTerminalSessionDialog>($"{ClientPresentationFormatting.ShellLabel(shell)} terminal", parameters,
-            new DialogOptions { CloseOnEscapeKey = true, FullWidth = true, MaxWidth = MaxWidth.ExtraExtraLarge, CloseButton = false });
-    }
-
-    private static string LogsTooltip(ClientPresentationModel client) => client.CanUseLogs
-        ? "Open client logs"
-        : $"Logs unavailable: {client.LogsUnavailableReason}";
-
-    private async Task OpenLogExplorerAsync(ClientPresentationModel client)
-    {
-        var parameters = new DialogParameters<GatewayClientLogExplorerDialog>
-        {
-            { dialog => dialog.TenantId, client.TenantId }, { dialog => dialog.AgentId, client.AgentId },
-            { dialog => dialog.HostLabel, client.HostName ?? client.DisplayName },
-            { dialog => dialog.TenantLabel, client.TenantName ?? $"Tenant {client.TenantId}" },
-            { dialog => dialog.Online, client.Online }
-        };
-        await DialogService.ShowAsync<GatewayClientLogExplorerDialog>("Client logs", parameters,
-            new DialogOptions { FullScreen = true, FullWidth = true, CloseOnEscapeKey = true, CloseButton = false });
-    }
+    private async Task OpenSoftwareInventoryAsync(ClientPresentationModel client) => await ClientToolDialogLauncher.SoftwareAsync(DialogService, client);
+    private async Task OpenTelemetryDialogAsync(ClientPresentationModel client, GatewayTelemetrySummary? telemetry) => await ClientToolDialogLauncher.TelemetryAsync(DialogService, client, telemetry);
+    private async Task OpenFileBrowserAsync(ClientPresentationModel client, string initialPath, bool? explicitFull = null) => await ClientToolDialogLauncher.FilesAsync(DialogService, Services, client, initialPath, explicitFull);
+    private async Task OpenTerminalAsync(ClientPresentationModel client, string shell) => await ClientToolDialogLauncher.TerminalAsync(DialogService, client, shell);
+    private async Task OpenLogExplorerAsync(ClientPresentationModel client) => await ClientToolDialogLauncher.LogsAsync(DialogService, client);
+    private static string LogsTooltip(ClientPresentationModel client) => client.CanUseLogs ? "Open client logs" : $"Logs unavailable: {client.LogsUnavailableReason}";
 
     private async Task OpenRemoteSupportAsync(ClientPresentationModel client)
     {

@@ -63,12 +63,6 @@ public partial class MonitoringPage
     private string? _reviewDescription;
     private ulong _editorConfigurationRevision;
     [Inject] private NavigationManager Navigation { get; set; } = default!;
-    private ElementReference _newRuleLauncher;
-    private readonly Dictionary<Guid, ElementReference> _ruleLaunchers = [];
-    private ElementReference? _editorLauncher, _restoreEditorFocus;
-    private int _editorLauncherTenant;
-    private long _focusCloseGeneration;
-    private string? _editorLauncherUri;
     private MonitoringPageState? _state;
     private MonitoringPageState State => _state ??= new(Api);
     private IReadOnlyList<MonitoringTenantDto> _tenants = [];
@@ -92,6 +86,8 @@ public partial class MonitoringPage
         builder.AddContent(3, _editorError);
         builder.CloseElement();
     };
+    private readonly MonitoringManagementWorkspace _managementWorkspace = new();
+    private readonly NetRatel.Web.Services.Clients.ClientToolReadiness _clientToolReadiness = new();
     private string _tab = "Active", _search = "", _reason = "", _groupName = "", _deleteName = "", _deleteCollection = "";
     private bool _interactive, _busy, _formDirty;
     private MonitoringRuleDraft? _draft;
@@ -142,6 +138,10 @@ public partial class MonitoringPage
         if (!string.IsNullOrEmpty(_fromDate)) pairs.Add(new("from", _fromDate));
         if (!string.IsNullOrEmpty(_toDate)) pairs.Add(new("to", _toDate));
         if (includeAlert && RequestedAlertId is { } alert) pairs.Add(new("alert", alert.ToString("D")));
+        var currentQuery = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(new Uri(Navigation.Uri).Query);
+        if (!int.TryParse(currentQuery.GetValueOrDefault("tenantId"), out var linkedTenant) || linkedTenant == State.TenantId)
+            foreach (var pair in currentQuery.Where(pair => pair.Key.StartsWith("manage", StringComparison.Ordinal)))
+                pairs.Add(new(pair.Key, pair.Value.ToString()));
         return "monitoring?" + string.Join("&", pairs.Select(pair => Uri.EscapeDataString(pair.Key) + "=" + Uri.EscapeDataString(pair.Value)));
     }
     private void PersistFilters(bool includeAlert = false)
@@ -268,15 +268,16 @@ public partial class MonitoringPage
         if (await ApplyRequestedScope()) { StateHasChanged(); return; }
         try
         {
-            if (State.Snapshot is not null && _tab is "Active" or "History")
+            if (!_resultsUnavailable && State.Snapshot is not null && _tab is "Active" or "History")
             {
                 _resultsModule ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/monitoring-results.js");
                 if (_resultsSizer is null && _resultsModule is not null) _resultsSizer = await _resultsModule.InvokeAsync<IJSObjectReference>("observeResults", _scrollRegion);
                 else if (_resultsSizer is not null) await _resultsSizer.InvokeVoidAsync("setElement", _scrollRegion);
             }
-            else if (_resultsSizer is not null) await _resultsSizer.InvokeVoidAsync("setElement", (object?)null);
+            else if (!_resultsUnavailable && _resultsSizer is not null) await _resultsSizer.InvokeVoidAsync("setElement", (object?)null);
         }
-        catch (Exception error) when (error is JSException or JSDisconnectedException) { Logger.LogDebug(error, "Monitoring uses CSS viewport sizing because browser sizing is unavailable."); }
+        catch (Exception error) when (error is JSException or JSDisconnectedException or OperationCanceledException)
+        { _resultsUnavailable = true; Logger.LogDebug(error, "Monitoring uses CSS viewport sizing because browser sizing is unavailable."); }
         if (_focusInvalid && _editor is not null)
         {
             _focusInvalid = false;
@@ -285,16 +286,22 @@ public partial class MonitoringPage
                 await using var module = await JS.InvokeAsync<IJSObjectReference>("import", "./js/monitoring-editor.js");
                 await module.InvokeVoidAsync("focusInvalidField", _editorRoot);
             }
-            catch (Exception error) when (error is JSException or JSDisconnectedException) { }
+            catch (Exception error) when (error is JSException or JSDisconnectedException) { Logger.LogDebug("Optional browser focus failed ({FailureType}).", error.GetType().Name); }
         }
-        if (_restoreEditorFocus is not { } launcher) return;
-        _restoreEditorFocus = null;
-        if (_lifetime.IsCancellationRequested || _editor is not null || _tab != "Manage" ||
-            _focusCloseGeneration != _editorGeneration || State.TenantId != _editorLauncherTenant ||
-            Navigation.Uri != _editorLauncherUri || State.Snapshot?.Permissions.CanManage != true) return;
-        // The close render has removed the editor and its trap; return to its actual launcher.
-        try { await launcher.FocusAsync(); }
-        catch (JSDisconnectedException) { return; }
+        if (_restoreManagementLauncher is { } managementLauncher && _editor is null)
+        {
+            _restoreManagementLauncher = null;
+            if (!_disposed && State.TenantId == _managementLauncherTenant && _tab == "Manage")
+            {
+                try
+                {
+                    await using var module = await JS.InvokeAsync<IJSObjectReference>("import", "./js/operator-policy-dialog.js");
+                    await module.InvokeVoidAsync("restoreFocus", managementLauncher, "manage-search", "manage-tab-rules");
+                }
+                catch (Exception error) when (error is JSException or JSDisconnectedException or OperationCanceledException) { Logger.LogDebug("Optional browser operation failed ({FailureType}).", error.GetType().Name); }
+            }
+        }
+
     }
     private async Task ChangeTenant(ChangeEventArgs args)
     {
@@ -401,21 +408,16 @@ public partial class MonitoringPage
     private IEnumerable<MonitoringBypassDto> AppliedBypasses(MonitoringSeriesState row) => State.Snapshot?.Configuration.Bypasses.Where(b =>
         !row.ApplicableBypassIds.IsDefault && row.ApplicableBypassIds.Contains(b.BypassId)) ?? [];
 
+    private string? _managementLauncher, _restoreManagementLauncher;
+    private int _managementLauncherTenant;
+    private void RememberManagementLauncher(string id) { _managementLauncher = id; _managementLauncherTenant = State.TenantId; }
+
     private void BeginEditor(string kind)
     {
         if (_busy) return;
-        CloseEditor(); _restoreEditorFocus = null; _conflict = _reviewedConflict = false; _reviewDescription = null; _editorConfigurationRevision = State.Snapshot?.Configuration.Revision ?? 0; _editor = kind; _editorGeneration++; _reason = ""; _formDirty = false; _editorError = null; _invalidField = null; _focusInvalid = false; _successMessage = null;
+        CloseEditor(); _restoreManagementLauncher = null; _conflict = _reviewedConflict = false; _reviewDescription = null; _editorConfigurationRevision = State.Snapshot?.Configuration.Revision ?? 0; _editor = kind; _editorGeneration++; _reason = ""; _formDirty = false; _editorError = null; _invalidField = null; _focusInvalid = false; _successMessage = null;
     }
     private void OpenRule(MonitoringRuleDto? rule) { if (_busy || rule is not null && rule.TenantId != State.TenantId) return; BeginEditor("rule"); _draft = MonitoringRuleDraft.Create(rule); }
-    private void OpenRuleFromLauncher(MonitoringRuleDto? rule, ElementReference launcher)
-    {
-        var generation = _editorGeneration;
-        OpenRule(rule);
-        if (_editorGeneration == generation || _editor != "rule") return;
-        _editorLauncher = launcher;
-        _editorLauncherTenant = State.TenantId;
-        _editorLauncherUri = Navigation.Uri;
-    }
     private void OpenGroup(MonitoringGroupDto? group) { if (_busy || group is not null && group.TenantId != State.TenantId) return; BeginEditor("group"); _originalGroup = group; _groupName = group?.Name ?? ""; _groupMembers = group?.AgentIds.ToHashSet() ?? []; }
     private void OpenOperator(MonitoringSeriesState series, string operation)
     {
@@ -428,10 +430,8 @@ public partial class MonitoringPage
     private void CloseEditor()
     {
         if (_busy) return;
-        _restoreEditorFocus = _editor == "rule" ? _editorLauncher : null;
-        _editorLauncher = null;
+        if (_editor is not null) { _restoreManagementLauncher = _managementLauncher; _managementLauncher = null; }
         _inventoryRead?.Cancel(); _editorGeneration++; _inventoryGeneration++;
-        _focusCloseGeneration = _editorGeneration;
         _editor = null; _draft = null; _operatorSeries = null; _invalidField = null; _focusInvalid = false;
         _serviceSuggestions = []; _inventoryAgent = null; _inventoryNote = "Suggestions read cached inventory only. No collection is requested.";
     }
@@ -562,13 +562,11 @@ public partial class MonitoringPage
     public async ValueTask DisposeAsync()
     {
         Dispose();
-        try
-        {
-            if (_resultsSizer is not null) { await _resultsSizer.InvokeVoidAsync("dispose"); await _resultsSizer.DisposeAsync(); }
-            if (_resultsModule is not null) await _resultsModule.DisposeAsync();
-        }
-        catch (Exception error) when (error is JSException or JSDisconnectedException or TaskCanceledException) { return; }
+        var observer = _resultsSizer; var module = _resultsModule;
+        _resultsSizer = _resultsModule = null;
+        await NetRatel.Web.Services.BrowserInteropCleanup.ReleaseAsync(Logger, observer, module);
     }
+    private bool _resultsUnavailable;
     private bool _disposed;
     public void Dispose() { if (_disposed) return; _disposed = true; FenceAlert(); _lifetime.Cancel(); _lifetime.Dispose(); _inventoryRead?.Cancel(); _inventoryRead?.Dispose(); _state?.Dispose(); }
 }

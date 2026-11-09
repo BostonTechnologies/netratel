@@ -58,7 +58,7 @@
     <div class="netclaw-scroll-area" @ref="_transcript" role="log" aria-label="Saved chat messages" aria-live="polite" aria-relevant="additions text">
         @if (Context is not null) { <div class="netclaw-context">@Context</div> }
         <div class="chat-transcript ai-transcript">
-            @foreach (var item in Events)
+            @foreach (var item in Events.Where(item => item.Type != "prepared_alert"))
             {
                 @if (item.Type is "operator" or "assistant" or "assistant_recovered")
                 {
@@ -105,7 +105,7 @@
             <label class="chat-visually-hidden" for="@_composerId">Message Netclaw</label>
             <textarea id="@_composerId" @ref="_composer" @bind:get="Message" @bind:set="InputMessage" @bind:event="oninput" @onkeydown="KeyDown" placeholder="Message Netclaw…" maxlength="16000" rows="3" disabled="@(!CanEditMessage)" data-testid="chat-message"></textarea>
             <div class="chat-composer-toolbar"><span class="chat-composer-tenant">Netclaw · @TenantName</span><button type="button" class="chat-send-button" @onclick="SendMessage" disabled="@(!CanSend)" data-testid="chat-send">@SendLabel</button></div>
-        </div><p class="chat-composer-hint">@(CanInvestigate ? "Enter to send · Shift + Enter for a new line" : "Your current access allows you to read saved conversations.")</p></div>
+        </div><p class="chat-composer-hint">@(CanInvestigate ? RequireStartClick ? "Review or edit this unsent draft, then choose Start investigation." : "Enter to send · Shift + Enter for a new line" : "Your current access allows you to read saved conversations.")</p></div>
     }
     else { <div class="chat-archived">Enable this tenant’s Netclaw connection to continue chatting.</div> }
 </section>
@@ -123,6 +123,7 @@
     [Parameter] public bool CanEditMessage { get; set; }
     [Parameter] public bool CanSend { get; set; }
     [Parameter] public string SendLabel { get; set; } = "Send";
+    [Parameter] public bool RequireStartClick { get; set; }
     [Parameter] public string? Error { get; set; }
     [Parameter] public string? LiveError { get; set; }
     [Parameter] public EventCallback Refresh { get; set; }
@@ -150,7 +151,7 @@
     private static string StateLabel(InvestigationState state) => state switch { InvestigationState.Idle => "Ready", InvestigationState.Processing => "Working", InvestigationState.AwaitingApproval => "Awaiting approval", InvestigationState.DeliveryUnknown => "Needs recovery", InvestigationState.Queued => "Queued", _ => "Archived" };
     private string FormatMessageTime(DateTimeOffset value) => MessageTimeFormatter?.Invoke(value) ?? value.UtcDateTime.ToString("HH:mm 'UTC'");
     private Task InputMessage(string value) { Message = value; return MessageChanged.InvokeAsync(value); }
-    private Task KeyDown(KeyboardEventArgs e) => e.Key == "Enter" && !e.ShiftKey && !e.AltKey && CanSend ? SendMessage() : Task.CompletedTask;
+    private Task KeyDown(KeyboardEventArgs e) => !RequireStartClick && e.Key == "Enter" && !e.ShiftKey && !e.AltKey && CanSend ? SendMessage() : Task.CompletedTask;
     private async Task OpenArchiveAsync()
     {
         if (Busy || _archive || !CanInvestigate || _disposed) return;

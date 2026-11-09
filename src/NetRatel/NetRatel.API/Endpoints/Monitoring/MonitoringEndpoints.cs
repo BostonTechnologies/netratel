@@ -74,6 +74,11 @@ public static class MonitoringEndpoints
     internal static async Task<IResult> ExecuteAsync<T>(Func<Task<T>> operation)
     {
         try { return Results.Ok(await operation().ConfigureAwait(false)); }
+        catch (NetRatel.Application.Monitoring.MonitoringValidationException exception)
+        {
+            return Results.Json(new { code = "monitoring_validation_failed", validation = exception.Issue,
+                correlationId = System.Diagnostics.Activity.Current?.TraceId.ToString() ?? "not_available" }, statusCode: 400);
+        }
         catch (MonitoringApiException exception) { return Results.Problem(statusCode: exception.StatusCode, title: exception.Code); }
         catch (ArgumentException exception) when (CapacityErrors.Contains(exception.Message)) { return Results.Problem(statusCode: StatusCodes.Status413PayloadTooLarge, title: exception.Message); }
         catch (InvalidOperationException exception) when (CapacityErrors.Contains(exception.Message)) { return Results.Problem(statusCode: StatusCodes.Status413PayloadTooLarge, title: exception.Message); }

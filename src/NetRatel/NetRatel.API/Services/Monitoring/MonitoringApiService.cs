@@ -232,8 +232,8 @@ public sealed class MonitoringApiService(IMonitoringResourceAuthorizer authoriza
         var configuration = await GetConfigurationAsync(tenantId, cancellationToken).ConfigureAwait(false);
         var ids = await ResolveTargetsAsync(tenantId, request.Targets, configuration, user, NetRatelPermissions.MonitoringManage, cancellationToken).ConfigureAwait(false);
         if (request.Condition is not null)
-            MonitoringContractValidator.RequireRule(new(tenantId, Guid.NewGuid(), 1, 1, "Preview", true, MonitoringSeverity.Warning,
-                request.Targets, request.Condition, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30), TimeSpan.FromMinutes(2)));
+            ValidateAuthoringRule(new(tenantId, Guid.NewGuid(), 1, 1, "Preview", true, MonitoringSeverity.Warning,
+                request.Targets, request.Condition, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30), TimeSpan.FromMinutes(2)), preview: true);
         var identities = await ReadIdentitiesAsync(tenantId, ids, cancellationToken).ConfigureAwait(false);
         var identityMap = identities.ToDictionary(item => item.AgentId);
         if (request.FreshnessBudget is { } freshness && (freshness < MonitoringLimits.MinimumFreshness || freshness > MonitoringLimits.MaximumFreshness))
@@ -278,6 +278,17 @@ public sealed class MonitoringApiService(IMonitoringResourceAuthorizer authoriza
         return Bounded(new MonitoringTargetPreviewDto(ids, configuration.Revision, details.ToImmutable(), ids.Length, ids.Length > details.Count, identities));
     }
 
+    private void ValidateAuthoringRule(MonitoringRuleDto rule, bool preview = false)
+    {
+        try { MonitoringContractValidator.RequireRule(rule, preview); }
+        catch (MonitoringValidationException exception)
+        {
+            logger.LogWarning("Monitoring validation rejected: Code={ValidationCode} Field={ValidationField} TenantId={TenantId} CorrelationId={CorrelationId}",
+                exception.Issue.Code, exception.Issue.Field, rule.TenantId, System.Diagnostics.Activity.Current?.TraceId.ToString() ?? "not_available");
+            throw;
+        }
+    }
+
     public async Task<MonitoringConfigurationDto> SaveRuleAsync(int tenantId, Guid ruleId, MonitoringRuleWriteDto request, ClaimsPrincipal user, CancellationToken cancellationToken)
     {
         await RequireAsync(user, NetRatelPermissions.MonitoringManage, new(tenantId, MonitoringResourceKind.Rule, ruleId), cancellationToken).ConfigureAwait(false);
@@ -298,7 +309,7 @@ public sealed class MonitoringApiService(IMonitoringResourceAuthorizer authoriza
             ExecutionCredentialId = request.Rule.PublishedFlowVersionId is null ? null : existing?.PublishedFlowVersionId == request.Rule.PublishedFlowVersionId
                 ? existing.ExecutionCredentialId : user.FindFirstValue("netratel_integration_credential_id")
         };
-        MonitoringContractValidator.RequireRule(rule);
+        ValidateAuthoringRule(rule);
         if (request.ResetPolicy is { } reset && !Enum.IsDefined(reset)) throw new MonitoringApiException(400, "invalid_monitoring_reset_policy");
         if (rule.Revision != (existing is null ? 1UL : checked(existing.Revision + 1))) throw new MonitoringApiException(409, "monitoring_rule_revision_conflict");
         var changed = existing is not null && MonitoringContractValidator.EvaluationFingerprint(existing) != MonitoringContractValidator.EvaluationFingerprint(rule);

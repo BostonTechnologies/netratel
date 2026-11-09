@@ -3852,6 +3852,16 @@ public sealed partial class NetRatelMcpOperationalTools
         }
         catch (NetRatelMcpApiException exception)
         {
+            if (tool == "netratel_monitoring" && exception.StatusCode == 400 && exception.Validation is { } validation &&
+                NetRatel.Shared.Contracts.Monitoring.MonitoringValidationErrors.FromWire(validation.Code, validation.Field) is { } safe)
+            {
+                return new NetRatelToolResponse(false, "invalid_request", "The monitoring condition did not meet the published contract.",
+                    Error: new NetRatelToolError(safe.Code, false, 400))
+                {
+                    FailureContext = new(safe.Code, "input", false, [], "not_available", null,
+                        "The request was rejected before configuration was changed.", safe.Remediation) { Validation = safe }
+                }.WithFailureContext(tool, operation, correlationId: exception.CorrelationId);
+            }
             if (tool == "netratel_marker_jobs" &&
                 operation == "cancel" &&
                 exception.StatusCode == 409 &&
@@ -3865,6 +3875,14 @@ public sealed partial class NetRatelMcpOperationalTools
                     .WithFailureContext(tool, operation);
             }
 
+            if (tool == "netratel_monitoring")
+            {
+                var code = exception.RemoteCode is "permission_denied" or "tenant_not_authorized" or "target_policy_denied" or "target_policy_missing" or "delegated_identity_invalid"
+                    ? exception.RemoteCode : "remote_request_failed";
+                return new NetRatelToolResponse(false, "failed", $"The monitoring request did not complete (HTTP {exception.StatusCode}). Inspect the safe failure code and correlation ID.",
+                    Error: new NetRatelToolError(code, exception.Retryable && NetRatelMcpCatalog.FindOperation(tool, operation)?.Safety == NetRatelMcpOperationSafety.Read, exception.StatusCode))
+                    .WithFailureContext(tool, operation, correlationId: exception.CorrelationId);
+            }
             return new NetRatelToolResponse(false, "failed", exception.Message,
                 Error: new NetRatelToolError(exception.RemoteCode ?? exception.Code,
                     exception.Retryable && NetRatelMcpCatalog.FindOperation(tool, operation)?.Safety == NetRatelMcpOperationSafety.Read, exception.StatusCode))

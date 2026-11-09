@@ -42,8 +42,14 @@ public static class MonitoringContractValidator
                 return Fail("invalid_service_condition", out error);
             return true;
         }
-        if (condition.ServicePlatform is not null || !condition.ExpectedServiceStates.IsDefaultOrEmpty ||
-            condition.Unit is null || !Enum.IsDefined(condition.Unit.Value) ||
+        if (condition.ServicePlatform is not null) return Fail("monitoring_numeric_service_platform", out error);
+        if (!condition.ExpectedServiceStates.IsDefaultOrEmpty) return Fail("monitoring_numeric_service_states", out error);
+        if (condition.Kind == MonitoringMetricKind.CpuUsagePercent && condition.ResourceName is not null)
+            return Fail("monitoring_cpu_resource_requires_null", out error);
+        if (condition.Kind is MonitoringMetricKind.DiskFreePercent or MonitoringMetricKind.DiskFreeSpace && condition.ResourceName is not null &&
+            (!Text(condition.ResourceName, 256) || !RemoteFilePath.TryNormalize(condition.ResourceName, out var path) || path != condition.ResourceName))
+            return Fail("monitoring_disk_resource_invalid", out error);
+        if (condition.Unit is null || !Enum.IsDefined(condition.Unit.Value) ||
             condition.BreachThreshold is not double breach || condition.RecoveryThreshold is not double recovery ||
             !double.IsFinite(breach) || !double.IsFinite(recovery)) return Fail("invalid_numeric_condition", out error);
         if (condition.Kind is MonitoringMetricKind.CpuUsagePercent or MonitoringMetricKind.DiskFreePercent)
@@ -56,11 +62,9 @@ public static class MonitoringContractValidator
             return Fail("invalid_space_condition", out error);
         if (condition.Kind == MonitoringMetricKind.CpuUsagePercent)
         {
-            if (condition.ResourceName is not null || breach <= recovery) return Fail("invalid_cpu_hysteresis", out error);
+            if (breach <= recovery) return Fail("monitoring_cpu_hysteresis", out error);
         }
-        else if (breach >= recovery || (condition.ResourceName is not null &&
-            (!Text(condition.ResourceName, 256) || !RemoteFilePath.TryNormalize(condition.ResourceName, out var normalized) || normalized != condition.ResourceName)))
-            return Fail("invalid_disk_hysteresis", out error);
+        else if (breach >= recovery) return Fail("monitoring_disk_hysteresis", out error);
         return true;
     }
 
@@ -99,9 +103,15 @@ public static class MonitoringContractValidator
         return true;
     }
 
-    public static void RequireRule(MonitoringRuleDto rule)
+    public static void RequireRule(MonitoringRuleDto rule) => RequireRule(rule, false);
+
+    public static void RequireRule(MonitoringRuleDto rule, bool preview)
     {
-        if (!TryValidateRule(rule, out var error)) throw new ArgumentException(error, nameof(rule));
+        if (!TryValidateRule(rule, out var error))
+        {
+            if (MonitoringValidationErrors.ForCode(error, preview) is { } issue) throw new MonitoringValidationException(issue);
+            throw new ArgumentException(error, nameof(rule));
+        }
     }
 
     public static bool TryValidateIncidentReceipt(MonitoringIncidentReceiptDto receipt, out string? error)

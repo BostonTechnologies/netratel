@@ -40,13 +40,8 @@
         var scopeGeneration = _scopeGeneration;
         try
         {
-            var parameters = new DialogParameters<ClientServicesDialog>
-            {
-                { dialog => dialog.TenantId, tenantId }, { dialog => dialog.AgentId, agentId },
-                { dialog => dialog.HostLabel, HostLabel }, { dialog => dialog.TenantLabel, TenantLabel }
-            };
-            var dialog = await DialogService.ShowAsync<ClientServicesDialog>("Services", parameters,
-                new DialogOptions { FullScreen = true, FullWidth = true, CloseOnEscapeKey = true, CloseOnNavigation = true, CloseButton = false, NoHeader = true });
+            if (tenantId <= 0 || agentId == Guid.Empty) return;
+            var dialog = await NetRatel.Web.Services.Clients.ClientToolDialogLauncher.ServicesAsync(DialogService, tenantId, agentId, HostLabel, TenantLabel);
             _dialog = dialog;
             if (!_disposed && !IsCurrentScope(scopeGeneration, tenantId, agentId)) dialog.Close();
             await dialog.Result;

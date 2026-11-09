@@ -33,7 +33,9 @@ public sealed partial class InvestigationStore(OrchestratorDbContext db, TimePro
             (x.RequestId == request.RequestId || sourceActionKey != null && x.SourceActionKey == sourceActionKey), ct);
         if (existing is not null)
         {
-            if (existing.Title != request.Title.Trim() || existing.CreatedBy != actor || existing.OccurrenceId != request.OccurrenceId ||
+            var prepared = await ReadPreparedAsync(existing.Id, ct);
+            if (prepared?.Alert != request.PreparedAlert) throw new InvestigationConflictException("This request ID already belongs to another alert context.");
+            if (request.PreparedAlert is null && existing.Title != request.Title.Trim() || existing.CreatedBy != actor || existing.OccurrenceId != request.OccurrenceId ||
                 existing.FlowRunId != flowRunId || existing.SourceActionKey != sourceActionKey ||
                 !existing.AgentIds.Order().SequenceEqual(request.AgentIds.Order()) || !NormalizePrompts(JsonSerializer.Deserialize<AiPromptReference[]>(existing.SelectedPromptReferencesJson)).SequenceEqual(references))
                 throw new InvestigationConflictException("This request ID already belongs to another investigation request.");
@@ -61,7 +63,10 @@ public sealed partial class InvestigationStore(OrchestratorDbContext db, TimePro
             SourceActionKey = sourceActionKey, FlowRunId = flowRunId, LastActivityUtc = clock.GetUtcNow(),
             PromptSnapshotsJson = JsonSerializer.Serialize(snapshots), SelectedPromptReferencesJson = referencesJson };
         await ComposeAsync(row, Guid.NewGuid(), "", new string('s', 256), ct);
+        var preparedContext = request.PreparedAlert is null ? null : await PrepareAlertAsync(tenantId, request, ct);
+        if (preparedContext?.Title is { } preparedTitle) row.Title = preparedTitle;
         db.Add(row); Append(db, row, "created", sourceActionKey is null ? "Investigation opened." : "Investigation opened by a published flow.", actor);
+        if (preparedContext is not null) Append(db, row, "prepared_alert", JsonSerializer.Serialize(preparedContext), actor);
         await db.SaveChangesAsync(ct); await tx.CommitAsync(ct);
         return row;
     }
@@ -76,6 +81,9 @@ public sealed partial class InvestigationStore(OrchestratorDbContext db, TimePro
             .OrderBy(x => x.Sequence).Take(200).ToListAsync(ct);
         var approvals = await db.Set<AiInvestigationApprovalRecord>().AsNoTracking()
             .Where(x => x.InvestigationId == id && row.State == InvestigationState.AwaitingApproval && x.MessageId == row.ActiveMessageId && x.SelectedKey == null).Take(32).ToListAsync(ct);
+        var prepared = await ReadPreparedAsync(id, ct);
+        if (prepared is not null)
+            prepared = prepared with { Started = await db.Set<AiInvestigationEventRecord>().AnyAsync(x => x.InvestigationId == id && x.Type == "operator" && x.MessageId == prepared.FirstMessageId, ct) };
         return new(Summary(row), row.LastSequence, row.ActiveMessageId,
             events.Select(x => new InvestigationEventDto(x.Sequence, x.Type, x.Text, x.Actor, x.CallId,
                 x.OptionsJson is null ? null : Options(x.OptionsJson), x.CreatedAtUtc, x.MessageId,
@@ -83,7 +91,7 @@ public sealed partial class InvestigationStore(OrchestratorDbContext db, TimePro
             await ClientsAsync(tenantId, row.AgentIds, ct),
             approvals.Select(x => new InvestigationApprovalDto(x.CallId, Options(x.OptionsJson))).ToArray(),
             Prompts: InvestigationContextComposer.Prompts(row), SentContext: await LastContextAsync(id, row.ActiveMessageId, ct),
-            Recovery: await RecoveryStatusAsync(row, ct));
+            Recovery: await RecoveryStatusAsync(row, ct)) { Prepared = prepared };
     }
 
     public async Task<bool> AcceptMessageAsync(int tenantId, Guid id, InvestigationMessageRequest request, string actor,

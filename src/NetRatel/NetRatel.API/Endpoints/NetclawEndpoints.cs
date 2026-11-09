@@ -118,7 +118,7 @@ public static class NetclawEndpoints
     {
         if (!await AllowedAsync(tenantId, NetRatelPermissions.ClientManagement, http, access, ct) ||
             !await AllowedAsync(tenantId, NetRatelPermissions.TelemetryRead, http, access, ct)) return Results.Forbid();
-        if (request.OccurrenceId is not null && !await AllowedAsync(tenantId, NetRatelPermissions.MonitoringRead, http, access, ct)) return Results.Forbid();
+        if ((request.OccurrenceId is not null || request.PreparedAlert is not null) && !await AllowedAsync(tenantId, NetRatelPermissions.MonitoringRead, http, access, ct)) return Results.Forbid();
         var row = await store.CreateAsync(tenantId, request, Actor(http), ct);
         return Results.Ok(await store.LoadAsync(tenantId, row.Id, 0, ct));
     }

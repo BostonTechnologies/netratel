@@ -27,6 +27,8 @@ public record NetRatelToolFailure(
     string SafeDetails,
     string Remediation)
 {
+    public NetRatel.Shared.Contracts.Monitoring.MonitoringValidationIssue? Validation { get; init; }
+
     internal static NetRatelToolFailure From(string status, NetRatelToolError? error)
     {
         var code = error?.Code ?? status;
