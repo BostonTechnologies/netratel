@@ -1,5 +1,6 @@
 # Release history
 
+- [0.1.4 — stable](0.1.4.md) — visual Flows authoring, Full Explorer and the Monitoring management/investigation workspace.
 - [0.1.4-beta.10](0.1.4-beta.10.md) — complete logging, Monitoring and Flows scope with bounded tag validation.
 - [0.1.4-beta.9 — unpublished candidate](0.1.4-beta.9.md) — logging, disk policy, incident presentation, Monitoring paging and Flows lifecycle/list/tooling.
 
