@@ -27,6 +27,8 @@ Synthetic, disposable fixtures only. This checklist covers issues
   deduplicated read-only readiness, existing dialog launch parameters and explicit
   shell/Explorer choices. Real top-layer menus remain inside viewport bounds on
   first/last rows of a 100-row page, including touch/keyboard and scroll dismissal.
+  Pointer-aware hover ignores touch compatibility mouse events; controller
+  attachment completes once before the launcher becomes interactive.
 - [x] **Prepared investigation:** one local durable investigation, authorized
   alert/device association, server-derived unsent context and a stable first
   message ID. Browser fixtures prove new-tab opening, a device absent from the

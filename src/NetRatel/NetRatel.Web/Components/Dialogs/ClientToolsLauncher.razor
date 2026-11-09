@@ -9,7 +9,7 @@
 
 <span @ref="_root" class="client-tools-launcher" @onclick:stopPropagation data-testid="client-tools-launcher">
     <MudTooltip Text="Client tools">
-        <MudFabMenu Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.Build" Fixed="false" Direction="Direction.Bottom" Open="_open" OpenChanged="OpenChanged" OpenOnMouseHover="true" CloseOnMenuItemClicked="true" DropShadow="false" ButtonStyle="width:32px;height:32px;min-height:32px;" MenuClass="client-tools-overlay" aria-label="Client tools">
+        <MudFabMenu Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.Build" Fixed="false" Direction="Direction.Bottom" Open="_open" OpenChanged="OpenChanged" OpenOnMouseHover="false" Disabled="@(!_ready || AgentId == Guid.Empty)" CloseOnMenuItemClicked="true" DropShadow="false" ButtonStyle="width:32px;height:32px;min-height:32px;" MenuClass="client-tools-overlay" aria-label="Client tools">
             @foreach (var tool in Tools)
             {
                 <MudTooltip Text="@Reason(tool)"><MudFabMenuItem Label="@tool" StartIcon="@Icon(tool)" Variant="Variant.Outlined" Size="Size.Small" Disabled="@(_opening || !Available(tool))" OnClick="() => Select(tool)" aria-label="@($"{tool} for {HostLabel}")" /></MudTooltip>
@@ -43,7 +43,7 @@
     private IJSObjectReference? _module, _controller;
     private DotNetObjectReference<ClientToolsLauncher>? _reference;
     private ClientPresentationModel? _client;
-    private bool _open, _opening, _disposed, _preferFull;
+    private bool _open, _opening, _disposed, _preferFull, _attaching, _ready;
     private string? _choice, _error;
     private string _scope = "";
     private long _generation;
@@ -86,14 +86,34 @@
     }
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
+        if (_disposed || _attaching) return;
+        _attaching = true;
+        bool? appliedOpen = null;
         try
         {
             _module ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/client-tools-menu.js");
+            if (_disposed) { await NetRatel.Web.Services.BrowserInteropCleanup.ReleaseAsync(Logger, null, _module); _module = null; return; }
             _reference ??= DotNetObjectReference.Create(this);
             _controller ??= await _module.InvokeAsync<IJSObjectReference>("attach", _root, _reference, $"Client tools for {HostLabel}");
-            await _controller.InvokeVoidAsync("setOpen", _open);
+            if (_disposed) { await NetRatel.Web.Services.BrowserInteropCleanup.ReleaseAsync(Logger, _controller, _module); _controller = _module = null; _reference?.Dispose(); return; }
+            if (!_ready) { _ready = true; StateHasChanged(); }
+            appliedOpen = _open;
+            await _controller.InvokeVoidAsync("setOpen", appliedOpen.Value);
         }
         catch (Exception error) when (error is JSException or JSDisconnectedException or OperationCanceledException) { Logger.LogDebug("Optional browser operation failed ({FailureType}).", error.GetType().Name); }
+        finally
+        {
+            _attaching = false;
+            if (!_disposed && appliedOpen.HasValue && appliedOpen.Value != _open) StateHasChanged();
+        }
+    }
+    [JSInvokable] public async Task Hover(bool open)
+    {
+        if (_disposed) return;
+        var pending = OpenChanged(open);
+        StateHasChanged();
+        await pending;
+        if (!_disposed) await InvokeAsync(StateHasChanged);
     }
     [JSInvokable] public Task Dismiss() { _open = false; return InvokeAsync(StateHasChanged); }
     private async Task Select(string tool)

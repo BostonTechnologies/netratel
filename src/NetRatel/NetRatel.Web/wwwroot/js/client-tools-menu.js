@@ -28,6 +28,11 @@ export function attach(root, receiver, label) {
     }
     function outside(event) { if (opened && !fab.contains(event.target)) close(); }
     function scroll(event) { if (opened && !menu.contains(event.target)) close(); }
+    // Touch emits compatibility mouse-enter/leave events after its click in
+    // Chromium. Pointer events retain real hover without closing a fresh tap.
+    function hover(event) {
+        if (!disposed && event.pointerType !== 'touch') receiver.invokeMethodAsync('Hover', event.type === 'pointerenter').catch(() => {});
+    }
     function key(event) {
         if (!opened) {
             if (event.target === button && ['ArrowDown', 'ArrowUp'].includes(event.key)) { event.preventDefault(); button.click(); requestAnimationFrame(() => menu.querySelector('button:not(:disabled)')?.focus()); }
@@ -43,6 +48,7 @@ export function attach(root, receiver, label) {
     document.addEventListener('pointerdown', outside, true);
     window.addEventListener('scroll', scroll, true); window.addEventListener('resize', scroll);
     fab.addEventListener('keydown', key);
+    fab.addEventListener('pointerenter', hover); fab.addEventListener('pointerleave', hover);
     const controller = {
         setOpen(value) {
             if (!value) { close(); return; }
@@ -57,6 +63,7 @@ export function attach(root, receiver, label) {
             disposed = true; close(); document.removeEventListener('pointerdown', outside, true);
             window.removeEventListener('scroll', scroll, true); window.removeEventListener('resize', scroll);
             fab.removeEventListener('keydown', key);
+            fab.removeEventListener('pointerenter', hover); fab.removeEventListener('pointerleave', hover);
         }
     };
     return controller;
