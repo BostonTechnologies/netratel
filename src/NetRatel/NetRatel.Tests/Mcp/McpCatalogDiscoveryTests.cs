@@ -13,8 +13,8 @@ namespace NetRatel.Tests.Mcp;
 public sealed class McpCatalogDiscoveryTests
 {
     [Theory]
-    [InlineData(NetRatelMcpTransport.StreamableHttp, "dev", 27, "12d684eb4998aaa43c90136032f448513e1824f38bc23c56fb2979f267c05d6c")]
-    [InlineData(NetRatelMcpTransport.Stdio, "prod", 33, "36ce637945cf08e532c10d69565766675832d7963359c9ba475b6994679a5ea2")]
+    [InlineData(NetRatelMcpTransport.StreamableHttp, "dev", 27, "917d9ce4857308ed22bd0fd27543287006565ce87cc5fa4fc7ddb1fae325a6af")]
+    [InlineData(NetRatelMcpTransport.Stdio, "prod", 33, "815afe398ec4a7b43f6c6ffa5f6df6d7b05801c6467afa4d43e1c838194abf3d")]
     public void Factory_preserves_frozen_schema_bytes_for_selected_surfaces(
         NetRatelMcpTransport transport, string instance, int count, string expectedDigest)
     {
@@ -42,6 +42,14 @@ public sealed class McpCatalogDiscoveryTests
             writer.WriteEndArray();
         }
         Assert.Equal(count, tools.Count);
+        var monitoring = tools.Single(tool => tool.ProtocolTool.Name == "netratel_monitoring").ProtocolTool.InputSchema;
+        var save = monitoring.GetProperty("oneOf").EnumerateArray().Single(operation =>
+            operation.GetProperty("properties").GetProperty("operation").GetProperty("const").GetString() == "save_rule");
+        var examples = save.GetProperty("properties").GetProperty("request").GetProperty("properties").GetProperty("data").GetProperty("examples");
+        var critical = examples.EnumerateArray().Single(example => example.GetProperty("rule").GetProperty("severity").GetString() == "Critical").GetProperty("rule");
+        Assert.Equal("DiskFreePercent", critical.GetProperty("condition").GetProperty("kind").GetString());
+        Assert.Equal(10, critical.GetProperty("condition").GetProperty("breachThreshold").GetInt32());
+        Assert.Equal(15, critical.GetProperty("condition").GetProperty("recoveryThreshold").GetInt32());
         Assert.Equal(expectedDigest, Convert.ToHexStringLower(SHA256.HashData(bytes.ToArray())));
     }
 

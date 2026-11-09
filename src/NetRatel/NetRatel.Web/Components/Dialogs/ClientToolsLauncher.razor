@@ -1,0 +1,166 @@
+@using NetRatel.Web.Models.Clients
+@using NetRatel.Web.Services.Clients
+@using NetRatel.Web.Services.FileSystem
+@implements IAsyncDisposable
+@inject IDialogService Dialogs
+@inject IServiceProvider Services
+@inject IJSRuntime JS
+@inject ILogger<ClientToolsLauncher> Logger
+
+<span @ref="_root" class="client-tools-launcher" @onclick:stopPropagation data-testid="client-tools-launcher">
+    <MudTooltip Text="Client tools">
+        <MudFabMenu Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.Build" Fixed="false" Direction="Direction.Bottom" Open="_open" OpenChanged="OpenChanged" OpenOnMouseHover="false" Disabled="@(!_ready || AgentId == Guid.Empty)" CloseOnMenuItemClicked="true" DropShadow="false" ButtonStyle="width:32px;height:32px;min-height:32px;" MenuClass="client-tools-overlay" aria-label="Client tools">
+            @foreach (var tool in Tools)
+            {
+                <MudTooltip Text="@Reason(tool)"><MudFabMenuItem Label="@tool" StartIcon="@Icon(tool)" Variant="Variant.Outlined" Size="Size.Small" Disabled="@(_opening || !Available(tool))" OnClick="() => Select(tool)" aria-label="@($"{tool} for {HostLabel}")" /></MudTooltip>
+            }
+        </MudFabMenu>
+    </MudTooltip>
+    @if (_choice == "Terminal" && _client is { } terminal)
+    {
+        <MudDialog Visible="true" Options="@(new DialogOptions { MaxWidth = MaxWidth.Small, CloseOnEscapeKey = true })" VisibleChanged="value => { if (!value) _choice = null; }">
+            <TitleContent><MudText Typo="Typo.h6">Choose terminal shell</MudText></TitleContent><DialogContent>@foreach (var shell in terminal.AvailableShells) { <MudButton OnClick='() => Launch("Terminal", shell)'>@shell</MudButton> }</DialogContent><DialogActions><MudButton OnClick="() => _choice = null">Cancel</MudButton></DialogActions>
+        </MudDialog>
+    }
+    @if (_choice == "Browse files")
+    {
+        <MudDialog Visible="true" Options="@(new DialogOptions { MaxWidth = MaxWidth.Small, CloseOnEscapeKey = true })" VisibleChanged="value => { if (!value) _choice = null; }">
+            <TitleContent><MudText Typo="Typo.h6">Choose file explorer</MudText></TitleContent><DialogContent><p>@(_preferFull ? "Full Explorer" : "Basic Explorer") is your saved preference.</p><MudButton OnClick='() => Launch("Browse files", full: false)'>Basic Explorer</MudButton><MudButton OnClick='() => Launch("Browse files", full: true)'>Full Explorer</MudButton></DialogContent><DialogActions><MudButton OnClick="() => _choice = null">Cancel</MudButton></DialogActions>
+        </MudDialog>
+    }
+    @if (_error is not null) { <span role="alert" class="client-tools-error">@_error</span> }
+</span>
+
+@code {
+    [Parameter] public int TenantId { get; set; }
+    [Parameter] public Guid AgentId { get; set; }
+    [Parameter] public string HostLabel { get; set; } = "Client";
+    [Parameter] public string TenantLabel { get; set; } = "";
+    [Parameter, EditorRequired] public ClientToolReadiness Readiness { get; set; } = default!;
+    [Parameter] public string ScopeKey { get; set; } = "";
+    private static readonly string[] Tools = ["Telemetry", "Terminal", "Browse files", "Client logs", "Services", "Software inventory"];
+    private ElementReference _root;
+    private IJSObjectReference? _module, _controller;
+    private DotNetObjectReference<ClientToolsLauncher>? _reference;
+    private ClientPresentationModel? _client;
+    private bool _open, _opening, _disposed, _preferFull, _attaching, _ready;
+    private string? _choice, _error;
+    private string _scope = "";
+    private long _generation;
+    protected override void OnParametersSet()
+    {
+        var scope = $"{TenantId}/{AgentId:D}/{ScopeKey}";
+        if (_scope == scope) return;
+        _scope = scope; ++_generation; _open = false; _client = null; _choice = null;
+    }
+    private bool Available(string tool) => TenantId > 0 && AgentId != Guid.Empty && tool switch
+    {
+        "Services" => true,
+        "Telemetry" => _client?.Telemetry is not null,
+        "Terminal" => _client?.CanUseTerminal == true,
+        "Browse files" => _client?.CanUseFilesystem == true,
+        "Client logs" => _client?.CanUseLogs == true,
+        "Software inventory" => _client is not null,
+        _ => false
+    };
+    private string Reason(string tool) => Available(tool) ? tool : _client is null ? "Client readiness is unavailable or still loading; current authorization is checked by each tool." : tool switch
+    {
+        "Browse files" => _client.FilesystemUnavailableReason,
+        "Client logs" => _client.LogsUnavailableReason,
+        "Terminal" => "No currently supported terminal shell is available.",
+        _ => "Cached evidence is unavailable."
+    };
+    private static string Icon(string tool) => tool switch { "Telemetry" => Icons.Material.Filled.Insights, "Terminal" => Icons.Material.Filled.Terminal, "Browse files" => Icons.Material.Filled.FolderOpen, "Client logs" => Icons.Material.Filled.FormatListBulleted, "Services" => Icons.Material.Filled.MiscellaneousServices, _ => Icons.Material.Filled.Inventory2 };
+    private async Task OpenChanged(bool open)
+    {
+        _open = open;
+        if (!open || _opening || _disposed) return;
+        var tenant = TenantId; var agent = AgentId; var generation = _generation;
+        try
+        {
+            var client = await Readiness.ResolveAsync(Services, tenant, agent);
+            if (!_disposed && generation == _generation) _client = client;
+        }
+        catch (Exception error) when (error is HttpRequestException or System.Text.Json.JsonException or OperationCanceledException)
+        { if (!_disposed && generation == _generation) _error = "Client readiness could not be read. Reopen the tools menu to retry."; }
+    }
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_disposed || _attaching) return;
+        _attaching = true;
+        bool? appliedOpen = null;
+        try
+        {
+            _module ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/client-tools-menu.js");
+            if (_disposed) { await NetRatel.Web.Services.BrowserInteropCleanup.ReleaseAsync(Logger, null, _module); _module = null; return; }
+            _reference ??= DotNetObjectReference.Create(this);
+            _controller ??= await _module.InvokeAsync<IJSObjectReference>("attach", _root, _reference, $"Client tools for {HostLabel}");
+            if (_disposed) { await NetRatel.Web.Services.BrowserInteropCleanup.ReleaseAsync(Logger, _controller, _module); _controller = _module = null; _reference?.Dispose(); return; }
+            if (!_ready) { _ready = true; StateHasChanged(); }
+            appliedOpen = _open;
+            await _controller.InvokeVoidAsync("setOpen", appliedOpen.Value);
+        }
+        catch (Exception error) when (error is JSException or JSDisconnectedException or OperationCanceledException) { Logger.LogDebug("Optional browser operation failed ({FailureType}).", error.GetType().Name); }
+        finally
+        {
+            _attaching = false;
+            if (!_disposed && appliedOpen.HasValue && appliedOpen.Value != _open) StateHasChanged();
+        }
+    }
+    [JSInvokable] public async Task Hover(bool open)
+    {
+        if (_disposed) return;
+        var pending = OpenChanged(open);
+        StateHasChanged();
+        await pending;
+        if (!_disposed) await InvokeAsync(StateHasChanged);
+    }
+    [JSInvokable] public Task Dismiss() { _open = false; return InvokeAsync(StateHasChanged); }
+    private async Task Select(string tool)
+    {
+        if (_opening || !Available(tool)) return;
+        _open = false;
+        if (tool == "Terminal") { _choice = tool; return; }
+        if (tool == "Browse files")
+        {
+            var generation = _generation; var tenant = TenantId;
+            var full = Services.GetService<ExplorerPreferenceService>() is { } preference && await preference.IsFullAsync(tenant);
+            if (_disposed || generation != _generation) return;
+            _preferFull = full; _choice = tool; return;
+        }
+        await Launch(tool);
+    }
+    private async Task Launch(string tool, string? shell = null, bool? full = null)
+    {
+        if (_opening || _disposed || !Available(tool)) return;
+        _opening = true; _choice = null; _error = null;
+        var tenant = TenantId; var agent = AgentId; var generation = _generation; var client = _client;
+        try
+        {
+            var dialog = tool switch
+            {
+                "Services" => await ClientToolDialogLauncher.ServicesAsync(Dialogs, tenant, agent, HostLabel, TenantLabel),
+                "Telemetry" => await ClientToolDialogLauncher.TelemetryAsync(Dialogs, client!, client!.Telemetry),
+                "Terminal" => await ClientToolDialogLauncher.TerminalAsync(Dialogs, client!, shell!),
+                "Browse files" => await ClientToolDialogLauncher.FilesAsync(Dialogs, Services, client!, client!.Telemetry?.Disks.FirstOrDefault()?.Scope ?? (client.OperatingSystem?.Contains("Windows", StringComparison.OrdinalIgnoreCase) == true ? "C:\\" : "/"), full),
+                "Client logs" => await ClientToolDialogLauncher.LogsAsync(Dialogs, client!),
+                _ => await ClientToolDialogLauncher.SoftwareAsync(Dialogs, client!)
+            };
+            await dialog.Result;
+            if (_disposed || generation != _generation || _controller is null) return;
+            await using var focus = await JS.InvokeAsync<IJSObjectReference>("import", "./js/client-services-focus.js");
+            await focus.InvokeVoidAsync("waitForDismissal", dialog.Id.ToString("N"));
+            if (!_disposed && generation == _generation) await _controller.InvokeVoidAsync("focus");
+        }
+        catch (Exception error) when (error is JSException or JSDisconnectedException or OperationCanceledException) { Logger.LogDebug("Optional browser operation failed ({FailureType}).", error.GetType().Name); }
+        catch (Exception error) when (error is HttpRequestException or InvalidOperationException) { _error = "The selected client tool is unavailable. Reopen the menu to refresh readiness."; }
+        finally { _opening = false; }
+    }
+    public async ValueTask DisposeAsync()
+    {
+        _disposed = true; ++_generation;
+        await NetRatel.Web.Services.BrowserInteropCleanup.ReleaseAsync(Logger, _controller, _module);
+        _controller = _module = null; _reference?.Dispose();
+        // An opened dialog owns its captured identity and outlives a refreshed row.
+    }
+}

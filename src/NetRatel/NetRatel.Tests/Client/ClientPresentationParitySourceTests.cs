@@ -11,6 +11,7 @@ public sealed class ClientPresentationParitySourceTests
     public void ClientCards_PreserveHistoricalHierarchy_ThroughAkkaV2Actions()
     {
         var source = ReadRepositoryFile("NetRatel.Web", "Components", "Pages", "Clients", "ClientCardGrid.razor");
+        var launcher = ReadRepositoryFile("NetRatel.Web", "Services", "Clients", "ClientToolDialogLauncher.cs");
 
         source.Should().ContainAll(
             "client-meta-grid",
@@ -25,15 +26,20 @@ public sealed class ClientPresentationParitySourceTests
             "ClientServicesLauncher",
             "TenantId=\"@client.TenantId\"",
             "AgentId=\"@client.AgentId\"",
-            "GatewayTelemetryDialog",
-            "ClientTerminalSessionDialog",
-            "ClientFileSystemViewer",
+            "ClientToolDialogLauncher.TelemetryAsync",
+            "ClientToolDialogLauncher.TerminalAsync",
+            "ClientToolDialogLauncher.FilesAsync",
             "GatewayRemoteSupportDialog",
             "telemetry-split-grid",
             ">Disk<");
         source.Should().NotContain("/api/v1/clients");
         source.Should().NotContain("SpacetimeDbService");
         source.Should().NotContain("GatewayActions.PingAsync");
+        launcher.Should().ContainAll("GatewayTelemetryDialog", "ClientTerminalSessionDialog", "ClientFileSystemViewer",
+            "dialog => dialog.TenantId, client.TenantId", "dialog => dialog.AgentId, client.AgentId");
+        launcher.Should().NotContain("/api/v1/clients");
+        launcher.Should().NotContain("SpacetimeDbService");
+        launcher.Should().NotContain("GatewayActions.PingAsync");
     }
 
     [Fact]

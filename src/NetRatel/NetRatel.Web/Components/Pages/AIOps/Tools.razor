@@ -1,3 +1,4 @@
+@using Microsoft.JSInterop
 @page "/ai/ops"
 @rendermode InteractiveServer
 @attribute [Authorize]
@@ -7,6 +8,7 @@
 @using System.Net
 @implements IAsyncDisposable
 @inject INetclawApiService Api
+@inject ILogger<Tools> Logger
 
 <PageTitle>AI Ops · Investigations</PageTitle>
 <main class="ai-ops @(_creating ? "is-creating" : "")" data-testid="ai-ops">
@@ -70,15 +72,19 @@
             else
             {
                 <NetclawConversation @key="_snapshot.Investigation.Id" Snapshot="_snapshot" Events="_events" TenantName="@(Access?.TenantName)"
-                    @bind-Message="_message" Busy="_busy" CanInvestigate="@(Access?.CanInvestigate == true)"
+                    Message="@_message" MessageChanged="EditMessageAsync" RequireStartClick="@(_snapshot.Prepared is { Started: false })" Busy="_busy" CanInvestigate="@(Access?.CanInvestigate == true)"
                     CanEditMessage="@(_pendingMessage is null && !_busy && Access?.CanInvestigate == true && _snapshot.Investigation.State == InvestigationState.Idle)"
                     CanSend="@(!_busy && Access?.CanInvestigate == true && _snapshot.Investigation.State == InvestigationState.Idle && !string.IsNullOrWhiteSpace(_message))"
-                    SendLabel="@(_pendingMessage is null ? "Send" : "Retry same request")"
+                    SendLabel="@(_pendingMessage is not null ? "Retry same request" : _snapshot.Prepared is { Started: false } ? "Start investigation" : "Send")"
                     Error="@_error" Refresh="ReloadAsync" Send="SendAsync" Recover="RecoverAsync" LoadMore="LoadMoreAsync"
                     Archive="@(async (bool acknowledge) => { _acknowledgeRemote = acknowledge; await ArchiveAsync(); })"
                     Approve="@(decision => ApproveAsync(decision.CallId, decision.Key))">
                     <Context>
                         <small>Investigation @_snapshot.Investigation.Id</small>
+                        @if (_snapshot.Prepared is { Started: false } prepared)
+                        {
+                            <div class="ai-notice" role="status" data-testid="ai-prepared-unsent"><strong>Prepared · unsent</strong><p>Review or edit the message, then choose Start investigation. Netclaw has not received a message.</p><details><summary>Original alert context · @prepared.PreparedAtUtc.ToString("u")</summary><p>@prepared.Message</p></details></div>
+                        }
                     <div class="ai-context" aria-label="System context">
                         @foreach (var client in _snapshot.Clients) { <span title="@(ClientDetails(client) + " · " + client.AgentId)">@client.HostName · @client.PrimaryIpAddress<small>@(client.FriendlyName ?? client.DisplayName) · @client.OperatingSystem · @client.Status · @client.AgentId.ToString("N")[..8]</small></span> }
                         @if (_snapshot.Investigation.OccurrenceId is not null) { <a href="@($"/monitoring?tenantId={_tenant}")">View monitoring</a> }
@@ -128,6 +134,41 @@
     private bool _loading = true, _busy, _creating, _disposed, _acknowledgeRemote;
     private Guid _createRequestId = Guid.NewGuid();
     private InvestigationMessageRequest? _pendingMessage;
+    [Inject] private Microsoft.JSInterop.IJSRuntime JS { get; set; } = default!;
+    private Microsoft.JSInterop.IJSObjectReference? _composerModule;
+    private Guid? _restoredComposer;
+    private sealed record ComposerDraft(string Text, InvestigationMessageRequest? Pending);
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_snapshot is not { Prepared: not null } snapshot || _restoredComposer == snapshot.Investigation.Id || _disposed) return;
+        try
+        {
+            _composerModule ??= await JS.InvokeAsync<Microsoft.JSInterop.IJSObjectReference>("import", "./js/investigation-composer.js");
+            var id = snapshot.Investigation.Id;
+            var draft = await _composerModule.InvokeAsync<ComposerDraft?>("read", id);
+            if (_snapshot?.Investigation.Id != id || _disposed) return;
+            _restoredComposer = id;
+            if (draft is not null && !snapshot.Prepared!.Started)
+            {
+                _message = draft.Text.Length <= 16000 ? draft.Text : snapshot.Prepared.Message;
+                _pendingMessage = draft.Pending is { } pending && pending.MessageId == snapshot.Prepared.FirstMessageId && pending.Text.Length <= 16000 ? pending : null;
+                StateHasChanged();
+            }
+        }
+        catch (Exception error) when (error is Microsoft.JSInterop.JSException or Microsoft.JSInterop.JSDisconnectedException or OperationCanceledException)
+        { _restoredComposer = snapshot.Investigation.Id; }
+    }
+    private async Task EditMessageAsync(string message)
+    {
+        _message = message;
+        await SaveComposerAsync();
+    }
+    private async Task SaveComposerAsync()
+    {
+        if (_snapshot?.Prepared is null || _composerModule is null) return;
+        try { await _composerModule.InvokeVoidAsync("save", _snapshot.Investigation.Id, _message, _pendingMessage); }
+        catch (Exception error) when (error is Microsoft.JSInterop.JSException or Microsoft.JSInterop.JSDisconnectedException or OperationCanceledException) { _error = "Composer edits could not be saved for reload. The original prepared context remains available."; Logger.LogDebug("Composer storage unavailable ({FailureType}).", error.GetType().Name); }
+    }
     private CancellationTokenSource _scope = new();
     private Task _polling = Task.CompletedTask;
     private NetclawTenantDto? Access => _tenants.FirstOrDefault(x => x.TenantId == _tenant);
@@ -190,7 +231,9 @@
     {
         var tenant = _tenant; var generation = _generation;
         var snapshot = await Api.GetAsync(tenant, id, 0, _scope.Token); if (!Current(tenant, generation)) return;
-        _events.Clear(); _snapshot = null; _message = ""; _pendingMessage = null; Apply(snapshot);
+        _events.Clear(); _snapshot = null; _message = snapshot.Prepared is { Started: false } prepared ? prepared.Message : ""; _pendingMessage = null;
+        foreach (var client in snapshot.Clients) _knownClients[client.AgentId] = client;
+        Apply(snapshot);
     }
     private void Apply(InvestigationSnapshotDto snapshot)
     {
@@ -243,11 +286,13 @@
     private Task SendAsync() => CommandAsync(async () =>
     {
         if (_snapshot is null || _snapshot.Investigation.State != InvestigationState.Idle) return;
-        _pendingMessage ??= new(Guid.NewGuid(), _message.Trim());
+        _pendingMessage ??= new(_snapshot.Prepared is { Started: false } prepared ? prepared.FirstMessageId : Guid.NewGuid(), _message.Trim());
+        await SaveComposerAsync();
         try { Apply(await Api.SendAsync(_tenant, _snapshot.Investigation.Id, _pendingMessage, _scope.Token)); }
         catch (HttpRequestException exception) when (exception.StatusCode == HttpStatusCode.BadRequest)
         { _pendingMessage = null; throw; }
         _pendingMessage = null; _message = "";
+        if (_composerModule is not null) await _composerModule.InvokeVoidAsync("clear", _snapshot.Investigation.Id);
     });
     private Task ApproveAsync(string callId, string key) => CommandAsync(async () =>
     { if (_snapshot is not null) Apply(await Api.ApproveAsync(_tenant, _snapshot.Investigation.Id, callId, key, _scope.Token)); });
@@ -288,5 +333,5 @@
     }
     private static string StateLabel(InvestigationState state) => state switch
     { InvestigationState.Idle => "Ready", InvestigationState.Processing => "Investigating", InvestigationState.AwaitingApproval => "Approval needed", InvestigationState.DeliveryUnknown => "Outcome unconfirmed", InvestigationState.Queued => "Queued", _ => "Archived" };
-    public async ValueTask DisposeAsync() { _clientSearchScope?.Cancel(); _clientSearchScope?.Dispose(); _disposed = true; ++_generation; await _scope.CancelAsync(); await _polling; _scope.Dispose(); }
+    public async ValueTask DisposeAsync() { _clientSearchScope?.Cancel(); _clientSearchScope?.Dispose(); _disposed = true; ++_generation; await _scope.CancelAsync(); await _polling; _scope.Dispose(); await NetRatel.Web.Services.BrowserInteropCleanup.ReleaseAsync(Logger, null, _composerModule); }
 }

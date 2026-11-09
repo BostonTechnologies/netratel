@@ -200,3 +200,168 @@ response-byte budget, and do not count expanded detail rows. Tenant/query/page-s
 changes reset pagination. A failed read is an explicit error and keeps the last
 successful results labelled as such. Filter, page-size, view and timezone context
 are preserved in the URL for refresh and browser back/forward navigation.
+
+## Author rules through HTTP or stdio MCP
+
+Use `netratel_monitoring/configuration` to discover current rules, groups and the
+configuration revision. HTTP and stdio publish the same typed operation schemas
+and examples. Required nullable condition fields must be present as explicit JSON
+`null`; omission is not a substitute for null. API and CLI use the same semantics.
+
+CPU uses `resourceName:null`, `unit:"Percent"`, and a breach threshold greater than
+recovery. Numeric conditions always use `servicePlatform:null` and
+`expectedServiceStates:[]`. Disk uses `resourceName:null` for every eligible disk,
+or an exact normalized path such as `/data` or `C:\`. Empty strings, invented CPU
+names and `"*"` are invalid. Wildcards belong only in the optional disk policy's
+pattern lists. `DiskFreePercent` measures **free space**: 80% used means 20% free;
+90% used means 10% free. Disk breach must be lower than recovery.
+
+After discovering an authorized tenant/group, replace the synthetic IDs and
+revision below. This is a complete `netratel_monitoring` CPU creation call:
+
+```json
+{
+  "operation": "save_rule",
+  "confirm": true,
+  "request": {
+    "tenantId": 7,
+    "ruleId": "22222222-2222-4222-8222-222222222222",
+    "data": {
+      "rule": {
+        "tenantId": 7,
+        "ruleId": "22222222-2222-4222-8222-222222222222",
+        "revision": 1,
+        "evaluationRevision": 1,
+        "name": "CPU warning",
+        "enabled": true,
+        "severity": "Warning",
+        "targets": {
+          "mode": "Selected",
+          "agentIds": [],
+          "groupIds": ["11111111-1111-4111-8111-111111111111"]
+        },
+        "condition": {
+          "kind": "CpuUsagePercent",
+          "unit": "Percent",
+          "breachThreshold": 95,
+          "recoveryThreshold": 90,
+          "resourceName": null,
+          "servicePlatform": null,
+          "expectedServiceStates": []
+        },
+        "breachHold": "00:03:00",
+        "recoveryHold": "00:00:30",
+        "freshnessBudget": "00:02:00",
+        "publishedFlowVersionId": null,
+        "executionPrincipalId": null,
+        "executionCredentialId": null
+      },
+      "expectedConfigurationRevision": 40,
+      "reason": "Reviewed CPU monitoring policy",
+      "resetPolicy": null
+    }
+  }
+}
+```
+
+This complete disk warning call uses another stable rule UUID and the next
+configuration revision. Always read the actual current revision before saving:
+
+```json
+{
+  "operation": "save_rule",
+  "confirm": true,
+  "request": {
+    "tenantId": 7,
+    "ruleId": "33333333-3333-4333-8333-333333333333",
+    "data": {
+      "rule": {
+        "tenantId": 7,
+        "ruleId": "33333333-3333-4333-8333-333333333333",
+        "revision": 1,
+        "evaluationRevision": 1,
+        "name": "Disk free warning",
+        "enabled": true,
+        "severity": "Warning",
+        "targets": {"mode":"Selected","agentIds":[],"groupIds":["11111111-1111-4111-8111-111111111111"]},
+        "condition": {"kind":"DiskFreePercent","unit":"Percent","breachThreshold":20,"recoveryThreshold":25,"resourceName":null,"servicePlatform":null,"expectedServiceStates":[]},
+        "breachHold": "00:03:00",
+        "recoveryHold": "00:00:30",
+        "freshnessBudget": "00:02:00",
+        "publishedFlowVersionId": null,
+        "executionPrincipalId": null,
+        "executionCredentialId": null
+      },
+      "expectedConfigurationRevision": 41,
+      "reason": "Reviewed disk free monitoring policy",
+      "resetPolicy": null
+    }
+  }
+}
+```
+
+For disk critical, use 10/15 free-percent thresholds and Critical severity. The
+catalog also contains complete CPU/disk write examples. To check support before
+saving, call the read-only recovery path with the same targets and condition:
+
+```json
+{
+  "operation": "preview_targets",
+  "request": {
+    "tenantId": 7,
+    "data": {
+      "targets": {"mode":"Selected","agentIds":[],"groupIds":["11111111-1111-4111-8111-111111111111"]},
+      "condition": {"kind":"DiskFreePercent","unit":"Percent","breachThreshold":20,"recoveryThreshold":25,"resourceName":null,"servicePlatform":null,"expectedServiceStates":[]},
+      "freshnessBudget": "00:02:00"
+    }
+  }
+}
+```
+
+Preview reads cached evidence, reports unsupported/stale/unknown and truncated
+results, starts no collection and changes no configuration. A known invalid
+condition returns `failure.layer:"input"` with `failure.validation.code`, an exact
+safe `field` such as `data.rule.condition.resourceName` (or
+`data.condition.resourceName` for preview), and bounded `remediation`. Correct
+that field and preview again. Unknown upstream failures remain redacted; retain
+the safe correlation ID for the existing diagnostics/log search.
+
+A new rule uses resource/evaluation revision 1. On edit, read the current resource
+and configuration revisions; increment the resource revision. Condition/target
+changes additionally increment evaluationRevision and require
+`resetPolicy:"SuspendOccurrenceAndRequireNewWindow"`. Renaming or changing only
+the selected flow retains evaluationRevision. Hold/freshness and authorization
+remain enforced. A published flow selection additionally needs `flow.read` and
+`flow.execute`; execution identity is always derived by the server. Read back
+configuration after saving, especially after an uncertain response.
+
+## Management tables and alert investigation shortcuts
+
+**Rules & groups** contains muted **Rules / Groups / Bypasses** secondary tabs.
+Each section has its own search, filters, sort and 20/50/100-row pagination over
+the complete authorized configuration. Toolbars and pagers remain outside the
+scrolling table. Legacy `view=manage` opens Rules; `manageTab=groups` or
+`manageTab=bypasses` selects the corresponding section. `manageSearch`,
+`manageFilter`, `manageSeverity`, `manageMetric`, `manageSort`, `manageDesc`,
+`manageSize` and `managePage` restore that section without changing alert filters.
+Edit/Remove and Revoke retain the existing reason, revision and confirmation
+workflows. There is no bypass editing or bulk action.
+
+A device alert's controls are Acknowledge, Clear, Bypass, **Client tools**, then
+**AI investigation**. The outlined tools menu exposes Telemetry, Terminal,
+Browse files, Client logs, Services and Software inventory. Selection opens the
+existing dialog in the current tab; terminal shell and Basic/Full Explorer
+choices remain explicit. Hover performs only deduplicated readiness reads.
+Cached/offline availability remains tool-specific. Aggregate offline rows do
+not silently choose a client.
+
+**AI investigation** creates an authorized local investigation and opens its
+ID in a new tab. The title and short prepared draft come from authorized alert
+records; URLs contain only tenant/investigation IDs. The draft is **unsent**.
+Review/edit it, then select **Start investigation** to admit the first message.
+Opening or reloading the investigation never starts Netclaw. The original draft
+persists in the investigation journal; composer edits and an uncertain first
+request are retained in the tab's session storage where available. Repeated
+launches reconcile the original request ID, and Start uses a stable first-message
+ID. Follow the existing recovery workflow for unknown delivery. If popups are
+blocked, use **Open created investigation** after creation is confirmed.

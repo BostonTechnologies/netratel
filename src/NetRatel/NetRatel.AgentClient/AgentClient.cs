@@ -11,11 +11,29 @@ public sealed class AgentClientRemoteException(string code, string message, int 
     public int StatusCode { get; } = statusCode;
     public string? ResponseBody { get; } = responseBody;
     public string? RemoteCode { get; } = remoteCode;
+    public NetRatel.Shared.Contracts.Monitoring.MonitoringValidationIssue? Validation { get; } = statusCode == 400 ? AgentClientRemoteError.ExtractMonitoringValidation(responseBody) : null;
     public string? CorrelationId { get; } = AgentClientRemoteError.ExtractSafeCorrelationId(responseBody);
 }
 
 internal static class AgentClientRemoteError
 {
+    internal static NetRatel.Shared.Contracts.Monitoring.MonitoringValidationIssue? ExtractMonitoringValidation(string? body)
+    {
+        if (string.IsNullOrWhiteSpace(body) || body.Length > 4096) return null;
+        try
+        {
+            using var document = JsonDocument.Parse(body);
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("code", out var code) ||
+                code.ValueKind != JsonValueKind.String || code.GetString() != "monitoring_validation_failed" ||
+                !root.TryGetProperty("validation", out var validation) || validation.ValueKind != JsonValueKind.Object ||
+                !validation.TryGetProperty("code", out var issueCode) || issueCode.ValueKind != JsonValueKind.String ||
+                !validation.TryGetProperty("field", out var field) || field.ValueKind != JsonValueKind.String) return null;
+            return NetRatel.Shared.Contracts.Monitoring.MonitoringValidationErrors.FromWire(issueCode.GetString(), field.GetString());
+        }
+        catch (JsonException) { return null; }
+    }
+
     public static string? ExtractSafeCorrelationId(string? responseBody)
     {
         if (string.IsNullOrWhiteSpace(responseBody) || responseBody.Length > 4096) return null;

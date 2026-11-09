@@ -38,7 +38,8 @@ public sealed partial class NetclawInvestigationWorker
                 await authority.CanInvestigateExecutionAsync(row.TenantId, actor, row.ActiveCredentialId, [source.SourceKind], ct);
         }
         return await authority.CanInvokeAsync(row.TenantId, actor, row.ActiveCredentialId, row.Automated, ct) &&
-            (row.OccurrenceId is null || await authority.CanReadAlertAsync(row.TenantId, actor, row.ActiveCredentialId, ct));
+            (!await provider.GetRequiredService<InvestigationStore>().HasAlertAsync(row.TenantId, row.Id, ct) ||
+             await authority.CanReadAlertAsync(row.TenantId, actor, row.ActiveCredentialId, ct));
     }
 
     private async Task<bool> AdmitAutomaticMessageAsync(IServiceProvider provider, AiInvestigationRecord row, NetclawRuntimeProfile profile, string expectedSessionId, CancellationToken ct)

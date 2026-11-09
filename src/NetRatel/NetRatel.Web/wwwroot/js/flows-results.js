@@ -23,8 +23,8 @@ export function observeResults(element) {
     }
     window.addEventListener('resize', schedule);
     setElement(element);
-    return DotNet.createJSObjectReference({
+    return {
         setElement,
         dispose() { cancelAnimationFrame(frame); observer?.disconnect(); window.removeEventListener('resize', schedule); current = null; }
-    });
+    };
 }

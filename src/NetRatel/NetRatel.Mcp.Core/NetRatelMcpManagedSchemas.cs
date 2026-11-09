@@ -71,12 +71,19 @@ public static partial class NetRatelMcpToolDefinitions
                     if (operation.Tool == "netratel_flows" && context.TypeInfo.Type == typeof(FlowNodeKind) &&
                         node is JsonObject enumSchema && enumSchema["enum"] is JsonArray)
                         enumSchema["enum"] = new JsonArray("AlertRaised", "Condition", "MapIncident", "CreateIncident", "ActionGroup", "InvestigateWithAi");
+                    if (operation.Tool == "netratel_monitoring" && context.TypeInfo.Type == typeof(MonitoringConditionDto) && node is JsonObject condition)
+                        AnnotateMonitoringCondition(condition);
                     return node;
                 }
             });
             // Exported references are relative to the DTO root. Inline them
             // before embedding under the tool's operation-discriminated request.
             properties["data"] = InlineManagedSchema(schema, schema, new HashSet<string>(StringComparer.Ordinal));
+            if (operation.Tool == "netratel_monitoring" && operation.Operation is "save_rule" or "preview_targets")
+            {
+                properties["data"]!["description"] = MonitoringAuthoringGuidance.Text;
+                properties["data"]!["examples"] = MonitoringExamples(operation.Operation == "preview_targets");
+            }
             if (operation.Tool == "netratel_flows" && operation.Operation == "delete")
             {
                 properties["data"]!["properties"]!["expectedRevision"]!["minimum"] = 1;
@@ -90,6 +97,50 @@ public static partial class NetRatelMcpToolDefinitions
             ["required"] = new JsonArray(operation.RequiredProperties.Select(name => (JsonNode?)JsonValue.Create(name)).ToArray()),
             ["description"] = $"Requires {string.Join(", ", new[] { operation.Permission }.Concat(operation.AdditionalPermissions))} for this tenant plus current MCP operation policy. Typed data uses the same request contract as the UI."
         }, true);
+    }
+
+    private static void AnnotateMonitoringCondition(JsonObject schema)
+    {
+        schema["description"] = MonitoringAuthoringGuidance.Text;
+        if (schema["properties"] is JsonObject fields)
+        {
+            fields["resourceName"]!["description"] = "Required: explicit null for CPU and all eligible disks; otherwise an exact normalized disk path or exact service name. Never empty or *.";
+            fields["servicePlatform"]!["description"] = "Required: explicit null for numeric conditions; Windows or LinuxSystemd for services.";
+            fields["expectedServiceStates"]!["description"] = "Required: [] for numeric conditions; explicit supported states for services.";
+        }
+        schema["allOf"] = JsonNode.Parse("""
+        [
+          {"if":{"properties":{"kind":{"enum":["CpuUsagePercent","DiskFreePercent","DiskFreeSpace"]}},"required":["kind"]},
+           "then":{"properties":{"servicePlatform":{"type":"null"},"expectedServiceStates":{"maxItems":0}}}},
+          {"if":{"properties":{"kind":{"const":"CpuUsagePercent"}},"required":["kind"]},
+           "then":{"properties":{"resourceName":{"type":"null"},"unit":{"const":"Percent"},"breachThreshold":{"type":"number","minimum":0,"maximum":100},"recoveryThreshold":{"type":"number","minimum":0,"maximum":100}}}},
+          {"if":{"properties":{"kind":{"enum":["DiskFreePercent","DiskFreeSpace"]}},"required":["kind"]},
+           "then":{"properties":{"resourceName":{"type":["string","null"],"minLength":1,"pattern":"^(/|[A-Z]:)"}}}},
+          {"if":{"properties":{"kind":{"const":"DiskFreePercent"}},"required":["kind"]},
+           "then":{"properties":{"unit":{"const":"Percent"},"breachThreshold":{"type":"number","minimum":0,"maximum":100},"recoveryThreshold":{"type":"number","minimum":0,"maximum":100}}}}
+        ]
+        """);
+    }
+
+    private static JsonArray MonitoringExamples(bool preview)
+    {
+        var result = new JsonArray();
+        foreach (var (kind, breach, recovery, severity) in new[]
+        {
+            (MonitoringMetricKind.CpuUsagePercent, 95, 90, MonitoringSeverity.Warning),
+            (MonitoringMetricKind.DiskFreePercent, 20, 25, MonitoringSeverity.Warning),
+            (MonitoringMetricKind.DiskFreePercent, 10, 15, MonitoringSeverity.Critical)
+        })
+        {
+            var targets = new MonitoringTargetSelectionDto(MonitoringTargetMode.Selected, [], [Guid.Parse("11111111-1111-4111-8111-111111111111")]);
+            var condition = new MonitoringConditionDto(kind, MonitoringNumericUnit.Percent, breach, recovery, null, null, []);
+            object data = preview ? new MonitoringTargetPreviewRequest(targets, condition, TimeSpan.FromMinutes(2)) :
+                new MonitoringRuleWriteDto(new(7, Guid.Parse("22222222-2222-4222-8222-222222222222"), 1, 1,
+                    kind == MonitoringMetricKind.CpuUsagePercent ? "CPU warning" : severity == MonitoringSeverity.Critical ? "Disk free critical" : "Disk free warning", true, severity,
+                    targets, condition, TimeSpan.FromMinutes(3), TimeSpan.FromSeconds(30), TimeSpan.FromMinutes(2)), 40, "Reviewed monitoring policy");
+            result.Add(JsonSerializer.SerializeToNode(data, data.GetType(), ManagedOperationCatalog.JsonOptions));
+        }
+        return result;
     }
 
     private static void LegacyFlowSchemaMetadata(JsonTypeInfo type)

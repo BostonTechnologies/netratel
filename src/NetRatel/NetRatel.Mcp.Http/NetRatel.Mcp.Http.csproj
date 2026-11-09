@@ -5,6 +5,7 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
   <ItemGroup>
+    <InternalsVisibleTo Include="NetRatel.Tests" />
     <ProjectReference Include="..\NetRatel.Mcp.Core\NetRatel.Mcp.Core.csproj" />
     <ProjectReference Include="..\NetRatel.ServiceDefaults\NetRatel.ServiceDefaults.csproj" />
     <ProjectReference Include="..\NetRatel.AgentClient\NetRatel.AgentClient.csproj" />

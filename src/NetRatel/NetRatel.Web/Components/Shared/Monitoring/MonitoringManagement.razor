@@ -1,0 +1,210 @@
+@using Microsoft.JSInterop
+@using Microsoft.AspNetCore.WebUtilities
+@using Microsoft.AspNetCore.Components.Web
+@using NetRatel.Shared.Contracts.Monitoring
+@using NetRatel.Web.Services.Monitoring
+@implements IAsyncDisposable
+@inject ILogger<MonitoringManagement> Logger
+@inject NavigationManager Navigation
+
+<div class="monitoring-management" data-testid="monitoring-management">
+    <div @ref="_tabs" class="management-tabs" role="tablist" aria-label="Monitoring management sections">
+        @foreach (var section in Sections)
+        {
+            <button type="button" role="tab" id="@($"manage-tab-{section}")" aria-controls="@($"manage-panel-{section}")" aria-selected="@(_section == section ? "true" : "false")" tabindex="@(_section == section ? 0 : -1)" @onkeydown="e => TabKey(e, section)" @onclick="() => Select(section)" data-testid="@($"manage-tab-{section}")">
+                <MudIcon Icon="@SectionIcon(section)" Size="Size.Small" /><span>@Title(section)</span><span class="management-count">@Count(section)</span>
+            </button>
+        }
+    </div>
+    <section role="tabpanel" id="@($"manage-panel-{_section}")" aria-labelledby="@($"manage-tab-{_section}")" class="management-panel">
+        <div class="management-toolbar">
+            <div><strong>@Title(_section)</strong><p class="monitoring-secondary">@Help</p></div>
+            <label>Search @Title(_section).ToLowerInvariant()<input id="manage-search" type="search" maxlength="256" value="@Query.Search" @oninput="SearchChanged" data-testid="manage-search" /></label>
+            @if (_section == "rules")
+            {
+                <label>State<select value="@Query.Filter" @onchange="FilterChanged"><option value="all">All states</option><option value="enabled">Enabled</option><option value="disabled">Disabled</option></select></label>
+                <label>Severity<select value="@Query.Severity" @onchange="SeverityChanged"><option value="all">All severities</option>@foreach (var severity in Enum.GetValues<MonitoringSeverity>()) { <option value="@severity">@severity</option> }</select></label>
+                <label>Metric<select value="@Query.Metric" @onchange="MetricChanged"><option value="all">All metrics</option>@foreach (var metric in Enum.GetValues<MonitoringMetricKind>()) { <option value="@metric">@MetricLabel(metric)</option> }</select></label>
+            }
+            @if (_section == "bypasses")
+            {
+                <label>Status<select value="@Query.Filter" @onchange="FilterChanged"><option value="all">All statuses</option><option value="active">Active</option><option value="expired">Expired</option></select></label>
+            }
+            <label>Sort<select value="@Query.Sort" @onchange="SortChanged" data-testid="manage-sort">@foreach (var sort in Sorts) { <option value="@sort.Key">@sort.Value</option> }</select></label>
+            <MudTooltip Text="Reverse sort direction"><MudIconButton Size="Size.Small" Icon="@(Query.Descending ? Icons.Material.Filled.ArrowDownward : Icons.Material.Filled.ArrowUpward)" OnClick="ReverseSort" aria-label="Reverse sort direction" /></MudTooltip>
+            <MudTooltip Text="Refresh configuration"><MudIconButton Size="Size.Small" Icon="@Icons.Material.Filled.Refresh" OnClick="Refresh" Disabled="@Busy" aria-label="Refresh configuration" /></MudTooltip>
+            <MudButton id="@($"manage-new-{_section}")" Variant="Variant.Outlined" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Add" Disabled="@(Busy || !CanCreate)" OnClick="Create" data-testid="@($"monitoring-new-{Singular}")">New @Singular</MudButton>
+        </div>
+        @if (Busy) { <MudProgressLinear Indeterminate="true" aria-label="Loading configuration" /> }
+        @if (Error is not null) { <MudAlert Severity="Severity.Error">@Error</MudAlert> }
+        @if (Error is null)
+        {
+            <div class="monitoring-table-wrap management-table-wrap" @ref="_scroll" tabindex="0" role="region" aria-label="@($"{Title(_section)} table; scroll for more columns and rows")" data-testid="manage-table-scroll">
+                <table class="monitoring-table management-table" data-testid="@($"manage-table-{_section}")">
+                    @if (_section == "rules")
+                    {
+                        var page = Rules;
+                        <thead><tr><th>Name / state</th><th>Condition</th><th>Severity</th><th>Targets</th><th>Holds</th><th>Linked flow</th><th>Actions</th></tr></thead>
+                        <tbody>@foreach (var rule in page.Items)
+                        {
+                            <tr @key="rule.RuleId"><td><strong>@rule.Name</strong><div class="monitoring-secondary">@(rule.Enabled ? "Enabled" : "Disabled")</div></td><td>@Condition(rule)</td><td>@rule.Severity</td><td>@Targets(rule)</td><td>Breach @rule.BreachHold.TotalSeconds s<div>Recovery @rule.RecoveryHold.TotalSeconds s</div></td><td>@Flow(rule)</td><td><div class="monitoring-row-actions">
+                                <MudTooltip Text="Edit rule"><MudIconButton id="@($"manage-edit-{rule.RuleId:N}")" Icon="@Icons.Material.Filled.Edit" Size="Size.Small" Disabled="@(!Permissions.CanManage || Busy)" OnClick="() => LaunchRule(rule)" aria-label="@($"Edit rule {rule.Name}")" data-testid="monitoring-edit-rule" /></MudTooltip>
+                                <MudTooltip Text="Remove rule"><MudIconButton id="@($"manage-remove-{rule.RuleId:N}")" Icon="@Icons.Material.Filled.DeleteOutline" Color="Color.Error" Size="Size.Small" Disabled="@(!Permissions.CanManage || Busy)" OnClick="() => Remove(rule.RuleId, rule.Name)" aria-label="@($"Remove rule {rule.Name}")" /></MudTooltip>
+                            </div></td></tr>
+                        }</tbody>
+                    }
+                    else if (_section == "groups")
+                    {
+                        <thead><tr><th>Name</th><th>Explicit clients</th><th>Referencing rules</th><th>Actions</th></tr></thead>
+                        <tbody>@foreach (var group in Groups.Items)
+                        {
+                            <tr @key="group.GroupId"><td><strong>@group.Name</strong></td><td>@group.AgentIds.Length</td><td>@References(group)</td><td><div class="monitoring-row-actions">
+                                <MudTooltip Text="Edit group"><MudIconButton id="@($"manage-edit-{group.GroupId:N}")" Icon="@Icons.Material.Filled.Edit" Size="Size.Small" Disabled="@(!Permissions.CanManage || Busy)" OnClick="() => LaunchGroup(group)" aria-label="@($"Edit group {group.Name}")" /></MudTooltip>
+                                <MudTooltip Text="Remove group"><MudIconButton id="@($"manage-remove-{group.GroupId:N}")" Icon="@Icons.Material.Filled.DeleteOutline" Color="Color.Error" Size="Size.Small" Disabled="@(!Permissions.CanManage || Busy)" OnClick="() => Remove(group.GroupId, group.Name)" aria-label="@($"Remove group {group.Name}")" /></MudTooltip>
+                            </div></td></tr>
+                        }</tbody>
+                    }
+                    else
+                    {
+                        <thead><tr><th>Reason</th><th>Scope</th><th>Status</th><th>Applied</th><th>Expiry</th><th>Actions</th></tr></thead>
+                        <tbody>@foreach (var bypass in Bypasses.Items)
+                        {
+                            <tr @key="bypass.BypassId"><td><strong>@bypass.Reason</strong></td><td>@Scope(bypass)</td><td>@(Expired(bypass) ? "Expired" : "Active")</td><td>@Time(bypass.StartsAtUtc)</td><td>@(bypass.ExpiresAtUtc is { } expiry ? Time(expiry) : "No expiry")</td><td>
+                                <MudTooltip Text="Revoke bypass"><MudIconButton id="@($"manage-remove-{bypass.BypassId:N}")" Icon="@Icons.Material.Filled.Block" Color="Color.Warning" Size="Size.Small" Disabled="@(!Permissions.CanBypass || Busy)" OnClick="() => Remove(bypass.BypassId, bypass.Reason)" aria-label="@($"Revoke bypass {bypass.Reason}")" /></MudTooltip>
+                            </td></tr>
+                        }</tbody>
+                    }
+                </table>
+            </div>
+            @if (Total == 0 && !Busy) { <p role="status" data-testid="manage-empty">@(Count(_section) == 0 ? $"No {_section} configured." : "No matching results. Change the search or filters.")</p> }
+            <footer class="monitoring-pager" aria-label="Management pagination" data-testid="manage-pager">
+                <label>Rows per page<select value="@Query.Size" @onchange="SizeChanged" data-testid="manage-page-size"><option value="20">20</option><option value="50">50</option><option value="100">100</option></select></label>
+                <span role="status" aria-live="polite">@Range</span>
+                <button type="button" class="monitoring-button" disabled="@(Busy || Query.Page <= 1)" @onclick="() => Page(1)">First page</button>
+                <button type="button" class="monitoring-button" disabled="@(Busy || Query.Page <= 1)" @onclick="() => Page(Query.Page - 1)">Previous page</button>
+                <button type="button" class="monitoring-button" disabled="@(Busy || Query.Page * Query.Size >= Total)" @onclick="() => Page(Query.Page + 1)" data-testid="manage-next">Next page</button>
+            </footer>
+        }
+    </section>
+    @foreach (var section in Sections.Where(section => section != _section))
+    { <section hidden role="tabpanel" id="@($"manage-panel-{section}")" aria-labelledby="@($"manage-tab-{section}")"></section> }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public MonitoringConfigurationDto Configuration { get; set; } = default!;
+    [Parameter, EditorRequired] public MonitoringPermissionsDto Permissions { get; set; } = default!;
+    [Parameter] public IReadOnlyList<MonitoringPublishedFlowDto> Flows { get; set; } = [];
+    [Parameter] public Func<Guid, string> ClientName { get; set; } = id => $"Client metadata unavailable ({id:D})";
+    [Parameter] public string QueryUri { get; set; } = "";
+    [Parameter] public bool Busy { get; set; }
+    [Parameter] public string? Error { get; set; }
+    [Parameter] public EventCallback Refresh { get; set; }
+    [Parameter] public EventCallback<MonitoringRuleDto?> EditRule { get; set; }
+    [Parameter] public EventCallback<MonitoringGroupDto?> EditGroup { get; set; }
+    [Parameter] public EventCallback NewBypass { get; set; }
+    [Parameter] public EventCallback<(string Collection, Guid Id, string Name)> Delete { get; set; }
+    [Parameter] public EventCallback<string> Launcher { get; set; }
+    [Inject] private Microsoft.JSInterop.IJSRuntime JS { get; set; } = default!;
+    private static readonly string[] Sections = ["rules", "groups", "bypasses"];
+    [Parameter] public MonitoringManagementWorkspace Workspace { get; set; } = new();
+    private Dictionary<string, MonitoringManagementQuery> _queries => Workspace.Queries;
+    private string _section = "rules", _uri = "";
+    private ElementReference _scroll, _tabs;
+    private IJSObjectReference? _resultsModule, _resultsObserver;
+    private bool _resultsUnavailable;
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_resultsUnavailable) return;
+        try
+        {
+            _resultsModule ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/monitoring-results.js");
+            if (_resultsObserver is null && Error is null) _resultsObserver = await _resultsModule.InvokeAsync<IJSObjectReference>("observeResults", _scroll, _tabs);
+            else if (_resultsObserver is not null) await _resultsObserver.InvokeVoidAsync("setElement", Error is null ? (object)_scroll : null);
+        }
+        catch (Exception error) when (error is JSException or JSDisconnectedException or OperationCanceledException)
+        { _resultsUnavailable = true; Logger.LogDebug("Management retains CSS scroll bounds ({FailureType}).", error.GetType().Name); }
+    }
+    public async ValueTask DisposeAsync()
+    {
+        var observer = _resultsObserver; var module = _resultsModule;
+        _resultsObserver = _resultsModule = null;
+        await NetRatel.Web.Services.BrowserInteropCleanup.ReleaseAsync(Logger, observer, module);
+    }
+    private MonitoringManagementQuery Query => _queries[_section];
+    private string Singular => _section == "bypasses" ? "bypass" : _section[..^1];
+    private bool CanCreate => _section == "bypasses" ? Permissions.CanBypass : Permissions.CanManage;
+    private string Help => _section switch { "rules" => "Conditions, targets and governed alert actions.", "groups" => "Explicit client membership for rule targeting.", _ => "Suppress new actions while health evaluation continues." };
+    private static string Title(string section) => char.ToUpperInvariant(section[0]) + section[1..];
+    private static string SectionIcon(string section) => section switch { "rules" => Icons.Material.Filled.Rule, "groups" => Icons.Material.Filled.GroupWork, _ => Icons.Material.Filled.PauseCircleOutline };
+    private int Count(string section) => section switch { "rules" => Configuration.Rules.Length, "groups" => Configuration.Groups.Length, _ => Configuration.Bypasses.Length };
+    private static string MetricLabel(MonitoringMetricKind metric) => metric switch { MonitoringMetricKind.CpuUsagePercent => "CPU usage %", MonitoringMetricKind.DiskFreePercent => "Disk free %", MonitoringMetricKind.DiskFreeSpace => "Disk free space", _ => "Expected service state" };
+    private static string Condition(MonitoringRuleDto rule) => rule.Condition.Kind == MonitoringMetricKind.ServiceExpectedState
+        ? $"{rule.Condition.ResourceName} · {rule.Condition.ServicePlatform} · expected {string.Join(", ", rule.Condition.ExpectedServiceStates)}"
+        : $"{MetricLabel(rule.Condition.Kind)} · breach {rule.Condition.BreachThreshold}, recover {rule.Condition.RecoveryThreshold} {rule.Condition.Unit} · {rule.Condition.ResourceName ?? (rule.Condition.Kind == MonitoringMetricKind.CpuUsagePercent ? "CPU" : "All eligible disks")}";
+    private string Flow(MonitoringRuleDto rule) => rule.PublishedFlowVersionId is { } id ? Flows.FirstOrDefault(flow => flow.PublishedFlowVersionId == id)?.Name ?? "Unavailable published flow" : "Display only";
+    private string Targets(MonitoringRuleDto rule) => rule.Targets.Mode == MonitoringTargetMode.AllEligible ? "All eligible clients" : $"{rule.Targets.AgentIds.Length} clients · " + string.Join(", ", rule.Targets.GroupIds.Select(id => Configuration.Groups.FirstOrDefault(group => group.GroupId == id)?.Name ?? "Removed group"));
+    private int References(MonitoringGroupDto group) => Configuration.Rules.Count(rule => rule.Targets.GroupIds.Contains(group.GroupId));
+    private string Scope(MonitoringBypassDto bypass) => $"Rule: {(bypass.RuleId is { } ruleId ? Configuration.Rules.FirstOrDefault(rule => rule.RuleId == ruleId)?.Name ?? "Removed rule" : "All")} · Group: {(bypass.GroupId is { } groupId ? Configuration.Groups.FirstOrDefault(group => group.GroupId == groupId)?.Name ?? "Removed group" : "All")} · Client: {(bypass.AgentId is { } agent ? ClientName(agent) : "All")} · Resource: {bypass.ResourceKey ?? "All"}";
+    private static string Time(DateTimeOffset at) => at.ToString("yyyy-MM-dd HH:mm:ss 'UTC'");
+    private static bool Expired(MonitoringBypassDto bypass) => bypass.ExpiresAtUtc <= DateTimeOffset.UtcNow;
+    private IEnumerable<KeyValuePair<string, string>> Sorts => _section switch
+    {
+        "rules" => new Dictionary<string, string> { ["name"] = "Name", ["severity"] = "Severity", ["metric"] = "Metric", ["enabled"] = "Enabled state" },
+        "groups" => new Dictionary<string, string> { ["name"] = "Name", ["clients"] = "Client count", ["rules"] = "Referencing rules" },
+        _ => new Dictionary<string, string> { ["applied"] = "Applied time", ["expiry"] = "Expiry", ["name"] = "Reason", ["status"] = "Status" }
+    };
+    private ManagementPage<MonitoringRuleDto> Rules => Query.Project(Configuration.Rules.Where(rule => Query.Matches(rule.Name, Condition(rule), Targets(rule), Flow(rule)) && (Query.Filter == "all" || rule.Enabled == (Query.Filter == "enabled")) && (Query.Severity == "all" || rule.Severity.ToString() == Query.Severity) && (Query.Metric == "all" || rule.Condition.Kind.ToString() == Query.Metric)), rule => Query.Sort switch { "severity" => (IComparable)(int)rule.Severity, "metric" => (int)rule.Condition.Kind, "enabled" => rule.Enabled ? 1 : 0, _ => rule.Name.ToUpperInvariant() }, rule => rule.RuleId);
+    private ManagementPage<MonitoringGroupDto> Groups => Query.Project(Configuration.Groups.Where(group => Query.Matches(group.Name)), group => Query.Sort switch { "clients" => (IComparable)group.AgentIds.Length, "rules" => References(group), _ => group.Name.ToUpperInvariant() }, group => group.GroupId);
+    private ManagementPage<MonitoringBypassDto> Bypasses => Query.Project(Configuration.Bypasses.Where(bypass => Query.Matches(bypass.Reason, Scope(bypass)) && (Query.Filter == "all" || Expired(bypass) == (Query.Filter == "expired"))), bypass => Query.Sort switch { "name" => (IComparable)bypass.Reason.ToUpperInvariant(), "expiry" => bypass.ExpiresAtUtc ?? DateTimeOffset.MaxValue, "status" => Expired(bypass) ? 1 : 0, _ => bypass.StartsAtUtc }, bypass => bypass.BypassId);
+    private int Total => _section switch { "rules" => Rules.Total, "groups" => Groups.Total, _ => Bypasses.Total };
+    private string Range => _section switch { "rules" => Rules.Range, "groups" => Groups.Range, _ => Bypasses.Range };
+    protected override void OnParametersSet()
+    {
+        if (Workspace.TenantId != Configuration.TenantId)
+        {
+            _queries.Clear(); foreach (var section in Sections) _queries[section] = new() { Sort = section == "bypasses" ? "applied" : "name", Descending = section == "bypasses" };
+            Workspace.TenantId = Configuration.TenantId; _uri = "";
+        }
+        if (_uri == QueryUri) return;
+        _uri = QueryUri;
+        var query = QueryHelpers.ParseQuery(new Uri(Navigation.ToAbsoluteUri(string.IsNullOrWhiteSpace(QueryUri) ? Navigation.Uri : QueryUri).AbsoluteUri).Query);
+        string Read(string key) => query.GetValueOrDefault(key).ToString();
+        _section = Sections.Contains(Read("manageTab")) ? Read("manageTab") : "rules";
+        Query.Search = Read("manageSearch") is { Length: <= 256 } search ? search : "";
+        var filter = Read("manageFilter"); Query.Filter = (_section == "rules" ? new[] { "enabled", "disabled" } : new[] { "active", "expired" }).Contains(filter) ? filter : "all";
+        Query.Severity = Enum.TryParse<MonitoringSeverity>(Read("manageSeverity"), out var severity) && Enum.IsDefined(severity) ? severity.ToString() : "all";
+        Query.Metric = Enum.TryParse<MonitoringMetricKind>(Read("manageMetric"), out var metric) && Enum.IsDefined(metric) ? metric.ToString() : "all";
+        Query.Sort = Sorts.Any(sort => sort.Key == Read("manageSort")) ? Read("manageSort") : _section == "bypasses" ? "applied" : "name";
+        Query.Descending = bool.TryParse(Read("manageDesc"), out var desc) ? desc : _section == "bypasses";
+        Query.Size = int.TryParse(Read("manageSize"), out var size) && size is 20 or 50 or 100 ? size : 20;
+        Query.Page = int.TryParse(Read("managePage"), out var page) ? Math.Clamp(page, 1, 1000) : 1;
+    }
+    private void Persist(bool reset = true)
+    {
+        if (reset) Query.Page = 1;
+        var uri = Navigation.GetUriWithQueryParameters(new Dictionary<string, object?> { ["view"] = "manage", ["manageTab"] = _section, ["manageSearch"] = Query.Search, ["manageFilter"] = Query.Filter, ["manageSeverity"] = Query.Severity, ["manageMetric"] = Query.Metric, ["manageSort"] = Query.Sort, ["manageDesc"] = Query.Descending, ["manageSize"] = Query.Size, ["managePage"] = Query.Page });
+        _uri = uri; Navigation.NavigateTo(uri);
+    }
+    private void Select(string section) { _section = section; Persist(false); }
+    private async Task TabKey(KeyboardEventArgs args, string section)
+    {
+        var index = Array.IndexOf(Sections, section);
+        var next = args.Key switch { "ArrowRight" => (index + 1) % 3, "ArrowLeft" => (index + 2) % 3, "Home" => 0, "End" => 2, _ => -1 };
+        if (next < 0) return;
+        Select(Sections[next]);
+        await using var module = await JS.InvokeAsync<Microsoft.JSInterop.IJSObjectReference>("import", "./js/operator-policy-dialog.js");
+        await module.InvokeVoidAsync("restoreFocus", $"manage-tab-{_section}", "manage-search", "monitoring-heading");
+    }
+    private void SearchChanged(ChangeEventArgs args) { Query.Search = args.Value?.ToString() ?? ""; Persist(); }
+    private void FilterChanged(ChangeEventArgs args) { Query.Filter = args.Value?.ToString() ?? "all"; Persist(); }
+    private void SeverityChanged(ChangeEventArgs args) { Query.Severity = args.Value?.ToString() ?? "all"; Persist(); }
+    private void MetricChanged(ChangeEventArgs args) { Query.Metric = args.Value?.ToString() ?? "all"; Persist(); }
+    private void SortChanged(ChangeEventArgs args) { Query.Sort = args.Value?.ToString() ?? "name"; Persist(); }
+    private void ReverseSort() { Query.Descending = !Query.Descending; Persist(); }
+    private void SizeChanged(ChangeEventArgs args) { Query.Size = int.TryParse(args.Value?.ToString(), out var size) ? size : 20; Persist(); }
+    private void Page(int page) { Query.Page = page; Persist(false); }
+    private async Task Create() { if (_section == "rules") await EditRule.InvokeAsync((MonitoringRuleDto?)null); else if (_section == "groups") await EditGroup.InvokeAsync((MonitoringGroupDto?)null); else await NewBypass.InvokeAsync(); await Launcher.InvokeAsync($"manage-new-{_section}"); }
+    private async Task LaunchRule(MonitoringRuleDto rule) { await EditRule.InvokeAsync(rule); await Launcher.InvokeAsync($"manage-edit-{rule.RuleId:N}"); }
+    private async Task LaunchGroup(MonitoringGroupDto group) { await EditGroup.InvokeAsync(group); await Launcher.InvokeAsync($"manage-edit-{group.GroupId:N}"); }
+    private async Task Remove(Guid id, string name) { await Delete.InvokeAsync((_section, id, name)); await Launcher.InvokeAsync($"manage-remove-{id:N}"); }
+}

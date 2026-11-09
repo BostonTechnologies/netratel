@@ -6,3 +6,5 @@ Evidence files retain the measurements and publication checks they record. They 
 - [Package inventories](client-dependency-trimming/package-inventories.json)
 - [Trimming diagnostics](client-dependency-trimming/trimming-diagnostics.json)
 - [Windows archive verification](client-dependency-trimming/windows-archive-verification.json)
+
+- [Monitoring workspace acceptance](monitoring-workspace-acceptance.md)

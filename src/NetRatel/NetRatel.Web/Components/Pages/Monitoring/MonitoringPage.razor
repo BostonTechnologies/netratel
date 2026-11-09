@@ -15,6 +15,8 @@
         <MudText Typo="Typo.h5">Monitoring</MudText>
         <div class="monitoring-toolbar">
             <label>Tenant<select data-testid="monitoring-tenant" value="@State.TenantId" @onchange="ChangeTenant" disabled="@(_editor is not null)"><option value="0">Select tenant</option>@foreach (var tenant in _tenants) { <option value="@tenant.TenantId">@tenant.Name</option> }</select></label>
+            @if (_tab != "Manage")
+            {
             <label>Search alerts<input type="search" value="@_search" @oninput="SearchChanged" maxlength="256" placeholder="Computer, rule or resource" data-testid="monitoring-search" /></label>
             <details class="monitoring-filters" data-testid="monitoring-filters" open="@_filtersOpen" @onkeydown="FiltersKey" @onkeydown:stopPropagation>
                 <summary @ref="_filtersSummary" @onclick="ToggleFilters" @onclick:preventDefault>Filters (@FilterCount)</summary>
@@ -26,12 +28,13 @@
                     <small>Dates use @_timeZone.Id. Rows without a raised date are excluded by Active date filters. History uses event / audit time.</small>
                 </div>
             </details>
+            }
             <MudTooltip Text="Refresh monitoring"><MudIconButton Icon="@Icons.Material.Filled.Refresh" OnClick="Refresh" Disabled="@(State.Loading || _busy)" aria-label="Refresh monitoring" data-testid="monitoring-refresh" /></MudTooltip>
         </div>
     </header>
     @if (_startupError is not null || State.Error is not null) { <MudAlert Severity="Severity.Error" data-testid="monitoring-read-error">@(_startupError ?? State.Error)</MudAlert> }
     @if (_filterError is not null) { <MudAlert Severity="Severity.Error" data-testid="monitoring-filter-error">@_filterError</MudAlert> }
-    @if (FilterCount > 0)
+    @if (_tab != "Manage" && FilterCount > 0)
     {
         <div class="monitoring-filter-chips" aria-label="Active filters" data-testid="monitoring-filter-chips">
             <span>@FilterCount active filters</span>
@@ -70,6 +73,8 @@
     {
         @if (_pendingWatchAtSaveTenant == State.TenantId && _pendingWatchAtSaveRevision is { } savedRevision) { <MudAlert Severity="Severity.Warning" data-testid="monitoring-watch-pending-at-save">Configuration revision @savedRevision was saved. The server reported selected service watch updates pending at save time. This notice does not confirm their current activation; fresh service evidence is still required.</MudAlert> }
         @if (snapshot.Configuration.WatchPolicyUpdatePending) { <MudAlert Severity="Severity.Warning" data-testid="monitoring-watch-pending">Configuration is saved. Selected service watch activation is pending; current service evidence remains unknown until the policy is accepted.</MudAlert> }
+        @if (_tab != "Manage")
+        {
         @if (State.ClientFilter is { } filteredClient)
         {
             <div class="monitoring-client-filter"><MudChip T="Guid" Variant="Variant.Outlined" OnClose="ClearClientFilter">Client: @ClientName(filteredClient)</MudChip><MudText Typo="Typo.caption">Alert rows show this client. Counts show the whole tenant.</MudText></div>
@@ -83,6 +88,7 @@
             <MudButton ButtonType="ButtonType.Button" Variant="@(_stateFilter == "all" ? Variant.Filled : Variant.Outlined)" Size="Size.Small" OnClick='() => FilterState("all")' aria-pressed="@((_stateFilter == "all").ToString().ToLowerInvariant())" data-testid="monitoring-state-all">All states</MudButton>
             <MudText Typo="Typo.caption">Tenant totals · @_timeZone.Id</MudText>
         </div>
+        }
         <nav class="monitoring-tabs" role="tablist" aria-label="Monitoring views">
             @foreach (var tab in new[] { "Active", "Manage", "History" }) { <MudButton ButtonType="ButtonType.Button" role="tab" Variant="@(_tab == tab ? Variant.Filled : Variant.Text)" Color="Color.Primary" aria-selected="@((_tab == tab).ToString().ToLowerInvariant())" OnClick="() => ChangeTab(tab)" data-testid="@($"monitoring-tab-{tab.ToLowerInvariant()}")">@(tab == "Active" ? "Active alerts" : tab == "Manage" ? "Rules & groups" : "History")</MudButton> }
         </nav>
@@ -125,7 +131,7 @@
                                     <MudTooltip Text="Clear this occurrence"><MudIconButton Icon="@Icons.Material.Filled.Clear" Size="Size.Small" Disabled="@(!snapshot.Permissions.CanClear)" OnClick='() => OpenOperator(row, "clear")' aria-label="Clear alert" data-testid="monitoring-clear" /></MudTooltip>
                                     <MudTooltip Text="Bypass new actions"><MudIconButton Icon="@Icons.Material.Filled.Pause" Size="Size.Small" Disabled="@(!snapshot.Permissions.CanBypass)" OnClick='() => OpenOperator(row, "bypass")' aria-label="Bypass alert actions" data-testid="monitoring-bypass" /></MudTooltip>
                                 }
-                                @if (!MonitoringOfflinePresentation.IsSeries(row.Series)) { <span data-testid="monitoring-services"><ClientServicesLauncher TenantId="@row.Series.TenantId" AgentId="@row.Series.AgentId" HostLabel="@($"{ClientName(row.Series.AgentId)} · {ClientContext(row.Series.AgentId)}".Trim(' ', '·'))" TenantLabel="@TenantName" /></span> }
+                                @if (!MonitoringOfflinePresentation.IsSeries(row.Series)) { <ClientToolsLauncher @key="(row.Series, 0)" TenantId="row.Series.TenantId" AgentId="row.Series.AgentId" HostLabel="@ClientName(row.Series.AgentId)" TenantLabel="@TenantName" Readiness="_clientToolReadiness" ScopeKey="@Navigation.Uri" /><MonitoringInvestigationLauncher @key="(row.Series, 1)" Row="row" ClientLabel="@ClientName(row.Series.AgentId)" /> }
                             </div></td>
                         </tr>
                         @if (Expanded(row))
@@ -204,7 +210,7 @@
                     }
                 </tbody></table></div>
                 @if (!ActiveRows.Any() && State.Error is null && !State.Loading) { <p data-testid="monitoring-empty">No alerts match these filters.</p> }
-                <MonitoringPager Size="_pageSize" SizeChanged="PageSizeChanged" Kind="series" Count="snapshot.Series.Items.Length" History="State.SeriesPager" NextCursor="snapshot.Series.NextCursor" Busy="@(State.Loading || State.PagingSeries)" First="() => PageSeries(null)" Previous="PreviousSeries" Next="() => PageSeries(snapshot.Series.NextCursor)" />
+                <MonitoringPager Size="_pageSize" SizeChanged="PageSizeChanged" Kind="series" Count="snapshot.Series.Items.Length" History="State.SeriesPager" NextCursor="@snapshot.Series.NextCursor" Busy="@(State.Loading || State.PagingSeries)" First="() => PageSeries(null)" Previous="PreviousSeries" Next="() => PageSeries(snapshot.Series.NextCursor)" />
             </MudPaper>
         }
         else if (_tab == "History")
@@ -225,23 +231,12 @@
                     }
                 </tbody></table></div>
                 @if (HistoryCount == 0 && State.Error is null && !State.Loading) { <p data-testid="monitoring-history-empty">No history matches these filters.</p> }
-                <MonitoringPager Size="_pageSize" SizeChanged="PageSizeChanged" Kind="history" Count="HistoryCount" History="State.HistoryPager" NextCursor="snapshot.History.NextCursor" Busy="@(State.Loading || State.PagingHistory)" First="() => PageHistory(null)" Previous="PreviousHistory" Next="() => PageHistory(snapshot.History.NextCursor)" />
+                <MonitoringPager Size="_pageSize" SizeChanged="PageSizeChanged" Kind="history" Count="HistoryCount" History="State.HistoryPager" NextCursor="@snapshot.History.NextCursor" Busy="@(State.Loading || State.PagingHistory)" First="() => PageHistory(null)" Previous="PreviousHistory" Next="() => PageHistory(snapshot.History.NextCursor)" />
             </MudPaper>
         }
         else
         {
-            <div class="monitoring-manage">
-                <MudPaper Class="monitoring-panel pa-3"><div class="monitoring-section-heading"><MudText Typo="Typo.h6">Rules</MudText><button type="button" class="monitoring-button" disabled="@(!snapshot.Permissions.CanManage)" @ref="_newRuleLauncher" @onclick="() => OpenRuleFromLauncher(null, _newRuleLauncher)" data-testid="monitoring-new-rule">New rule</button></div>
-                    @foreach (var rule in snapshot.Configuration.Rules.Where(r => Contains(r.Name))) { <div @key="rule.RuleId" class="monitoring-definition"><div><strong>@rule.Name</strong><div>@Label(rule.Condition.Kind) · @(rule.Enabled ? "Enabled" : "Disabled") · @rule.Severity</div><small>Breach @rule.BreachHold.TotalSeconds s · recovery @rule.RecoveryHold.TotalSeconds s</small>@if (rule.AlertIfOffline) { <div>Alert if Offline · @(rule.OfflineGraceSeconds ?? MonitoringOfflinePresentation.DefaultGraceSeconds) s grace</div> }</div><button type="button" class="monitoring-button" disabled="@(!snapshot.Permissions.CanManage)" @ref="_ruleLaunchers[rule.RuleId]" @onclick="() => OpenRuleFromLauncher(rule, _ruleLaunchers[rule.RuleId])" data-testid="monitoring-edit-rule">Edit</button><button type="button" class="monitoring-button" disabled="@(!snapshot.Permissions.CanManage)" @onclick='() => OpenDelete("rules", rule.RuleId, rule.Name)'>Remove</button></div> }
-                    @if (snapshot.Configuration.Rules.IsEmpty) { <p>No rules. Templates are choices and are never enabled automatically.</p> }
-                </MudPaper>
-                <MudPaper Class="monitoring-panel pa-3"><div class="monitoring-section-heading"><MudText Typo="Typo.h6">Groups</MudText><button type="button" class="monitoring-button" disabled="@(!snapshot.Permissions.CanManage)" @onclick="() => OpenGroup(null)" data-testid="monitoring-new-group">New group</button></div>
-                    @foreach (var group in snapshot.Configuration.Groups.Where(g => Contains(g.Name))) { <div class="monitoring-definition"><div><strong>@group.Name</strong><div>@group.AgentIds.Length explicit clients</div></div><button type="button" class="monitoring-button" disabled="@(!snapshot.Permissions.CanManage)" @onclick="() => OpenGroup(group)">Edit</button><button type="button" class="monitoring-button" disabled="@(!snapshot.Permissions.CanManage)" @onclick='() => OpenDelete("groups", group.GroupId, group.Name)'>Remove</button></div> }
-                </MudPaper>
-                <MudPaper Class="monitoring-panel pa-3"><div class="monitoring-section-heading"><MudText Typo="Typo.h6">Bypasses</MudText><button type="button" class="monitoring-button" disabled="@(!snapshot.Permissions.CanBypass)" @onclick="() => OpenBypass()" data-testid="monitoring-new-bypass">New bypass</button></div>
-                    <p>Suppresses new actions while health evaluation continues.</p>@foreach (var bypass in snapshot.Configuration.Bypasses) { <div class="monitoring-definition"><div><strong>@bypass.Reason</strong><div>@(bypass.ExpiresAtUtc <= DateTimeOffset.UtcNow ? "Expired" : "Active") · ends @Time(bypass.ExpiresAtUtc)</div><small>Rule @(bypass.RuleId is { } ruleId ? RuleName(ruleId) : "all") · group @(bypass.GroupId is { } groupId ? snapshot.Configuration.Groups.FirstOrDefault(g => g.GroupId == groupId)?.Name ?? "Removed group" : "all") · client @(bypass.AgentId is { } agentId ? ClientName(agentId) : "all")</small><div>Applied @Time(bypass.StartsAtUtc)</div></div><button type="button" class="monitoring-button" disabled="@(!snapshot.Permissions.CanBypass)" @onclick='() => OpenDelete("bypasses", bypass.BypassId, bypass.Reason)'>Revoke</button></div> }
-                </MudPaper>
-            </div>
+            <MonitoringManagement Configuration="snapshot.Configuration" Permissions="snapshot.Permissions" Flows="snapshot.PublishedFlows" ClientName="ClientName" Workspace="_managementWorkspace" QueryUri="@Navigation.Uri" Busy="@(State.Loading || _busy)" Error="@State.Error" Refresh="Refresh" EditRule="OpenRule" EditGroup="OpenGroup" NewBypass="OpenBypass" Delete="request => OpenDelete(request.Collection, request.Id, request.Name)" Launcher="RememberManagementLauncher" />
         }
     }
     else if (!State.Loading && _startupError is null && State.Error is null && _filterError is null) { <MudPaper Class="pa-4"><p>Select an authorized tenant to read monitoring.</p></MudPaper> }

@@ -35,7 +35,7 @@ using System.Collections.Concurrent;
 
 namespace NetRatel.Tests.API;
 
-public sealed class MonitoringApiTests
+public sealed partial class MonitoringApiTests
 {
     private static readonly Guid OperatorId = Guid.Parse("a4b9a726-b36b-48f3-9b59-c6b7f5cd9467");
     private static ClaimsPrincipal User => new(new ClaimsIdentity([new Claim("netratel_principal_id", OperatorId.ToString("N"))], "Test"));

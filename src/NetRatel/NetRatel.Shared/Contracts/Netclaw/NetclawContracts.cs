@@ -20,7 +20,15 @@ public sealed record NetclawTestResult(bool Success, string Code, NetclawConnect
     public string? Remediation => Success ? null : NetclawConnectionTestHelp.ForCode(Code);
 }
 public sealed record InvestigationCreateRequest(Guid RequestId, string Title, IReadOnlyList<Guid> AgentIds, Guid? OccurrenceId = null,
-    IReadOnlyList<AiPromptReference>? SelectedPrompts = null);
+    IReadOnlyList<AiPromptReference>? SelectedPrompts = null)
+{
+    public MonitoringInvestigationReference? PreparedAlert { get; init; }
+}
+public sealed record MonitoringInvestigationReference(Guid RuleId, string ResourceKey);
+public sealed record PreparedInvestigationDto(MonitoringInvestigationReference Alert, string Message, Guid FirstMessageId, DateTimeOffset PreparedAtUtc, bool Started = false)
+{
+    public string? Title { get; init; }
+}
 public sealed record GeneralChatCreateRequest(Guid RequestId, string Title);
 public sealed record InvestigationMessageRequest(Guid MessageId, string Text);
 public sealed record InvestigationApprovalRequest(string SelectedKey);
@@ -45,7 +53,10 @@ public sealed record InvestigationOptionDto(string Key, string Label);
 public sealed record InvestigationSnapshotDto(InvestigationSummaryDto Investigation, long LastSequence, Guid? ActiveMessageId,
     IReadOnlyList<InvestigationEventDto> Events, IReadOnlyList<InvestigationClientDto> Clients,
     IReadOnlyList<InvestigationApprovalDto> PendingApprovals, string? Draft = null, IReadOnlyList<AiPromptSnapshot>? Prompts = null,
-    InvestigationSentContextDto? SentContext = null, InvestigationRecoveryDto? Recovery = null);
+    InvestigationSentContextDto? SentContext = null, InvestigationRecoveryDto? Recovery = null)
+{
+    public PreparedInvestigationDto? Prepared { get; init; }
+}
 public sealed record InvestigationRecoveryDto(DateTimeOffset? LastAttemptAtUtc, string? Summary, string? FailureCode = null);
 public sealed record InvestigationSentContextDto(Guid MessageId, string Request, string MetadataJson, int PayloadBytes,
     DateTimeOffset PreparedAtUtc, DateTimeOffset? SendAttemptedAtUtc, IReadOnlyList<string> OmissionNotes);

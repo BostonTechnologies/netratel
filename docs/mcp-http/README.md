@@ -35,3 +35,6 @@ bytes/hash and existing references are preserved. An omitted destination remains
 backward compatible. Development's admitted canonical source variant retains
 its separate source-revision/content-hash contract; discover the active schema
 before choosing a request shape.
+
+Monitoring rule authoring, explicit nullable fields, CPU/disk examples and typed
+validation recovery are documented in the canonical [Monitoring guide](../operations/MONITORING.md#author-rules-through-http-or-stdio-mcp). The same schemas and guidance are published by HTTP and stdio catalogs.

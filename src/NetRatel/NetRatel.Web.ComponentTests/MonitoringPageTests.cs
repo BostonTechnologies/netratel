@@ -260,7 +260,8 @@ public sealed class MonitoringPageTests : AsyncBunitContext
         cut.WaitForAssertion(() => Assert.Contains("11 clients are offline.", cut.Markup));
         Assert.Single(cut.FindAll("[data-testid='monitoring-series-row']"));
         Assert.Equal(11, cut.FindAll("[data-testid='monitoring-offline-members'] small").Count);
-        Assert.Empty(cut.FindAll("[data-testid='monitoring-services']"));
+        Assert.Empty(cut.FindAll("[data-testid='client-tools-launcher']"));
+        Assert.Empty(cut.FindAll("[data-testid='monitoring-ai-investigation']"));
         Assert.Single(cut.FindAll("[data-testid='monitoring-ack']"));
     }
     [Theory]
@@ -297,7 +298,7 @@ public sealed class MonitoringPageTests : AsyncBunitContext
         Assert.Single(cut.FindAll("[data-testid='monitoring-save']"));
         Assert.Single(cut.FindAll("[data-testid='monitoring-cancel']"));
         cut.Find("[data-testid='monitoring-cancel']").Click();
-        Assert.Empty(cut.FindAll("[data-testid='monitoring-editor']")); Assert.Equal(1, calls);
+        cut.WaitForAssertion(() => Assert.Empty(cut.FindAll("[data-testid='monitoring-editor']"))); Assert.Equal(1, calls);
     }
     [Fact]
     public async Task DuplicateSubmissionIsGuardedWhileSaveIsOutstanding()
@@ -446,6 +447,7 @@ public sealed class MonitoringPageTests : AsyncBunitContext
         Assert.NotNull(write); Assert.Empty(write.Rule.Targets.AgentIds); Assert.Equal([group.GroupId], write.Rule.Targets.GroupIds);
         Assert.Equal(firstFlow, current.Rules[0].PublishedFlowVersionId);
         var evaluation = current.Rules[0].EvaluationRevision; var condition = current.Rules[0].Condition;
+        cut.WaitForAssertion(() => Assert.Single(cut.FindAll("[data-testid='monitoring-edit-rule']")));
         cut.Find("[data-testid='monitoring-edit-rule']").Click();
         Assert.Equal("Group CPU", cut.Find("[data-testid='monitoring-rule-name']").GetAttribute("value"));
         Assert.Equal(firstFlow.ToString(), cut.Find("[data-testid='monitoring-flow']").GetAttribute("value"));

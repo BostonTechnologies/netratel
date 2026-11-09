@@ -1,5 +1,5 @@
 // Size the row viewport from the actual wrapped toolbar and pager, including browser zoom.
-export function observeResults(element) {
+export function observeResults(element, tabs = null) {
     let current, observer, frame;
     const schedule = () => { cancelAnimationFrame(frame); frame = requestAnimationFrame(fit); };
     function fit() {
@@ -22,11 +22,13 @@ export function observeResults(element) {
         if (heading) observer.observe(heading);
         schedule();
     }
+    const tabKey = event => { if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) event.preventDefault(); };
+    tabs?.addEventListener('keydown', tabKey);
     window.addEventListener('resize', schedule);
     window.addEventListener('scroll', schedule, { passive: true });
     setElement(element);
-    return DotNet.createJSObjectReference({
+    return {
         setElement,
-        dispose() { cancelAnimationFrame(frame); observer?.disconnect(); window.removeEventListener('resize', schedule); window.removeEventListener('scroll', schedule); current = null; }
-    });
+        dispose() { tabs?.removeEventListener('keydown', tabKey); cancelAnimationFrame(frame); observer?.disconnect(); window.removeEventListener('resize', schedule); window.removeEventListener('scroll', schedule); current = null; }
+    };
 }
