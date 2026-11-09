@@ -192,13 +192,25 @@ public sealed class FullExplorerAcceptanceTests(ClientsManagementBrowserFixture 
                 Assert.True(Math.Abs((await grid.BoundingBoxAsync())!.Width - before.Width) > 10, "Dragging the actual dock divider resized Files.");
                 await AssertStableTilesAsync(grid);
             }
+            var resizeStarted = System.Diagnostics.Stopwatch.StartNew();
             await page.SetViewportSizeAsync(pass == 0 ? 390 : 1280, pass == 0 ? 844 : 900);
             await Assertions.Expect(workspace).ToHaveAttributeAsync("data-narrow", pass == 0 ? "true" : "false");
+            await SaveEvidenceAsync(page, $"explorer-tiles-resize-transition-{pass}");
             // The pinned manager replaces its dock grid with a compact grid at
             // this breakpoint. Wait for that actual component transition before
             // measuring idle geometry; a detached old element has height zero.
             if (pass == 0) await Assertions.Expect(workspace.Locator(".dv-dockview:visible")).ToHaveCountAsync(0);
-            else await Assertions.Expect(workspace.Locator(".dv-dockview:visible")).ToBeVisibleAsync();
+            else
+            {
+                try { await Assertions.Expect(workspace.Locator(".dv-dockview:visible")).ToBeVisibleAsync(new() { Timeout = 15_000 }); }
+                catch
+                {
+                    Console.WriteLine("Dock transition: " + await workspace.EvaluateAsync<string>("element => JSON.stringify({width:innerWidth,docks:document.querySelectorAll('.dv-dockview').length,grids:[...element.querySelectorAll('.mud-ex-file-grid')].map(grid=>({width:grid.clientWidth,height:grid.clientHeight,connected:grid.isConnected,parent:grid.parentElement.outerHTML.slice(0,400)}))})"));
+                    await SaveEvidenceAsync(page, "explorer-dock-transition-failure");
+                    throw;
+                }
+            }
+            Console.WriteLine($"Tiles responsive transition {pass}: {resizeStarted.Elapsed.TotalMilliseconds:F0} ms");
             await SaveEvidenceAsync(page, $"explorer-tiles-resized-{pass}");
             await AssertStableTilesAsync(grid);
             await workspace.GetByRole(AriaRole.Button, new() { Name = "Details / tiles", Exact = true }).ClickAsync();
