@@ -16,6 +16,334 @@ namespace NetRatel.Web.PlaywrightTests;
 [Trait("Category", "manual-integration")]
 public sealed class FullExplorerAcceptanceTests(ClientsManagementBrowserFixture browser) : IClassFixture<ClientsManagementBrowserFixture>
 {
+    [Fact]
+    public async Task DelayedTreeCompletionUpdatesFilesWithoutRefreshAndCannotReplaceANewerDirectory()
+    {
+        ExplorerFixtureFactory? remote = null;
+        await using var fixture = await StartExplorerAsync(value => remote = value);
+        await using var context = await browser.Browser.NewContextAsync(new() { ViewportSize = new() { Width = 1440, Height = 1000 } });
+        var page = await context.NewPageAsync();
+        var workspace = await OpenExplorerAsync(page, fixture);
+        remote!.DelayAlpha = true;
+        var tree = workspace.Locator(".mud-ex-fm").GetByText("alpha", new() { Exact = true }).First;
+        await tree.ClickAsync();
+        await remote.AlphaStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        try
+        {
+            await Assertions.Expect(workspace.GetByText("This folder is empty.", new() { Exact = true })).ToHaveCountAsync(0);
+        }
+        finally { remote.ReleaseAlpha.TrySetResult(); }
+        await workspace.Locator(".mud-ex-file-grid:visible").GetByText("alpha-notes.txt", new() { Exact = true }).WaitForAsync();
+        await Assertions.Expect(workspace.GetByRole(AriaRole.Textbox, new() { Name = "Remote path", Exact = true })).ToHaveValueAsync("/alpha");
+        await workspace.GetByRole(AriaRole.Button, new() { Name = "Up", Exact = true }).ClickAsync();
+        await workspace.Locator(".mud-ex-file-grid:visible").GetByText("beta", new() { Exact = true }).DblClickAsync();
+        await workspace.Locator(".mud-ex-file-grid:visible").GetByText("beta-notes.txt", new() { Exact = true }).WaitForAsync();
+        await Assertions.Expect(workspace.GetByRole(AriaRole.Textbox, new() { Name = "Remote path", Exact = true })).ToHaveValueAsync("/beta");
+        await workspace.GetByRole(AriaRole.Button, new() { Name = "Up", Exact = true }).ClickAsync();
+        await workspace.Locator(".mud-ex-fm").GetByText("alpha", new() { Exact = true }).First.ClickAsync();
+        await workspace.Locator(".mud-ex-file-grid:visible").GetByText("alpha-notes.txt", new() { Exact = true }).WaitForAsync();
+        await workspace.Locator(".mud-ex-fm-crumbs").GetByText("/", new() { Exact = true }).ClickAsync();
+        await workspace.Locator(".mud-ex-file-grid:visible").GetByText("notes.txt", new() { Exact = true }).WaitForAsync();
+        await workspace.GetByRole(AriaRole.Textbox, new() { Name = "Remote path", Exact = true }).FillAsync("/late");
+        await workspace.GetByRole(AriaRole.Button, new() { Name = "Go", Exact = true }).ClickAsync();
+        await remote.LateStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        try
+        {
+            await workspace.GetByTestId("explorer-listing-loading").WaitForAsync();
+            await workspace.Locator(".mud-ex-fm").GetByText("beta", new() { Exact = true }).First.ClickAsync();
+            await workspace.Locator(".mud-ex-file-grid:visible").GetByText("beta-notes.txt", new() { Exact = true }).WaitForAsync();
+        }
+        finally { remote.ReleaseLate.TrySetResult(); }
+        await Assertions.Expect(workspace.GetByRole(AriaRole.Textbox, new() { Name = "Remote path", Exact = true })).ToHaveValueAsync("/beta");
+        await workspace.GetByRole(AriaRole.Textbox, new() { Name = "Remote path", Exact = true }).FillAsync("/empty");
+        await workspace.GetByRole(AriaRole.Button, new() { Name = "Go", Exact = true }).ClickAsync();
+        await workspace.Locator(".mud-ex-file-grid-empty").WaitForAsync();
+        await workspace.GetByRole(AriaRole.Textbox, new() { Name = "Remote path", Exact = true }).FillAsync("/denied");
+        await workspace.GetByRole(AriaRole.Button, new() { Name = "Go", Exact = true }).ClickAsync();
+        await workspace.GetByTestId("explorer-listing-unavailable").Filter(new() { HasText = "Synthetic access denied" }).WaitForAsync();
+        await Assertions.Expect(workspace.Locator(".mud-ex-file-grid-empty")).ToHaveCountAsync(0);
+        Assert.Equal(1, remote.Listings.Count(path => path == "/alpha"));
+        Assert.False(await page.Locator("#blazor-error-ui").IsVisibleAsync());
+        Assert.DoesNotContain(fixture.StartupServerDiagnostics, message => message.Contains("Unhandled exception", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task TransportResultsAutomaticallyReconcileCreatedUploadedRenamedAndMovedEntries()
+    {
+        ExplorerFixtureFactory? remote = null;
+        await using var fixture = await StartExplorerAsync(value => remote = value);
+        await using var context = await browser.Browser.NewContextAsync(new() { ViewportSize = new() { Width = 1440, Height = 1000 } });
+        var page = await context.NewPageAsync();
+        var workspace = await OpenExplorerAsync(page, fixture);
+        var grid = workspace.Locator(".mud-ex-file-grid:visible");
+        await workspace.GetByRole(AriaRole.Button, new() { Name = "New", Exact = true }).ClickAsync();
+        await page.GetByText("New folder", new() { Exact = true }).ClickAsync();
+        await workspace.GetByRole(AriaRole.Textbox, new() { Name = "New folder name (create only)", Exact = true }).FillAsync("created-folder");
+        remote!.DelayNextRoot = true;
+        await workspace.GetByRole(AriaRole.Button, new() { Name = "Create", Exact = true }).ClickAsync();
+        await remote.ReconciliationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        try
+        {
+            await workspace.GetByTestId("explorer-listing-loading").WaitForAsync();
+            await Assertions.Expect(grid.GetByText("created-folder", new() { Exact = true })).ToHaveCountAsync(0);
+        }
+        finally { remote.ReleaseReconciliation.TrySetResult(); }
+        await grid.GetByText("created-folder", new() { Exact = true }).WaitForAsync();
+        Assert.True(await workspace.Locator(".mud-ex-fm").GetByText("created-folder", new() { Exact = true }).CountAsync() >= 2, "The tree and Files both contain the authoritative new folder.");
+        await workspace.GetByRole(AriaRole.Button, new() { Name = "New", Exact = true }).ClickAsync();
+        await page.GetByText("New empty file", new() { Exact = true }).ClickAsync();
+        await workspace.GetByRole(AriaRole.Textbox, new() { Name = "New file name (create only)", Exact = true }).FillAsync("created.txt");
+        await workspace.GetByRole(AriaRole.Button, new() { Name = "Create", Exact = true }).ClickAsync();
+        await grid.GetByText("created.txt", new() { Exact = true }).WaitForAsync();
+        var upload = await page.RunAndWaitForResponseAsync(() => workspace.GetByLabel("Upload remote file").SetInputFilesAsync(
+            new FilePayload { Name = "uploaded.txt", MimeType = "text/plain", Buffer = "Synthetic upload"u8.ToArray() }),
+            response => response.Url.Contains("/file-browser/transfers/upload-entry?", StringComparison.Ordinal));
+        Assert.True(upload.Ok, $"Authenticated upload failed: {upload.Status} {await upload.TextAsync()}");
+        await grid.GetByText("uploaded.txt", new() { Exact = true }).WaitForAsync();
+        await grid.GetByText("created-folder", new() { Exact = true }).ClickAsync();
+        await workspace.GetByRole(AriaRole.Button, new() { Name = "Rename", Exact = true }).ClickAsync();
+        await workspace.GetByRole(AriaRole.Textbox, new() { Name = "New remote name", Exact = true }).FillAsync("renamed-folder");
+        await workspace.GetByRole(AriaRole.Button, new() { Name = "Save", Exact = true }).ClickAsync();
+        await grid.GetByText("renamed-folder", new() { Exact = true }).WaitForAsync();
+        await Assertions.Expect(workspace.GetByText("created-folder", new() { Exact = true })).ToHaveCountAsync(0);
+        await grid.GetByText("renamed-folder", new() { Exact = true }).ClickAsync();
+        await workspace.GetByRole(AriaRole.Button, new() { Name = "Move to…", Exact = true }).ClickAsync();
+        await workspace.GetByRole(AriaRole.Textbox, new() { Name = "Destination directory on this client", Exact = true }).FillAsync("/beta");
+        await workspace.GetByRole(AriaRole.Button, new() { Name = "Move selection", Exact = true }).ClickAsync();
+        await Assertions.Expect(grid.GetByText("renamed-folder", new() { Exact = true })).ToHaveCountAsync(0);
+        await workspace.GetByRole(AriaRole.Textbox, new() { Name = "Remote path", Exact = true }).FillAsync("/beta");
+        await workspace.GetByRole(AriaRole.Button, new() { Name = "Go", Exact = true }).ClickAsync();
+        await grid.GetByText("renamed-folder", new() { Exact = true }).WaitForAsync();
+        Assert.True(await workspace.Locator(".mud-ex-fm").GetByText("renamed-folder", new() { Exact = true }).CountAsync() >= 2);
+        Assert.Contains("/beta", remote!.Listings);
+        await SaveEvidenceAsync(page, "explorer-mutation-reconciliation");
+        Assert.DoesNotContain(fixture.StartupServerDiagnostics, message => message.Contains("Unhandled exception", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task RejectedImagesKeepTheCircuitUsableForValidPreviewAndFullscreen()
+    {
+        await using var fixture = await StartExplorerAsync(_ => { });
+        await using var context = await browser.Browser.NewContextAsync(new() { ViewportSize = new() { Width = 1440, Height = 1000 } });
+        var page = await context.NewPageAsync();
+        var errors = new List<string>();
+        page.PageError += (_, error) => errors.Add(error);
+        var workspace = await OpenExplorerAsync(page, fixture);
+        foreach (var name in new[] { "rejected.webp", "oversize.png" })
+        {
+            await workspace.Locator(".mud-ex-file-grid:visible").GetByText(name, new() { Exact = true }).ClickAsync();
+            await workspace.GetByText("Image dimensions/animation exceed", new() { Exact = false }).First.WaitForAsync();
+            await Assertions.Expect(workspace.GetByRole(AriaRole.Button, new() { Name = "Download file", Exact = true })).ToBeEnabledAsync();
+            await workspace.Locator(".mud-ex-file-grid:visible").GetByText("valid.png", new() { Exact = true }).ClickAsync();
+            await workspace.GetByRole(AriaRole.Img, new() { Name = "valid.png", Exact = true }).WaitForAsync();
+        }
+        await workspace.Locator(".mud-ex-file-grid:visible").GetByText("rejected.webp", new() { Exact = true }).DblClickAsync();
+        await page.GetByRole(AriaRole.Button, new() { Name = "Return to Explorer", Exact = true }).WaitForAsync();
+        await page.GetByText("Image dimensions/animation exceed", new() { Exact = false }).Last.WaitForAsync();
+        await page.GetByRole(AriaRole.Button, new() { Name = "Return to Explorer", Exact = true }).ClickAsync();
+        await workspace.Locator(".mud-ex-file-grid:visible").GetByText("notes.txt", new() { Exact = true }).ClickAsync();
+        await workspace.GetByText("Synthetic remote text", new() { Exact = true }).First.WaitForAsync();
+        await SaveEvidenceAsync(page, "explorer-preview-recovery");
+        Assert.False(await page.Locator("#blazor-error-ui").IsVisibleAsync());
+        Assert.Empty(errors);
+        Assert.DoesNotContain(fixture.StartupServerDiagnostics, message => message.Contains("Unhandled exception", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task TilesRemainBoundedAtTheListingLimitAcrossScrollingModesAndResizing()
+    {
+        ExplorerFixtureFactory? remote = null;
+        await using var fixture = await StartExplorerAsync(value => remote = value);
+        await using var context = await browser.Browser.NewContextAsync(new() { ViewportSize = new() { Width = 1440, Height = 1000 } });
+        var page = await context.NewPageAsync();
+        var workspace = await OpenExplorerAsync(page, fixture);
+        await workspace.GetByRole(AriaRole.Textbox, new() { Name = "Remote path", Exact = true }).FillAsync("/large");
+        await workspace.GetByRole(AriaRole.Button, new() { Name = "Go", Exact = true }).ClickAsync();
+        var grid = workspace.Locator(".mud-ex-file-grid:visible");
+        await grid.GetByText("folder-0000", new() { Exact = true }).WaitForAsync();
+        var requests = remote!.Listings.Count;
+        for (var pass = 0; pass < 3; pass++)
+        {
+            await workspace.GetByRole(AriaRole.Button, new() { Name = "Details / tiles", Exact = true }).ClickAsync();
+            await grid.Locator(".mud-ex-file-grid-tiles").WaitForAsync();
+            await AssertStableTilesAsync(grid);
+            await Assertions.Expect(grid.Locator(".mud-ex-file-grid-item")).ToHaveCountAsync(4096);
+            var last = grid.GetByText("entry-4095-" + new string('x', 90) + ".txt", new() { Exact = true });
+            await last.ScrollIntoViewIfNeededAsync();
+            await SaveEvidenceAsync(page, $"explorer-tiles-pass-{pass}");
+            await last.ClickAsync();
+            await Assertions.Expect(last.Locator("xpath=ancestor::*[contains(@class,'mud-ex-file-grid-item')][1]")).ToHaveClassAsync(new System.Text.RegularExpressions.Regex("mud-ex-file-grid-selected"));
+            if (pass == 0)
+            {
+                await SaveEvidenceAsync(page, "explorer-tiles-limit");
+                var before = (await grid.BoundingBoxAsync())!;
+                ILocator? divider = null;
+                foreach (var sash in await workspace.Locator(".dv-sash:visible").AllAsync())
+                {
+                    var box = await sash.BoundingBoxAsync();
+                    if (box is { Height: > 100 } && Math.Abs(box.X - before.X - before.Width) < 12) { divider = sash; break; }
+                }
+                Assert.NotNull(divider);
+                var handle = (await divider.BoundingBoxAsync())!;
+                await page.Mouse.MoveAsync(handle.X + handle.Width / 2, handle.Y + handle.Height / 2);
+                await page.Mouse.DownAsync();
+                await page.Mouse.MoveAsync(handle.X - 80, handle.Y + handle.Height / 2, new() { Steps = 8 });
+                await page.Mouse.UpAsync();
+                Assert.True(Math.Abs((await grid.BoundingBoxAsync())!.Width - before.Width) > 10, "Dragging the actual dock divider resized Files.");
+                await AssertStableTilesAsync(grid);
+            }
+            var resizeStarted = System.Diagnostics.Stopwatch.StartNew();
+            await page.SetViewportSizeAsync(pass == 0 ? 390 : 1280, pass == 0 ? 844 : 900);
+            await Assertions.Expect(workspace).ToHaveAttributeAsync("data-narrow", pass == 0 ? "true" : "false");
+            await SaveEvidenceAsync(page, $"explorer-tiles-resize-transition-{pass}");
+            // The pinned manager replaces its dock grid with a compact grid at
+            // this breakpoint. Wait for that actual component transition before
+            // measuring idle geometry; a detached old element has height zero.
+            if (pass == 0) await Assertions.Expect(workspace.Locator(".dv-dockview:visible")).ToHaveCountAsync(0);
+            else
+            {
+                try { await Assertions.Expect(workspace.Locator(".dv-dockview:visible")).ToBeVisibleAsync(new() { Timeout = 15_000 }); }
+                catch
+                {
+                    Console.WriteLine("Dock transition: " + await workspace.EvaluateAsync<string>("element => JSON.stringify({width:innerWidth,docks:document.querySelectorAll('.dv-dockview').length,grids:[...element.querySelectorAll('.mud-ex-file-grid')].map(grid=>({width:grid.clientWidth,height:grid.clientHeight,connected:grid.isConnected,parent:grid.parentElement.outerHTML.slice(0,400)}))})"));
+                    await SaveEvidenceAsync(page, "explorer-dock-transition-failure");
+                    throw;
+                }
+            }
+            Console.WriteLine($"Tiles responsive transition {pass}: {resizeStarted.Elapsed.TotalMilliseconds:F0} ms");
+            await SaveEvidenceAsync(page, $"explorer-tiles-resized-{pass}");
+            await AssertStableTilesAsync(grid);
+            await workspace.GetByRole(AriaRole.Button, new() { Name = "Details / tiles", Exact = true }).ClickAsync();
+            await grid.Locator(".mud-ex-file-grid-rows").WaitForAsync();
+            Assert.True(await grid.Locator(".mud-ex-file-grid-item").CountAsync() < 4096, "Details retains virtualization.");
+            await grid.Locator(".mud-ex-file-grid-head > div").First.ClickAsync();
+        }
+        Assert.Equal(requests, remote.Listings.Count);
+        Assert.False(await page.Locator("#blazor-error-ui").IsVisibleAsync());
+    }
+
+    private static async Task AssertStableTilesAsync(ILocator grid)
+    {
+        await Assertions.Expect(grid).ToBeVisibleAsync();
+        var geometry = await grid.EvaluateAsync<string>("""
+        async grid => {
+          const scroll = grid.querySelector('.mud-ex-file-grid-scroll');
+          const heights = [];
+          for (let i = 0; i < 30; i++) {
+            await new Promise(requestAnimationFrame);
+            heights.push(scroll.scrollHeight);
+          }
+          if (Math.max(...heights) > 1000000 || Math.max(...heights) - Math.min(...heights) > 2)
+            throw new Error('Unstable tile geometry: ' + JSON.stringify(heights));
+          return JSON.stringify({entries:grid.querySelectorAll('.mud-ex-file-grid-item').length,
+            width:scroll.clientWidth,height:scroll.clientHeight,scrollHeight:scroll.scrollHeight,
+            idleFrames:heights.length,min:Math.min(...heights),max:Math.max(...heights)});
+        }
+        """);
+        Console.WriteLine("Tiles geometry: " + geometry);
+    }
+
+    [Fact]
+    public async Task PdfControlsExposeLoadingPageZoomFailureAndIndependentFullscreenState()
+    {
+        ExplorerFixtureFactory? remote = null;
+        await using var fixture = await StartExplorerAsync(value => remote = value);
+        await using var context = await browser.Browser.NewContextAsync(new() { ViewportSize = new() { Width = 1440, Height = 1000 } });
+        var page = await context.NewPageAsync();
+        var workspace = await OpenExplorerAsync(page, fixture);
+        remote!.DelayPdfContent = true;
+        await workspace.Locator(".mud-ex-file-grid:visible").GetByText("document.pdf", new() { Exact = true }).ClickAsync();
+        await remote.PdfStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        var controls = workspace.GetByRole(AriaRole.Group, new() { Name = "PDF controls", Exact = true });
+        try
+        {
+            await Assertions.Expect(controls).ToHaveAttributeAsync("aria-busy", "true");
+            foreach (var button in await controls.GetByRole(AriaRole.Button).AllAsync()) await Assertions.Expect(button).ToBeDisabledAsync();
+        }
+        finally { remote.ReleasePdf.TrySetResult(); }
+        await controls.GetByRole(AriaRole.Status).Filter(new() { HasText = "Page 1 / 1 · 100%" }).WaitForAsync();
+        await Assertions.Expect(controls.GetByRole(AriaRole.Button, new() { Name = "Previous page", Exact = true })).ToBeDisabledAsync();
+        await Assertions.Expect(controls.GetByRole(AriaRole.Button, new() { Name = "Next page", Exact = true })).ToBeDisabledAsync();
+        for (var percent = 125; percent <= 300; percent += 25)
+        {
+            await controls.GetByRole(AriaRole.Button, new() { Name = "Zoom in", Exact = true }).ClickAsync();
+            await Assertions.Expect(controls.GetByRole(AriaRole.Status)).ToHaveTextAsync($"Page 1 / 1 · {percent}%");
+        }
+        await Assertions.Expect(controls.GetByRole(AriaRole.Button, new() { Name = "Zoom in", Exact = true })).ToBeDisabledAsync();
+        for (var percent = 275; percent >= 25; percent -= 25)
+        {
+            await controls.GetByRole(AriaRole.Button, new() { Name = "Zoom out", Exact = true }).ClickAsync();
+            await Assertions.Expect(controls.GetByRole(AriaRole.Status)).ToHaveTextAsync($"Page 1 / 1 · {percent}%");
+        }
+        await Assertions.Expect(controls.GetByRole(AriaRole.Button, new() { Name = "Zoom out", Exact = true })).ToBeDisabledAsync();
+        await workspace.Locator(".mud-ex-file-grid:visible").GetByText("multi.pdf", new() { Exact = true }).ClickAsync();
+        await Assertions.Expect(controls.GetByRole(AriaRole.Status)).ToHaveTextAsync("Page 1 / 3 · 100%");
+        await controls.GetByRole(AriaRole.Button, new() { Name = "Next page", Exact = true }).FocusAsync();
+        await page.Keyboard.PressAsync("Enter");
+        await Assertions.Expect(controls.GetByRole(AriaRole.Status)).ToHaveTextAsync("Page 2 / 3 · 100%");
+        await workspace.GetByRole(AriaRole.Button, new() { Name = "Open fullscreen", Exact = true }).ClickAsync();
+        var fullscreen = page.Locator(".mud-dialog").Filter(new() { Has = page.GetByRole(AriaRole.Button, new() { Name = "Return to Explorer", Exact = true }) });
+        var fullscreenControls = fullscreen.GetByRole(AriaRole.Group, new() { Name = "PDF controls", Exact = true });
+        await Assertions.Expect(fullscreenControls.GetByRole(AriaRole.Status)).ToHaveTextAsync("Page 1 / 3 · 100%");
+        await fullscreenControls.GetByRole(AriaRole.Button, new() { Name = "Next page", Exact = true }).ClickAsync();
+        await Assertions.Expect(fullscreenControls.GetByRole(AriaRole.Status)).ToHaveTextAsync("Page 2 / 3 · 100%");
+        await fullscreenControls.GetByRole(AriaRole.Button, new() { Name = "Next page", Exact = true }).ClickAsync();
+        await Assertions.Expect(fullscreenControls.GetByRole(AriaRole.Status)).ToHaveTextAsync("Page 3 / 3 · 100%");
+        await Assertions.Expect(fullscreenControls.GetByRole(AriaRole.Button, new() { Name = "Next page", Exact = true })).ToBeDisabledAsync();
+        await SaveEvidenceAsync(page, "explorer-pdf-fullscreen");
+        await fullscreen.GetByRole(AriaRole.Button, new() { Name = "Return to Explorer", Exact = true }).ClickAsync();
+        await Assertions.Expect(controls.GetByRole(AriaRole.Status)).ToHaveTextAsync("Page 2 / 3 · 100%");
+        await page.SetViewportSizeAsync(390, 844);
+        await workspace.GetByRole(AriaRole.Tab, new() { Name = "Preview", Exact = true }).ClickAsync();
+        await Assertions.Expect(controls.GetByRole(AriaRole.Status)).ToHaveTextAsync("Page 1 / 3 · 100%");
+        Assert.True(await controls.EvaluateAsync<bool>("element => element.scrollWidth <= element.clientWidth + 2"));
+        await SaveEvidenceAsync(page, "explorer-pdf-narrow");
+        await workspace.Locator(".mud-ex-file-grid:visible").GetByText("broken.pdf", new() { Exact = true }).ClickAsync();
+        await controls.GetByRole(AriaRole.Status).Filter(new() { HasText = "PDF preview unavailable" }).WaitForAsync();
+        foreach (var button in await controls.GetByRole(AriaRole.Button).AllAsync()) await Assertions.Expect(button).ToBeDisabledAsync();
+        await workspace.Locator(".mud-ex-file-grid:visible").GetByText("small.pdf", new() { Exact = true }).ClickAsync();
+        await Assertions.Expect(controls.GetByRole(AriaRole.Status)).ToHaveTextAsync("Page 1 / 1 · 100%");
+        Assert.False(await page.Locator("#blazor-error-ui").IsVisibleAsync());
+        Assert.DoesNotContain(fixture.StartupServerDiagnostics, message => message.Contains("Unhandled exception", StringComparison.Ordinal));
+    }
+
+    private static async Task SaveEvidenceAsync(IPage page, string name)
+    {
+        var evidence = Path.Combine(AppContext.BaseDirectory, "TestResults", "playwright");
+        Directory.CreateDirectory(evidence);
+        await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, name + ".png"), FullPage = true });
+    }
+
+    private static async Task<ILocator> OpenExplorerAsync(IPage page, ClientsManagementFixtureHost fixture)
+    {
+        page.Response += (_, response) => { if (response.Status >= 400) Console.WriteLine($"Explorer HTTP {response.Status}: {response.Url}"); };
+        await page.GotoAsync(fixture.BaseAddress + "/clients");
+        await page.GetByTestId("clients-page-interactive").WaitForAsync(new() { State = WaitForSelectorState.Attached });
+        await page.GetByRole(AriaRole.Button, new() { Name = "Open file browser", Exact = true }).First.ClickAsync();
+        await page.GetByText("Full Explorer", new() { Exact = true }).ClickAsync();
+        var workspace = page.GetByTestId("full-explorer");
+        await workspace.Locator(".mud-ex-file-grid:visible").GetByText("notes.txt", new() { Exact = true }).WaitForAsync();
+        return workspace;
+    }
+
+    private static Task<ClientsManagementFixtureHost> StartExplorerAsync(Action<ExplorerFixtureFactory> capture) => ClientsManagementFixtureHost.StartAsync(services =>
+    {
+        services.AddControllersWithViews(); // Exercise the real antiforgery filter on streaming uploads.
+        MudBlazor.Extensions.ServiceCollectionExtensions.AddMudExtensions(services, configuration => configuration.WithoutAutomaticCssLoading(), typeof(RemoteDataRenderer).Assembly);
+        services.AddSingleton<IHttpClientFactory>(provider => { var remote = new ExplorerFixtureFactory(provider.GetRequiredService<ClientDirectoryFixtureData>()); capture(remote); return remote; });
+        services.AddScoped<NetRatel.Web.Services.IUploadsApiClient>(provider => new FixtureUploadsClient(provider.GetRequiredService<IHttpClientFactory>().CreateClient("OrchestratorApiStreaming")));
+        services.AddScoped<GatewayFileSystemApiService>();
+        services.AddScoped<FileSystemApiService>();
+        services.AddScoped<ExplorerPreferenceService>();
+        services.AddScoped<FileBrowserContentService>();
+        services.AddScoped<FileBrowserCircuitLifetime>();
+        services.AddScoped<Microsoft.AspNetCore.Components.Server.Circuits.CircuitHandler>(provider => provider.GetRequiredService<FileBrowserCircuitLifetime>());
+        services.AddSingleton(TimeProvider.System);
+        services.AddSingleton<FileBrowserContentRegistry>();
+        services.AddSingleton<IFileBrowserDownloadTransferRegistry, FileBrowserDownloadTransferRegistry>();
+        services.AddOptions<FileBrowserOptions>();
+    });
+
     [Theory]
     [InlineData(1440, 1000)]
     [InlineData(390, 844)]
@@ -24,21 +352,7 @@ public sealed class FullExplorerAcceptanceTests(ClientsManagementBrowserFixture 
         ExplorerFixtureFactory? remote = null;
         // This is UI/Blazor lifecycle evidence. Native filesystem/range behavior
         // is separately exercised by the existing admitted-gateway test server.
-        await using var fixture = await ClientsManagementFixtureHost.StartAsync(services =>
-        {
-            MudBlazor.Extensions.ServiceCollectionExtensions.AddMudExtensions(services, configuration => configuration.WithoutAutomaticCssLoading(), typeof(RemoteDataRenderer).Assembly);
-            services.AddSingleton<IHttpClientFactory>(provider => remote = new ExplorerFixtureFactory(provider.GetRequiredService<ClientDirectoryFixtureData>()));
-            services.AddScoped<NetRatel.Web.Services.IUploadsApiClient>(provider => new FixtureUploadsClient(provider.GetRequiredService<IHttpClientFactory>().CreateClient("OrchestratorApiStreaming")));
-            services.AddScoped<GatewayFileSystemApiService>();
-            services.AddScoped<FileSystemApiService>();
-            services.AddScoped<ExplorerPreferenceService>();
-            services.AddScoped<FileBrowserContentService>();
-            services.AddScoped<FileBrowserCircuitLifetime>();
-            services.AddScoped<Microsoft.AspNetCore.Components.Server.Circuits.CircuitHandler>(provider => provider.GetRequiredService<FileBrowserCircuitLifetime>());
-            services.AddSingleton(TimeProvider.System);
-            services.AddSingleton<FileBrowserContentRegistry>();
-            services.AddOptions<FileBrowserOptions>();
-        });
+        await using var fixture = await StartExplorerAsync(value => remote = value);
         await using var context = await browser.Browser.NewContextAsync(new() { ViewportSize = new() { Width = width, Height = height } });
         await context.RouteAsync("https://**/*", route => route.AbortAsync());
         var page = await context.NewPageAsync();
@@ -49,7 +363,17 @@ public sealed class FullExplorerAcceptanceTests(ClientsManagementBrowserFixture 
         context.Request += (_, request) => { if (request.Url.StartsWith("http", StringComparison.Ordinal) && !request.Url.StartsWith(fixture.BaseAddress + "/", StringComparison.Ordinal)) externalContent.Add(request.Url); };
         await page.GotoAsync(fixture.BaseAddress + "/clients");
         await page.GetByTestId("clients-page-interactive").WaitForAsync(new() { State = WaitForSelectorState.Attached });
-        await page.GetByRole(AriaRole.Button, new() { Name = "Choose file explorer", Exact = true }).First.ClickAsync();
+        if (width > 1000)
+        {
+            var folder = page.GetByRole(AriaRole.Button, new() { Name = "Open file browser", Exact = true }).First;
+            await folder.FocusAsync();
+            await page.Keyboard.PressAsync("Enter");
+            await Assertions.Expect(folder).ToHaveAttributeAsync("aria-expanded", "true");
+            await page.Keyboard.PressAsync("Escape");
+            await Assertions.Expect(folder).ToHaveAttributeAsync("aria-expanded", "false");
+            await Assertions.Expect(folder).ToBeFocusedAsync();
+        }
+        await page.GetByRole(AriaRole.Button, new() { Name = "Open file browser", Exact = true }).First.ClickAsync();
         await page.GetByText("Full Explorer", new() { Exact = true }).ClickAsync();
         var workspace = page.GetByTestId("full-explorer");
         try { await workspace.GetByText("notes.txt", new() { Exact = true }).WaitForAsync(new() { Timeout = 60_000 }); }
@@ -69,6 +393,8 @@ public sealed class FullExplorerAcceptanceTests(ClientsManagementBrowserFixture 
             await page.ReloadAsync();
             await page.GetByTestId("clients-page-interactive").WaitForAsync(new() { State = WaitForSelectorState.Attached });
             await page.GetByRole(AriaRole.Button, new() { Name = "Open file browser", Exact = true }).First.ClickAsync();
+            await Assertions.Expect(workspace).ToHaveCountAsync(0);
+            await page.GetByText("Full Explorer", new() { Exact = true }).ClickAsync();
             await workspace.GetByText("notes.txt", new() { Exact = true }).WaitForAsync();
         }
         var pathInput = workspace.GetByRole(AriaRole.Textbox, new() { Name = "Remote path", Exact = true });
@@ -170,25 +496,43 @@ public sealed class FullExplorerAcceptanceTests(ClientsManagementBrowserFixture 
         return stream.ToArray();
     }
 
-    private static byte[] Pdf(bool large = false)
+    private static byte[] Pdf(bool large = false, int pages = 1)
     {
         const string text = "BT /F1 24 Tf 40 100 Td (Synthetic PDF) Tj ET";
-        string[] objects = ["<< /Type /Catalog /Pages 2 0 R >>", "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
-            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>", $"<< /Length {text.Length} >>\nstream\n{text}\nendstream"];
+        List<string> objects = ["<< /Type /Catalog /Pages 2 0 R >>",
+            $"<< /Type /Pages /Kids [{string.Join(' ', Enumerable.Range(0, pages).Select(i => $"{4 + 2 * i} 0 R"))}] /Count {pages} >>",
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"];
+        for (var i = 0; i < pages; i++)
+        {
+            objects.Add($"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Resources << /Font << /F1 3 0 R >> >> /Contents {5 + 2 * i} 0 R >>");
+            objects.Add($"<< /Length {text.Length} >>\nstream\n{text}\nendstream");
+        }
         var pdf = new StringBuilder("%PDF-1.4\n");
         var offsets = new List<int>();
-        for (var i = 0; i < objects.Length; i++) { offsets.Add(pdf.Length); pdf.Append($"{i + 1} 0 obj\n{objects[i]}\nendobj\n"); }
+        for (var i = 0; i < objects.Count; i++) { offsets.Add(pdf.Length); pdf.Append($"{i + 1} 0 obj\n{objects[i]}\nendobj\n"); }
         if (large) pdf.Append('%').Append(' ', 2 * 1024 * 1024).Append('\n');
         var xref = pdf.Length;
-        pdf.Append($"xref\n0 {objects.Length + 1}\n0000000000 65535 f \n");
+        pdf.Append($"xref\n0 {objects.Count + 1}\n0000000000 65535 f \n");
         foreach (var offset in offsets) pdf.Append($"{offset:D10} 00000 n \n");
-        pdf.Append($"trailer << /Size {objects.Length + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n");
+        pdf.Append($"trailer << /Size {objects.Count + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n");
         return Encoding.ASCII.GetBytes(pdf.ToString());
     }
 
     private sealed class ExplorerFixtureFactory(ClientDirectoryFixtureData directory) : IHttpClientFactory
     {
+        public ConcurrentQueue<string> Listings { get; } = new();
+        public bool DelayAlpha { get; set; }
+        public TaskCompletionSource AlphaStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource ReleaseAlpha { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public bool DelayPdfContent { get; set; }
+        public TaskCompletionSource PdfStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource ReleasePdf { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource LateStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource ReleaseLate { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public ConcurrentDictionary<string, GatewayFileSystemEntryDto> Created { get; } = new(StringComparer.Ordinal);
+        public bool DelayNextRoot { get; set; }
+        public TaskCompletionSource ReconciliationStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource ReleaseReconciliation { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public ConcurrentQueue<long> RangeOffsets { get; } = new();
         public TaskCompletionSource SlowStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource ReleaseSlow { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -198,10 +542,14 @@ public sealed class FullExplorerAcceptanceTests(ClientsManagementBrowserFixture 
             private static readonly DateTimeOffset Modified = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
             private static readonly Dictionary<string, byte[]> Corpus = new()
             {
+                ["/valid.png"] = Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j40kAAAAASUVORK5CYII="),
+                ["/rejected.webp"] = "RIFF\0\0\0\0WEBPVP8 unsupported"u8.ToArray(),
+                ["/oversize.png"] = OversizePng(),
                 ["/notes.txt"] = Encoding.UTF8.GetBytes("Synthetic remote text"),
                 ["/active.html"] = Encoding.UTF8.GetBytes(ActiveMarkup),
                 ["/slow.txt"] = Encoding.UTF8.GetBytes("Stale selection must never appear"),
-                ["/document.docx"] = Docx(), ["/document.pdf"] = Pdf(true), ["/small.pdf"] = Pdf()
+                ["/document.docx"] = Docx(), ["/document.pdf"] = Pdf(true), ["/small.pdf"] = Pdf(),
+                ["/multi.pdf"] = Pdf(pages: 3), ["/broken.pdf"] = "%PDF-invalid"u8.ToArray()
             };
             protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
             {
@@ -214,6 +562,13 @@ public sealed class FullExplorerAcceptanceTests(ClientsManagementBrowserFixture 
                 var path = query.TryGetValue("path", out var selectedPath) ? selectedPath.ToString() : "";
                 var content = Corpus.GetValueOrDefault(path) ?? [];
                 object body;
+                if (uri.AbsolutePath.EndsWith("/directory", StringComparison.Ordinal) && request.Method == HttpMethod.Post)
+                    return CreateDirectoryAsync();
+                if (uri.AbsolutePath.EndsWith("/entries", StringComparison.Ordinal) && request.Method == HttpMethod.Post)
+                    return MutateAsync();
+                if (uri.AbsolutePath.EndsWith("/content", StringComparison.Ordinal) && request.Method == HttpMethod.Put)
+                    return UploadAsync();
+                if (path == "/denied") return Task.FromResult(new HttpResponseMessage(HttpStatusCode.Forbidden) { Content = JsonContent.Create(new { detail = "Synthetic access denied" }) });
                 if (uri.AbsolutePath.EndsWith("/roots", StringComparison.Ordinal))
                     body = new GatewayFileSystemListResponse(tenant, agent, "", "akka", [new("/", "/", true, 0)]);
                 else if (uri.AbsolutePath.EndsWith("/stat", StringComparison.Ordinal))
@@ -232,7 +587,13 @@ public sealed class FullExplorerAcceptanceTests(ClientsManagementBrowserFixture 
                         response.Content.Headers.ContentRange = new(start, end, content.Length);
                         response.Headers.AcceptRanges.Add("bytes");
                     }
+                    if (owner.DelayPdfContent)
+                    {
+                        owner.PdfStarted.TrySetResult();
+                        return DelayedPdfAsync();
+                    }
                     return Task.FromResult(response);
+                    async Task<HttpResponseMessage> DelayedPdfAsync() { await owner.ReleasePdf.Task; return response; }
                 }
                 else if (uri.AbsolutePath.EndsWith("/file", StringComparison.Ordinal))
                 {
@@ -240,12 +601,49 @@ public sealed class FullExplorerAcceptanceTests(ClientsManagementBrowserFixture 
                     return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(content) });
                 }
                 else
-                    body = new GatewayFileSystemListResponse(tenant, agent, path, "akka",
-                        Corpus.Select(item => new GatewayFileSystemEntryDto(item.Key[1..], item.Key, false, item.Value.Length) { LastModifiedUtc = Modified }).ToArray())
+                {
+                    owner.Listings.Enqueue(path);
+                    GatewayFileSystemEntryDto[] entries = path switch
+                    {
+                        "/alpha" => [new("alpha-notes.txt", "/alpha/alpha-notes.txt", false, 0)],
+                        "/beta" => [new("beta-notes.txt", "/beta/beta-notes.txt", false, 0)],
+                        "/large" => Enumerable.Range(0, 4096).Select(i => i < 256
+                            ? new GatewayFileSystemEntryDto($"folder-{i:D4}", $"/large/folder-{i:D4}", true, 0)
+                            : new GatewayFileSystemEntryDto($"entry-{i:D4}-{(i % 2 == 0 ? "short" : new string('x', 90))}.txt", $"/large/entry-{i:D4}.txt", false, i)).ToArray(),
+                        "/" => Corpus.Select(item => new GatewayFileSystemEntryDto(item.Key[1..], item.Key, false, item.Value.Length) { LastModifiedUtc = Modified })
+                            .Concat(new[] { "alpha", "beta", "large", "late", "empty", "denied" }.Select(name => new GatewayFileSystemEntryDto(name, "/" + name, true, 0))).ToArray(),
+                        _ => []
+                    };
+                    entries = entries.Concat(owner.Created.Values.Where(entry => RemoteFilePath.TryGetDirectoryParent(entry.FullPath, out var parent) && parent == path)).ToArray();
+                    body = new GatewayFileSystemListResponse(tenant, agent, path, "akka", entries)
                     {
                         CanCreateDirectory = true, CanDeleteDirectory = true, CanWriteFiles = true,
                         Capabilities = new() { Stat = true, CreateFile = true, MoveEntry = true, DeleteFile = true, DeleteRecursive = true, ConditionalUpload = true }
                     };
+                    if (path == "/alpha" && owner.DelayAlpha)
+                    {
+                        owner.AlphaStarted.TrySetResult();
+                        return DelayedListingAsync();
+                    }
+                    if (path == "/" && owner.DelayNextRoot)
+                    {
+                        owner.DelayNextRoot = false;
+                        owner.ReconciliationStarted.TrySetResult();
+                        return ReconcileAsync();
+                    }
+                    async Task<HttpResponseMessage> ReconcileAsync() { await owner.ReleaseReconciliation.Task; return new(HttpStatusCode.OK) { Content = JsonContent.Create(body) }; }
+                    if (path == "/late")
+                    {
+                        owner.LateStarted.TrySetResult();
+                        return LateListingAsync();
+                    }
+                    async Task<HttpResponseMessage> LateListingAsync() { await owner.ReleaseLate.Task; return new(HttpStatusCode.OK) { Content = JsonContent.Create(body) }; }
+                    async Task<HttpResponseMessage> DelayedListingAsync()
+                    {
+                        await owner.ReleaseAlpha.Task;
+                        return new(HttpStatusCode.OK) { Content = JsonContent.Create(body) };
+                    }
+                }
                 return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = JsonContent.Create(body) });
                 async Task<HttpResponseMessage> LateResponseAsync()
                 {
@@ -254,6 +652,41 @@ public sealed class FullExplorerAcceptanceTests(ClientsManagementBrowserFixture 
                     await owner.ReleaseSlow.Task;
                     return new(HttpStatusCode.OK) { Content = new ByteArrayContent(content) };
                 }
+                async Task<HttpResponseMessage> CreateDirectoryAsync()
+                {
+                    var input = (await request.Content!.ReadFromJsonAsync<GatewayFileSystemCreateDirectoryRequest>(cancellationToken))!;
+                    var target = RemoteFilePath.Join(input.ParentPath, input.Name);
+                    owner.Created[target] = new(input.Name, target, true, 0);
+                    return new(HttpStatusCode.OK) { Content = JsonContent.Create(new GatewayFileSystemWriteResponse(tenant, agent, target, "fixture")) };
+                }
+                async Task<HttpResponseMessage> MutateAsync()
+                {
+                    var input = (await request.Content!.ReadFromJsonAsync<GatewayFileSystemMutationRequest>(cancellationToken))!;
+                    foreach (var item in input.Items)
+                    {
+                        if (input.Operation == "create_file") owner.Created[item.Path] = new(Path.GetFileName(item.Path), item.Path, false, 0);
+                        else if (input.Operation == "move" && owner.Created.TryRemove(item.Path, out var entry))
+                            owner.Created[item.DestinationPath!] = entry with { FullPath = item.DestinationPath!, Name = Path.GetFileName(item.DestinationPath!) };
+                        else throw new InvalidOperationException("Unsupported fixture mutation.");
+                    }
+                    return new(HttpStatusCode.OK) { Content = JsonContent.Create(new GatewayFileSystemMutationResponse(input.Items.Select(item => new GatewayFileSystemMutationResult(item.Path, item.DestinationPath, "completed", AffectedEntries: 1)).ToArray())) };
+                }
+                async Task<HttpResponseMessage> UploadAsync()
+                {
+                    var bytes = await request.Content!.ReadAsByteArrayAsync(cancellationToken);
+                    owner.Created[path] = new(Path.GetFileName(path), path, false, bytes.Length);
+                    return new(HttpStatusCode.OK);
+                }
+            }
+
+            private static byte[] OversizePng()
+            {
+                var bytes = new byte[24];
+                new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 }.CopyTo(bytes, 0);
+                "IHDR"u8.CopyTo(bytes.AsSpan(12));
+                System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(16), 10000);
+                System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(20), 10000);
+                return bytes;
             }
         }
     }

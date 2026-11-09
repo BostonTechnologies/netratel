@@ -8,7 +8,7 @@
 
 @if (_error is not null)
 {
-    <MudAlert Severity="Severity.Warning">@_error</MudAlert>
+    <MudAlert Severity="Severity.Warning">Preview unavailable: @_error Use Download file if permitted.</MudAlert>
 }
 else if (_preview is null)
 {
@@ -40,7 +40,8 @@ else if (_document is not null)
 
     protected override async Task OnParametersSetAsync()
     {
-        var identity = $"{TenantId}/{AgentId:D}/{File.FullPath}/{File.SizeBytes}/{File.LastModifiedUtc}";
+        var file = File;
+        var identity = $"{TenantId}/{AgentId:D}/{file.FullPath}/{file.SizeBytes}/{file.LastModifiedUtc}";
         if (_identity == identity) return;
         _identity = identity;
         var generation = ++_generation;
@@ -55,12 +56,13 @@ else if (_document is not null)
         FileBrowserPreview? acquired = null;
         try
         {
-            acquired = await Content.AcquireAsync(TenantId, AgentId, File.FullPath, token);
+            acquired = await Content.AcquireAsync(TenantId, AgentId, file.FullPath, token);
+            if (token.IsCancellationRequested || generation != _generation || _disposed) return;
             var document = acquired.Url is not null
                 ? new RemotePreviewDocument(acquired.ContentType == "application/pdf" ? "pdf" : acquired.ContentType.StartsWith("video/") ? "video" : "audio", "Native seekable preview · browser codec support applies")
-                : RemotePreviewPolicy.Inspect(File.Name, acquired.Stream!, token);
-            if (token.IsCancellationRequested || generation != _generation || _disposed) { await acquired.DisposeAsync(); return; }
-            if (document.Kind == "image" && FileBrowserContentClassifier.TryGetPreviewImageContentType(File.Name, out var imageType))
+                : RemotePreviewPolicy.Inspect(file.Name, acquired.Stream!, token);
+            if (token.IsCancellationRequested || generation != _generation || _disposed) return;
+            if (document.Kind == "image" && FileBrowserContentClassifier.TryGetPreviewImageContentType(file.Name, out var imageType))
             {
                 // The HTTP acquisition is generic octet-stream; the governed
                 // renderer chooses an allowlisted raster MIME after header checks.
@@ -68,19 +70,21 @@ else if (_document is not null)
                 acquired = new FileBrowserPreview(bytes, null, acquired.File, imageType);
             }
             _preview = acquired;
+            acquired = null; // Ownership transfers to this consumer only after validation.
             _document = document;
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested)
-        { if (acquired is not null) await acquired.DisposeAsync(); }
-        catch (Exception exception) when (exception is HttpRequestException or InvalidOperationException or IOException or System.Text.DecoderFallbackException or System.Xml.XmlException or System.Text.Json.JsonException or Microsoft.VisualBasic.FileIO.MalformedLineException or ExcelDataReader.Exceptions.ExcelReaderException)
+        { return; } // The acquisition is still released by finally.
+        catch (Exception exception) when (exception is HttpRequestException or InvalidOperationException or InvalidDataException or IOException or System.Text.DecoderFallbackException or System.Xml.XmlException or System.Text.Json.JsonException or Microsoft.VisualBasic.FileIO.MalformedLineException or ExcelDataReader.Exceptions.ExcelReaderException)
         {
-            if (acquired is not null) await acquired.DisposeAsync();
             if (generation == _generation && !_disposed) _error = exception.Message;
         }
+        finally { if (acquired is not null) await acquired.DisposeAsync(); }
     }
 
     public async ValueTask DisposeAsync()
     {
+        if (_disposed) return;
         _disposed = true;
         _generation++;
         _selection?.Cancel();

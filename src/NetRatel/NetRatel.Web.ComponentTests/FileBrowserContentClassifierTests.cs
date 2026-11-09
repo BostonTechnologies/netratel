@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text;
 using Bunit;
+using Bunit.TestDoubles;
 using AwesomeAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using MudBlazor.Services;
@@ -14,6 +15,48 @@ namespace NetRatel.Web.ComponentTests;
 
 public sealed class FileBrowserContentClassifierTests : AsyncBunitContext
 {
+    [Theory]
+    [InlineData("rejected.webp")]
+    [InlineData("malformed.zip")]
+    [InlineData("truncated.pdf")]
+    public async Task GovernedComponentContainsAcquisitionPolicyRejectionAndKeepsIndependentConsumers(string rejectedName)
+    {
+        ComponentFactories.AddStub<MudBlazor.Extensions.Components.MudExFileDisplay>();
+        var modified = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var factory = new PreviewFactory(request =>
+        {
+            var path = System.Web.HttpUtility.ParseQueryString(request.RequestUri!.Query)["path"]!;
+            var bytes = path == "/notes.txt" ? "valid synthetic text"u8.ToArray() : "invalid"u8.ToArray();
+            return request.RequestUri.AbsolutePath.EndsWith("/stat", StringComparison.Ordinal)
+                ? new(HttpStatusCode.OK) { Content = JsonContent.Create(new GatewayFileSystemStatResponse(3, AgentId, path, false, bytes.Length, modified, modified, "v1:fixture", false)) }
+                : new(HttpStatusCode.OK) { Content = new ByteArrayContent(bytes) };
+        });
+        Services.AddSingleton<IHttpClientFactory>(factory);
+        Services.AddSingleton(TimeProvider.System);
+        Services.AddSingleton<FileBrowserContentRegistry>();
+        Services.AddSingleton<Microsoft.AspNetCore.Components.Authorization.AuthenticationStateProvider, PreviewAuthentication>();
+        Services.AddScoped<FileBrowserContentService>();
+        var file = new GatewayFileSystemEntryDto(rejectedName, "/" + rejectedName, false, 7);
+        var inline = Render<GovernedFilePreview>(parameters => parameters.Add(component => component.TenantId, 3)
+            .Add(component => component.AgentId, AgentId).Add(component => component.File, file));
+        inline.WaitForAssertion(() => inline.Markup.Should().Contain("Preview unavailable:").And.Contain("Download file"));
+        var valid = new GatewayFileSystemEntryDto("notes.txt", "/notes.txt", false, 20);
+        inline.Render(parameters => parameters.Add(component => component.File, valid));
+        inline.WaitForAssertion(() => inline.FindComponents<Stub<MudBlazor.Extensions.Components.MudExFileDisplay>>().Should().ContainSingle());
+        var inlineStream = inline.FindComponent<Stub<MudBlazor.Extensions.Components.MudExFileDisplay>>().Instance.Parameters.Get(component => component.ContentStream)!;
+        var fullscreen = Render<GovernedFilePreview>(parameters => parameters.Add(component => component.TenantId, 3)
+            .Add(component => component.AgentId, AgentId).Add(component => component.File, valid));
+        fullscreen.WaitForAssertion(() => fullscreen.FindComponents<Stub<MudBlazor.Extensions.Components.MudExFileDisplay>>().Should().ContainSingle());
+        var fullscreenStream = fullscreen.FindComponent<Stub<MudBlazor.Extensions.Components.MudExFileDisplay>>().Instance.Parameters.Get(component => component.ContentStream)!;
+        inlineStream.Should().NotBeSameAs(fullscreenStream);
+        await inline.InvokeAsync(async () => await inline.Instance.DisposeAsync());
+        inlineStream.CanRead.Should().BeFalse();
+        fullscreenStream.CanRead.Should().BeTrue();
+        fullscreen.Render(parameters => parameters.Add(component => component.File, file));
+        fullscreen.WaitForAssertion(() => fullscreen.Markup.Should().Contain("Preview unavailable:"));
+        fullscreenStream.CanRead.Should().BeFalse();
+    }
+
     [Fact]
     public async Task WholeFilePreviewDetectsChangesFromLegacyStatWithoutObservedVersion()
     {

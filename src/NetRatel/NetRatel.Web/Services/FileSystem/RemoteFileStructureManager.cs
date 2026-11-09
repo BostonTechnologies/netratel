@@ -11,7 +11,11 @@ public sealed class RemoteFileStructureManager(GatewayFileSystemApiService gatew
     private readonly Guid _owner = Guid.NewGuid();
     private long _generation;
     private readonly Dictionary<string, MudExFileStructureNode> _nodes = new(StringComparer.Ordinal);
-    public GatewayFileSystemListResponse? Listing { get; private set; }
+    private readonly Dictionary<string, RemoteDirectoryListing> _listings = new(StringComparer.Ordinal);
+    public event Func<Task>? ListingChanged;
+    public GatewayFileSystemListResponse? Listing => _listings.GetValueOrDefault(CurrentPath)?.Response;
+    public RemoteDirectoryListing DirectoryListing(MudExFileStructureNode node) =>
+        TryEntry(node, out var entry) ? _listings.GetValueOrDefault(entry.FullPath) ?? RemoteDirectoryListing.NotLoaded : RemoteDirectoryListing.NotLoaded;
     public string CurrentPath { get; set; } = initialPath;
     public GatewayFileSystemMutationResponse? LastOutcomes { get; private set; }
     public IReadOnlyList<string> RefreshFailures { get; private set; } = [];
@@ -24,13 +28,14 @@ public sealed class RemoteFileStructureManager(GatewayFileSystemApiService gatew
     {
         ct.ThrowIfCancellationRequested();
         lifetime.ThrowIfCancellationRequested();
-        _generation++;
-        _nodes.Clear();
+        Invalidate();
+        var generation = _generation;
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, lifetime);
         try
         {
             var roots = await gateway.RootsAsync(tenantId, agentId, linked.Token);
-            lifetime.ThrowIfCancellationRequested();
+            linked.Token.ThrowIfCancellationRequested();
+            if (generation != _generation) throw new OperationCanceledException("The remote roots were replaced.");
             return roots.Entries.Where(entry => entry.IsDirectory).Select(entry => Node(entry)).ToHashSet();
         }
         catch (HttpRequestException exception) when (exception.StatusCode == System.Net.HttpStatusCode.Conflict)
@@ -42,15 +47,44 @@ public sealed class RemoteFileStructureManager(GatewayFileSystemApiService gatew
         }
     }
 
-    public async Task<HashSet<MudExFileStructureNode>> GetChildrenAsync(MudExFileStructureNode node, CancellationToken ct = default)
+    public Task<HashSet<MudExFileStructureNode>> GetChildrenAsync(MudExFileStructureNode node, CancellationToken ct = default)
     {
         var handle = Resolve(node);
         if (!handle.Entry.IsDirectory) throw new InvalidOperationException("Select a directory.");
+        return LoadChildrenAsync(node, handle, ct);
+    }
+
+    private async Task<HashSet<MudExFileStructureNode>> LoadChildrenAsync(MudExFileStructureNode node, Handle handle, CancellationToken ct)
+    {
+        var path = handle.Entry.FullPath;
+        _listings[path] = new(RemoteDirectoryLoadStatus.Loading);
+        if (ListingChanged is { } started) await started();
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, lifetime);
-        var listing = await gateway.ListAsync(tenantId, agentId, handle.Entry.FullPath, linked.Token);
-        Resolve(node); // A context/generation replaced during an awaited native listing is stale.
-        Listing = listing;
-        return listing.Entries.Select(entry => Node(entry, node)).ToHashSet();
+        HashSet<MudExFileStructureNode> children = [];
+        try
+        {
+            var listing = await gateway.ListAsync(tenantId, agentId, path, linked.Token);
+            linked.Token.ThrowIfCancellationRequested();
+            if (!TryEntry(node, out _)) return [];
+            if (listing.TenantId != tenantId || listing.AgentId != agentId || listing.Path != path || listing.Entries.Count > 4096)
+                throw new InvalidDataException("The remote listing did not match this directory or exceeded its 4,096-entry limit.");
+            children = listing.Entries.Select(entry => Node(entry, node)).ToHashSet();
+            _listings[path] = new(RemoteDirectoryLoadStatus.Loaded, listing);
+        }
+        catch (Exception exception) when (exception is HttpRequestException or InvalidOperationException or InvalidDataException or OperationCanceledException or System.Text.Json.JsonException)
+        {
+            if (!TryEntry(node, out _)) return [];
+            _listings[path] = new(RemoteDirectoryLoadStatus.Unavailable, Error: exception is OperationCanceledException
+                ? "Directory loading was cancelled. Use Refresh to try again." : $"Listing unavailable: {exception.Message}");
+        }
+        // Hierarchical.LoadChildren is one-shot: a second caller returns before
+        // the first load finishes, and its continuation mutates Children outside
+        // the renderer. Commit the canonical node before notifying the dialog.
+        // The package's continuation can then repeat this same assignment safely.
+        node.LoadChildrenFunc = null;
+        node.Children = children;
+        if (ListingChanged is { } completed) await completed();
+        return children;
     }
 
     public MudExFileStructureNode Directory(string path)
@@ -205,7 +239,7 @@ public sealed class RemoteFileStructureManager(GatewayFileSystemApiService gatew
         }
     }
 
-    public void Invalidate() { _generation++; _nodes.Clear(); }
+    public void Invalidate() { _generation++; _nodes.Clear(); _listings.Clear(); }
     private string ResolveParent(MudExFileStructureNode? parent) => parent is null ? CurrentPath : Resolve(parent).Entry.FullPath;
     private Handle Resolve(MudExFileStructureNode node) => node?.Handle is Handle handle && handle.Owner == _owner &&
         handle.Generation == _generation && !lifetime.IsCancellationRequested ? handle : throw new InvalidOperationException("This remote node is stale. Refresh the directory.");
@@ -222,6 +256,12 @@ public sealed class RemoteFileStructureManager(GatewayFileSystemApiService gatew
         return node;
     }
     private sealed record Handle(Guid Owner, long Generation, GatewayFileSystemEntryDto Entry);
+}
+
+public enum RemoteDirectoryLoadStatus { NotLoaded, Loading, Loaded, Unavailable }
+public sealed record RemoteDirectoryListing(RemoteDirectoryLoadStatus Status, GatewayFileSystemListResponse? Response = null, string? Error = null)
+{
+    public static RemoteDirectoryListing NotLoaded { get; } = new(RemoteDirectoryLoadStatus.NotLoaded);
 }
 
 public sealed class RemoteFileBatchException(GatewayFileSystemMutationResponse outcomes) : Exception(

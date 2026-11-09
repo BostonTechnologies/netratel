@@ -1,4 +1,5 @@
 using Bunit;
+using Bunit.TestDoubles;
 using AwesomeAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using MudBlazor.Services;
@@ -7,6 +8,9 @@ using NetRatel.Web.Components.Pages.Clients;
 using NetRatel.Web.Services.Clients;
 using NetRatel.Web.Models.Clients;
 using NetRatel.Web.Services.Telemetry;
+using NetRatel.Web.Services.FileSystem;
+using NetRatel.Web.Components.Dialogs;
+using MudBlazor;
 using Xunit;
 
 namespace NetRatel.Web.ComponentTests;
@@ -64,6 +68,61 @@ public sealed class ClientCardGridTests : AsyncBunitContext
 
         cut.Find("button[aria-label='Open terminal']").HasAttribute("disabled").Should().BeTrue();
         cut.Find("button[aria-label='Open client services']").HasAttribute("disabled").Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task OneFolderButtonAlwaysOffersExplicitChoicesAndLaunchesTheExactCapturedClientOnce(bool full)
+    {
+        AddAuthorization().SetAuthorized("synthetic-operator");
+        Services.AddScoped<ExplorerPreferenceService>();
+        JSInterop.Setup<string?>("netratelExplorer.get", _ => true).SetResult("full");
+        ComponentFactories.AddStub<FullFileExplorerDialog>();
+        ComponentFactories.AddStub<ClientFileSystemViewer>();
+        var dialogs = Services.GetRequiredService<IDialogService>();
+        var launches = new List<IDialogReference>();
+        dialogs.DialogInstanceAddedAsync += reference => { launches.Add(reference); return Task.CompletedTask; };
+        var popovers = Render<MudPopoverProvider>();
+        var provider = Render<MudDialogProvider>();
+        var cut = RenderGrid(true, ["file-gateway"], new GatewayTerminalCapabilityDto(false, [], false, null, DateTimeOffset.UtcNow));
+        cut.FindAll("button[aria-label='Open file browser']").Should().ContainSingle();
+        cut.FindAll("button[aria-label='Choose file explorer']").Should().BeEmpty();
+        cut.Find("button[aria-label='Open file browser']").Click();
+        launches.Should().BeEmpty();
+        JSInterop.Invocations.Should().NotContain(invocation => invocation.Identifier == "netratelExplorer.get");
+        cut.Find("button[aria-label='Open file browser']").GetAttribute("aria-expanded").Should().Be("true");
+        popovers.WaitForAssertion(() => popovers.FindAll(".mud-menu-item").Select(item => item.TextContent.Trim())
+            .Should().Equal("Basic Explorer", "Full Explorer"));
+        popovers.FindAll(".mud-menu-item").Single(item => item.TextContent.Trim() == (full ? "Full Explorer" : "Basic Explorer")).Click();
+        provider.WaitForAssertion(() => launches.Should().ContainSingle());
+        if (full)
+        {
+            var parameters = provider.FindComponent<Stub<FullFileExplorerDialog>>().Instance.Parameters;
+            parameters.Get(component => component.TenantId).Should().Be(3);
+            parameters.Get(component => component.AgentId).Should().Be(AgentId);
+            parameters.Get(component => component.InitialPath).Should().Be("/");
+        }
+        else
+        {
+            var parameters = provider.FindComponent<Stub<ClientFileSystemViewer>>().Instance.Parameters;
+            parameters.Get(component => component.TenantId).Should().Be(3);
+            parameters.Get(component => component.AgentId).Should().Be(AgentId);
+            parameters.Get(component => component.InitialPath).Should().Be("/");
+        }
+        JSInterop.Invocations.Should().Contain(invocation => invocation.Identifier == "netratelExplorer.set" &&
+            invocation.Arguments.Last()!.ToString() == (full ? "full" : "basic"));
+        await cut.InvokeAsync(() => launches.Single().Close());
+    }
+
+    [Theory]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    public void SoleFolderActivatorRemainsDisabledWithoutNativeAvailability(bool online, bool capability)
+    {
+        var cut = RenderGrid(online, capability ? ["file-gateway"] : [], new GatewayTerminalCapabilityDto(false, [], false, null, DateTimeOffset.UtcNow));
+        cut.FindAll("button[aria-label='Open file browser']").Should().ContainSingle().Which.HasAttribute("disabled").Should().BeTrue();
+        cut.FindAll("button[aria-label='Choose file explorer']").Should().BeEmpty();
     }
 
     [Fact]

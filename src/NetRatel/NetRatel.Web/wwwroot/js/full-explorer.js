@@ -36,10 +36,16 @@
       if (cancelled || !container.isConnected) return;
       pdfjs.GlobalWorkerOptions.workerSrc = '/js/viewers/pdfjs-dist/6.5.438/build/pdf.worker.min.mjs';
       const assets = '/js/viewers/pdfjs-dist/6.5.438/';
-      let destroyed = false, pdf = null, rendering = null, page = 1, scale = 1, revision = 0;
+      let destroyed = false, busy = true, pdf = null, rendering = null, page = 1, scale = 1, revision = 0;
       const controls = document.createElement('div');
+      controls.className = 'netratel-pdf-toolbar';
+      controls.setAttribute('role', 'group');
+      controls.setAttribute('aria-label', 'PDF controls');
       const status = document.createElement('span');
       status.setAttribute('role', 'status');
+      status.setAttribute('aria-live', 'polite');
+      status.setAttribute('aria-atomic', 'true');
+      status.className = 'netratel-pdf-status';
       const canvas = document.createElement('canvas');
       canvas.setAttribute('aria-label', 'PDF page');
       canvas.style.maxWidth = '100%';
@@ -48,30 +54,34 @@
         useSystemFonts: false, cMapUrl: assets + 'cmaps/', cMapPacked: true,
         standardFontDataUrl: assets + 'standard_fonts/', wasmUrl: assets + 'wasm/' });
       const owner = {
-        dispose() {
+        dispose(remove = true) {
           if (destroyed) return;
           destroyed = true;
+          updateControls();
           clearTimeout(deadline);
           observer.disconnect();
           rendering?.cancel();
           loading.destroy().catch(error => console.debug('PDF cleanup:', error.name));
           canvas.width = canvas.height = 0;
-          container.replaceChildren();
+          if (remove) container.replaceChildren(); else canvas.remove();
           documents.delete(id);
         }
       };
       const observer = new MutationObserver(() => { if (!container.isConnected) owner.dispose(); });
-      let deadline = setTimeout(() => { owner.dispose(); container.textContent = 'PDF loading exceeded its 30-second budget. Use Download.'; }, 30000);
+      const fail = message => { owner.dispose(false); status.textContent = message; };
+      let deadline = setTimeout(() => fail('PDF loading exceeded its 30-second budget. Use Download.'), 30000);
       observer.observe(container.ownerDocument.body, { childList: true, subtree: true });
       documents.set(id, owner);
       const render = async () => {
         if (destroyed || !pdf) return;
         const current = ++revision;
+        busy = true; updateControls();
+        status.textContent = `Loading page ${page} / ${pdf.numPages} · ${Math.round(scale * 100)}%…`;
         clearTimeout(deadline);
         rendering?.cancel();
         const pageDeadline = setTimeout(() => {
           if (current !== revision) return;
-          owner.dispose(); container.textContent = 'PDF page exceeded its 15-second work budget. Use Download.';
+          fail('PDF page exceeded its 15-second work budget. Use Download.');
         }, 15000);
         deadline = pageDeadline;
         try {
@@ -84,23 +94,45 @@
           rendering = selected.render({ canvas, canvasContext: canvas.getContext('2d'), viewport, annotationMode: 0 });
           await rendering.promise;
           clearTimeout(pageDeadline);
-          if (!destroyed && current === revision) status.textContent = ` Page ${page} / ${pdf.numPages} · ${Math.round(scale * 100)}% `;
+          if (!destroyed && current === revision) {
+            busy = false; updateControls();
+            status.textContent = `Page ${page} / ${pdf.numPages} · ${Math.round(scale * 100)}%`;
+          }
           selected.cleanup();
         } catch (error) {
           clearTimeout(pageDeadline);
-          if (!destroyed && current === revision && error.name !== 'RenderingCancelledException') status.textContent = error.message;
+          if (!destroyed && current === revision && error.name !== 'RenderingCancelledException')
+            fail('PDF preview unavailable: ' + error.message + ' Use Download.');
         }
       };
-      const button = (label, action) => {
+      const group = label => {
+        const element = document.createElement('div');
+        element.className = 'netratel-pdf-control-group';
+        element.setAttribute('role', 'group'); element.setAttribute('aria-label', label);
+        controls.append(element); return element;
+      };
+      const pages = group('PDF page navigation'), zoom = group('PDF zoom');
+      const button = (parent, label, action) => {
         const element = document.createElement('button');
         element.type = 'button'; element.textContent = label;
-        element.addEventListener('click', action);
-        controls.append(element);
+        element.className = 'netratel-pdf-button mud-button-root mud-button mud-button-outlined';
+        element.setAttribute('aria-label', label); element.title = label;
+        element.addEventListener('click', () => { if (!destroyed && !busy && pdf) action(); });
+        parent.append(element); return element;
       };
-      button('Previous page', () => { if (page > 1) { page--; void render(); } });
-      button('Next page', () => { if (pdf && page < pdf.numPages) { page++; void render(); } });
-      button('Zoom out', () => { scale = Math.max(0.25, scale - 0.25); void render(); });
-      button('Zoom in', () => { scale = Math.min(3, scale + 0.25); void render(); });
+      const previous = button(pages, 'Previous page', () => { if (page > 1) { page--; void render(); } });
+      const next = button(pages, 'Next page', () => { if (page < pdf.numPages) { page++; void render(); } });
+      const zoomOut = button(zoom, 'Zoom out', () => { if (scale > 0.25) { scale -= 0.25; void render(); } });
+      const zoomIn = button(zoom, 'Zoom in', () => { if (scale < 3) { scale += 0.25; void render(); } });
+      const updateControls = () => {
+        const unavailable = destroyed || busy || !pdf;
+        previous.disabled = unavailable || page <= 1;
+        next.disabled = unavailable || page >= pdf.numPages;
+        zoomOut.disabled = unavailable || scale <= 0.25;
+        zoomIn.disabled = unavailable || scale >= 3;
+        controls.setAttribute('aria-busy', busy && !destroyed ? 'true' : 'false');
+      };
+      updateControls();
       controls.append(status);
       container.replaceChildren(controls, canvas);
       status.textContent = 'Loading PDF…';
@@ -108,7 +140,7 @@
         pdf = await loading.promise;
         if (!destroyed) await render();
       } catch (error) {
-        if (!destroyed) { owner.dispose(); container.textContent = 'PDF preview unavailable: ' + error.message; }
+        if (!destroyed) fail('PDF preview unavailable: ' + error.message + ' Use Download.');
       }
     },
     async renderDocx(frame, stream, id) {
