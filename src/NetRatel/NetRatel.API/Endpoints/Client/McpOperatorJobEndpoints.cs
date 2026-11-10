@@ -371,9 +371,11 @@ public static partial class McpOperatorJobEndpoints
         {
             var plan = await confirmations.CreatePlanAsync(new McpOperatorConfirmationPlanRequest(context.Decision, RunHash(startValidation.Snapshot!, request))
             { JobRequestHash = JobRequestHash(jobId, request) }, cancellationToken).ConfigureAwait(false);
-            return Results.Ok(new McpOperatorJobRunPreview(plan.PlanToken, plan.IdempotencyKey, plan.ExpiresAtUtc, plan.ConfirmationClass, Decimal(jobId), context.Decision.Request.TargetSetDigest!, startValidation.Snapshot!.TargetPlan?.Nodes.Count ?? 1, context.CorrelationId)
+            return Results.Ok(new McpOperatorJobRunPreview(plan.PlanToken, plan.IdempotencyKey, plan.ExpiresAtUtc, plan.ConfirmationClass, Decimal(jobId), context.Decision.Request.TargetSetDigest!, startValidation.Snapshot!.TargetPlan?.ExecutionTargetCount ?? 1, context.CorrelationId)
             { TargetPlanDigest = startValidation.Snapshot.TargetPlan?.ComputeDigest(), ExecutionPolicy = startValidation.Snapshot.TargetPlan?.ExecutionPolicy,
                 ResolvedTargets = startValidation.Snapshot.TargetPlan?.Nodes, DefinitionDigest = startValidation.Snapshot.TargetPlan?.DefinitionDigest,
+                WorkerPoolCount = startValidation.Snapshot.TargetPlan?.NeedsHaWorkerSelection == true ? startValidation.Snapshot.TargetPlan.Nodes.Count : null,
+                GroupName = startValidation.Snapshot.TargetPlan?.GroupName,
                 GroupRevision = startValidation.Snapshot.TargetPlan?.GroupRevision?.ToString(CultureInfo.InvariantCulture) });
         }
         catch (ArgumentException) { return Failure("confirmation_plan_invalid", context); }
@@ -1035,6 +1037,10 @@ public sealed record McpOperatorJobPreview(string PlanToken, string IdempotencyK
 public sealed record McpOperatorJobMutationResult(string JobId, string Version, string? ItemId, bool Deleted, bool Replayed, string CorrelationId);
 public sealed record McpOperatorJobRunPreview(string PlanToken, string IdempotencyKey, DateTimeOffset ExpiresAtUtc, McpOperatorConfirmationClass ConfirmationClass, string JobId, string TargetSetDigest, int TargetCount, string CorrelationId)
 {
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public int? WorkerPoolCount { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public string? GroupName { get; init; }
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public IReadOnlyList<JobTargetNode>? ResolvedTargets { get; init; }
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]

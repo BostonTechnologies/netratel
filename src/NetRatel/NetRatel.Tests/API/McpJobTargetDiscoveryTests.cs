@@ -65,11 +65,15 @@ public sealed class McpJobTargetDiscoveryTests
         first.Items.Concat(second.Items).Select(node => node.AgentId).Should().BeEquivalentTo(authorized);
         var groups = new ExecutionGroupService(db, access, directory, [], TimeProvider.System);
         var groupPage = await groups.ListForTargetsAsync(7, null, 1, 1, authorized, user, default);
-        groupPage.TotalCount.Should().Be(1);
+        groupPage.TotalCount.Should().Be(2); groupPage.NextPage.Should().Be(2);
         groupPage.Items.Single().Id.Should().Be(permittedGroup.Id);
-        var denied = () => resolver.ResolveAsync(7, new() { Source = JobTargetSource.ExecutionGroup,
+        var mixedPage = await groups.ListForTargetsAsync(7, null, 2, 1, authorized, user, default);
+        mixedPage.Items.Single().Id.Should().Be(deniedGroup.Id);
+        mixedPage.Items.Single().MemberCount.Should().Be(1, "denied workers must not leak into visible pool counts");
+        var pool = await resolver.ResolveAsync(7, new() { Source = JobTargetSource.ExecutionGroup,
             ExecutionGroupId = deniedGroup.Id }, null, null, null, authorized, default);
-        await denied.Should().ThrowAsync<JobTargetValidationException>();
+        pool.Nodes.Select(node => node.AgentId).Should().Equal(nodes[0].Id);
+        (await groups.ListForTargetsAsync(7, null, 1, 1, new HashSet<Guid> { nodes[2].Id }, user, default)).TotalCount.Should().Be(0);
     }
 
     private sealed class ReadOnlyJobAccess : IEffectiveAccessService

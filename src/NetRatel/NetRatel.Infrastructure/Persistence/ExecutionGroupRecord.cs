@@ -12,6 +12,7 @@ public sealed class ExecutionGroupRecord
     public long Revision { get; set; } = 1;
     public bool Enabled { get; set; } = true;
     public bool Archived { get; set; }
+    public Guid? LastHaWorkerAgentId { get; set; }
     public DateTimeOffset CreatedAtUtc { get; set; }
     public DateTimeOffset UpdatedAtUtc { get; set; }
     public string? CreatedBy { get; set; }

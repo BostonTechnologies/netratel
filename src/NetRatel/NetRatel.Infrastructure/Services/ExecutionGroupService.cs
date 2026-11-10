@@ -36,12 +36,15 @@ public sealed class ExecutionGroupService(OrchestratorDbContext db, IEffectiveAc
         if (authorizedAgentIds is not null)
         {
             var permitted = authorizedAgentIds.ToArray();
-            query = query.Where(group => !group.Members.Any(member => !permitted.Contains(member.AgentId)));
+            query = query.Where(group => group.Members.Any(member => permitted.Contains(member.AgentId)));
         }
         var total = await query.CountAsync(cancellationToken).ConfigureAwait(false);
         var records = await query.OrderBy(x => x.NormalizedName).ThenBy(x => x.Id).Skip((page - 1) * pageSize).Take(pageSize).ToArrayAsync(cancellationToken).ConfigureAwait(false);
         var groupIds = records.Select(x => x.Id).ToArray();
-        var members = await db.ExecutionGroupMembers.AsNoTracking().Where(x => x.TenantId == tenantId && groupIds.Contains(x.GroupId))
+        var visibleIds = authorizedAgentIds?.ToArray();
+        var memberQuery = db.ExecutionGroupMembers.AsNoTracking().Where(x => x.TenantId == tenantId && groupIds.Contains(x.GroupId));
+        if (visibleIds is not null) memberQuery = memberQuery.Where(member => visibleIds.Contains(member.AgentId));
+        var members = await memberQuery
             .Select(x => new { x.GroupId, x.AgentId }).ToArrayAsync(cancellationToken).ConfigureAwait(false);
         var memberIds = members.Select(x => x.AgentId).ToHashSet();
         var inventory = await directory.ReadAsync(tenantId, memberIds, true, cancellationToken).ConfigureAwait(false);

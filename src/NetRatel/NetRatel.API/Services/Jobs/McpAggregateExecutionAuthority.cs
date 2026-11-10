@@ -33,13 +33,15 @@ public sealed class McpAggregateExecutionAuthority(IJobNodeDirectory directory, 
         var resolution = await resolver.ResolveAsync(route.TenantId, target, JobExecutionContextPolicy.FromJob(snapshot.Definition.Job),
             parameters, runtime, permitted.Keys.ToHashSet(), ct).ConfigureAwait(false);
         var policy = snapshot.Definition.Job.ExecutionPolicy ?? new JobExecutionPolicy();
-        var plan = new JobResolvedTargetPlan(1, route.TenantId, snapshot.Definition.Job.Id,
-            snapshot.ComputeDefinitionDigest(), target, resolution.GroupRevision, resolution.Bindings, resolution.Nodes, policy);
+        var version = target.Source == JobTargetSource.ExecutionGroup ? 2 : 1;
+        var plan = new JobResolvedTargetPlan(version, route.TenantId, snapshot.Definition.Job.Id,
+            snapshot.ComputeDefinitionDigest(), target, resolution.GroupRevision, resolution.Bindings, resolution.Nodes, policy,
+            null, null, version == 2 ? resolution.GroupName : null);
         var grants = new List<McpAggregateTargetGrant>(plan.Nodes.Count);
         foreach (var node in plan.Nodes)
         {
             var decision = permitted[node.AgentId];
-            RequirePlanBounds(snapshot, decision, plan.Nodes.Count);
+            RequirePlanBounds(snapshot, decision, plan.ExecutionTargetCount);
             grants.Add(new(node.AgentId, decision.MatchingPolicyIds.Single(), decision.SelectedPolicyVersion!.Value,
                 decision.Request.TargetSetDigest!, ConstraintDigest(decision.EffectiveConstraints!))
             { MaximumConcurrentJobTargets = decision.EffectiveConstraints!.MaxConcurrentJobTargets,
@@ -89,7 +91,7 @@ public sealed class McpAggregateExecutionAuthority(IJobNodeDirectory directory, 
             decision.ConstraintsPolicyId != grant.QuotaPolicyId || decision.ConstraintsPolicyVersion != grant.QuotaPolicyVersion ||
             decision.EffectiveConstraints is not { } constraints || ConstraintDigest(constraints) != grant.ConstraintsDigest)
             throw new ExecutionAdmissionDeniedException("Current target authority differs from the reviewed execution grant.");
-        RequirePlanBounds(snapshot, decision, plan.Nodes.Count);
+        RequirePlanBounds(snapshot, decision, plan.ExecutionTargetCount);
     }
 
     public static IReadOnlyList<McpJobTargetQuota> Quotas(McpOperatorJobExecutionSnapshot snapshot)
@@ -97,7 +99,8 @@ public sealed class McpAggregateExecutionAuthority(IJobNodeDirectory directory, 
         if (snapshot.ReviewedAuthority is not { } authority) return [];
         return authority.Targets.GroupBy(grant => new { PolicyId = grant.QuotaPolicyId ?? grant.PolicyId,
             PolicyVersion = grant.QuotaPolicyVersion ?? grant.PolicyVersion })
-            .Select(group => new McpJobTargetQuota(group.Key.PolicyId, group.Key.PolicyVersion, group.Count(),
+            .Select(group => new McpJobTargetQuota(group.Key.PolicyId, group.Key.PolicyVersion,
+                snapshot.TargetPlan?.NeedsHaWorkerSelection == true ? 1 : group.Count(),
                 // The limit is separately captured server-side below; the
                 // digest still binds every effective constraint in the review.
                 group.First().MaximumConcurrentJobTargets)).OrderBy(quota => quota.PolicyId).ToArray();

@@ -1,34 +1,56 @@
-# Jobs, execution groups and node runs
+# Jobs, HA Groups and node runs
 
-A job has one target source: **Execution group**, **Selected nodes**, **Node
-filter**, or **Provided at run time**. An execution group is a tenant-owned
-explicit set of stable client IDs. A run targets every member; the group does
-not choose a spare executor and membership grants no execution permission.
+A job has one target source: **HA Group**, **Selected nodes**, **Node filter**,
+or **Provided at run time**. A high availability group is a tenant-owned worker
+pool. Each fresh job invocation runs its complete ordered workflow on exactly
+**one healthy, authorized worker**. Selected nodes, filters and runtime target
+lists continue to run on every selected node. Membership grants no execution
+permission.
 
 ## Configure a group
 
-Open the tenant editor and select **Execution groups**. Create a named group,
-search the authorized client directory and select clients. Search and paging do
-not clear selections. Use the Selected view to review the complete selection,
-including offline or subsequently disabled members. **Select visible** applies
-only to the displayed page. Save the group explicitly with **Save group**.
-Group saves are independent of **Save tenant changes** and **Cancel tenant
-changes**.
-
-Names are trimmed, Unicode Form KC normalized and compared with invariant
-uppercase within a tenant, with a 200-character bound. Renaming preserves the
-group ID. Empty groups may be saved during setup, but cannot admit a run.
-A disabled, archived, missing
-or invalid member causes a visible admission error; the service does not run an
-accepted subset. Offline clients remain selected and receive a visible dispatch
-outcome. A stale revision preserves the draft for reconciliation. Referenced
+Open the tenant editor and select **HA Groups**. Create a named group, search
+the authorized client directory and choose workers. Search and paging retain
+selections, including offline or subsequently disabled members. Save explicitly
+with **Save group**; tenant Save/Cancel does not undo an independently saved
+group. Names are trimmed, Unicode Form KC normalized and compared with
+invariant uppercase within the tenant, with a 200-character bound. Renaming
+preserves the group ID. Groups contain at most 10,000 members; group and target
+HTTP JSON is capped at 1 MiB before binding. Empty groups may be saved during
+setup. Disabled, archived or missing groups cannot admit fresh work. Referenced
 groups must be retired or their job/retained Flow references removed before
-hard deletion.
+hard deletion. A stale edit preserves the draft for reconciliation.
 
-Groups contain at most 10,000 members. A subsequently disabled member remains
-visible. Metadata/disable/archive edits may retain it; newly added IDs must be
-valid, and new execution still rejects the entire group until invalid members
-are addressed. Group and target HTTP JSON is capped at 1 MiB before binding.
+The orchestrator rotates through the stable ordered eligible pool using a
+PostgreSQL cursor shared across API instances. Worker choice, cursor advance,
+parent and single node queue commit together. Preview does not rotate the
+cursor. Duplicate keyed or schedule delivery returns the original run and
+worker without advancing it. With unchanged healthy membership, 100 new runs
+split 50/50 across two workers, or 25 each across four; adding workers shares
+subsequent work across the new pool. This balances admission counts, not job
+runtime or CPU usage, so different job durations can produce different active
+loads.
+
+Availability comes from the shared committed connection lease and validated
+authentication expiry. Offline, expired, disabled, revoked or otherwise
+unauthorized members cannot be chosen; healthy eligible survivors remain
+usable. If no eligible members remain, target resolution fails. If eligible members
+exist but none has a healthy lease, admission returns
+`ha_group_no_healthy_workers` before creating a parent. A worker already
+admitted to a run is not silently replaced: native ownership, receipts,
+cancellation and unknown-execution safeguards still prevent duplicate work.
+**Rerun original execution** keeps that original worker; a new ordinary run
+balances again.
+
+The wire identifiers `ExecutionGroup = 1`, `executionGroupId`,
+`execution-groups` and `netratel_execution_groups` remain compatible. Fresh
+HA resolutions use target-plan schema 2. A selected plan binds its one worker
+to the approved frozen candidate pool and its digest. Volatile online hints
+are not part of the schema-2 HA policy digest; committed availability is
+checked when choosing the worker. Membership revision, identities, metadata,
+definition and execution settings remain bound. Historical schema-1 plans,
+including already accepted reviewed/keyed submissions, retain their original
+fanout and canonical hashes. This correction does not rewrite admitted history.
 
 ## Select targets
 
@@ -104,8 +126,12 @@ Tag or Tags input. ID and hostname lists select a union. Tags selects any listed
 tag unless all-of is explicitly configured. Invocation values take precedence
 over declared defaults; a missing required input fails before dispatch.
 
-Fixed group/node/filter jobs cannot be retargeted by arbitrary invocation
-fields. A filter may deliberately reference a declared `@option.Name@`
+Fixed group/node/filter jobs cannot be widened by arbitrary invocation fields.
+Ordinary REST Run accepts optional `selectedTargetAgentIds`: a nonempty,
+unique subset of the complete resolved set, limited to 10,000 IDs. It changes
+only that invocation, never the saved job. Foreign, duplicate or empty choices
+fail before admission. For HA Groups it narrows the approved worker pool,
+from which one healthy worker is chosen. Schema 2 binds this subset explicitly. A filter may deliberately reference a declared `@option.Name@`
 operand. Values such as `.*`, commas, quotes, `+` or `!tags:` remain data and
 cannot inject selector clauses. Script parameters and reserved target bindings
 are separate.
@@ -142,8 +168,9 @@ group/filter set is rejected.
 
 ## Concurrency, failures and timeouts
 
-Thread Count defaults to 1 and is the maximum number of nodes running this job
-concurrently. Each slot owns one node's complete ordered enabled-step workflow.
+For explicit nodes, filters and runtime lists, Thread Count defaults to 1 and
+is the maximum number of nodes running this job concurrently. HA runs always
+have effective concurrency 1; saved Thread Count does not fan out an HA pool. Each slot owns one node's complete ordered enabled-step workflow.
 The configured count is retained when it exceeds the target count; effective
 concurrency also reflects available execution capacity.
 
@@ -228,7 +255,12 @@ Reviewed execution binds the whole resolved plan, inputs, definition, execution
 settings and effective policies. Group/tag changes cannot widen an approved
 preview: confirmation either uses its unchanged approved set under current
 authority or returns a stale-review conflict. Preview performs permitted reads
-and simulations and dispatches no execution.
+and simulations and dispatches no execution. HA previews report physical
+`targetCount: 1`, candidate `workerPoolCount`, and the group name. Metadata
+pages still cover the entire approved candidate pool. MCP confirmation remains
+required and captures grants for every eligible candidate. Each distinct
+eligible quota policy conservatively reserves one physical slot; a shared
+policy reserves one slot for the run, not one per pool member.
 An accepted reviewed admission also retains its protected original definition
 and inputs before parent materialization, so recovery cannot re-resolve a
 later group edit. An unresolved physical execution retains its configured
@@ -282,6 +314,9 @@ See [Flows](FLOWS.md) for versioning, causation and recovery budgets.
 
 ## Automated validation
 
+The [HA admission fixtures](../../src/NetRatel/NetRatel.Tests/API/JobAggregatePostgresTests.Ha.cs)
+check exact 100-run distributions, scale-out, shared cursor contention, offline
+failover, duplicate delivery, original-worker rerun and historical compatibility.
 The [aggregate PostgreSQL fixtures](../../src/NetRatel/NetRatel.Tests/API/JobAggregatePostgresTests.cs)
 exercise five-node concurrency, native authority/receipt ownership, failure
 policies, recovery, cancellation and deadlines using a synthetic gateway.
@@ -302,10 +337,13 @@ node/step identities and relevant redacted OTEL/log evidence.
 1. Enroll five synthetic clients with the same supported shell/platform and
    reported hostnames lab-node-01 through lab-node-05 (or substitute their
    actual reported hostnames throughout these checks). Tag each
-   TestSystem, then save all five in one execution group. Reload, rename the
+   TestSystem, then save workers in an HA Group. Reload, rename the
    group and confirm its ID and membership persist. Search across pages and
-   use Selected members to check retained choices.
-2. Create a group-targeted job with two supported sequential investigation
+   use the node editor to check retained choices. Run 100 fresh HA invocations
+   with two healthy members and verify 50 each, then add two and verify 25 each
+   for the next 100. Disconnect a worker and confirm new runs use survivors;
+   with all workers offline, no run should be admitted.
+2. Create an explicit five-node job with two supported sequential investigation
    steps: report node identity/start and inspect local free disk space/finish.
    Use a harmless bounded delay in the test script when overlap needs to be
    visible. Run with Thread Count 1, 2 and 100. Expect exactly five nodes and

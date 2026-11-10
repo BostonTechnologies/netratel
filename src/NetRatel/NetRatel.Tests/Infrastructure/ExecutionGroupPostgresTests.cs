@@ -57,8 +57,23 @@ public sealed class ExecutionGroupPostgresTests(PostgreSqlPersistenceFixture pos
         // Upgrade populated group data, then prove mutable Agent metadata remains
         // guarded by PostgreSQL tenant constraints rather than an immutable EF key.
         await using var db = await CreateAsync(ct, "20261110054634_AddExecutionGroups"); var ids = await SeedAsync(db, ct);
-        var group = await Service(db).CreateAsync(7, new("Case sensitive name", null, true, false, ids), Manager, ct);
+        // Seed the previous schema directly: the current EF model also includes the
+        // newly added cursor column, which cannot be used until the upgrade runs.
+        var originalGroupId = Guid.NewGuid(); var now = DateTimeOffset.UtcNow;
+        await db.Database.ExecuteSqlInterpolatedAsync($"""
+            INSERT INTO "ExecutionGroups" ("Id","TenantId","Name","NormalizedName","Revision","Enabled","Archived","CreatedAtUtc","UpdatedAtUtc")
+            VALUES ({originalGroupId},7,'Case sensitive name','CASE SENSITIVE NAME',1,TRUE,FALSE,{now},{now})
+            """, ct);
+        foreach (var id in ids)
+            await db.Database.ExecuteSqlInterpolatedAsync($"INSERT INTO \"ExecutionGroupMembers\" (\"GroupId\",\"TenantId\",\"AgentId\") VALUES ({originalGroupId},7,{id})", ct);
+        var membership = JsonSerializer.Serialize(ids);
+        await db.Database.ExecuteSqlInterpolatedAsync($"""
+            INSERT INTO "ExecutionGroupAudits" ("Id","GroupId","TenantId","Operation","Revision","MembershipJson","CreatedAtUtc")
+            VALUES ({Guid.NewGuid()},{originalGroupId},7,'created',1,{membership}::jsonb,{now})
+            """, ct);
         await db.Database.MigrateAsync(ct);
+        var group = (await Service(db).GetAsync(7, originalGroupId, Manager, ct))!;
+        (await db.ExecutionGroups.SingleAsync(ct)).LastHaWorkerAgentId.Should().BeNull();
         (await db.ExecutionGroupMembers.CountAsync(ct)).Should().Be(5);
         await using (var relocation = NewDb(db.Database.GetConnectionString()!))
         {
@@ -119,7 +134,8 @@ public sealed class ExecutionGroupPostgresTests(PostgreSqlPersistenceFixture pos
         var renamed = await service.UpdateAsync(7, group.Group.Id, new("Renamed with unavailable member", null, true, false, ids, 2), Manager, ct);
         renamed!.Group.Revision.Should().Be(3);
         renamed.Members.Should().HaveCount(5).And.Contain(x => x.AgentId == ids[0] && !x.IsEnabled);
-        (await Assert.ThrowsAsync<JobTargetValidationException>(() => resolver.ResolveAsync(7, target, null, null, null, null, ct))).Code.Should().Be("target_node_unavailable");
+        (await resolver.ResolveAsync(7, target, null, null, null, null, ct)).Nodes.Select(node => node.AgentId)
+            .Should().BeEquivalentTo(ids.Skip(1));
         first.IsEnabled = true; await db.SaveChangesAsync(ct);
         db.Jobs.Add(new() { Id = 41, Name = "Referenced job", TenantId = 7, TargetJson = JsonSerializer.Serialize(target), CreatedAtUtc = DateTimeOffset.UtcNow, UpdatedAtUtc = DateTimeOffset.UtcNow }); await db.SaveChangesAsync(ct);
         var blockedJob = await Assert.ThrowsAsync<ExecutionGroupReferencedException>(() => service.DeleteAsync(7, group.Group.Id, 3, Manager, ct));

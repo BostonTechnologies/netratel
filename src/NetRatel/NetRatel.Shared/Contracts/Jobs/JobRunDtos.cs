@@ -107,4 +107,7 @@ public record RunJobRequest(
     public JobRuntimeTargetInput? RuntimeTarget { get; init; }
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public string? ExpectedTargetPlanDigest { get; init; }
+    /// <summary>Optional invocation-only subset of the complete resolved target set.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<Guid>? SelectedTargetAgentIds { get; init; }
 }
