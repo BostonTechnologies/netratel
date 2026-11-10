@@ -45,14 +45,15 @@
     }
     else if (_target.Source == JobTargetSource.NodeFilter)
     {
-        <MudTextField T="string" Value="_target.Filter" ValueChanged="FilterChangedAsync" Label="Node filter expression" Variant="Variant.Outlined" Lines="3" Immediate="true" Disabled="Disabled" HelperText="Example: tags: TestSystem !tags: Excluded. Empty never means all nodes. Use the explicit all-nodes action for every authorized client." />
+        <MudTextField T="string" Value="_target.Filter" ValueChanged="FilterChangedAsync" Label="Node filter expression" Variant="Variant.Outlined" Lines="2" Immediate="true" Disabled="Disabled" HelperText="All nodes: .* · Regex: hostname: /^worker-/ · Tags: tags: TestSystem !tags: Excluded" />
         <div class="job-target-toolbar">
-            <MudSelect T="string" @bind-Value="_builderField" Label="Literal property" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="Disabled">
+            <MudSelect T="string" Value="_builderField" ValueChanged="BuilderFieldChanged" Label="Property" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="Disabled">
                 @foreach (var field in _properties.Where(field => field.Name != "all"))
-                { <MudSelectItem T="string" Value="@field.Name">@field.Name · @field.Description</MudSelectItem> }
+                { <MudSelectItem T="string" Value="@field.Name">@field.Name</MudSelectItem> }
             </MudSelect>
-            <MudTextField T="string" @bind-Value="_builderValue" Label="Exact literal value" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="Disabled" />
-            <MudButton OnClick="AddLiteralAsync" Disabled="@(Disabled || _properties.Count == 0 || string.IsNullOrWhiteSpace(_builderValue))">Add literal clause</MudButton>
+            <MudTextField T="string" @bind-Value="_builderValue" Label="@(_builderRegex ? "Regex pattern" : "Exact value")" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="Disabled" />
+            <MudSwitch T="bool" @bind-Value="_builderRegex" Label="Regex" Size="Size.Small" Disabled="@(Disabled || !BuilderSupportsRegex)" />
+            <MudButton OnClick="AddClauseAsync" Disabled="@(Disabled || _properties.Count == 0 || string.IsNullOrWhiteSpace(_builderValue))">Add clause</MudButton>
             <MudButton OnClick="AllNodesAsync" Disabled="Disabled">Use all authorized nodes</MudButton>
         </div>
         <MudText Typo="Typo.caption">Different properties combine with AND. Tags use comma for any-of and + for all-of. Quote punctuation-bearing values. Explicit /regex/ is bounded. Parameter operands use @@option.name@@ and bind as literal values. Adding a builder clause preserves the existing advanced expression.</MudText>
@@ -92,6 +93,8 @@
     private string? _error;
     private int _groupPage = 1, _loadedTenant;
     private bool _groupsLoading;
+    private bool _builderRegex;
+    private bool BuilderSupportsRegex => _properties.Any(property => property.Name == _builderField && property.SupportsRegex);
     private long _groupsGeneration;
     private readonly CancellationTokenSource _dispose = new();
 
@@ -134,7 +137,12 @@
         _runtimeDefaults = value ?? "";
         return ChangedAsync(_target with { RuntimeInput = Runtime with { DefaultValues = ParseLines(_runtimeDefaults) } });
     }
-    private Task AddLiteralAsync() => FilterChangedAsync(string.Join(" ", new[] { _target.Filter?.Trim(), $"{_builderField}: {QuoteLiteral(_builderValue)}" }.Where(value => !string.IsNullOrWhiteSpace(value))));
+    private void BuilderFieldChanged(string value) { _builderField = value; if (!BuilderSupportsRegex) _builderRegex = false; }
+    private Task AddClauseAsync()
+    {
+        var operand = _builderRegex && BuilderSupportsRegex ? "/" + _builderValue.Replace("/", "\\/", StringComparison.Ordinal) + "/" : QuoteLiteral(_builderValue);
+        return FilterChangedAsync(string.Join(" ", new[] { _target.Filter?.Trim(), $"{_builderField}: {operand}" }.Where(value => !string.IsNullOrWhiteSpace(value))));
+    }
     private static string QuoteLiteral(string value) => "\"" + value.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal) + "\"";
     private Task AllNodesAsync() => FilterChangedAsync("all: true");
     private async Task LoadPropertiesAsync()

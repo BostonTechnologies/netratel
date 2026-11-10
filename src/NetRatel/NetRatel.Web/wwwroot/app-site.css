@@ -1616,6 +1616,13 @@ html[data-netratel-theme="light"] .netratel-login-panel {
     flex-direction: column;
     overflow: hidden;
 }
+.mud-dialog.jobs-edit-dialog {
+    width: calc(100% - 32px);
+    max-width: calc(100% - 32px);
+    height: min(calc(100dvh - 32px), calc(100% - 32px));
+    max-height: min(calc(100dvh - 32px), calc(100% - 32px));
+    margin: 16px;
+}
 .mud-dialog.jobs-edit-dialog .mud-dialog-content, .mud-dialog.tenant-editor-dialog .mud-dialog-content, .mud-dialog.jobs-run-dialog .mud-dialog-content {
     flex: 1 1 auto;
     min-height: 0;
@@ -1637,6 +1644,9 @@ html[data-netratel-theme="light"] .netratel-login-panel {
     .mud-dialog.jobs-edit-dialog, .mud-dialog.tenant-editor-dialog { width:100%; max-width:100%; height:100%; max-height:100%; margin:0; border-radius:0; }
     .mud-dialog.jobs-edit-dialog .mud-dialog-actions, .mud-dialog.tenant-editor-dialog .mud-dialog-actions { flex-wrap:wrap; padding:8px; }
     .mud-dialog.jobs-edit-dialog .mud-dialog-actions .mud-button-root, .mud-dialog.tenant-editor-dialog .mud-dialog-actions .mud-button-root, .mud-dialog.jobs-run-dialog .mud-dialog-actions .mud-button-root { min-height:44px; }
+}
+@media (max-width: 959px), (orientation: portrait) {
+    .mud-dialog.jobs-edit-dialog { width:100%; max-width:100%; height:100%; max-height:100%; margin:0; border-radius:0; }
 }
 
 /* Native fullscreen includes the document so Mud providers stay in their original DOM.

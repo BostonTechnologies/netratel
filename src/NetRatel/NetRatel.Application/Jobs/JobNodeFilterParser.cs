@@ -115,22 +115,32 @@ public static class JobNodeFilterParser
                 Space(); if (position == text.Length) break;
                 var excluded = Take('!');
                 var saved = position;
-                var field = ReadField();
-                if (field is not null && Take(':'))
+                if (!excluded && text.AsSpan(position).StartsWith(".*", StringComparison.Ordinal) &&
+                    (position + 2 == text.Length || char.IsWhiteSpace(text[position + 2])))
                 {
-                    var canonical = CanonicalField(field);
-                    Space(); var terms = ReadAlternatives(canonical);
-                    if (canonical == "all" && (excluded || terms.Count != 1 || terms[0].Operands.Count != 1 ||
-                        terms[0].Operands[0].Kind != JobNodeFilterOperandKind.Literal || !string.Equals(terms[0].Operands[0].Value, "true", StringComparison.OrdinalIgnoreCase)))
-                        throw Error("target_filter_invalid_all", "The explicit all-nodes clause is all: true.");
-                    clauses.Add(new(canonical, excluded, terms));
+                    position += 2;
+                    if (++operands > MaximumOperands) throw Error("target_filter_too_complex", "The filter exceeds 128 operands.");
+                    clauses.Add(new("all", false, [new([new(JobNodeFilterOperandKind.Literal, "true")])]));
                 }
                 else
                 {
-                    position = saved;
-                    if (excluded) throw Error("target_filter_invalid", "Exclusions require an allowlisted property followed by ':'.");
-                    var alternatives = ReadAlternatives("node");
-                    bare.AddRange(alternatives);
+                    var field = ReadField();
+                    if (field is not null && Take(':'))
+                    {
+                        var canonical = CanonicalField(field);
+                        Space(); var terms = ReadAlternatives(canonical);
+                        if (canonical == "all" && (excluded || terms.Count != 1 || terms[0].Operands.Count != 1 ||
+                            terms[0].Operands[0].Kind != JobNodeFilterOperandKind.Literal || !string.Equals(terms[0].Operands[0].Value, "true", StringComparison.OrdinalIgnoreCase)))
+                            throw Error("target_filter_invalid_all", "The explicit all-nodes clause is all: true.");
+                        clauses.Add(new(canonical, excluded, terms));
+                    }
+                    else
+                    {
+                        position = saved;
+                        if (excluded) throw Error("target_filter_invalid", "Exclusions require an allowlisted property followed by ':'.");
+                        var alternatives = ReadAlternatives("node");
+                        bare.AddRange(alternatives);
+                    }
                 }
                 if (clauses.Count + (bare.Count > 0 ? 1 : 0) > MaximumClauses)
                     throw Error("target_filter_too_complex", "The filter exceeds 32 clauses.");

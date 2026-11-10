@@ -10,6 +10,7 @@ public sealed class MultiNodeWorkspacesAcceptanceTests(ClientsManagementBrowserF
     [Theory]
     [InlineData(1366, 900, "light", 1d)]
     [InlineData(1366, 900, "dark", 1d)]
+    [InlineData(1920, 1080, "light", 1d)]
     [InlineData(768, 1024, "light", 1d)]
     [InlineData(390, 844, "dark", 1d)]
     [InlineData(320, 740, "light", 1d)]
@@ -65,6 +66,18 @@ public sealed class MultiNodeWorkspacesAcceptanceTests(ClientsManagementBrowserF
         await OpenAsync(page, fixture, "/jobs", width);
         await page.GetByRole(AriaRole.Button, new() { Name = "Edit Nightly backup", Exact = true }).ClickAsync();
         var editor = page.Locator(".jobs-edit-dialog");
+        await editor.GetByLabel("Job Name", new() { Exact = false }).WaitForAsync();
+        await editor.EvaluateAsync("async element => { for (let current = element; current; current = current.parentElement) await Promise.all(current.getAnimations().map(animation => animation.finished)); }");
+        var editorBounds = (await editor.BoundingBoxAsync())!;
+        Assert.InRange(editorBounds.Width, width - 32 * scale - 4, width + 2);
+        Assert.InRange(editorBounds.Height, height - 32 * scale - 4, height + 2);
+        foreach (var section in new[] { "Definition", "Targets", "Execution", "Steps", "Parameters", "Schedule" })
+        {
+            await SectionAsync(editor, "Job section", section);
+            var sectionBounds = (await editor.BoundingBoxAsync())!;
+            Assert.InRange(Math.Abs(sectionBounds.Width - editorBounds.Width), 0, 2);
+            Assert.InRange(Math.Abs(sectionBounds.Height - editorBounds.Height), 0, 2);
+        }
         await SectionAsync(editor, "Job section", "Targets");
         await editor.GetByRole(AriaRole.Button, new() { Name = "Preview targets", Exact = true }).ClickAsync();
         await Assertions.Expect(editor.GetByText("5 targets", new() { Exact = false }).First).ToBeVisibleAsync();

@@ -83,14 +83,33 @@ public sealed class MultiNodeWorkspaceTests : AsyncBunitContext
         var cut = Render<JobTargetPicker>(parameters => parameters.Add(picker => picker.TenantId, 7)
             .Add(picker => picker.Value, new() { Source = JobTargetSource.NodeFilter, Filter = "os: Linux" })
             .Add(picker => picker.ValueChanged, value => changed = value));
-        cut.WaitForAssertion(() => Button(cut, "Add literal clause").HasAttribute("disabled").Should().BeTrue());
-        cut.FindComponents<MudTextField<string>>().Single(field => field.Instance.Label == "Exact literal value").Find("input").Change(literal);
-        Button(cut, "Add literal clause").Click();
+        cut.WaitForAssertion(() => Button(cut, "Add clause").HasAttribute("disabled").Should().BeTrue());
+        cut.FindComponents<MudTextField<string>>().Single(field => field.Instance.Label == "Exact value").Find("input").Change(literal);
+        Button(cut, "Add clause").Click();
         cut.WaitForAssertion(() => changed.Should().NotBeNull());
         changed!.Filter.Should().StartWith("os: Linux ");
         var parsed = JobNodeFilterParser.Parse(changed.Filter);
         parsed.Clauses.Should().HaveCount(2);
         parsed.Clauses.Single(clause => clause.Field == "tags").Alternatives.Single().Operands.Single().Value.Should().Be(literal);
+    }
+
+    [Fact]
+    public async Task Regex_builder_preserves_the_pattern_and_combines_with_the_all_nodes_shorthand()
+    {
+        JobTargetDefinition? changed = null;
+        var cut = Render<JobTargetPicker>(parameters => parameters.Add(picker => picker.TenantId, 7)
+            .Add(picker => picker.Value, new() { Source = JobTargetSource.NodeFilter, Filter = ".*" })
+            .Add(picker => picker.ValueChanged, value => changed = value));
+        cut.WaitForAssertion(() => cut.FindComponents<MudSwitch<bool>>().Should().ContainSingle());
+        await cut.InvokeAsync(() => cut.FindComponent<MudSwitch<bool>>().Instance.ValueChanged.InvokeAsync(true));
+        cut.FindComponents<MudTextField<string>>().Single(field => field.Instance.Label == "Regex pattern").Find("input").Change("^web/[0-9]+$");
+        Button(cut, "Add clause").Click();
+        cut.WaitForAssertion(() => changed.Should().NotBeNull());
+        var parsed = JobNodeFilterParser.Parse(changed!.Filter);
+        parsed.Clauses[0].Field.Should().Be("all");
+        var operand = parsed.Clauses[1].Alternatives.Single().Operands.Single();
+        operand.Kind.Should().Be(JobNodeFilterOperandKind.Regex);
+        operand.Value.Should().Be("^web/[0-9]+$");
     }
 
     [Fact]
@@ -249,6 +268,37 @@ public sealed class MultiNodeWorkspaceTests : AsyncBunitContext
         await browse;
         cut.Find(".node-run-output").TextContent.Should().Be("new live output");
         cut.FindAll("button").Should().NotContain(button => button.TextContent.Trim() == "Load more output");
+    }
+
+    [Fact]
+    public async Task Live_step_snapshot_during_terminal_output_refresh_does_not_invalidate_step_enumeration()
+    {
+        _transport.PagedLogs = true;
+        var live = new ControlledLiveStream();
+        Services.AddSingleton<IJobRunStreamService>(live);
+        var node = Node(Transport.AgentA, 101, 1) with { State = JobRunNodeState.Running, CompletedAtMicros = null };
+        var view = new JobRunNodeViewState();
+        var cut = Render<JobRunNodeDetails>(parameters => parameters.Add(component => component.ParentRunId, 9UL)
+            .Add(component => component.Node, node).Add(component => component.ViewState, view));
+        cut.WaitForElement(".node-run-output");
+        _transport.PendingLog = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        _transport.NativeStepsTerminal = true;
+        var refresh = cut.InvokeAsync(() => cut.Render(parameters => parameters.Add(component => component.ParentRunId, 9UL)
+            .Add(component => component.Node, node with { State = JobRunNodeState.Succeeded, CompletedAtMicros = 1 })
+            .Add(component => component.ViewState, view)));
+        cut.WaitForAssertion(() => _transport.LogQueries.Should().HaveCount(2));
+        var native = new JobRunDto(101, 42, "Concurrent refresh", 7, "", "owner", JobRunStatusDto.Succeeded, 0, 0, 0, 1, null, null)
+            { AgentId = Transport.AgentA };
+        await live.SendAsync(new("Fresh live node data", new(native,
+            [new JobStepRunDto(1001, 101, 1, JobStepRunStatusDto.Succeeded, 1, "task-a", 0, 1, null)],
+            [new(1, [new(99, "task-a", "node-a", DateTimeOffset.UnixEpoch, "stdout", "fresh live output", 99)])])));
+        cut.WaitForAssertion(() => cut.Find(".node-run-output").TextContent.Should().Be("fresh live output"));
+        _transport.PendingLog.Task.IsCompleted.Should().BeFalse("the live replacement must happen while the HTTP enumeration is suspended");
+        _transport.PendingLog.SetResult(new(HttpStatusCode.OK)
+            { Content = JsonContent.Create(new ExecutionLogDto("task-a", "stale HTTP output", null, null, [])) });
+        await refresh;
+        cut.WaitForAssertion(() => cut.Markup.Should().NotContain("Retry node details"));
+        cut.Find(".node-run-output").TextContent.Should().Be("fresh live output");
     }
 
     private static JobRunNodeDto Node(Guid agent, ulong native, int ordinal) => new(9, agent, ordinal, native, JobRunNodeState.Succeeded,
