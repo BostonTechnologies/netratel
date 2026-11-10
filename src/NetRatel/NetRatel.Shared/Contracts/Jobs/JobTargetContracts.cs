@@ -139,6 +139,8 @@ public sealed record JobResolvedTargetPlan
         if (Version != 1 || TenantId <= 0 || JobId == 0 || DefinitionDigest.Length != 64 ||
             DefinitionDigest.Any(character => !Uri.IsHexDigit(character)) || Nodes.Count is < 1 or > 10_000 ||
             Nodes.Any(node => node.AgentId == Guid.Empty || string.IsNullOrWhiteSpace(node.Hostname)) || GroupRevision is < 1 ||
+            (Target.Source == JobTargetSource.ExecutionGroup) != GroupRevision.HasValue ||
+            Target.Source == JobTargetSource.ExplicitNodes && !Target.AgentIds!.ToHashSet().SetEquals(Nodes.Select(node => node.AgentId)) ||
             Bindings.Any(binding => string.IsNullOrWhiteSpace(binding.Name) || string.IsNullOrWhiteSpace(binding.Source)))
             throw new ArgumentException("The resolved job target plan is incomplete or invalid.");
     }

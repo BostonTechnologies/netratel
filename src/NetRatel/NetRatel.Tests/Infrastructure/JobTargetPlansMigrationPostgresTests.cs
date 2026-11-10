@@ -34,6 +34,8 @@ public sealed class JobTargetPlansMigrationPostgresTests(PostgreSqlPersistenceFi
         legacy.ClientIdentity.Should().Be("historic-name");
 
         var first = Guid.NewGuid(); var second = Guid.NewGuid();
+        db.Agents.AddRange(new Agent { Id = first, TenantId = 7 }, new Agent { Id = second, TenantId = 7 });
+        await db.SaveChangesAsync(ct);
         await db.Database.ExecuteSqlInterpolatedAsync($$"""
             INSERT INTO "JobRuns" ("Id","JobId","TenantId","AgentId","ParentRunId","IsAggregate","ClientIdentity","StartedBy","Status","CurrentStepOrdinal","CreatedAtUtc")
             VALUES (61,41,7,NULL,NULL,true,'','fixture',0,0,'2026-11-01T10:00:00Z'),
@@ -51,7 +53,7 @@ public sealed class JobTargetPlansMigrationPostgresTests(PostgreSqlPersistenceFi
         (await duplicate.Should().ThrowAsync<PostgresException>()).Which.SqlState.Should().Be(PostgresErrorCodes.UniqueViolation);
         var foreignTenant = () => db.Database.ExecuteSqlInterpolatedAsync($$"""
             INSERT INTO "JobRunNodes" ("ParentRunId","AgentId","TenantId","Ordinal","State","TargetJson")
-            VALUES (64,{{Guid.NewGuid()}},7,1,0,'{}');
+            VALUES (64,{{first}},7,1,0,'{}');
             """, ct);
         (await foreignTenant.Should().ThrowAsync<PostgresException>()).Which.SqlState.Should().Be(PostgresErrorCodes.ForeignKeyViolation);
         var substitutedNative = () => db.Database.ExecuteSqlInterpolatedAsync($$"""

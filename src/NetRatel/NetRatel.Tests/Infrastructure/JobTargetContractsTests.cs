@@ -58,6 +58,9 @@ public sealed class JobTargetContractsTests
         var conflicting = () => new JobResolvedTargetPlan(1, 7, 41, new('a', 64), target, null, [],
             [plan.Nodes[0], plan.Nodes[0] with { Hostname = "substituted" }], new(2));
         conflicting.Should().Throw<ArgumentException>();
+        var widened = () => new JobResolvedTargetPlan(1, 7, 41, new('a', 64), target, null, [],
+            [.. plan.Nodes, new(Guid.NewGuid(), "unapproved-node", null, [])], new(2));
+        widened.Should().Throw<ArgumentException>();
     }
 
     [Fact]
