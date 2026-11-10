@@ -534,6 +534,9 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("TenantId", "CreatedAtUtc");
 
+                    b.HasIndex("TenantId", "Id")
+                        .IsUnique();
+
                     b.HasIndex("TenantId", "IsEnabled");
 
                     b.HasIndex("TenantId", "PublicKeyFingerprint")
@@ -2793,6 +2796,8 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
 
                     b.HasKey("GroupId", "AgentId");
 
+                    b.HasIndex("AgentId");
+
                     b.HasIndex("TenantId", "AgentId");
 
                     b.HasIndex("TenantId", "GroupId");
@@ -3510,6 +3515,8 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                         .HasColumnType("integer");
 
                     b.HasKey("ParentRunId", "AgentId");
+
+                    b.HasIndex("AgentId");
 
                     b.HasIndex("NativeRunId")
                         .IsUnique();
@@ -7930,8 +7937,7 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                 {
                     b.HasOne("NetRatel.Infrastructure.Persistence.Agent", null)
                         .WithMany()
-                        .HasForeignKey("TenantId", "AgentId")
-                        .HasPrincipalKey("TenantId", "Id")
+                        .HasForeignKey("AgentId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
@@ -8034,6 +8040,12 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
 
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.JobRunNodeRecord", b =>
                 {
+                    b.HasOne("NetRatel.Infrastructure.Persistence.Agent", null)
+                        .WithMany()
+                        .HasForeignKey("AgentId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
                     b.HasOne("NetRatel.Infrastructure.Persistence.JobRunRecord", null)
                         .WithMany()
                         .HasForeignKey("NativeRunId")
@@ -8043,13 +8055,6 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                         .WithMany()
                         .HasForeignKey("ParentRunId")
                         .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.HasOne("NetRatel.Infrastructure.Persistence.Agent", null)
-                        .WithMany()
-                        .HasForeignKey("TenantId", "AgentId")
-                        .HasPrincipalKey("TenantId", "Id")
-                        .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
                 });
 

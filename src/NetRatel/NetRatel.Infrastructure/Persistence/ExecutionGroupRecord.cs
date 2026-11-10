@@ -44,10 +44,13 @@ public static class ExecutionGroupModelConfiguration
 {
     public static void ConfigureExecutionGroupModel(this ModelBuilder model)
     {
-        model.Entity<Agent>().HasAlternateKey(x => new { x.TenantId, x.Id });
+        // Tenant identity remains mutable for an unreferenced Agent. PostgreSQL composite
+        // constraints enforce retained membership/node tenant integrity without making
+        // TenantId an EF key (which would freeze every Agent, including legacy clients).
+        model.Entity<Agent>().HasIndex(x => new { x.TenantId, x.Id }).IsUnique();
+        model.Entity<JobRunNodeRecord>().HasIndex(x => new { x.TenantId, x.AgentId });
         model.Entity<JobRunNodeRecord>().HasOne<Agent>().WithMany()
-            .HasForeignKey(x => new { x.TenantId, x.AgentId }).HasPrincipalKey(x => new { x.TenantId, x.Id })
-            .OnDelete(DeleteBehavior.Restrict);
+            .HasForeignKey(x => x.AgentId).OnDelete(DeleteBehavior.Restrict);
         model.Entity<ExecutionGroupRecord>(entity =>
         {
             entity.ToTable("ExecutionGroups", table => table.HasCheckConstraint("CK_ExecutionGroups_Revision", "\"Revision\" > 0"));
@@ -69,8 +72,7 @@ public static class ExecutionGroupModelConfiguration
             entity.HasKey(x => new { x.GroupId, x.AgentId });
             entity.HasOne(x => x.Group).WithMany(x => x.Members).HasForeignKey(x => new { x.TenantId, x.GroupId })
                 .HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Cascade);
-            entity.HasOne<Agent>().WithMany().HasForeignKey(x => new { x.TenantId, x.AgentId })
-                .HasPrincipalKey(x => new { x.TenantId, x.Id }).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<Agent>().WithMany().HasForeignKey(x => x.AgentId).OnDelete(DeleteBehavior.Restrict);
             entity.HasIndex(x => new { x.TenantId, x.AgentId });
         });
         model.Entity<ExecutionGroupAuditRecord>(entity =>

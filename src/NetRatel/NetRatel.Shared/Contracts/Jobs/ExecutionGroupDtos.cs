@@ -7,6 +7,7 @@ public sealed record ExecutionGroupDto(Guid Id, int TenantId, string Name, strin
     bool Enabled, bool Archived, int MemberCount, int OnlineCount, int OfflineCount,
     DateTimeOffset CreatedAtUtc, DateTimeOffset UpdatedAtUtc);
 
+/// <summary>Every stored member ID is retained; unavailable metadata is represented by a disabled placeholder.</summary>
 public sealed record ExecutionGroupDetailsDto(ExecutionGroupDto Group, IReadOnlyList<JobNodeInventoryDto> Members);
 public sealed record ExecutionGroupPageDto(IReadOnlyList<ExecutionGroupDto> Items, int Page, int PageSize, int TotalCount, int? NextPage);
 public sealed record ExecutionGroupWriteDto(string Name, string? Description, bool Enabled, bool Archived,

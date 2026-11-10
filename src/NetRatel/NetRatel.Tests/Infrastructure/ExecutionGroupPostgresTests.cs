@@ -2,6 +2,8 @@ using System.Security.Claims;
 using System.Text.Json;
 using AwesomeAssertions;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using NetRatel.Application.Jobs;
 using NetRatel.Infrastructure.Identity.Authorization;
 using NetRatel.Infrastructure.Persistence;
@@ -53,8 +55,21 @@ public sealed class ExecutionGroupPostgresTests(PostgreSqlPersistenceFixture pos
     public async Task Tenant_constraints_duplicate_names_and_atomic_conflicting_revisions_are_enforced_by_postgres()
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(45)); var ct = deadline.Token;
-        await using var db = await CreateAsync(ct); var ids = await SeedAsync(db, ct);
+        // Upgrade populated group data, then prove mutable Agent metadata remains
+        // guarded by PostgreSQL tenant constraints rather than an immutable EF key.
+        await using var db = await CreateAsync(ct, "20261110054634_AddExecutionGroups"); var ids = await SeedAsync(db, ct);
         var group = await Service(db).CreateAsync(7, new("Case sensitive name", null, true, false, ids), Manager, ct);
+        await db.Database.MigrateAsync(ct);
+        (await db.ExecutionGroupMembers.CountAsync(ct)).Should().Be(5);
+        await using (var relocation = NewDb(db.Database.GetConnectionString()!))
+        {
+            var member = await relocation.Agents.SingleAsync(agent => agent.Id == ids[0], ct);
+            member.TenantId = 8;
+            var rejected = await Assert.ThrowsAsync<DbUpdateException>(() => relocation.SaveChangesAsync(ct));
+            var postgresError = rejected.InnerException.Should().BeOfType<PostgresException>().Which;
+            postgresError.SqlState.Should().Be(PostgresErrorCodes.ForeignKeyViolation);
+            postgresError.ConstraintName.Should().Be("FK_ExecutionGroupMembers_Agents_TenantId_AgentId");
+        }
         await using (var other = NewDb(db.Database.GetConnectionString()!))
         {
             (await Assert.ThrowsAsync<JobTargetValidationException>(() => Service(other).CreateAsync(7,
@@ -122,9 +137,12 @@ public sealed class ExecutionGroupPostgresTests(PostgreSqlPersistenceFixture pos
         (await Assert.ThrowsAsync<JobTargetValidationException>(() => resolver.ResolveAsync(7, target, null, null, null, null, ct))).Code.Should().Be("target_group_unavailable");
     }
 
-    private async Task<OrchestratorDbContext> CreateAsync(CancellationToken ct)
+    private async Task<OrchestratorDbContext> CreateAsync(CancellationToken ct, string? migration = null)
     {
-        var db = NewDb(await postgres.CreateDatabaseAsync(ct)); await db.Database.MigrateAsync(ct); return db;
+        var db = NewDb(await postgres.CreateDatabaseAsync(ct));
+        if (migration is null) await db.Database.MigrateAsync(ct);
+        else await db.GetService<IMigrator>().MigrateAsync(migration, ct);
+        return db;
     }
     private static OrchestratorDbContext NewDb(string connection) => new(new DbContextOptionsBuilder<OrchestratorDbContext>().UseNpgsql(connection).Options);
     private static async Task<Guid[]> SeedAsync(OrchestratorDbContext db, CancellationToken ct)

@@ -56,6 +56,13 @@ public sealed class JobTargetPlansMigrationPostgresTests(PostgreSqlPersistenceFi
             VALUES (64,{{first}},7,1,0,'{}');
             """, ct);
         (await foreignTenant.Should().ThrowAsync<PostgresException>()).Which.SqlState.Should().Be(PostgresErrorCodes.ForeignKeyViolation);
+        var foreignAgentTenant = () => db.Database.ExecuteSqlInterpolatedAsync($$"""
+            INSERT INTO "JobRunNodes" ("ParentRunId","AgentId","TenantId","Ordinal","State","TargetJson")
+            VALUES (64,{{first}},8,1,0,'{}');
+            """, ct);
+        var agentTenantFailure = (await foreignAgentTenant.Should().ThrowAsync<PostgresException>()).Which;
+        agentTenantFailure.SqlState.Should().Be(PostgresErrorCodes.ForeignKeyViolation);
+        agentTenantFailure.ConstraintName.Should().Be("FK_JobRunNodes_Agents_TenantId_AgentId");
         var substitutedNative = () => db.Database.ExecuteSqlInterpolatedAsync($$"""
             UPDATE "JobRunNodes" SET "NativeRunId" = 63 WHERE "ParentRunId" = 61 AND "AgentId" = {{first}};
             """, ct);

@@ -197,7 +197,13 @@ public sealed class ExecutionGroupService(OrchestratorDbContext db, IEffectiveAc
     private async Task<ExecutionGroupDetailsDto> DetailsAsync(ExecutionGroupRecord record, CancellationToken ct)
     {
         var ids = record.Members.Select(x => x.AgentId).ToHashSet();
-        var nodes = (await directory.ReadAsync(record.TenantId, ids, true, ct).ConfigureAwait(false)).ToArray();
+        var available = (await directory.ReadAsync(record.TenantId, ids, true, ct).ConfigureAwait(false)).ToDictionary(x => x.AgentId);
+        // Membership is independent of metadata visibility. A metadata-only save must
+        // preserve stored IDs even when their canonical directory row is unavailable.
+        var nodes = ids.Select(id => available.GetValueOrDefault(id) ?? new JobNodeInventoryDto(
+                id, string.Empty, "Unavailable client", null, [], null, null, null, false, false, "agent_metadata_unavailable"))
+            .OrderBy(x => JobTargetNode.SortKey(x.Hostname, x.Name, x.DisplayName), StringComparer.OrdinalIgnoreCase)
+            .ThenBy(x => x.AgentId).ToArray();
         return new(Map(record, ids, nodes.Where(x => x.IsOnline).Select(x => x.AgentId).ToHashSet()), nodes);
     }
     private static ExecutionGroupDto Map(ExecutionGroupRecord record, IEnumerable<Guid> members, IReadOnlySet<Guid> online)

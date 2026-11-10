@@ -157,6 +157,34 @@ public sealed class JobNodeSelectorTests
             .Code.Should().Be("target_node_unavailable");
     }
 
+    [Fact]
+    public async Task Group_details_preserve_unavailable_member_ids_without_metadata_or_execution_authority()
+    {
+        await using var db = Db();
+        var groupId = Guid.NewGuid();
+        db.ExecutionGroups.Add(new() { Id = groupId, TenantId = 7, Name = "Stored members", NormalizedName = "STORED MEMBERS",
+            Members = Ids.Take(2).Select(id => new ExecutionGroupMemberRecord { TenantId = 7, AgentId = id }).ToList() });
+        await db.SaveChangesAsync();
+        var directory = new Directory([Inventory[0], Inventory[2]]);
+        var service = new ExecutionGroupService(db, new Access(), directory, [], TimeProvider.System);
+        var details = (await service.GetAsync(7, groupId, new(), CancellationToken.None))!;
+        details.Members.Select(x => x.AgentId).Should().BeEquivalentTo(Ids.Take(2));
+        details.Group.MemberCount.Should().Be(2); details.Group.OnlineCount.Should().Be(1); details.Group.OfflineCount.Should().Be(1);
+        var unavailable = details.Members.Single(x => x.AgentId == Ids[1]);
+        unavailable.IsEnabled.Should().BeFalse(); unavailable.IsOnline.Should().BeFalse();
+        unavailable.UnavailableReason.Should().Be("agent_metadata_unavailable");
+        unavailable.Hostname.Should().BeEmpty(); unavailable.Name.Should().BeNull(); unavailable.Tags.Should().BeEmpty();
+        unavailable.OperatingSystem.Should().BeNull(); unavailable.Architecture.Should().BeNull(); unavailable.Environment.Should().BeNull();
+        var saved = (await service.UpdateAsync(7, groupId, new("Renamed", null, true, false,
+            details.Members.Select(x => x.AgentId).ToArray(), details.Group.Revision), new(), CancellationToken.None))!;
+        saved.Members.Select(x => x.AgentId).Should().BeEquivalentTo(Ids.Take(2));
+        (await db.ExecutionGroupMembers.CountAsync()).Should().Be(2);
+        var resolver = new JobTargetResolver(db, directory);
+        (await Assert.ThrowsAsync<JobTargetValidationException>(() => resolver.ResolveAsync(7,
+            new() { Source = JobTargetSource.ExecutionGroup, ExecutionGroupId = groupId }, null, null, null, null, CancellationToken.None)))
+            .Code.Should().Be("target_node_unavailable");
+    }
+
     private static OrchestratorDbContext Db() => new(new DbContextOptionsBuilder<OrchestratorDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);
     private sealed class Directory(IReadOnlyList<JobNodeInventoryDto> nodes) : IJobNodeDirectory
     {

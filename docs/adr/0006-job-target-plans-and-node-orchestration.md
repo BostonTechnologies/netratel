@@ -30,6 +30,6 @@ One canonical job completion event belongs to the parent. Internal native childr
 
 ## Persistence and compatibility
 
-New columns and tables are additive. Historic incomplete rows retain null tenant/agent fields; migrations do not invent target authority. Unique constraints prevent duplicate queue entries and native identities. Tenant consistency is checked by database constraints without turning nullable historical JobRun tenant data into a required field. Protected execution material and output redaction continue to use the existing envelope and native services.
+New columns and tables are additive. Historic incomplete rows retain null tenant/agent fields; migrations do not invent target authority. Unique constraints prevent duplicate queue entries and native identities. Agent identity remains its stable Id; a mutable unique index over TenantId and Id plus PostgreSQL composite foreign keys retains group/node tenant integrity without making TenantId an EF key. Unreferenced legacy agents retain their existing tenant-change behavior. Tenant consistency is checked by database constraints without turning nullable historical JobRun tenant data into a required field. Protected execution material and output redaction continue to use the existing envelope and native services.
 
 These contracts are the foundation for target/group resolution, orchestration, Flows and tooling. They do not themselves claim native deployment acceptance; that evidence is recorded separately from build and distribution integrity.
