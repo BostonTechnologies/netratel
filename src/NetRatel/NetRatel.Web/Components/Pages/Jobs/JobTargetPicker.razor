@@ -1,0 +1,161 @@
+@using NetRatel.Shared
+@using NetRatel.Shared.Contracts.Jobs
+@implements IDisposable
+@inject IHttpClientFactory HttpClients
+
+<section class="job-target-picker" aria-label="Job targets" data-testid="job-target-picker">
+    <MudSelect T="JobTargetSource" Value="_target.Source" ValueChanged="SourceChangedAsync" Label="Target source" Variant="Variant.Outlined" Disabled="Disabled">
+        <MudSelectItem Value="JobTargetSource.ExecutionGroup">Execution group</MudSelectItem>
+        <MudSelectItem Value="JobTargetSource.ExplicitNodes">Selected nodes</MudSelectItem>
+        <MudSelectItem Value="JobTargetSource.NodeFilter">Node filter</MudSelectItem>
+        <MudSelectItem Value="JobTargetSource.RuntimeInput">Provided at run time</MudSelectItem>
+    </MudSelect>
+    @if (TenantId <= 0)
+    {
+        <MudText Typo="Typo.body2">Select a tenant in Definition before choosing targets.</MudText>
+    }
+    else if (_target.Source == JobTargetSource.ExplicitNodes)
+    {
+        <JobNodePicker TenantId="TenantId" Environment="Environment" Value="@(_target.AgentIds ?? [])" ValueChanged="NodesChangedAsync" Disabled="Disabled" />
+    }
+    else if (_target.Source == JobTargetSource.ExecutionGroup)
+    {
+        <div class="job-target-toolbar">
+            <MudTextField T="string" Value="_groupSearch" ValueChanged="GroupSearchChangedAsync" DebounceInterval="300" Label="Search tenant execution groups" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="Disabled" />
+            <MudButton OnClick="SearchGroupsAsync" Disabled="@(_groupsLoading || Disabled)">Search groups</MudButton>
+        </div>
+        @if (_groupsLoading) { <MudProgressLinear Indeterminate="true" aria-label="Loading execution groups" /> }
+        @if (_groups is not null)
+        {
+            <MudText Typo="Typo.caption">@_groups.TotalCount matching groups. Each selected group's complete membership runs the job.</MudText>
+            @foreach (var group in _groups.Items)
+            {
+                <MudPaper Outlined="true" Class="pa-2 job-target-group" @key="group.Id">
+                    <MudButton Color="Color.Primary" Variant="@(_target.ExecutionGroupId == group.Id ? Variant.Filled : Variant.Outlined)" OnClick="@(() => GroupChangedAsync(group.Id))" Disabled="@(Disabled || !group.Enabled || group.Archived)" aria-label="@($"Select group {group.Name}")">@group.Name</MudButton>
+                    <MudText Typo="Typo.caption">@group.MemberCount members · Revision @group.Revision · @(group.Archived ? "Archived" : group.Enabled ? "Enabled" : "Disabled")</MudText>
+                </MudPaper>
+            }
+            <div class="job-target-toolbar">
+                <MudButton OnClick="PreviousGroupsAsync" Disabled="@(_groupPage <= 1 || _groupsLoading)">Previous groups</MudButton>
+                <MudText Typo="Typo.caption">Page @_groupPage</MudText>
+                <MudButton OnClick="NextGroupsAsync" Disabled="@(_groups.NextPage is null || _groupsLoading)">Next groups</MudButton>
+            </div>
+        }
+        @if (_target.ExecutionGroupId is { } groupId) { <MudText Typo="Typo.caption">Selected group ID: @groupId. Fresh runs resolve current membership.</MudText> }
+    }
+    else if (_target.Source == JobTargetSource.NodeFilter)
+    {
+        <MudTextField T="string" Value="_target.Filter" ValueChanged="FilterChangedAsync" Label="Node filter expression" Variant="Variant.Outlined" Lines="3" Immediate="true" Disabled="Disabled" HelperText="Example: tags: TestSystem !tags: Excluded. Empty never means all nodes. Use the explicit all-nodes action for every authorized client." />
+        <div class="job-target-toolbar">
+            <MudSelect T="string" @bind-Value="_builderField" Label="Literal property" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="Disabled">
+                @foreach (var field in _properties.Where(field => field.Name != "all"))
+                { <MudSelectItem T="string" Value="@field.Name">@field.Name · @field.Description</MudSelectItem> }
+            </MudSelect>
+            <MudTextField T="string" @bind-Value="_builderValue" Label="Exact literal value" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="Disabled" />
+            <MudButton OnClick="AddLiteralAsync" Disabled="@(Disabled || _properties.Count == 0 || string.IsNullOrWhiteSpace(_builderValue))">Add literal clause</MudButton>
+            <MudButton OnClick="AllNodesAsync" Disabled="Disabled">Use all authorized nodes</MudButton>
+        </div>
+        <MudText Typo="Typo.caption">Different properties combine with AND. Tags use comma for any-of and + for all-of. Quote punctuation-bearing values. Explicit /regex/ is bounded. Parameter operands use @@option.name@@ and bind as literal values. Adding a builder clause preserves the existing advanced expression.</MudText>
+    }
+    else if (_target.Source == JobTargetSource.RuntimeInput)
+    {
+        <MudAlert Severity="Severity.Info" Dense="true">Targets supplied when the job runs. The required typed input can come from manual Run, a Flow, or complete schedule defaults.</MudAlert>
+        <MudSelect T="JobRuntimeTargetKind" Value="Runtime.Kind" ValueChanged="RuntimeKindChangedAsync" Label="Runtime target type" Variant="Variant.Outlined" Disabled="Disabled">
+            @foreach (var kind in Enum.GetValues<JobRuntimeTargetKind>()) { <MudSelectItem Value="@kind">@kind</MudSelectItem> }
+        </MudSelect>
+        <MudTextField T="string" Value="Runtime.Name" ValueChanged="RuntimeNameChangedAsync" Label="Runtime target input name" Variant="Variant.Outlined" Immediate="true" Disabled="Disabled" />
+        <MudTextField T="string" Value="_runtimeDefaults" ValueChanged="RuntimeDefaultsChangedAsync" Label="Default target values (optional, one per line)" Variant="Variant.Outlined" Lines="3" Immediate="true" Disabled="Disabled" HelperText="Client IDs, exact hostnames, or exact tags retain distinct meanings. Commas and filter punctuation within each line are literal data." />
+        @if (Runtime.Kind is JobRuntimeTargetKind.Tag or JobRuntimeTargetKind.Tags)
+        { <MudSwitch T="bool" Value="Runtime.AllOf" ValueChanged="RuntimeAllOfChangedAsync" Label="Require every listed tag (all-of)" Disabled="Disabled" /> }
+    }
+    @if (_error is not null) { <MudAlert Severity="Severity.Error" Dense="true" role="alert">@_error</MudAlert> }
+    <JobTargetPreview TenantId="TenantId" Target="_target" ExecutionPolicy="ExecutionPolicy" Environment="Environment" Parameters="Parameters" Disabled="Disabled" CountChanged="PreviewCountChanged" />
+</section>
+
+@code {
+    [Parameter] public int TenantId { get; set; }
+    [Parameter] public ClientEnvironment? Environment { get; set; }
+    [Parameter] public JobTargetDefinition Value { get; set; } = new() { Source = JobTargetSource.ExplicitNodes, AgentIds = [] };
+    [Parameter] public EventCallback<JobTargetDefinition> ValueChanged { get; set; }
+    [Parameter] public EventCallback<int?> PreviewCountChanged { get; set; }
+    [Parameter] public IReadOnlyDictionary<string, string[]>? Parameters { get; set; }
+    [Parameter] public bool Disabled { get; set; }
+    [Parameter] public JobExecutionPolicy? ExecutionPolicy { get; set; }
+    private JobTargetsApiClient Api => _api ??= new(HttpClients);
+    private JobTargetsApiClient? _api;
+    private JobTargetDefinition _target = new() { Source = JobTargetSource.ExplicitNodes, AgentIds = [] };
+    private JobTargetDefinition? _received;
+    private JobRuntimeTargetDefinition Runtime => _target.RuntimeInput ?? new(JobRuntimeTargetKind.ClientId, "ClientId");
+    private ExecutionGroupPageDto? _groups;
+    private IReadOnlyList<JobNodeFilterPropertyDto> _properties = [];
+    private string _groupSearch = "", _builderField = "tags", _builderValue = "", _runtimeDefaults = "";
+    private string? _error;
+    private int _groupPage = 1, _loadedTenant;
+    private bool _groupsLoading;
+    private long _groupsGeneration;
+    private readonly CancellationTokenSource _dispose = new();
+
+    protected override async Task OnParametersSetAsync()
+    {
+        var scopeChanged = _loadedTenant != TenantId;
+        if (!ReferenceEquals(_received, Value))
+        {
+            _target = Value; _received = Value;
+            _runtimeDefaults = string.Join("\n", Runtime.DefaultValues ?? []);
+        }
+        if (scopeChanged) { _loadedTenant = TenantId; _groups = null; _groupPage = 1; }
+        if (_target.Source == JobTargetSource.ExecutionGroup && _groups is null && TenantId > 0) await LoadGroupsAsync();
+        if (_target.Source == JobTargetSource.NodeFilter && _properties.Count == 0 && TenantId > 0) await LoadPropertiesAsync();
+    }
+    private async Task ChangedAsync(JobTargetDefinition value)
+    {
+        _target = value; _received = value; _error = null;
+        await PreviewCountChanged.InvokeAsync(null);
+        await ValueChanged.InvokeAsync(value);
+    }
+    private async Task SourceChangedAsync(JobTargetSource source)
+    {
+        var target = new JobTargetDefinition { Source = source,
+            AgentIds = source == JobTargetSource.ExplicitNodes ? [] : null,
+            RuntimeInput = source == JobTargetSource.RuntimeInput ? new(JobRuntimeTargetKind.ClientId, "ClientId") : null };
+        _runtimeDefaults = "";
+        await ChangedAsync(target);
+        if (source == JobTargetSource.ExecutionGroup && TenantId > 0) await LoadGroupsAsync();
+        if (source == JobTargetSource.NodeFilter && TenantId > 0) await LoadPropertiesAsync();
+    }
+    private Task NodesChangedAsync(IReadOnlyList<Guid> ids) => ChangedAsync(_target with { AgentIds = ids });
+    private Task GroupChangedAsync(Guid id) => ChangedAsync(_target with { ExecutionGroupId = id });
+    private Task FilterChangedAsync(string? value) => ChangedAsync(_target with { Filter = value });
+    private Task RuntimeKindChangedAsync(JobRuntimeTargetKind kind) => ChangedAsync(_target with { RuntimeInput = Runtime with { Kind = kind, AllOf = false } });
+    private Task RuntimeNameChangedAsync(string value) => ChangedAsync(_target with { RuntimeInput = Runtime with { Name = value } });
+    private Task RuntimeAllOfChangedAsync(bool value) => ChangedAsync(_target with { RuntimeInput = Runtime with { AllOf = value } });
+    private Task RuntimeDefaultsChangedAsync(string? value)
+    {
+        _runtimeDefaults = value ?? "";
+        return ChangedAsync(_target with { RuntimeInput = Runtime with { DefaultValues = ParseLines(_runtimeDefaults) } });
+    }
+    private Task AddLiteralAsync() => FilterChangedAsync(string.Join(" ", new[] { _target.Filter?.Trim(), $"{_builderField}: {QuoteLiteral(_builderValue)}" }.Where(value => !string.IsNullOrWhiteSpace(value))));
+    private static string QuoteLiteral(string value) => "\"" + value.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal) + "\"";
+    private Task AllNodesAsync() => FilterChangedAsync("all: true");
+    private async Task LoadPropertiesAsync()
+    {
+        try { _properties = await Api.GetPropertiesAsync(TenantId, _dispose.Token); }
+        catch (OperationCanceledException) when (_dispose.IsCancellationRequested) { _properties = []; }
+        catch (Exception ex) { _error = ex.Message; }
+    }
+    private async Task LoadGroupsAsync()
+    {
+        _groupsLoading = true; _error = null;
+        var generation = ++_groupsGeneration;
+        try { var groups = await Api.GetGroupsAsync(TenantId, _groupSearch, _groupPage, _dispose.Token); if (generation == _groupsGeneration) _groups = groups; }
+        catch (OperationCanceledException) when (_dispose.IsCancellationRequested) { _groups = null; }
+        catch (Exception ex) { if (generation == _groupsGeneration) _error = ex.Message; }
+        finally { if (generation == _groupsGeneration) _groupsLoading = false; }
+    }
+    private Task SearchGroupsAsync() { _groupPage = 1; return LoadGroupsAsync(); }
+    private Task GroupSearchChangedAsync(string? value) { _groupSearch = value ?? ""; return SearchGroupsAsync(); }
+    private Task PreviousGroupsAsync() { _groupPage = Math.Max(1, _groupPage - 1); return LoadGroupsAsync(); }
+    private Task NextGroupsAsync() { _groupPage = _groups?.NextPage ?? _groupPage; return LoadGroupsAsync(); }
+    internal static string[] ParseLines(string? text) => (text ?? "").Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    public void Dispose() { _dispose.Cancel(); _dispose.Dispose(); }
+}

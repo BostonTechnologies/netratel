@@ -1,0 +1,2 @@
+.job-run-target-plan { display:flex; flex-direction:column; gap:8px; min-width:0; overflow-wrap:anywhere; }
+.job-run-target-plan-pages { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }

@@ -271,7 +271,7 @@
                         </MudTd>
                         <MudTd DataLabel="Target / environment">
                             <MudTooltip Text="@context.AgentId?.ToString()">
-                                <span>@(context.ClientDisplayName ?? (context.AgentId.HasValue ? $"Agent {context.AgentId.Value.ToString("N")[..8]}" : "Target unavailable"))</span>
+                                <span>@(context.IsAggregate ? $"{context.TargetCount} nodes · {context.TargetSource}" : context.ClientDisplayName ?? (context.AgentId.HasValue ? $"Agent {context.AgentId.Value.ToString("N")[..8]}" : "Target unavailable"))</span>
                             </MudTooltip>
                             <MudText Typo="Typo.caption" Color="Color.Secondary">@(context.Environment?.ToShortLabel() ?? "Unknown environment")</MudText>
                         </MudTd>
@@ -770,13 +770,28 @@
 
     private static string GetClientDisplayText(JobDto job)
     {
+        if (job.Target is { } target) return target.Source switch
+        {
+            JobTargetSource.ExecutionGroup => "Execution group · all members",
+            JobTargetSource.ExplicitNodes => $"{target.AgentIds?.Distinct().Count() ?? 0} selected nodes",
+            JobTargetSource.NodeFilter => "Node filter",
+            JobTargetSource.RuntimeInput => "Provided at run time",
+            _ => "Target unavailable"
+        };
         if (!string.IsNullOrWhiteSpace(job.ClientDisplayName))
             return StripTrailingIp(job.ClientDisplayName) ?? job.ClientDisplayName;
 
         return job.AgentId is { } id ? $"Agent {id.ToString("N")[..8]}" : "Target unavailable";
     }
 
-    private static string GetClientTooltip(JobDto job) => job.AgentId?.ToString() ?? string.Empty;
+    private static string GetClientTooltip(JobDto job) => job.Target?.Source switch
+    {
+        JobTargetSource.ExecutionGroup => $"Group {job.Target.ExecutionGroupId}",
+        JobTargetSource.NodeFilter => job.Target.Filter ?? string.Empty,
+        JobTargetSource.RuntimeInput => $"{job.Target.RuntimeInput?.Name}: {job.Target.RuntimeInput?.Kind}",
+        JobTargetSource.ExplicitNodes => $"{job.Target.AgentIds?.Count ?? 0} stable client identities",
+        _ => job.AgentId?.ToString() ?? string.Empty
+    };
 
     private static string? StripTrailingIp(string? value)
     {

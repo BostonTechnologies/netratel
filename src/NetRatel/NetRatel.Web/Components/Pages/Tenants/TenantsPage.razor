@@ -430,7 +430,8 @@
 
     private static DialogOptions BuildDialogOptions() => new()
     {
-        CloseOnEscapeKey = true,
+        CloseOnEscapeKey = false,
+        BackdropClick = false,
         FullWidth = true,
         MaxWidth = MaxWidth.Medium
     };

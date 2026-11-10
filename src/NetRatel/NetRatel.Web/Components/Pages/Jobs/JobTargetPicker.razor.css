@@ -1,0 +1,6 @@
+.job-target-picker { display:flex; flex-direction:column; gap:12px; min-width:0; }
+.job-target-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
+.job-target-toolbar ::deep .mud-input-control { flex:1 1 180px; min-width:0; }
+::deep .job-target-group { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
+::deep .job-target-preview-row { overflow-wrap:anywhere; }
+@media(max-width:599px) { .job-target-toolbar ::deep .mud-button-root { min-height:44px; } }

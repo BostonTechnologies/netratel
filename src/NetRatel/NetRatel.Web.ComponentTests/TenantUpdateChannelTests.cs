@@ -43,7 +43,7 @@ public sealed class TenantUpdateChannelTests : AsyncBunitContext
         channel.Instance.Value.Should().Be(originalChannel);
         dialogs.Find("[data-testid='tenant-target-version']").TextContent.Should().Contain("0.4.103");
         await dialogs.InvokeAsync(() => channel.Instance.ValueChanged.InvokeAsync(selectedChannel));
-        await dialogs.InvokeAsync(() => dialogs.FindAll("button").Single(button => button.TextContent.Trim() == "Save Changes").Click());
+        await dialogs.InvokeAsync(() => dialogs.FindAll("button").Single(button => button.TextContent.Trim() == "Save tenant changes").Click());
 
         page.WaitForAssertion(() => transport.Updated.Should().NotBeNull());
         transport.Updated.Should().BeEquivalentTo(new UpdateTenantRequest
@@ -80,7 +80,7 @@ public sealed class TenantUpdateChannelTests : AsyncBunitContext
         await dialogs.InvokeAsync(() => policy.Instance.ValueChanged.InvokeAsync(pinEnabled));
         if (pinEnabled)
             await dialogs.InvokeAsync(() => dialogs.Find("input[data-testid='tenant-target-version-input']").Input(enteredPin));
-        await dialogs.InvokeAsync(() => dialogs.FindAll("button").Single(button => button.TextContent.Trim() == "Save Changes").Click());
+        await dialogs.InvokeAsync(() => dialogs.FindAll("button").Single(button => button.TextContent.Trim() == "Save tenant changes").Click());
 
         page.WaitForAssertion(() => transport.Updated.Should().NotBeNull());
         transport.Updated!.AutoUpdateTargetVersion.Should().Be(expectedPin ?? string.Empty);
@@ -131,11 +131,11 @@ public sealed class TenantUpdateChannelTests : AsyncBunitContext
         dialogs.WaitForAssertion(() => dialogs.FindComponent<TenantEditorDialog>().Should().NotBeNull());
         await dialogs.InvokeAsync(() => dialogs.FindComponents<MudSelect<string>>().Single(select => select.Instance.Label == "Release channel")
             .Instance.ValueChanged.InvokeAsync("stable"));
-        await dialogs.InvokeAsync(() => dialogs.FindAll("button").Single(button => button.TextContent.Trim() == "Save Changes").Click());
+        await dialogs.InvokeAsync(() => dialogs.FindAll("button").Single(button => button.TextContent.Trim() == "Save tenant changes").Click());
         dialogs.WaitForAssertion(() => dialogs.FindComponent<MudForm>().Instance.IsValid.Should().BeFalse());
         dialogs.FindComponent<TenantEditorDialog>().Markup.Should().Contain("Select the prerelease channel");
         await dialogs.InvokeAsync(() => dialogs.FindComponent<MudSelect<bool>>().Instance.ValueChanged.InvokeAsync(false));
-        await dialogs.InvokeAsync(() => dialogs.FindAll("button").Single(button => button.TextContent.Trim() == "Save Changes").Click());
+        await dialogs.InvokeAsync(() => dialogs.FindAll("button").Single(button => button.TextContent.Trim() == "Save tenant changes").Click());
         var result = (await reference.Result)!.Data.Should().BeOfType<CreateTenantRequest>().Which;
         result.AutoUpdateChannel.Should().Be("stable");
         result.AutoUpdateTargetVersion.Should().BeNull();

@@ -1,0 +1,338 @@
+@using System.Text.Json
+@using NetRatel.Shared.Utils
+@using NetRatel.Shared.Contracts.Jobs
+@using NetRatel.Shared.Contracts.Tasks
+@implements IDisposable
+@inject IJobApiClient JobApi
+@inject IJobRunStreamService RunStream
+
+<section class="node-run-details" aria-label="@($"Steps and output for {Node.Hostname}")" data-node-agent-id="@Node.AgentId">
+    @if (_error is not null) { <MudAlert Severity="Severity.Warning" Dense="true">@_error <MudButton Size="Size.Small" OnClick="LoadAsync">Retry node details</MudButton></MudAlert> }
+    @if (_loading) { <MudProgressLinear Indeterminate="true" aria-label="Loading node steps" /> }
+    @if (Node.NativeRunId is null)
+    {
+        <MudText Typo="Typo.body2">@(Node.State == JobRunNodeState.NeverStarted ? "Queued. This node has not started." : Node.Reason ?? "No native execution was admitted for this node.")</MudText>
+    }
+    else if (_steps.Count == 0 && !_loading)
+    {
+        <MudText Typo="Typo.body2">No step evidence has been captured for this node.</MudText>
+    }
+    else
+    {
+        <MudText Typo="Typo.caption" role="status">Native execution #@Node.NativeRunId · @_liveState</MudText>
+        <MudExpansionPanels MultiExpansion="true" Elevation="0">
+            @foreach (var state in _steps.OrderBy(state => state.Step.Ordinal))
+            {
+                var step = state.Step;
+                <MudExpansionPanel @key="step.Id" Expanded="ViewState.ExpandedSteps.Contains(step.Id)" ExpandedChanged="@(expanded => ExpandedAsync(state, expanded))" Class="node-run-step">
+                    <TitleContent>
+                        <div class="node-run-step-heading">
+                            <strong>@step.Ordinal. @(step.ScriptName ?? step.CommandLabel ?? "Job step")</strong>
+                            <MudChip T="string" Size="Size.Small" Color="@StatusColor(step.Status)" Variant="Variant.Outlined">@step.Status</MudChip>
+                            <span>@step.ScriptType</span>
+                        </div>
+                    </TitleContent>
+                    <ChildContent>
+                        @if (ViewState.ExpandedSteps.Contains(step.Id))
+                        {
+                            <MudTabs ActivePanelIndex="ViewState.ActiveTabs.GetValueOrDefault(step.Id)" ActivePanelIndexChanged="@(tab => TabChangedAsync(step.Id, tab))" KeepPanelsAlive="true" Elevation="0">
+                                <MudTabPanel Text="Output">
+                                    @if (state.InspectingPages) { <MudText Typo="Typo.caption" role="status">Browsing captured output. Live step status continues; this inspected window stays in place.</MudText> }
+                                    @if (state.Loading) { <MudText Typo="Typo.caption" role="status">Loading node output…</MudText> }
+                                    @if (Output(state) is { Length: > 0 } output)
+                                    { <pre class="node-run-output" tabindex="0" aria-label="@($"{Node.Hostname} step {step.Ordinal} output")">@output</pre> }
+                                    else
+                                    { <MudText Typo="Typo.body2" Class="pa-3" role="status">@EmptyOutput(step)</MudText> }
+                                    @if (state.Truncated) { <MudText Typo="Typo.caption">Some output was omitted from this bounded view. Open the linked task for full output.</MudText> }
+                                    @if (state.TruncatedLogIds.Count > 0) { <MudText Typo="Typo.caption">Captured log lines truncated by the byte limit: @string.Join(", ", state.TruncatedLogIds.Order().Take(10))@(state.TruncatedLogIds.Count > 10 ? " …" : ""). Open full output to inspect the complete capture.</MudText> }
+                                    @if (state.HasMore && state.NextCursor is not null) { <MudButton OnClick="@(() => LoadMoreAsync(state))" Disabled="state.Loading">Load more output</MudButton> }
+                                    @if (step.TaskRequestId is not null) { <MudButton OnClick="@(() => BrowseFromStartAsync(state))" Disabled="state.Loading">@(state.InspectingPages ? "Refresh captured output" : "Browse output from start")</MudButton> }
+                                    @if (FullOutputLink(state) is { } fullOutput) { <MudButton Href="@fullOutput">Full output</MudButton> }
+                                    @if (state.LoadFailed) { <MudText Color="Color.Warning" role="alert">Output could not be loaded.</MudText><MudButton OnClick="@(() => RetryOutputAsync(state))">Retry node output</MudButton> }
+                                </MudTabPanel>
+                                <MudTabPanel Text="Diagnostics">
+                                    <MudText Typo="Typo.caption">Step run #@step.Id · Native run #@step.JobRunId</MudText>
+                                    <MudText Typo="Typo.body2">@(step.ExitCode is { } exit ? $"Exit code: {exit}" : "Exit code was not captured.")</MudText>
+                                    @if (!string.IsNullOrWhiteSpace(step.Error)) { <pre class="node-run-output">@Bound(step.Error)</pre> }
+                                    @if (step.TaskRequestId is { Length: > 0 } requestId)
+                                    { <MudButton Href="@($"/tasks/request/{Uri.EscapeDataString(requestId)}")">Full task output</MudButton> }
+                                </MudTabPanel>
+                            </MudTabs>
+                        }
+                    </ChildContent>
+                </MudExpansionPanel>
+            }
+        </MudExpansionPanels>
+    }
+</section>
+
+@code {
+    [Parameter] public ulong ParentRunId { get; set; }
+    [Parameter, EditorRequired] public JobRunNodeDto Node { get; set; } = default!;
+    [Parameter, EditorRequired] public JobRunNodeViewState ViewState { get; set; } = default!;
+    [Parameter] public bool Following { get; set; }
+    [Parameter] public EventCallback<bool> FollowingChanged { get; set; }
+    private readonly List<StepState> _steps = [];
+    private readonly CancellationTokenSource _dispose = new();
+    private CancellationTokenSource? _stream;
+    private (ulong Parent, Guid Agent, ulong? Native)? _loaded;
+    private string? _error;
+    private string _liveState = "Recorded evidence";
+    private bool _loading, _receivedFollowing;
+    private JobRunNodeState? _lastNodeState;
+    private ulong? _lastFollowStep;
+    private const int MaximumOutputCharacters = 256 * 1024;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        var identity = (ParentRunId, Node.AgentId, Node.NativeRunId);
+        if (_loaded != identity)
+        {
+            _loaded = identity; _steps.Clear(); StopStream();
+            await LoadAsync();
+            StartStream();
+        }
+        else if (_lastNodeState != Node.State && IsTerminal(Node.State))
+        {
+            // Parent and native streams may arrive in either order. Reconcile committed terminal steps before stopping.
+            await LoadAsync();
+        }
+        _lastNodeState = Node.State;
+        if (Following && !_receivedFollowing)
+        {
+            foreach (var state in _steps) state.InspectingPages = false;
+            _lastFollowStep = null;
+            await FollowCurrentAsync();
+        }
+        _receivedFollowing = Following;
+        if (IsTerminal(Node.State)) StopStream();
+    }
+    private async Task LoadAsync()
+    {
+        if (Node.NativeRunId is not { } native) return;
+        _loading = true; _error = null;
+        try
+        {
+            var steps = await JobApi.GetJobRunNodeStepsAsync(ParentRunId, Node.AgentId, _dispose.Token);
+            if (steps.Any(step => step.JobRunId != native)) throw new InvalidDataException("The server returned steps for a different node execution.");
+            MergeSteps(steps);
+            if (!ViewState.Initialized)
+            {
+                ViewState.Initialized = true;
+                var active = CurrentStep();
+                if (active is not null) ViewState.ExpandedSteps.Add(active.Step.Id);
+            }
+            foreach (var state in _steps.Where(state => ViewState.ExpandedSteps.Contains(state.Step.Id) && !state.InspectingPages)) await LoadLogAsync(state);
+        }
+        catch (OperationCanceledException) when (_dispose.IsCancellationRequested) { _liveState = "Closed"; }
+        catch (Exception ex) { _error = ex.Message; }
+        finally { _loading = false; }
+    }
+    private void MergeSteps(IReadOnlyList<JobStepRunDto> steps)
+    {
+        var existing = _steps.ToDictionary(state => state.Step.Id);
+        _steps.Clear();
+        foreach (var step in steps.OrderBy(step => step.Ordinal).ThenBy(step => step.Id))
+        {
+            if (!existing.TryGetValue(step.Id, out var state)) state = new() { Step = step };
+            else
+            {
+                if (state.Step.TaskRequestId != step.TaskRequestId || state.Step.StartedAtMicros != step.StartedAtMicros)
+                { state.Log = null; state.LogAttempted = false; state.NextCursor = null; state.HasMore = false; state.Truncated = false; state.LoadFailed = false; state.MorePageFailed = false; state.InspectingPages = false; state.TruncatedLogIds.Clear(); state.FullOutputUrl = null; state.Revision++; }
+                state.Step = step;
+            }
+            _steps.Add(state);
+        }
+    }
+    private StepState? CurrentStep() => _steps.FirstOrDefault(state => state.Step.Status == JobStepRunStatusDto.Running)
+        ?? _steps.LastOrDefault(state => state.Step.StartedAtMicros is not null) ?? _steps.FirstOrDefault();
+    private async Task FollowCurrentAsync()
+    {
+        if (_steps.Any(state => state.InspectingPages)) return;
+        var active = CurrentStep();
+        if (active is null || active.Step.Id == _lastFollowStep) return;
+        _lastFollowStep = active.Step.Id;
+        ViewState.ExpandedSteps.Clear(); ViewState.ExpandedSteps.Add(active.Step.Id); ViewState.ActiveTabs[active.Step.Id] = 0;
+        if (active.Log is null && !active.LogAttempted) await LoadLogAsync(active);
+    }
+    private async Task ExpandedAsync(StepState state, bool expanded)
+    {
+        var changed = ViewState.ExpandedSteps.Contains(state.Step.Id) != expanded;
+        if (expanded) ViewState.ExpandedSteps.Add(state.Step.Id); else ViewState.ExpandedSteps.Remove(state.Step.Id);
+        if (changed && Following) await FollowingChanged.InvokeAsync(false);
+        if (expanded && state.Log is null && !state.Loading) await LoadLogAsync(state);
+    }
+    private async Task TabChangedAsync(ulong id, int tab)
+    {
+        if (ViewState.ActiveTabs.GetValueOrDefault(id) != tab && Following) await FollowingChanged.InvokeAsync(false);
+        ViewState.ActiveTabs[id] = tab;
+    }
+    private async Task LoadLogAsync(StepState state, bool resetInspectedWindow = false)
+    {
+        if (state.Loading || state.Step.TaskRequestId is null || state.InspectingPages && !resetInspectedWindow) return;
+        var revision = state.Revision;
+        var requestId = state.Step.TaskRequestId;
+        state.Loading = true; state.LogAttempted = true; state.LoadFailed = false;
+        state.MorePageFailed = false;
+        try
+        {
+            var log = await JobApi.GetJobRunNodeStepLogsAsync(ParentRunId, Node.AgentId, state.Step.Id, _dispose.Token);
+            if (requestId != state.Step.TaskRequestId || log is null) return;
+            if (revision == state.Revision)
+            {
+                SetLog(state, log);
+                CapturePageMetadata(state, log);
+            }
+        }
+        catch (OperationCanceledException) when (_dispose.IsCancellationRequested) { _liveState = "Closed"; }
+        catch (Exception) { if (revision == state.Revision) state.LoadFailed = true; }
+        finally { state.Loading = false; }
+    }
+    private async Task LoadMoreAsync(StepState state)
+    {
+        if (state.Loading || !state.HasMore || state.NextCursor is not { } cursor) return;
+        var requestId = state.Step.TaskRequestId;
+        var revision = state.Revision;
+        state.InspectingPages = true;
+        state.Loading = true; state.LoadFailed = false; state.MorePageFailed = false;
+        if (Following) await FollowingChanged.InvokeAsync(false);
+        try
+        {
+            var page = await JobApi.GetJobRunNodeStepLogsPageAsync(ParentRunId, Node.AgentId, state.Step.Id, cursor, _dispose.Token);
+            if (requestId != state.Step.TaskRequestId || page is null || revision != state.Revision || !state.InspectingPages) return;
+            if (page.HasMore && page.NextCursor == cursor) throw new InvalidDataException("The output cursor did not advance.");
+            SetLog(state, page, append: true);
+            CapturePageMetadata(state, page);
+        }
+        catch (OperationCanceledException) when (_dispose.IsCancellationRequested) { _liveState = "Closed"; }
+        catch (Exception) { state.LoadFailed = true; state.MorePageFailed = true; }
+        finally { state.Loading = false; }
+    }
+    private async Task BrowseFromStartAsync(StepState state)
+    {
+        if (state.Loading) return;
+        state.InspectingPages = true;
+        if (Following) await FollowingChanged.InvokeAsync(false);
+        await LoadLogAsync(state, resetInspectedWindow: true);
+    }
+    private Task RetryOutputAsync(StepState state) => state.MorePageFailed ? LoadMoreAsync(state) : LoadLogAsync(state, resetInspectedWindow: state.InspectingPages);
+    private static void CapturePageMetadata(StepState state, ExecutionLogDto page)
+    {
+        state.NextCursor = page.NextCursor; state.HasMore = page.HasMore;
+        state.TruncatedLogIds.UnionWith(page.TruncatedLogIds ?? []);
+        state.FullOutputUrl = page.FullOutputUrl ?? state.FullOutputUrl;
+    }
+    private static string? FullOutputLink(StepState state) => state.FullOutputUrl is { } url && url.StartsWith('/') && !url.StartsWith("//", StringComparison.Ordinal) && !url.Contains('\\')
+        ? url : state.Step.TaskRequestId is { Length: > 0 } requestId ? $"/tasks/request/{Uri.EscapeDataString(requestId)}" : null;
+    private void StartStream()
+    {
+        if (Node.NativeRunId is not { } native || IsTerminal(Node.State)) return;
+        _stream = CancellationTokenSource.CreateLinkedTokenSource(_dispose.Token);
+        _ = ObserveAsync(native, _stream.Token);
+    }
+    private async Task ObserveAsync(ulong native, CancellationToken ct)
+    {
+        try
+        {
+            await foreach (var update in RunStream.SubscribeAsync(native, ct))
+            {
+                if (ct.IsCancellationRequested) break;
+                await InvokeAsync(async () =>
+                {
+                    if (ct.IsCancellationRequested) return;
+                    _liveState = update.State;
+                    if (update.Snapshot is { } snapshot && snapshot.Run.Id == native && snapshot.Run.AgentId == Node.AgentId)
+                    {
+                        if (snapshot.Steps.Any(step => step.JobRunId != native)) { _error = "A node update had an invalid execution identity."; return; }
+                        MergeSteps(snapshot.Steps);
+                        foreach (var captured in snapshot.Logs)
+                        {
+                            var candidates = _steps.Where(state => state.Step.Ordinal == captured.Ordinal).Take(2).ToArray();
+                            // A legacy ordinal-only stream cannot identify two attempts. Exact step-run output is fetched below.
+                            if (candidates.Length == 1 && !candidates[0].InspectingPages)
+                            {
+                                SetLog(candidates[0], new(candidates[0].Step.TaskRequestId, null, null, null, captured.Logs) { Truncated = captured.Truncated });
+                                candidates[0].NextCursor = null; candidates[0].HasMore = false;
+                            }
+                        }
+                        if (Following) await FollowCurrentAsync();
+                        foreach (var state in _steps.Where(state => ViewState.ExpandedSteps.Contains(state.Step.Id) && state.Log is null && !state.LogAttempted)) await LoadLogAsync(state);
+                    }
+                    StateHasChanged();
+                });
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { _liveState = "Closed"; }
+        catch (Exception) { if (!ct.IsCancellationRequested) await InvokeAsync(() => { _liveState = "Live node updates unavailable; reopen or refresh to retry."; StateHasChanged(); }); }
+    }
+    private static void SetLog(StepState state, ExecutionLogDto log, bool append = false)
+    {
+        state.Revision++;
+        var source = append && state.Log is { } previous ? previous.Logs.Concat(log.Logs) : log.Logs;
+        var ordered = source.GroupBy(line => (line.Seq, line.Id)).Select(group => group.First()).OrderBy(line => line.Seq).ThenBy(line => line.Id).ToList();
+        var lines = ordered.TakeLast(2000).ToList();
+        var remaining = MaximumOutputCharacters;
+        for (var index = lines.Count - 1; index >= 0; index--)
+        {
+            if (lines[index].Message.Length > remaining)
+            {
+                lines[index] = lines[index] with { Message = lines[index].Message[^remaining..] };
+                lines.RemoveRange(0, index);
+                state.Truncated = true;
+                break;
+            }
+            remaining -= lines[index].Message.Length;
+        }
+        state.Log = log with { Logs = lines, Plain = log.Plain is null ? append ? state.Log?.Plain : null : Bound(log.Plain) };
+        state.Truncated = state.Truncated || log.Truncated || lines.Count < ordered.Count || (log.Plain?.Length ?? 0) > MaximumOutputCharacters;
+        state.LoadFailed = false;
+    }
+    private static string Output(StepState state)
+    {
+        if (state.Log is not { } log) return Bound(state.Step.LogText ?? "");
+        foreach (var candidate in new[] { log.Plain }.Concat(log.Logs.OrderByDescending(line => line.Seq).Select(line => line.Message)))
+        {
+            if (string.IsNullOrWhiteSpace(candidate) || !candidate.TrimStart().StartsWith('{')) continue;
+            try
+            {
+                using var json = JsonDocument.Parse(candidate);
+                if (json.RootElement.TryGetProperty("stdout", out var stdout) && stdout.ValueKind == JsonValueKind.Array)
+                {
+                    var lines = stdout.EnumerateArray().Select(line => line.ValueKind == JsonValueKind.String ? line.GetString() ?? "" : line.GetRawText());
+                    if (json.RootElement.TryGetProperty("stderr", out var stderr) && stderr.ValueKind == JsonValueKind.Array) lines = lines.Concat(stderr.EnumerateArray().Select(line => line.ValueKind == JsonValueKind.String ? line.GetString() ?? "" : line.GetRawText()));
+                    return Bound(AnsiConsole.NormalizeForDisplay(string.Join("\n", lines)));
+                }
+            }
+            catch (JsonException) { continue; } // Ordinary text remains eligible for the plain-output fallback.
+        }
+        return Bound(AnsiConsole.NormalizeForDisplay(log.Logs.Count > 0 ? string.Join("\n", log.Logs.Select(line => line.Message)) : log.Plain ?? ""));
+    }
+    private static string EmptyOutput(JobStepRunDto step) => step.Status switch
+    {
+        JobStepRunStatusDto.Pending => "Waiting for this node’s step to start.",
+        JobStepRunStatusDto.Running => "Waiting for output from this node.",
+        JobStepRunStatusDto.Unknown => "The physical execution outcome is unknown. No replay is implied.",
+        _ => "No output was captured for this node’s step."
+    };
+    private static string Bound(string text) => text.Length > MaximumOutputCharacters ? text[^MaximumOutputCharacters..] : text;
+    private static Color StatusColor(JobStepRunStatusDto status) => status switch { JobStepRunStatusDto.Succeeded => Color.Success, JobStepRunStatusDto.Failed => Color.Error, JobStepRunStatusDto.Running => Color.Info, _ => Color.Warning };
+    private static bool IsTerminal(JobRunNodeState state) => state is JobRunNodeState.Succeeded or JobRunNodeState.Failed or JobRunNodeState.Skipped or JobRunNodeState.Cancelled or JobRunNodeState.TimedOut or JobRunNodeState.Unknown;
+    private void StopStream() { _stream?.Cancel(); _stream?.Dispose(); _stream = null; }
+    public void Dispose() { StopStream(); _dispose.Cancel(); _dispose.Dispose(); }
+    private sealed class StepState
+    {
+        public required JobStepRunDto Step { get; set; }
+        public ExecutionLogDto? Log { get; set; }
+        public long Revision { get; set; }
+        public bool Loading { get; set; }
+        public bool LoadFailed { get; set; }
+        public bool LogAttempted { get; set; }
+        public bool Truncated { get; set; }
+        public string? NextCursor { get; set; }
+        public bool HasMore { get; set; }
+        public HashSet<long> TruncatedLogIds { get; } = [];
+        public string? FullOutputUrl { get; set; }
+        public bool MorePageFailed { get; set; }
+        public bool InspectingPages { get; set; }
+    }
+}

@@ -59,6 +59,14 @@
         }
         <MudText Typo="Typo.body2" Class="job-run-summary" role="status">@GetRunOutcomeSummary()</MudText>
 
+        @if (_run.IsAggregate)
+        {
+            <JobRunNodes Run="_run" />
+        }
+        else
+        {
+        <details class="job-run-legacy-node" open>
+            <summary>@GetTargetSummary()</summary>
         <section class="job-run-execution" aria-label="Execution steps and output">
             <div class="job-run-follow-bar">
                 <MudText Typo="Typo.subtitle2">Steps and output</MudText>
@@ -144,12 +152,23 @@
                 </MudExpansionPanels>
             }
         </section>
+        </details>
+
+
+        }
 
         <details class="job-run-details">
             <summary>Run details and inputs</summary>
             <MudStack Spacing="2" Class="pa-3">
                 <MudText Typo="Typo.caption">Started by @(_run.StartedBy ?? "Unknown") · Created @FormatTimestamp(_run.CreatedAtMicros) · Started @FormatTimestamp(_run.StartedAtMicros) · @(_run.Status == JobRunStatusDto.Unknown ? "Reconciled" : "Completed") @FormatTimestamp(_run.CompletedAtMicros)</MudText>
-                <MudText Typo="Typo.caption" Color="Color.Secondary">Agent ID: @(_run.AgentId?.ToString() ?? "Not recorded") · Client identity: @(string.IsNullOrWhiteSpace(_run.ClientIdentity) ? "Not recorded" : _run.ClientIdentity)</MudText>
+                @if (_run.IsAggregate)
+                {
+                    <MudText Typo="Typo.caption">Target source: @_run.TargetSource · Target plan: @_run.TargetPlanDigest · Definition: @_run.DefinitionDigest</MudText>
+                }
+                else
+                {
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">Agent ID: @(_run.AgentId?.ToString() ?? "Not recorded") · Client identity: @(string.IsNullOrWhiteSpace(_run.ClientIdentity) ? "Not recorded" : _run.ClientIdentity)</MudText>
+                }
                 @if (!string.IsNullOrWhiteSpace(_run.Error))
                 {
                     <pre class="job-run-diagnostic-text">@BoundText(_run.Error)</pre>
@@ -167,6 +186,13 @@
                 }
             </MudStack>
         </details>
+        @if (_run.IsAggregate)
+        {
+            <section class="job-run-details">
+                <MudButton OnClick="@(() => _planDetailsOpen = !_planDetailsOpen)" aria-expanded="@_planDetailsOpen" aria-controls="admitted-target-plan">@(_planDetailsOpen ? "Hide admitted target plan" : "Show admitted target plan and provenance")</MudButton>
+                @if (_planDetailsOpen) { <div id="admitted-target-plan"><JobRunTargetPlanDetails RunId="_run.Id" /></div> }
+            </section>
+        }
     }
 </MudStack>
 
@@ -181,6 +207,7 @@
     private IReadOnlyList<JobRunOptionDto> _runOptions = Array.Empty<JobRunOptionDto>();
 
     private bool _isLoading = true;
+    private bool _planDetailsOpen;
     private string _liveState = "Connecting";
     private bool _isCancelling;
     private bool _disposed;
@@ -207,6 +234,7 @@
         _follow.Reset();
         _loadedRunId = RunIdValue;
         _run = null;
+        _planDetailsOpen = false;
         _steps = [];
         _liveState = "Connecting";
         _isCancelling = false;
@@ -280,7 +308,7 @@
             JobId = (long)run.JobId;
             _runOptions = BuildRunOptions(run);
 
-            var fetchedSteps = (await JobApi.GetJobRunStepsAsync(runId, cancellationToken)).OrderBy(step => step.Ordinal).ToList();
+            var fetchedSteps = run.IsAggregate ? [] : (await JobApi.GetJobRunStepsAsync(runId, cancellationToken)).OrderBy(step => step.Ordinal).ToList();
             cancellationToken.ThrowIfCancellationRequested();
             if (generation != _routeGeneration || _disposed) return;
             SyncStepStates(fetchedSteps);
@@ -330,8 +358,8 @@
                         _run = snapshot.Run;
                         _loadError = null;
                         _runOptions = BuildRunOptions(_run);
-                        SyncStepStates(snapshot.Steps.OrderBy(step => step.Ordinal).ToList());
-                        foreach (var captured in snapshot.Logs)
+                        SyncStepStates(_run.IsAggregate ? [] : snapshot.Steps.OrderBy(step => step.Ordinal).ToList());
+                        foreach (var captured in _run.IsAggregate ? [] : snapshot.Logs)
                         {
                             var state = _steps.FirstOrDefault(state => state.Step.Ordinal == captured.Ordinal);
                             if (state is null) continue;
@@ -431,6 +459,7 @@
         {
             JobRunStatusDto.Succeeded => "Execution completed successfully.",
             JobRunStatusDto.Failed => string.IsNullOrWhiteSpace(_run.Error) ? "Execution failed. Expand diagnostics for details." : $"Execution failed: {TaskPresentation.ConciseReason(_run.Error)}",
+            JobRunStatusDto.Running when _run.IsAggregate => "Node workflows are in progress. Open a hostname for ordered steps and isolated output.",
             JobRunStatusDto.Running when _steps.Any(state => state.Step.StartedAtMicros.HasValue) => "Execution is in progress.",
             JobRunStatusDto.Running => "Waiting for agent execution evidence.",
             JobRunStatusDto.Pending => "Queued. Waiting for execution to start.",
@@ -444,10 +473,11 @@
 
     private string GetTargetSummary()
     {
+        if (_run?.IsAggregate == true) return $"{_run.TargetCount} nodes · {_run.TargetSource}";
         var name = new[] { _run?.TargetDisplayName, _run?.TargetName, _run?.ClientDisplayName }.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
         var host = _run?.TargetHostName;
-        if (!string.IsNullOrWhiteSpace(name)) return !string.IsNullOrWhiteSpace(host) && host != name ? $"{name} ({host})" : name;
-        return !string.IsNullOrWhiteSpace(host) ? host : "Target unknown";
+        if (!string.IsNullOrWhiteSpace(name)) return !string.IsNullOrWhiteSpace(host) ? host != name ? $"{name} ({host})" : host : $"Hostname unavailable · {name}";
+        return !string.IsNullOrWhiteSpace(host) ? host : "Target unknown (hostname unavailable)";
     }
 
     private string GetEnvironmentSummary() => _run?.Environment is { } environment ? environment.ToShortLabel() : "Environment not recorded";
@@ -603,7 +633,7 @@
     private static void ApplyLog(StepState state, ExecutionLogDto log, bool truncated)
     {
         state.OutputRevision++;
-        var ordered = log.Logs.GroupBy(line => line.Seq).Select(group => group.First()).OrderBy(line => line.Seq).ToList();
+        var ordered = log.Logs.GroupBy(line => (line.Seq, line.Id)).Select(group => group.First()).OrderBy(line => line.Seq).ThenBy(line => line.Id).ToList();
         var bounded = ordered.TakeLast(MaximumOutputLines).ToList();
         var remaining = MaximumOutputCharacters;
         for (var index = bounded.Count - 1; index >= 0; index--)

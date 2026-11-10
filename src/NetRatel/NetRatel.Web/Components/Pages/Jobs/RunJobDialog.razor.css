@@ -11,3 +11,6 @@
 .run-job-inputs-single { grid-template-columns: minmax(0, 1fr); }
 
 .run-job-field-error { color: var(--mud-palette-error); font-size: .75rem; margin-top: 4px; }
+.run-job-targets { display:flex; flex-direction:column; gap:12px; padding:12px 0; border-bottom:1px solid var(--mud-palette-divider); min-width:0; overflow-wrap:anywhere; }
+.run-job-target-names { max-height:240px; overflow:auto; }
+.run-job-target-pages { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }

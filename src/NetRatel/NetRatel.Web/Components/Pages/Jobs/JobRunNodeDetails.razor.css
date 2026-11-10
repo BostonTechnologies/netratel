@@ -1,0 +1,8 @@
+.node-run-details { min-width:0; }
+.node-run-step-heading { display:flex; flex-wrap:wrap; align-items:center; gap:8px; min-width:0; overflow-wrap:anywhere; }
+.node-run-step-heading strong { flex:1 1 160px; }
+.node-run-output { margin:12px 0; padding:12px; max-width:100%; max-height:50dvh; min-height:100px; overflow:auto; white-space:pre; font:.85rem/1.5 ui-monospace,monospace; background:var(--mud-palette-background-gray); border:1px solid var(--mud-palette-divider); border-radius:6px; }
+.node-run-output:focus-visible { outline:2px solid var(--mud-palette-primary); outline-offset:2px; }
+.node-run-details ::deep .mud-expand-panel-header { min-height:44px; }
+.node-run-details ::deep .mud-tab { text-transform:none; min-height:44px; }
+@media(max-width:599px) { .node-run-details ::deep .mud-expand-panel-content { padding:8px; } }

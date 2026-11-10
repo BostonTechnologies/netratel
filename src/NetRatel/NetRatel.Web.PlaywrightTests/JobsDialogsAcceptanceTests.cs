@@ -50,7 +50,7 @@ public sealed class JobsDialogsAcceptanceTests(ClientsManagementBrowserFixture b
         await page.GetByRole(AriaRole.Button, new() { Name = "Edit Nightly backup", Exact = true }).ClickAsync();
         var parent = page.Locator(".jobs-edit-dialog");
         await parent.GetByLabel("Job Name", new() { Exact = true }).FillAsync("Unsaved parent title");
-        await parent.GetByRole(AriaRole.Tab, new() { Name = "Parameters", Exact = false }).ClickAsync();
+        await SelectJobSectionAsync(parent, "Parameters");
         await parent.GetByRole(AriaRole.Button, new() { Name = "Add Param", Exact = true }).ClickAsync();
         var editor = page.Locator(".param-editor");
         await editor.GetByLabel("Name", new() { Exact = true }).FillAsync("New input");
@@ -84,7 +84,7 @@ public sealed class JobsDialogsAcceptanceTests(ClientsManagementBrowserFixture b
         await page.GetByRole(AriaRole.Button, new() { Name = "Edit Nightly backup", Exact = true }).ClickAsync();
         var parent = page.Locator(".jobs-edit-dialog");
         await parent.GetByLabel("Job Name", new() { Exact = true }).FillAsync("Unsaved definition stays");
-        await parent.GetByRole(AriaRole.Tab, new() { Name = "Parameters", Exact = false }).ClickAsync();
+        await SelectJobSectionAsync(parent, "Parameters");
         var types = new[] { "Text", "Whole number", "True / false", "JSON", "Choice", "Secret", "Text", "Text" };
         for (var index = 0; index < types.Length; index++)
         {
@@ -221,9 +221,16 @@ public sealed class JobsDialogsAcceptanceTests(ClientsManagementBrowserFixture b
         await page.GetByTestId("app-main-content").WaitForAsync(new() { Timeout = 90_000 });
         await page.Locator("html[data-netratel-theme]").WaitForAsync();
         var drawer = page.GetByTestId("app-navigation-drawer");
-        var closed = await drawer.EvaluateAsync<bool>("e => e.classList.contains('mud-drawer--closed')");
-        if ((width >= 1280 && closed) || (width < 1280 && !closed)) await page.GetByTestId("navigation-toggle").ClickAsync();
-        if (width < 1280) await Assertions.Expect(drawer).ToHaveClassAsync(new System.Text.RegularExpressions.Regex("mud-drawer--closed"));
+        await Assertions.Expect(drawer).ToHaveClassAsync(new System.Text.RegularExpressions.Regex(
+            width < 1280 ? "mud-drawer--closed" : "mud-drawer--open"));
+    }
+    private static async Task SelectJobSectionAsync(ILocator dialog, string name)
+    {
+        await dialog.WaitForAsync();
+        var switcher = dialog.GetByLabel("Job section", new() { Exact = true });
+        await switcher.WaitForAsync(new() { State = WaitForSelectorState.Attached });
+        if (await switcher.IsVisibleAsync()) await switcher.SelectOptionAsync(new SelectOptionValue { Label = name });
+        else await dialog.GetByRole(AriaRole.Tab, new() { Name = name, Exact = false }).ClickAsync();
     }
     private static async Task WaitForDialogAnimationAsync(ILocator dialog) =>
         await dialog.EvaluateAsync("e => Promise.all(e.getAnimations().map(animation => animation.finished.catch(() => {})))");

@@ -1,0 +1,51 @@
+@using NetRatel.Shared.Contracts.Jobs
+@implements IDisposable
+@inject IJobApiClient JobApi
+
+<section aria-label="Admitted target plan" class="job-run-target-plan pa-3">
+    @if (_loading) { <MudProgressLinear Indeterminate="true" aria-label="Loading admitted target plan" /> }
+    @if (_error is not null) { <MudAlert Severity="Severity.Warning" Dense="true">@_error <MudButton OnClick="@(() => LoadAsync(1))">Retry target plan</MudButton></MudAlert> }
+    @if (_plan is { } plan)
+    {
+        <MudText Typo="Typo.body2">@plan.TargetCount admitted targets · @plan.Target.Source · Thread Count @plan.ExecutionPolicy.ThreadCount · @plan.ExecutionPolicy.NodeFailurePolicy</MudText>
+        @if (plan.Target.ExecutionGroupId is { } groupId) { <MudText Typo="Typo.body2">Execution group @groupId · Admitted revision @plan.GroupRevision</MudText> }
+        @if (plan.Target.Filter is { } filter) { <MudText Typo="Typo.body2">Admitted filter: @filter</MudText> }
+        <MudText Typo="Typo.caption">Definition digest: @plan.DefinitionDigest</MudText>
+        <MudText Typo="Typo.caption">Target-plan digest: @plan.Digest</MudText>
+        @foreach (var binding in plan.Bindings)
+        { <MudText Typo="Typo.caption">Binding @binding.Name · Source @binding.Source</MudText> }
+        <MudText Typo="Typo.caption">The original admitted membership and metadata are shown here. Current group edits do not alter this execution.</MudText>
+        @foreach (var node in plan.Nodes)
+        { <MudText Typo="Typo.body2" @key="node.AgentId">@(string.IsNullOrWhiteSpace(node.Hostname) ? "Hostname unavailable" : node.Hostname) · @node.DisplayName · @node.AgentId</MudText> }
+        <div class="job-run-target-plan-pages">
+            <MudButton Disabled="@(plan.Page <= 1 || _loading)" OnClick="@(() => LoadAsync(Math.Max(1, plan.Page - 1)))">Previous admitted targets</MudButton>
+            <MudText Typo="Typo.caption">Page @plan.Page · @plan.TargetCount total</MudText>
+            <MudButton Disabled="@(plan.NextPage is null || _loading)" OnClick="@(() => LoadAsync(plan.NextPage ?? plan.Page))">Next admitted targets</MudButton>
+        </div>
+    }
+</section>
+
+@code {
+    [Parameter] public ulong RunId { get; set; }
+    private JobLaunchPreviewDto? _plan;
+    private ulong? _loaded;
+    private bool _loading;
+    private string? _error;
+    private readonly CancellationTokenSource _dispose = new();
+    protected override Task OnParametersSetAsync() => _loaded != RunId ? LoadAsync(1) : Task.CompletedTask;
+    private async Task LoadAsync(int page)
+    {
+        var runId = RunId; _loaded = runId; _loading = true; _error = null;
+        try
+        {
+            var plan = await JobApi.GetJobRunTargetPlanAsync(runId, page, 25, _dispose.Token);
+            if (RunId != runId) return;
+            if (plan?.Nodes.Count > 25) throw new InvalidDataException("The historical target page exceeded its requested bound.");
+            _plan = plan;
+        }
+        catch (OperationCanceledException) when (_dispose.IsCancellationRequested) { _plan = null; }
+        catch (Exception) { _error = "The admitted target plan could not be loaded. Existing node and output evidence remains available."; }
+        finally { if (RunId == runId) _loading = false; }
+    }
+    public void Dispose() { _dispose.Cancel(); _dispose.Dispose(); }
+}

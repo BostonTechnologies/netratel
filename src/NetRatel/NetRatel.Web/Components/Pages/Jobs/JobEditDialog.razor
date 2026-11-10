@@ -12,7 +12,6 @@
 
 @inject IJobApiClient JobApi
 @inject ITenantApiService TenantApi
-@inject ClientPresentationService ClientPresentation
 @inject IScriptLibraryService ScriptLibrary
 @inject ISnackbar Snackbar
 @inject IDialogService DialogService
@@ -24,6 +23,12 @@
             {
                 <MudText Typo="Typo.caption" Color="Color.Secondary" Class="jobs-editor-saved" role="status">
                     Job #@_jobId created. Steps and parameters save as you edit them. Save finishes the definition and enables its schedule.
+                </MudText>
+            }
+            else if (_jobId is not null)
+            {
+                <MudText Typo="Typo.caption" Color="Color.Secondary" Class="jobs-editor-saved" role="status">
+                    Steps and parameters save as you edit them. Cancel discards unsaved definition, target, execution and schedule changes; saved steps and parameters remain.
                 </MudText>
             }
             @if (!string.IsNullOrWhiteSpace(_validationMessage))
@@ -43,12 +48,15 @@
                 </MudAlert>
             }
             <fieldset class="jobs-editor-fields" disabled="@(_isSaving || _isLoading)">
-            <MudGrid Spacing="2" Class="flex-grow-1 jobs-editor-layout ma-0">
-                <MudItem xs="12" md="3" Class="d-flex">
-                    <MudPaper Elevation="0" Class="pa-3 jobs-editor-panel jobs-editor-sidebar">
-                        <MudStack Spacing="2">
-                            <MudTabs KeepPanelsAlive="true" Elevation="0" TabPanelsClass="pt-2" Color="Color.Default" Class="jobs-editor-definition-tabs">
-                                <MudTabPanel Text="Definition" Icon="@Icons.Material.Filled.Work">
+            <label class="jobs-editor-section-switcher">
+                <span>Job section</span>
+                <select @bind="_detailsTab" aria-label="Job section">
+                    <option value="0">Definition</option><option value="1">Targets</option><option value="2">Execution</option>
+                    <option value="3">Steps</option><option value="4">Parameters</option><option value="5">Schedule</option>
+                </select>
+            </label>
+            <MudTabs @bind-ActivePanelIndex="_detailsTab" KeepPanelsAlive="true" Elevation="0" TabPanelsClass="pa-3" Color="Color.Default" Class="jobs-editor-tabs jobs-editor-definition-tabs">
+<MudTabPanel Text="Definition" Icon="@Icons.Material.Filled.Work">
                                     <MudStack Spacing="2">
                                         <MudTextField @bind-Value="_name"
                                                       Label="Job Name"
@@ -87,26 +95,7 @@
                                             }
                                         </MudSelect>
 
-                                        <MudAutocomplete T="ClientPresentationModel"
-                                                         Label="@(_selectedTenant == null ? "Select a Tenant first" : "Select Agent")"
-                                                         Value="_selectedClient"
-                                                         ValueChanged="OnClientChanged"
-                                                         SearchFunc="SearchClients"
-                                                         ToStringFunc="@(c => c == null ? "" : $"{c.DisplayName} ({c.HostName})")"
-                                                         Variant="Variant.Outlined"
-                                                         Margin="Margin.Dense"
-                                                         AdornmentIcon="@Icons.Material.Filled.Fingerprint"
-                                                         Disabled="@(_selectedTenant == null)"
-                                                         ResetValueOnEmptyText="true"
-                                                         Clearable="true"
-                                                         Required="true">
-                                            <ItemTemplate Context="client">
-                                                <MudText Typo="Typo.body2">
-                                                    <b>@client.DisplayName</b>
-                                                    <span class="mud-text-secondary"> - @client.HostName (@client.OperatingSystem)</span>
-                                                </MudText>
-                                            </ItemTemplate>
-                                        </MudAutocomplete>
+
 
                                         <MudTextField T="string"
                                                       Value="_folderSubfolder"
@@ -126,8 +115,21 @@
 
                                     </MudStack>
                                 </MudTabPanel>
-                                <MudTabPanel Text="Runtime">
+<MudTabPanel Text="Targets" Icon="@Icons.Material.Filled.Devices">
+                    <JobTargetPicker TenantId="@(_selectedTenant?.Id ?? 0)" Environment="_environment" Value="_target" ValueChanged="TargetChanged" ExecutionPolicy="@(new JobExecutionPolicy(_threadCount, _nodeFailurePolicy))" PreviewCountChanged="TargetPreviewChanged" Parameters="TargetParameters" />
+                </MudTabPanel>
+<MudTabPanel Text="Execution">
                                     <MudStack Spacing="2">
+                                    <MudNumericField T="int" @bind-Value="_threadCount" Label="Thread Count" Min="1" Max="100" Required="true" Variant="Variant.Outlined" HelperText="Maximum nodes running this job concurrently. Each slot runs one node’s complete ordered workflow." />
+                                    <MudText Typo="Typo.body2" role="status">@ConcurrencySummary</MudText>
+                                    <MudText Typo="Typo.subtitle2">If a node fails</MudText>
+                                    <MudRadioGroup T="JobNodeFailurePolicy" @bind-Value="_nodeFailurePolicy" aria-label="If a node fails">
+                                        <MudRadio Value="JobNodeFailurePolicy.StopRemaining">Stop starting remaining nodes</MudRadio>
+                                        <MudRadio Value="JobNodeFailurePolicy.ContinueRemaining">Continue on remaining nodes, then fail the run</MudRadio>
+                                    </MudRadioGroup>
+                                    <MudText Typo="Typo.caption">Already running nodes settle in either policy. Unknown physical execution closes new starts even when continuing. Step retry and failure behavior stays within each node.</MudText>
+                                    <MudText Typo="Typo.caption">Runtime limits below apply to each native node workflow after dispatch; waiting targets do not consume another node’s deadline. A Flow action can still have a whole-action deadline.</MudText>
+
                                         <MudGrid Spacing="1">
                                             <MudItem xs="12" sm="6">
                                                 <MudNumericField T="int"
@@ -148,63 +150,7 @@
                                         </MudGrid>
                                     </MudStack>
                                 </MudTabPanel>
-                                <MudTabPanel Text="Schedule" Icon="@Icons.Material.Filled.Schedule">
-                                    <MudStack Spacing="2">
-                                        <MudSwitch T="bool"
-                                                   @bind-Value="_scheduleEnabled"
-                                                   Color="Color.Primary"
-                                                   Label="Run on a schedule" />
-
-                                        <MudSelect T="SchedulePreset"
-                                                   Label="Repeat"
-                                                   @bind-Value="_schedulePreset"
-                                                   Variant="Variant.Outlined"
-                                                   Margin="Margin.Dense"
-                                                   Disabled="@(!_scheduleEnabled)">
-                                            <MudSelectItem Value="@SchedulePreset.EveryDay">Every day</MudSelectItem>
-                                            <MudSelectItem Value="@SchedulePreset.SelectedDays">Selected days</MudSelectItem>
-                                        </MudSelect>
-
-                                        @if (_schedulePreset == SchedulePreset.SelectedDays)
-                                        {
-                                            <MudGrid Spacing="1">
-                                                @foreach (var day in ScheduleDays)
-                                                {
-                                                    <MudItem xs="6">
-                                                        <MudCheckBox T="bool"
-                                                                     Value="@IsScheduleDaySelected(day)"
-                                                                     ValueChanged="@(value => SetScheduleDay(day, value))"
-                                                                     Disabled="@(!_scheduleEnabled)"
-                                                                     Label="@day.ToString()" />
-                                                    </MudItem>
-                                                }
-                                            </MudGrid>
-                                        }
-
-                                        <MudTimePicker Label="Run time"
-                                                       Time="_scheduleTime"
-                                                       TimeChanged="OnScheduleTimeChanged"
-                                                       Variant="Variant.Outlined"
-                                                       Margin="Margin.Dense"
-                                                       AmPm="false"
-                                                       Disabled="@(!_scheduleEnabled)" />
-
-                                        <MudPaper Class="pa-2 jobs-editor-folder-preview" Outlined="true">
-                                            <MudText Typo="Typo.caption" Class="jobs-editor-field-caption">Timezone</MudText>
-                                            <MudText Typo="Typo.body2">@_scheduleTimeZoneId</MudText>
-                                        </MudPaper>
-                                    </MudStack>
-                                </MudTabPanel>
-                            </MudTabs>
-                        </MudStack>
-                    </MudPaper>
-                </MudItem>
-
-                <MudItem xs="12" md="9" Class="d-flex">
-                    <MudTabs @bind-ActivePanelIndex="_detailsTab" KeepPanelsAlive="true" Elevation="0" TabPanelsClass="pa-0" Color="Color.Default" Class="flex-grow-1 jobs-editor-tabs">
-
-                <!-- STEPS TAB -->
-                <MudTabPanel Text="Steps" Icon="@Icons.Material.Filled.PlaylistPlay" BadgeData="@(_steps.Count > 0 ? _steps.Count : null)" BadgeColor="Color.Secondary">
+<MudTabPanel Text="Steps" Icon="@Icons.Material.Filled.PlaylistPlay" BadgeData="@(_steps.Count > 0 ? _steps.Count : null)" BadgeColor="Color.Secondary">
                     <MudTable Items="_steps" Dense="true" Hover="true" Breakpoint="Breakpoint.Md" FixedHeader="true" Height="min(520px, calc(100dvh - 230px))" Class="jobs-editor-steps" Style="background: transparent;">
                         <ToolBarContent>
                             <MudText Typo="Typo.h6">Steps</MudText>
@@ -257,9 +203,7 @@
                         </NoRecordsContent>
                     </MudTable>
                 </MudTabPanel>
-
-                <!-- PARAMETERS TAB -->
-                <MudTabPanel Text="Parameters" Icon="@Icons.Material.Filled.Tune" BadgeData="@(_params.Count > 0 ? _params.Count : null)" BadgeColor="Color.Secondary">
+<MudTabPanel Text="Parameters" Icon="@Icons.Material.Filled.Tune" BadgeData="@(_params.Count > 0 ? _params.Count : null)" BadgeColor="Color.Secondary">
                     <MudTable Items="_params" Dense="true" Hover="true" FixedHeader="true" Height="min(360px, calc(100dvh - 270px))">
                         <ToolBarContent>
                             <MudText Typo="Typo.h6">Parameters</MudText>
@@ -299,9 +243,54 @@
                         </NoRecordsContent>
                     </MudTable>
                 </MudTabPanel>
-                    </MudTabs>
-                </MudItem>
-            </MudGrid>
+<MudTabPanel Text="Schedule" Icon="@Icons.Material.Filled.Schedule">
+                                    <MudStack Spacing="2">
+                                        <MudSwitch T="bool"
+                                                   @bind-Value="_scheduleEnabled"
+                                                   Color="Color.Primary"
+                                                   Label="Run on a schedule" />
+
+                                        <MudSelect T="SchedulePreset"
+                                                   Label="Repeat"
+                                                   @bind-Value="_schedulePreset"
+                                                   Variant="Variant.Outlined"
+                                                   Margin="Margin.Dense"
+                                                   Disabled="@(!_scheduleEnabled)">
+                                            <MudSelectItem Value="@SchedulePreset.EveryDay">Every day</MudSelectItem>
+                                            <MudSelectItem Value="@SchedulePreset.SelectedDays">Selected days</MudSelectItem>
+                                        </MudSelect>
+
+                                        @if (_schedulePreset == SchedulePreset.SelectedDays)
+                                        {
+                                            <MudGrid Spacing="1">
+                                                @foreach (var day in ScheduleDays)
+                                                {
+                                                    <MudItem xs="6">
+                                                        <MudCheckBox T="bool"
+                                                                     Value="@IsScheduleDaySelected(day)"
+                                                                     ValueChanged="@(value => SetScheduleDay(day, value))"
+                                                                     Disabled="@(!_scheduleEnabled)"
+                                                                     Label="@day.ToString()" />
+                                                    </MudItem>
+                                                }
+                                            </MudGrid>
+                                        }
+
+                                        <MudTimePicker Label="Run time"
+                                                       Time="_scheduleTime"
+                                                       TimeChanged="OnScheduleTimeChanged"
+                                                       Variant="Variant.Outlined"
+                                                       Margin="Margin.Dense"
+                                                       AmPm="false"
+                                                       Disabled="@(!_scheduleEnabled)" />
+
+                                        <MudPaper Class="pa-2 jobs-editor-folder-preview" Outlined="true">
+                                            <MudText Typo="Typo.caption" Class="jobs-editor-field-caption">Timezone</MudText>
+                                            <MudText Typo="Typo.body2">@_scheduleTimeZoneId</MudText>
+                                        </MudPaper>
+                                    </MudStack>
+                                </MudTabPanel>
+            </MudTabs>
             </fieldset>
         </div>
     </DialogContent>
@@ -340,11 +329,12 @@
     private bool _createdInWorkspace;
     private int _detailsTab;
     private JobDto? _savedJob;
+    private JobDto? _definitionOrigin;
     private string _savedDefinition = string.Empty;
     private string DefinitionSnapshot => System.Text.Json.JsonSerializer.Serialize(new
     {
         Name = _name, Description = _description, TenantId = _selectedTenant?.Id, Environment = _environment,
-        AgentId = _selectedClient?.AgentId ?? _rawAgentId, Folder = _folderSubfolder,
+        Target = _target, ExecutionPolicy = new JobExecutionPolicy(_threadCount, _nodeFailurePolicy), Folder = _folderSubfolder,
         ExpectedMinutes = _expectedRuntimeMinutes, GraceMinutes = _graceRuntimeMinutes,
         ScheduleEnabled = _scheduleEnabled, ScheduleTimeZone = _scheduleTimeZoneId, SchedulePreset = _schedulePreset, ScheduleTime = _scheduleTime,
         ScheduleDays = _selectedScheduleDays.OrderBy(day => day).ToArray()
@@ -396,8 +386,35 @@
     private ClientEnvironment?[] _environments = [null, ClientEnvironment.None, ClientEnvironment.Dev, ClientEnvironment.Prod, ClientEnvironment.Both];
     private ClientEnvironment? _environment = ClientEnvironment.Dev;
 
-    private ClientPresentationModel? _selectedClient;
-    private Guid? _rawAgentId;
+    private JobTargetDefinition _target = new() { Source = JobTargetSource.ExplicitNodes, AgentIds = [] };
+    private int _threadCount = 1;
+    private JobNodeFailurePolicy _nodeFailurePolicy = JobNodeFailurePolicy.StopRemaining;
+    private int? _targetPreviewCount;
+    private IReadOnlyDictionary<string, string[]> TargetParameters => _params.Where(parameter => !parameter.Type.Equals("secret", StringComparison.OrdinalIgnoreCase) && parameter.Default is not null)
+        .ToDictionary(parameter => parameter.Name, parameter => new[] { parameter.Default! }, StringComparer.OrdinalIgnoreCase);
+    private string ConcurrencySummary => _targetPreviewCount is { } count
+        ? $"{count} targets · configured {_threadCount} · up to {Math.Min(count, _threadCount)} active, subject to available capacity."
+        : $"Configured {_threadCount} concurrent node workflows. Preview Targets to see the effective target count.";
+    private void TargetChanged(JobTargetDefinition target) { _target = target; _targetPreviewCount = null; }
+    private void TargetPreviewChanged(int? count) => _targetPreviewCount = count;
+    private void ApplyTargetPolicy(JobDto job)
+    {
+        _definitionOrigin = job;
+        _target = job.Target ?? (job.AgentId is { } agent ? JobTargetDefinition.FromLegacy(agent) : new() { Source = JobTargetSource.ExplicitNodes, AgentIds = [] });
+        _threadCount = job.ExecutionPolicy?.ThreadCount ?? 1;
+        _nodeFailurePolicy = job.ExecutionPolicy?.NodeFailurePolicy ?? JobNodeFailurePolicy.StopRemaining;
+    }
+    private bool PreserveLegacyTarget => _jobId is not null && _definitionOrigin is { Target: null, AgentId: { } agent } origin &&
+        origin.TenantId == _selectedTenant?.Id && origin.Environment == _environment && _target.Source == JobTargetSource.ExplicitNodes &&
+        _target.AgentIds?.Distinct().SequenceEqual(new[] { agent }) == true;
+    private JobExecutionPolicy? UpdatedExecutionPolicy
+    {
+        get
+        {
+            var current = new JobExecutionPolicy(_threadCount, _nodeFailurePolicy);
+            return _definitionOrigin?.ExecutionPolicy is not null || current != new JobExecutionPolicy() ? current : null;
+        }
+    }
 
     private List<JobParamDto> _params = new();
     private List<JobStepDto> _steps = new();
@@ -455,7 +472,7 @@
 
             _name = job.Name;
             _description = job.Description;
-            _rawAgentId = job.AgentId;
+            ApplyTargetPolicy(job);
             _environment = job.Environment;
             ApplyRuntimePolicy(job);
             ApplySchedule(job.Schedule);
@@ -467,7 +484,6 @@
                 if (_selectedTenant != null)
                 {
                     SetSubfolder(ExtractSubfolder(job.FolderPath, _selectedTenant.Name), isUserOverride: false);
-                    await TryPreselectAgentAsync(job.AgentId);
                 }
             }
             else
@@ -499,7 +515,7 @@
 
             _name = $"{job.Name} (copy)";
             _description = job.Description;
-            _rawAgentId = job.AgentId;
+            ApplyTargetPolicy(job);
             _environment = job.Environment;
             ApplyRuntimePolicy(job);
             ApplySchedule(job.Schedule);
@@ -508,11 +524,9 @@
                 ? _tenants.FirstOrDefault(t => t.Id == job.TenantId.Value)
                 : null;
 
-            _selectedClient = null;
             if (_selectedTenant is not null)
             {
                 SetSubfolder(ExtractSubfolder(job.FolderPath, _selectedTenant.Name), isUserOverride: false);
-                await TryPreselectAgentAsync(job.AgentId);
             }
             else
             {
@@ -531,13 +545,6 @@
         }
     }
 
-    private async Task TryPreselectAgentAsync(Guid? agentId)
-    {
-        if (_selectedTenant is null || !agentId.HasValue) return;
-        var snapshot = await ClientPresentation.GetClientsAsync(_disposeCts.Token);
-        _selectedClient = snapshot.Clients.FirstOrDefault(c => c.TenantId == _selectedTenant.Id && c.AgentId == agentId.Value);
-    }
-
     // --- Autocomplete Logic ---
 
     private Task<IEnumerable<TenantDto>> SearchTenants(string value, CancellationToken ct)
@@ -553,8 +560,13 @@
     private void OnTenantChanged(TenantDto? tenant)
     {
         _selectedTenant = tenant;
-        _selectedClient = null; // Reset client on tenant change
-        _rawAgentId = null;
+        _target = _target.Source switch
+        {
+            JobTargetSource.ExplicitNodes => new() { Source = JobTargetSource.ExplicitNodes, AgentIds = [] },
+            JobTargetSource.ExecutionGroup => new() { Source = JobTargetSource.ExecutionGroup },
+            _ => _target
+        };
+        _targetPreviewCount = null;
 
         _folderSubfolderOverridden = false;
         SetSubfolder(string.Empty, isUserOverride: false);
@@ -565,32 +577,9 @@
     private void OnEnvironmentChanged(ClientEnvironment? env)
     {
         _environment = env;
-        _selectedClient = null;
-        _rawAgentId = null; // A changed environment requires explicit target reselection.
+        if (_target.Source == JobTargetSource.ExplicitNodes) _target = _target with { AgentIds = [] };
+        _targetPreviewCount = null; // A changed environment requires explicit target revalidation.
         StateHasChanged();
-    }
-
-    private async Task<IEnumerable<ClientPresentationModel>> SearchClients(string value, CancellationToken ct)
-    {
-        if (_selectedTenant == null) return Enumerable.Empty<ClientPresentationModel>();
-
-        try
-        {
-            var snapshot = await ClientPresentation.GetClientsAsync(ct);
-            return snapshot.Clients.Where(c => c.TenantId == _selectedTenant.Id && c.Enabled)
-                .Where(c => string.IsNullOrWhiteSpace(value) || $"{c.DisplayName} {c.HostName} {c.OperatingSystem}".Contains(value, StringComparison.OrdinalIgnoreCase))
-                .Take(20);
-        }
-        catch
-        {
-            return Enumerable.Empty<ClientPresentationModel>();
-        }
-    }
-
-    private void OnClientChanged(ClientPresentationModel? client)
-    {
-        _selectedClient = client is { Enabled: true } && client.TenantId == _selectedTenant?.Id ? client : null;
-        _rawAgentId = _selectedClient?.AgentId;
     }
 
     private void OnSubfolderChanged(string path)
@@ -704,15 +693,18 @@
             }
 
             var finalTenantId = _selectedTenant?.Id;
-            var finalAgentId = _selectedClient?.AgentId ?? _rawAgentId;
+            Guid? finalAgentId = null; // Target is the authoritative replacement; never carry a legacy AgentId.
 
             if (finalTenantId == null) {
                  _validationMessage = "Please select a Tenant.";
                  return;
             }
-            if (!finalAgentId.HasValue)
+            try { _target.Validate(); new JobExecutionPolicy(_threadCount, _nodeFailurePolicy).Validate(); }
+            catch (ArgumentException error) { _validationMessage = error.Message; _detailsTab = 1; return; }
+            if (_scheduleEnabled && _target.Source == JobTargetSource.RuntimeInput && _target.RuntimeInput?.DefaultValues is not { Count: > 0 })
             {
-                _validationMessage = "Please select an Agent.";
+                _validationMessage = "Scheduled runtime-target jobs require complete default target values. Add defaults in Targets or disable the schedule.";
+                _detailsTab = 1;
                 return;
             }
 
@@ -741,16 +733,17 @@
                     HardTimeoutSeconds: EffectiveHardTimeoutSeconds,
                     Schedule: null,
                     AgentId: finalAgentId,
-                    Environment: _environment);
+                    Environment: _environment) { Target = _target, ExecutionPolicy = new(_threadCount, _nodeFailurePolicy) };
                 job = await JobApi.CreateJobAsync(req);
                 if (job.Id == 0) throw new InvalidOperationException("The server did not return a saved job ID.");
                 _jobId = job.Id;
                 _params = [];
                 _steps = [];
                 _savedJob = job;
+                _definitionOrigin = job;
                 _createdInWorkspace = true;
                 _savedDefinition = DefinitionSnapshot;
-                _detailsTab = 0;
+                _detailsTab = 3;
 
                 if (_isCloneDraft && templateParams is not null && templateSteps is not null)
                 {
@@ -789,8 +782,8 @@
                     GraceSeconds: EffectiveGraceSeconds,
                     HardTimeoutSeconds: EffectiveHardTimeoutSeconds,
                     Schedule: schedule,
-                    AgentId: finalAgentId,
-                    Environment: _environment);
+                    AgentId: PreserveLegacyTarget ? _definitionOrigin!.AgentId : finalAgentId,
+                    Environment: _environment) { Target = PreserveLegacyTarget ? null : _target, ExecutionPolicy = UpdatedExecutionPolicy };
                 job = await JobApi.UpdateJobAsync(_jobId.Value, req);
                 _savedDefinition = DefinitionSnapshot;
                 _savedJob = job;
