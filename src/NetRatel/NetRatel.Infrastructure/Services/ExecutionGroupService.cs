@@ -30,7 +30,8 @@ public sealed class ExecutionGroupService(OrchestratorDbContext db, IEffectiveAc
         var groupIds = records.Select(x => x.Id).ToArray();
         var members = await db.ExecutionGroupMembers.AsNoTracking().Where(x => x.TenantId == tenantId && groupIds.Contains(x.GroupId))
             .Select(x => new { x.GroupId, x.AgentId }).ToArrayAsync(cancellationToken).ConfigureAwait(false);
-        var inventory = await directory.ReadAsync(tenantId, null, true, cancellationToken).ConfigureAwait(false);
+        var memberIds = members.Select(x => x.AgentId).ToHashSet();
+        var inventory = await directory.ReadAsync(tenantId, memberIds, true, cancellationToken).ConfigureAwait(false);
         var online = inventory.Where(x => x.IsOnline).Select(x => x.AgentId).ToHashSet();
         return new(records.Select(record => Map(record, members.Where(x => x.GroupId == record.Id).Select(x => x.AgentId), online)).ToArray(),
             page, pageSize, total, (long)page * pageSize < total ? page + 1 : null);
@@ -129,7 +130,14 @@ public sealed class ExecutionGroupService(OrchestratorDbContext db, IEffectiveAc
             var references = await FindJobReferencesAsync(tenantId, groupId, cancellationToken).ConfigureAwait(false);
             foreach (var provider in referenceProviders)
                 references.AddRange(await provider.FindFlowReferencesAsync(tenantId, groupId, cancellationToken).ConfigureAwait(false));
-            if (references.Count > 0) throw new ExecutionGroupReferencedException(references);
+            if (references.Count > 0)
+            {
+                var jobRead = await access.AuthorizeAsync(principal, NetRatelPermissions.JobManagement, tenantId, cancellationToken).ConfigureAwait(false);
+                var flowRead = await access.AuthorizeAsync(principal, NetRatelPermissions.FlowRead, tenantId, cancellationToken).ConfigureAwait(false);
+                var visible = references.Where(reference => reference.Kind == "job" ? jobRead : flowRead).ToList();
+                if (visible.Count != references.Count) visible.Add(new("restricted", string.Empty, "One or more retained definitions"));
+                throw new ExecutionGroupReferencedException(visible);
+            }
             Audit(record, "deleted", principal); db.ExecutionGroups.Remove(record);
             await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
             return true;
@@ -139,7 +147,9 @@ public sealed class ExecutionGroupService(OrchestratorDbContext db, IEffectiveAc
     private async Task<List<ExecutionGroupReferenceDto>> FindJobReferencesAsync(int tenantId, Guid groupId, CancellationToken ct)
     {
         // Parsed typed JSON avoids substring matches and supports the legacy null target column.
-        var jobs = await db.Jobs.AsNoTracking().Where(x => x.TenantId == tenantId)
+        var groupText = groupId.ToString("D");
+        var jobs = await db.Jobs.IgnoreQueryFilters().AsNoTracking().Where(x => x.TenantId == tenantId && x.DeletedAtUtc == null &&
+            x.TargetJson != null && x.TargetJson.Contains(groupText))
             .Select(x => new { x.Id, x.Name, x.TargetJson }).ToArrayAsync(ct).ConfigureAwait(false);
         return jobs.Where(x => ReferencesGroup(x.TargetJson, groupId))
             .Select(x => new ExecutionGroupReferenceDto("job", x.Id.ToString(System.Globalization.CultureInfo.InvariantCulture), x.Name)).ToList();

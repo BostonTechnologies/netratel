@@ -45,6 +45,9 @@ public static class ExecutionGroupModelConfiguration
     public static void ConfigureExecutionGroupModel(this ModelBuilder model)
     {
         model.Entity<Agent>().HasAlternateKey(x => new { x.TenantId, x.Id });
+        model.Entity<JobRunNodeRecord>().HasOne<Agent>().WithMany()
+            .HasForeignKey(x => new { x.TenantId, x.AgentId }).HasPrincipalKey(x => new { x.TenantId, x.Id })
+            .OnDelete(DeleteBehavior.Restrict);
         model.Entity<ExecutionGroupRecord>(entity =>
         {
             entity.ToTable("ExecutionGroups", table => table.HasCheckConstraint("CK_ExecutionGroups_Revision", "\"Revision\" > 0"));
