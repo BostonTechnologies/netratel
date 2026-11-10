@@ -95,6 +95,12 @@
         {
             // Keep the complete selection as IDs; hydrate metadata only for the current Selected page.
             var selectedPage = _selectedOnly ? _selected.Order().Skip((_page - 1) * 25).Take(25).ToArray() : [];
+            if (_selectedOnly)
+            {
+                _total = _selected.Count;
+                _items = selectedPage.Where(_identities.ContainsKey).Select(id => _identities[id]).ToArray();
+                _unavailablePage = selectedPage.Where(id => !_identities.ContainsKey(id)).ToArray();
+            }
             var missing = selectedPage.Where(id => !_identities.ContainsKey(id)).ToArray();
             foreach (var batch in missing.Chunk(100))
             {

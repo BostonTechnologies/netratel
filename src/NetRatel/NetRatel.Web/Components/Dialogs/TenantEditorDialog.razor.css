@@ -1,0 +1,15 @@
+.tenant-editor-section-switcher { display:none; }
+.tenant-editor-workspace { min-width:0; container-type:inline-size; }
+::deep .tenant-editor-sections { min-width:0; }
+::deep .tenant-editor-sections .mud-tab { min-height:44px; text-transform:none; white-space:normal; }
+::deep .tenant-editor-sections .mud-grid-item { min-width:0; }
+@media (max-width:767px) {
+    .tenant-editor-section-switcher { display:flex; flex-direction:column; gap:6px; }
+    .tenant-editor-section-switcher select { width:100%; min-height:44px; padding:10px; border:1px solid var(--mud-palette-divider); border-radius:6px; background:var(--mud-palette-surface); color:var(--mud-palette-text-primary); font:inherit; }
+    ::deep .tenant-editor-sections .mud-tabs-tabbar { display:none; }
+}
+@container (max-width:767px) {
+    .tenant-editor-section-switcher { display:flex; flex-direction:column; gap:6px; }
+    .tenant-editor-section-switcher select { width:100%; min-height:44px; padding:10px; border:1px solid var(--mud-palette-divider); border-radius:6px; background:var(--mud-palette-surface); color:var(--mud-palette-text-primary); font:inherit; }
+    ::deep .tenant-editor-sections .mud-tabs-tabbar { display:none; }
+}

@@ -7,6 +7,9 @@
 .job-run-header ::deep .job-run-context { width: 100%; overflow-wrap: anywhere; }
 ::deep .job-run-summary { overflow-wrap: anywhere; }
 .job-run-execution { min-width: 0; }
+.job-run-legacy-node { min-width:0; border:1px solid var(--mud-palette-divider); border-radius:6px; padding:0 10px 10px; }
+.job-run-legacy-node > summary { padding:12px 0; min-height:44px; cursor:pointer; font-weight:600; overflow-wrap:anywhere; }
+.job-run-legacy-node > summary:focus-visible { outline:2px solid var(--mud-palette-primary); outline-offset:2px; }
 .job-run-execution ::deep .job-run-step-panel { border-bottom: 1px solid var(--mud-palette-divider); background: var(--mud-palette-surface); }
 .job-run-step-header { display: flex; flex-wrap: wrap; align-items: center; gap: .25rem .75rem; width: 100%; }
 .job-run-step-name { flex: 1; min-width: 8rem; overflow-wrap: anywhere; font-size: .875rem; }

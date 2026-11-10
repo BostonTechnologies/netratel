@@ -143,7 +143,7 @@ public sealed class JobsWorkspaceTests : AsyncBunitContext
         var (cut, _) = await OpenEditorAsync(jobId: 42);
         Name(cut).Change("Unsaved renamed workflow");
         cut.FindComponents<MudTextField<string>>().Single(field => field.Instance.Label == "Folder (within tenant)").Find("input").Change("Changed/Nested");
-        Tab(cut, "Runtime").Click();
+        Tab(cut, "Execution").Click();
         cut.FindComponents<MudNumericField<int>>().Single(field => field.Instance.Label == "Expected Runtime (minutes)").Find("input").Change("47");
         Tab(cut, "Schedule").Click();
         await cut.InvokeAsync(() => cut.FindComponent<MudTimePicker>().Instance.TimeChanged.InvokeAsync(new TimeSpan(9, 30, 0)));
@@ -192,9 +192,9 @@ public sealed class JobsWorkspaceTests : AsyncBunitContext
         Name(cut).Change("Retained edit");
         await cut.InvokeAsync(() => cut.FindComponents<MudSelect<ClientEnvironment?>>().Single(select => select.Instance.Label == "Environment").Instance.ValueChanged.InvokeAsync(ClientEnvironment.Prod));
         Button(cut, "Save").Click();
-        cut.WaitForAssertion(() => cut.Markup.Should().Contain("Please select an Agent."));
+        cut.WaitForAssertion(() => cut.Markup.Should().Contain("Exactly one complete job target source is required"));
         _transport.UpdateCalls.Should().Be(0);
-        await cut.InvokeAsync(() => cut.FindComponent<MudAutocomplete<ClientPresentationModel>>().Instance.ValueChanged.InvokeAsync(Client));
+        await cut.InvokeAsync(() => cut.FindComponent<JobTargetPicker>().Instance.ValueChanged.InvokeAsync(JobTargetDefinition.FromLegacy(AgentId)));
         _transport.FailSave = true;
         Button(cut, "Save").Click();
         cut.WaitForAssertion(() => cut.Markup.Should().Contain("Failed to save:"));
@@ -335,6 +335,57 @@ public sealed class JobsWorkspaceTests : AsyncBunitContext
         _transport.CreateCalls.Should().Be(1);
     }
 
+    [Fact]
+    public async Task Renaming_a_legacy_job_keeps_its_single_agent_request_shape_and_absent_policy()
+    {
+        var (cut, _) = await OpenEditorAsync(jobId: 42);
+        await cut.InvokeAsync(() => Name(cut).Change("Renamed legacy workflow"));
+        await cut.InvokeAsync(() => Button(cut, "Save").Click());
+        cut.WaitForAssertion(() => _transport.Update.Should().NotBeNull());
+        _transport.Update!.Name.Should().Be("Renamed legacy workflow");
+        _transport.Update.AgentId.Should().Be(AgentId);
+        _transport.Update.Target.Should().BeNull();
+        _transport.Update.ExecutionPolicy.Should().BeNull();
+        _transport.Update.TenantId.Should().Be(7);
+        _transport.Update.Environment.Should().Be(ClientEnvironment.Dev);
+    }
+
+    [Fact]
+    public async Task Replacing_a_legacy_target_with_runtime_input_clears_agent_and_preserves_execution_settings()
+    {
+        var (cut, _) = await OpenEditorAsync(jobId: 42);
+        await cut.InvokeAsync(() => cut.FindComponent<JobTargetPicker>().Instance.ValueChanged.InvokeAsync(new()
+        {
+            Source = JobTargetSource.RuntimeInput,
+            RuntimeInput = new(JobRuntimeTargetKind.ClientId, "ClientId")
+        }));
+        await cut.InvokeAsync(() => cut.FindComponents<MudSwitch<bool>>().Single(toggle => toggle.Instance.Label == "Run on a schedule").Instance.ValueChanged.InvokeAsync(false));
+        await cut.InvokeAsync(() => cut.FindComponents<MudNumericField<int>>().Single(field => field.Instance.Label == "Thread Count").Instance.ValueChanged.InvokeAsync(100));
+        await cut.InvokeAsync(() => cut.FindComponent<MudRadioGroup<JobNodeFailurePolicy>>().Instance.ValueChanged.InvokeAsync(JobNodeFailurePolicy.ContinueRemaining));
+        Button(cut, "Save").Click();
+        cut.WaitForAssertion(() => _transport.Update.Should().NotBeNull());
+        _transport.Update!.AgentId.Should().BeNull();
+        _transport.Update.Target!.Source.Should().Be(JobTargetSource.RuntimeInput);
+        _transport.Update.Target.RuntimeInput!.Kind.Should().Be(JobRuntimeTargetKind.ClientId);
+        _transport.Update.ExecutionPolicy.Should().Be(new JobExecutionPolicy(100, JobNodeFailurePolicy.ContinueRemaining));
+        _transport.RunCalls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Incomplete_runtime_schedule_retains_the_draft_and_does_not_save()
+    {
+        var (cut, _) = await OpenEditorAsync(jobId: 42);
+        await cut.InvokeAsync(() => cut.FindComponent<JobTargetPicker>().Instance.ValueChanged.InvokeAsync(new()
+        {
+            Source = JobTargetSource.RuntimeInput,
+            RuntimeInput = new(JobRuntimeTargetKind.Hostnames, "Hosts")
+        }));
+        Button(cut, "Save").Click();
+        cut.WaitForAssertion(() => cut.Markup.Should().Contain("Scheduled runtime-target jobs require complete default target values"));
+        _transport.UpdateCalls.Should().Be(0);
+        cut.FindComponent<JobTargetPicker>().Instance.Value.RuntimeInput!.Name.Should().Be("Hosts");
+    }
+
     private async Task<(IRenderedComponent<JobEditDialog> Cut, IDialogReference Reference)> OpenEditorAsync(ulong? jobId = null, ulong? cloneId = null)
     {
         var reference = await Services.GetRequiredService<IDialogService>().ShowAsync<JobEditDialog>("Job",
@@ -352,7 +403,7 @@ public sealed class JobsWorkspaceTests : AsyncBunitContext
     {
         Name(cut).Change(name);
         await cut.InvokeAsync(() => cut.FindComponent<MudAutocomplete<TenantDto>>().Instance.ValueChanged.InvokeAsync(Tenant));
-        await cut.InvokeAsync(() => cut.FindComponent<MudAutocomplete<ClientPresentationModel>>().Instance.ValueChanged.InvokeAsync(Client));
+        await cut.InvokeAsync(() => cut.FindComponent<JobTargetPicker>().Instance.ValueChanged.InvokeAsync(JobTargetDefinition.FromLegacy(AgentId)));
     }
 
     private sealed class Tenants : ITenantApiService
@@ -372,6 +423,7 @@ public sealed class JobsWorkspaceTests : AsyncBunitContext
     {
         public JobDto Job { get; set; } = new(42, "Nightly backup", "/Fixture/Backups/", null, 7, "fixture-host", 0, 0,
             Environment: ClientEnvironment.Dev, Schedule: new(true, "Africa/Johannesburg", "08:00", ["Monday", "Wednesday", "Friday"]), AgentId: AgentId);
+        private static JobNodeInventoryDto Node() => new(AgentId, "fixture-host", "Fixture agent", "Fixture agent", [], "Linux", "x64", ClientEnvironment.Dev, true, true, null);
         private List<JobStepDto> _steps = [new(1, 42, 1, JobStepTypeDto.RunCommand, "bash", "echo backup", null, null, true)];
         private List<JobParamDto> _parameters = [new(1, 42, "Path", "string", true, "/fixture/backup", null, null)];
         public int CreateCalls { get; private set; }
@@ -403,11 +455,13 @@ public sealed class JobsWorkspaceTests : AsyncBunitContext
                 if (path.EndsWith("/steps")) return Ok(_steps);
                 if (path.EndsWith("/details")) return Ok(new JobWithDetailsDto(Job, _steps, _parameters));
                 if (path == "/api/v1/jobs/42") return Ok(Job);
+                if (path == "/api/v2/tenants/7/job-targets/nodes") return Ok(new JobNodePageDto([Node()], 1, 25, 1, null));
                 if (path == "/api/v2/client-presence") return Ok(new ClientPresenceListDto("v2", 1, [new("fixture", 7, AgentId, "Fixture agent", "fixture-host", "Linux", "x64", true, true, null, null, [], "fixture", "gateway", true, 1)]));
                 if (path == "/api/v2/agent-telemetry") return Ok(Array.Empty<GatewayTelemetrySummary>());
             }
             if (request.Method == HttpMethod.Post)
             {
+                if (path == "/api/v2/tenants/7/job-targets/nodes/identities") return Ok(new[] { Node() });
                 if (path == "/api/v1/jobs")
                 {
                     CreateCalls++;
@@ -415,7 +469,7 @@ public sealed class JobsWorkspaceTests : AsyncBunitContext
                     var body = (await request.Content!.ReadFromJsonAsync<CreateJobRequest>(cancellationToken))!;
                     Create = body;
                     Job = Job with { Id = 43, Name = body.Name, Description = body.Description, FolderPath = body.FolderPath,
-                        Schedule = body.Schedule, AgentId = body.AgentId, Environment = body.Environment,
+                        Schedule = body.Schedule, AgentId = body.AgentId, Environment = body.Environment, Target = body.Target, ExecutionPolicy = body.ExecutionPolicy,
                         ExpectedRuntimeSeconds = body.ExpectedRuntimeSeconds ?? 1800, GraceSeconds = body.GraceSeconds ?? 0,
                         HardTimeoutSeconds = body.HardTimeoutSeconds ?? 1800 };
                     _steps = []; _parameters = [];

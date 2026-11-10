@@ -1,9 +1,11 @@
 @using NetRatel.Shared.Contracts
 @using NetRatel.Shared.Contracts.Requests
 @using NetRatel.Web.Components.SoftwareInventory
+@inject IDialogService Dialogs
 
 <MudDialog Class="tenant-editor-dialog">
     <DialogContent>
+        <div class="tenant-editor-workspace">
         <MudStack Spacing="3">
             <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Start" Class="flex-wrap">
                 <div>
@@ -21,7 +23,18 @@
                 }
             </MudStack>
 
+            <label class="tenant-editor-section-switcher">
+                <span>Tenant section</span>
+                <select @bind="Section" aria-label="Tenant section">
+                    <option value="0">General &amp; defaults</option>
+                    <option value="1">Software inventory</option>
+                    <option value="2">Auto update</option>
+                    <option value="3">Execution groups</option>
+                </select>
+            </label>
             <MudForm @ref="_form">
+                <MudTabs @bind-ActivePanelIndex="Section" KeepPanelsAlive="true" Class="tenant-editor-sections" TabPanelsClass="pt-4">
+                    <MudTabPanel Text="General &amp; defaults">
                 <MudGrid Spacing="2">
                     <MudItem xs="12" md="6">
                         <MudTextField @bind-Value="_model.Name"
@@ -70,7 +83,15 @@
                                       Immediate="true" />
                     </MudItem>
 
-                    <MudItem xs="12"><MudTabs>
+                </MudGrid>
+                    </MudTabPanel>
+                    <MudTabPanel Text="Software Inventory">
+                        @if (IsEditMode && Tenant is not null && _inventoryOpened)
+                        {
+                            <SoftwareInventoryPolicyEditor TenantId="Tenant.TenantId" />
+                        }
+                        else if (!IsEditMode) { <MudText Class="pa-4">Software inventory defaults to enabled every 7 days. Create the tenant to customize its policy.</MudText> }
+                    </MudTabPanel>
                     <MudTabPanel Text="Auto Update"><MudGrid>
                     <MudItem xs="12">
                         <MudSwitch T="bool"
@@ -125,23 +146,29 @@
                         </MudPaper>
                     </MudItem>
                     </MudGrid></MudTabPanel>
-                    <MudTabPanel Text="Software Inventory">
+                    <MudTabPanel Text="Execution groups">
                         @if (IsEditMode && Tenant is not null)
                         {
-                            <SoftwareInventoryPolicyEditor TenantId="Tenant.TenantId" />
+                            @if (_section == 3 || _groupsOpened)
+                            {
+                                <NetRatel.Web.Components.Pages.Jobs.ExecutionGroupsEditor TenantId="Tenant.TenantId" DirtyChanged="GroupDirtyChanged" />
+                            }
                         }
-                        else { <MudText Class="pa-4">Software inventory defaults to enabled every 7 days. Create the tenant to customize its policy.</MudText> }
+                        else
+                        {
+                            <MudText Class="pa-4">Create the tenant before adding execution groups.</MudText>
+                        }
                     </MudTabPanel>
-                    </MudTabs></MudItem>
-                </MudGrid>
+                </MudTabs>
             </MudForm>
         </MudStack>
+        </div>
     </DialogContent>
 
     <DialogActions>
-        <MudButton Variant="Variant.Text" OnClick="Cancel">Cancel</MudButton>
+        <MudButton Variant="Variant.Text" OnClick="CancelAsync">Cancel tenant changes</MudButton>
         <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="SubmitAsync">
-            @(IsEditMode ? "Save Changes" : "Create Tenant")
+            @(IsEditMode ? "Save tenant changes" : "Create Tenant")
         </MudButton>
     </DialogActions>
 </MudDialog>
@@ -157,6 +184,18 @@
     private CreateTenantRequest _model = new();
     private string _domainsText = string.Empty;
     private bool _pinTargetVersion;
+    private int _section;
+    private int Section
+    {
+        get => _section;
+        set { _section = value; if (value == 1) _inventoryOpened = true; if (value == 3) _groupsOpened = true; }
+    }
+    private bool _groupsOpened, _groupDirty, _inventoryOpened;
+    protected override Task OnInitializedAsync() => MudDialog is null ? Task.CompletedTask : MudDialog.SetOptionsAsync(
+        MudDialog.Options with { BackdropClick = false, CloseOnEscapeKey = false, CloseButton = false });
+    private void GroupDirtyChanged(bool dirty) { _groupsOpened = true; _groupDirty = dirty; }
+    private async Task<bool> ConfirmGroupDraftAsync() => !_groupDirty || await Dialogs.ShowMessageBoxAsync(
+        "Unsaved group changes", "The execution group draft has not been saved. Discard that draft and close? Saved groups are unaffected.", yesText: "Discard group draft", cancelText: "Keep editing") == true;
 
     protected override void OnParametersSet()
     {
@@ -185,7 +224,7 @@
         _pinTargetVersion = !string.IsNullOrWhiteSpace(Tenant.AutoUpdateTargetVersion);
     }
 
-    private void Cancel() => MudDialog.Cancel();
+    private async Task CancelAsync() { if (await ConfirmGroupDraftAsync()) MudDialog.Cancel(); }
 
     private async Task SubmitAsync()
     {
@@ -198,6 +237,7 @@
             }
         }
 
+        if (!await ConfirmGroupDraftAsync()) return;
         _model.Name = _model.Name?.Trim() ?? string.Empty;
         _model.Description = string.IsNullOrWhiteSpace(_model.Description) ? null : _model.Description.Trim();
         _model.Location = string.IsNullOrWhiteSpace(_model.Location) ? null : _model.Location.Trim();

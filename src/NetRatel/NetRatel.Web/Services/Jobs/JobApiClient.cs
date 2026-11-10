@@ -52,6 +52,16 @@ public interface IJobApiClient
         int pageSize = 20,
         CancellationToken cancellationToken = default);
     Task<ExecutionLogDto?> GetJobStepLogsAsync(ulong runId, int ordinal, CancellationToken cancellationToken = default);
+    Task<PagedJobRunNodesDto> GetJobRunNodesAsync(ulong runId, int page = 1, int pageSize = 25, CancellationToken cancellationToken = default)
+        => throw new NotSupportedException("Node projections are unavailable on this client.");
+    Task<IReadOnlyList<JobStepRunDto>> GetJobRunNodeStepsAsync(ulong runId, Guid agentId, CancellationToken cancellationToken = default)
+        => throw new NotSupportedException("Node steps are unavailable on this client.");
+    Task<ExecutionLogDto?> GetJobRunNodeStepLogsAsync(ulong runId, Guid agentId, ulong stepRunId, CancellationToken cancellationToken = default)
+        => throw new NotSupportedException("Node output is unavailable on this client.");
+    Task<ExecutionLogDto?> GetJobRunNodeStepLogsPageAsync(ulong runId, Guid agentId, ulong stepRunId, string cursor, CancellationToken cancellationToken = default)
+        => throw new NotSupportedException("Forward node output pages are unavailable on this client.");
+    Task<JobLaunchPreviewDto?> GetJobRunTargetPlanAsync(ulong runId, int page = 1, int pageSize = 25, CancellationToken cancellationToken = default)
+        => throw new NotSupportedException("Historical target plans are unavailable on this client.");
     Task<JobRunDto?> StartJobRunAsync(ulong jobId, CancellationToken cancellationToken = default);
     Task CancelJobRunAsync(ulong runId, CancellationToken cancellationToken = default);
     Task DeleteJobRunAsync(ulong runId, CancellationToken cancellationToken = default);
@@ -249,6 +259,22 @@ public sealed class JobApiClient : IJobApiClient
 
     public Task<ExecutionLogDto?> GetJobStepLogsAsync(ulong runId, int ordinal, CancellationToken cancellationToken = default) =>
         _http.GetFromJsonAsync<ExecutionLogDto>($"/api/v1/jobruns/{runId}/steps/{ordinal}/logs", cancellationToken);
+
+    public async Task<PagedJobRunNodesDto> GetJobRunNodesAsync(ulong runId, int page = 1, int pageSize = 25, CancellationToken cancellationToken = default) =>
+        await _http.GetFromJsonAsync<PagedJobRunNodesDto>($"/api/v1/jobruns/{runId}/nodes?page={page}&pageSize={pageSize}", cancellationToken)
+        ?? new PagedJobRunNodesDto([], 0);
+
+    public async Task<IReadOnlyList<JobStepRunDto>> GetJobRunNodeStepsAsync(ulong runId, Guid agentId, CancellationToken cancellationToken = default) =>
+        await _http.GetFromJsonAsync<List<JobStepRunDto>>($"/api/v1/jobruns/{runId}/nodes/{agentId}/steps", cancellationToken) ?? [];
+
+    public Task<ExecutionLogDto?> GetJobRunNodeStepLogsAsync(ulong runId, Guid agentId, ulong stepRunId, CancellationToken cancellationToken = default) =>
+        _http.GetFromJsonAsync<ExecutionLogDto>($"/api/v1/jobruns/{runId}/nodes/{agentId}/steps/{stepRunId}/logs", cancellationToken);
+
+    public Task<ExecutionLogDto?> GetJobRunNodeStepLogsPageAsync(ulong runId, Guid agentId, ulong stepRunId, string cursor, CancellationToken cancellationToken = default) =>
+        _http.GetFromJsonAsync<ExecutionLogDto>($"/api/v1/jobruns/{runId}/nodes/{agentId}/steps/{stepRunId}/logs?cursor={Uri.EscapeDataString(cursor)}&limit=500&maximumBytes=65536", cancellationToken);
+
+    public Task<JobLaunchPreviewDto?> GetJobRunTargetPlanAsync(ulong runId, int page = 1, int pageSize = 25, CancellationToken cancellationToken = default) =>
+        _http.GetFromJsonAsync<JobLaunchPreviewDto>($"/api/v1/jobruns/{runId}/target-plan?page={page}&pageSize={pageSize}", cancellationToken);
 
     public async Task<JobRunDto?> StartJobRunAsync(ulong jobId, CancellationToken cancellationToken = default)
     {

@@ -1,19 +1,37 @@
 @using System.Text.Json
 @using NetRatel.Shared
 @using NetRatel.Shared.Contracts.Jobs
+@implements IDisposable
 @inject IJobApiClient JobApi
 @inject ISnackbar Snackbar
 @inject NavigationManager NavManager
 
-<MudDialog Style="@(_params?.Count > 1 ? "width:min(1160px,calc(100vw - 32px));max-width:1160px" : "width:min(560px,calc(100vw - 32px));max-width:560px")" ContentStyle="max-height:calc(100dvh - 180px);overflow-y:auto">
+<MudDialog Class="@(_params?.Count > 1 || Job.Target is not null ? "jobs-run-dialog jobs-run-dialog-wide" : "jobs-run-dialog")">
     <DialogContent>
         <form class="run-job-dialog" id="@_formId" autocomplete="off" aria-label="Job inputs" @onsubmit:preventDefault="true">
             <div class="run-job-context">
                 <strong>@Job.Name</strong>
-                <span>@(Job.ClientDisplayName ?? "Target label unavailable")</span>
+                <span>@TargetSummary</span>
                 <span>@(Job.TenantDisplayName ?? "Tenant label unavailable")</span>
                 <span>@(Job.Environment?.ToShortLabel() ?? "Environment unknown")</span>
             </div>
+            @if (Job.Target is not null)
+            {
+                <section class="run-job-targets" aria-label="Invocation targets">
+                    <MudText Typo="Typo.subtitle2">Targets and execution</MudText>
+                    <MudText Typo="Typo.body2">@TargetSummary · Thread Count @(Job.ExecutionPolicy?.ThreadCount ?? 1) · @((Job.ExecutionPolicy?.NodeFailurePolicy ?? JobNodeFailurePolicy.StopRemaining) == JobNodeFailurePolicy.StopRemaining ? "Stop starting remaining nodes on failure" : "Continue on remaining nodes, then fail the run")</MudText>
+                    @if (Job.Target.Source == JobTargetSource.RuntimeInput && Job.Target.RuntimeInput is { } runtime)
+                    {
+                        <MudTextField T="string" Value="_runtimeValues" ValueChanged="RuntimeValuesChanged" Label="@($"{runtime.Name} ({runtime.Kind})")" InputId="@(_formId + "-runtime-target")" UserAttributes="@JobParameterInput.OperationalAttributes(_formId + "-runtime-target")" Required="true" Lines="3" Variant="Variant.Outlined" Immediate="true" Disabled="_isSubmitting" HelperText="One exact value per line. Commas and filter punctuation stay literal. Client IDs, hostnames and tags have distinct meanings." />
+                        @if (RuntimeInputError is { } targetError) { <MudText Typo="Typo.caption" Color="Color.Error" role="alert">@targetError</MudText> }
+                        @if (runtime.Kind is JobRuntimeTargetKind.ClientId or JobRuntimeTargetKind.ClientIds && Job.TenantId is { } tenantId)
+                        {
+                            <JobNodePicker TenantId="tenantId" Environment="Job.Environment" Value="RuntimeIds" ValueChanged="RuntimeNodesChanged" Disabled="_isSubmitting" />
+                        }
+                    }
+                    <JobTargetPreview TenantId="@(Job.TenantId ?? 0)" Target="Job.Target" ExecutionPolicy="Job.ExecutionPolicy" Environment="Job.Environment" JobId="Job.Id" RunRequest="BuildRequest(false)" Disabled="@(!CanPreview)" ButtonLabel="Preview invocation targets" LaunchPreviewChanged="LaunchPreviewChanged" />
+                </section>
+            }
             @if (_params is null)
             {
                 @if (_parameterLoadFailed)
@@ -83,10 +101,34 @@
     private string _startedBy = "ui";
     private string? _launchError;
     private bool _isSubmitting, _parameterLoadFailed, _loadingParameters, _submitted;
+    private string _runtimeValues = "";
+    private JobLaunchPreviewDto? _launchPreview;
+    private readonly CancellationTokenSource _dispose = new();
+    private string TargetSummary => Job.Target?.Source switch
+    {
+        JobTargetSource.ExecutionGroup => "Execution group · every member",
+        JobTargetSource.ExplicitNodes => $"{Job.Target.AgentIds?.Distinct().Count() ?? 0} selected nodes",
+        JobTargetSource.NodeFilter => $"Node filter: {Job.Target.Filter}",
+        JobTargetSource.RuntimeInput => "Targets supplied for this invocation",
+        _ => Job.ClientDisplayName ?? "Target label unavailable"
+    };
+    private string[] RuntimeValues => JobTargetPicker.ParseLines(_runtimeValues);
+    private IReadOnlyList<Guid> RuntimeIds => RuntimeValues.Where(value => Guid.TryParse(value, out _)).Select(Guid.Parse).ToArray();
+    private string? RuntimeInputError => Job.Target?.Source != JobTargetSource.RuntimeInput ? null
+        : RuntimeValues.Length == 0 ? "Supply the required runtime target input."
+        : Job.Target.RuntimeInput?.Kind is JobRuntimeTargetKind.ClientId or JobRuntimeTargetKind.Hostname or JobRuntimeTargetKind.Tag && RuntimeValues.Length != 1 ? "This target type requires exactly one value."
+        : Job.Target.RuntimeInput?.Kind is JobRuntimeTargetKind.ClientId or JobRuntimeTargetKind.ClientIds && RuntimeIds.Count != RuntimeValues.Length ? "Enter complete stable client IDs or select clients below."
+        : null;
+    private bool ValidInputs => _params is not null && _params.All(p => JobParameterInput.Validate(p.Type, GetValue(p.Name), p.Required, p.OptionsJson) is null);
+    private bool CanPreview => !_isSubmitting && ValidInputs && RuntimeInputError is null;
     private bool CanRun => !_isSubmitting && !_submitted && _params is not null && !string.IsNullOrWhiteSpace(_startedBy)
-        && _params.All(p => JobParameterInput.Validate(p.Type, GetValue(p.Name), p.Required, p.OptionsJson) is null);
+        && ValidInputs && RuntimeInputError is null && (Job.Target is null || _launchPreview is not null);
 
-    protected override Task OnInitializedAsync() => LoadParametersAsync();
+    protected override Task OnInitializedAsync()
+    {
+        _runtimeValues = string.Join("\n", Job.Target?.RuntimeInput?.DefaultValues ?? []);
+        return LoadParametersAsync();
+    }
     private async Task LoadParametersAsync()
     {
         if (_loadingParameters) return;
@@ -106,7 +148,22 @@
     private string? GetValue(string key) => _values.GetValueOrDefault(key);
     private string? FieldError(JobParamDto p) => _touched.Contains(p.Name) || !string.IsNullOrWhiteSpace(GetValue(p.Name))
         ? JobParameterInput.Validate(p.Type, GetValue(p.Name), p.Required, p.OptionsJson) : null;
-    private void SetValue(string key, string? value) { _values[key] = value; _touched.Add(key); }
+    private void SetValue(string key, string? value) { _values[key] = value; _touched.Add(key); InvalidatePreview(); }
+    private void RuntimeValuesChanged(string? value) { _runtimeValues = value ?? ""; InvalidatePreview(); }
+    private void RuntimeNodesChanged(IReadOnlyList<Guid> ids) { _runtimeValues = string.Join("\n", ids); InvalidatePreview(); }
+    private void InvalidatePreview() => _launchPreview = null;
+    private void LaunchPreviewChanged(JobLaunchPreviewDto? preview) => _launchPreview = preview;
+    private RunJobRequest BuildRequest(bool reviewed)
+    {
+        var payload = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+        foreach (var p in _params ?? [])
+            payload[p.Name] = p.Type.Equals("bool", StringComparison.OrdinalIgnoreCase) ? GetBoolValue(p.Name) : GetValue(p.Name);
+        return new RunJobRequest(_startedBy, JsonSerializer.Serialize(payload), ClientIdentityOverride: null, Environment: Job.Environment)
+        {
+            RuntimeTarget = Job.Target?.Source == JobTargetSource.RuntimeInput && Job.Target.RuntimeInput is { } runtime ? new(runtime.Kind, RuntimeValues, runtime.AllOf) : null,
+            ExpectedTargetPlanDigest = reviewed ? _launchPreview?.Digest : null
+        };
+    }
     private bool GetBoolValue(string key) => bool.TryParse(GetValue(key), out var value) && value;
     private void SetBoolValue(string key, bool value) => SetValue(key, value ? "true" : "false");
     private async Task RunAsync()
@@ -116,18 +173,16 @@
         _launchError = null;
         try
         {
-            var payload = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
-            foreach (var p in _params)
-                payload[p.Name] = p.Type.Equals("bool", StringComparison.OrdinalIgnoreCase) ? GetBoolValue(p.Name) : GetValue(p.Name);
-            var run = await JobApi.RunJobAsync(Job.Id, new RunJobRequest(_startedBy, JsonSerializer.Serialize(payload), ClientIdentityOverride: null, Environment: Job.Environment));
+            var run = await JobApi.RunJobAsync(Job.Id, BuildRequest(true));
             _submitted = true;
             Snackbar.Add($"Run #{run.Id} submitted.", Severity.Success);
             if (OnRunCompleted.HasDelegate) await OnRunCompleted.InvokeAsync(run);
             NavManager.NavigateTo($"/jobs/{Job.Id}/runs/{run.Id}");
             MudDialog.Close(DialogResult.Ok(run));
         }
-        catch { _launchError = "The run could not be started. Your inputs are retained; try again."; }
+        catch { _launchError = "The run could not be started. Your inputs are retained. Preview the current targets and try again."; InvalidatePreview(); }
         finally { _isSubmitting = false; }
     }
     private void Cancel() { if (!_isSubmitting) MudDialog.Cancel(); }
+    public void Dispose() { _dispose.Cancel(); _dispose.Dispose(); }
 }

@@ -36,12 +36,15 @@ public sealed class TenantUpdateChannelResponsiveTests(ClientsManagementBrowserF
             await manage.WaitForAsync(new() { Timeout = 90_000 });
             await page.Locator($"html[data-netratel-theme={(theme == "light" ? "light" : "dark")}]").WaitForAsync();
             var drawer = page.GetByTestId("app-navigation-drawer");
-            if (width < 1280 && !await drawer.EvaluateAsync<bool>("e => e.classList.contains('mud-drawer--closed')"))
-                await page.GetByTestId("navigation-toggle").ClickAsync();
+            await Assertions.Expect(drawer).ToHaveClassAsync(new System.Text.RegularExpressions.Regex(
+                width < 1280 ? "mud-drawer--closed" : "mud-drawer--open"));
             await manage.FocusAsync();
             await manage.PressAsync("Enter");
-            await page.GetByRole(AriaRole.Menuitem, new() { Name = "Edit Tenant", Exact = true }).PressAsync("Enter");
+            var edit = page.GetByRole(AriaRole.Menuitem, new() { Name = "Edit Tenant", Exact = true });
+            await Assertions.Expect(edit).ToBeFocusedAsync();
+            await page.Keyboard.PressAsync("Enter");
             var dialog = page.GetByRole(AriaRole.Dialog);
+            await SelectUpdateSectionAsync(dialog);
             var channel = page.GetByRole(AriaRole.Combobox, new() { Name = "Release channel", Exact = true });
             await Assertions.Expect(channel).ToHaveTextAsync("Stable releases only");
             await Assertions.Expect(page.GetByTestId("tenant-target-version")).ToContainTextAsync("0.4.103-rc.1");
@@ -60,7 +63,7 @@ public sealed class TenantUpdateChannelResponsiveTests(ClientsManagementBrowserF
                 ?? Path.Combine(Path.GetTempPath(), "netratel-tenant-update-policy");
             Directory.CreateDirectory(root);
             await page.ScreenshotAsync(new() { Path = Path.Combine(root, $"tenant-channel-{width}-{theme}.png"), FullPage = true });
-            var save = page.GetByRole(AriaRole.Button, new() { Name = "Save Changes", Exact = true });
+            var save = page.GetByRole(AriaRole.Button, new() { Name = "Save tenant changes", Exact = true });
             await save.FocusAsync();
             await save.PressAsync("Enter");
             await Assertions.Expect(dialog).ToBeHiddenAsync();
@@ -71,8 +74,9 @@ public sealed class TenantUpdateChannelResponsiveTests(ClientsManagementBrowserF
             // A fresh page must display the actual saved channel, independently of global automation.
             await manage.ClickAsync();
             await page.GetByRole(AriaRole.Menuitem, new() { Name = "Edit Tenant", Exact = true }).ClickAsync();
+            await SelectUpdateSectionAsync(dialog);
             await Assertions.Expect(channel).ToHaveTextAsync("Stable releases and prereleases");
-            await page.GetByRole(AriaRole.Button, new() { Name = "Cancel", Exact = true }).ClickAsync();
+            await page.GetByRole(AriaRole.Button, new() { Name = "Cancel tenant changes", Exact = true }).ClickAsync();
             _tenants.Reset();
             await page.GotoAsync(_fixture.BaseAddress + "/clients/mgmt", new() { WaitUntil = WaitUntilState.DOMContentLoaded });
             var explanation = page.GetByTestId("tenant-prerelease-excluded");
@@ -88,6 +92,15 @@ public sealed class TenantUpdateChannelResponsiveTests(ClientsManagementBrowserF
             Assert.Empty(errors);
             Assert.False(await page.Locator("#blazor-error-ui").IsVisibleAsync());
         }
+    }
+
+    private static async Task SelectUpdateSectionAsync(ILocator dialog)
+    {
+        await dialog.WaitForAsync();
+        var switcher = dialog.GetByLabel("Tenant section", new() { Exact = true });
+        await switcher.WaitForAsync(new() { State = WaitForSelectorState.Attached });
+        if (await switcher.IsVisibleAsync()) await switcher.SelectOptionAsync(new SelectOptionValue { Label = "Auto update" });
+        else await dialog.GetByRole(AriaRole.Tab, new() { Name = "Auto Update", Exact = true }).ClickAsync();
     }
 
     private static async Task AssertFitsAsync(IPage page, ILocator control, int width)

@@ -1,0 +1,168 @@
+@using NetRatel.Shared.Contracts.Jobs
+@implements IDisposable
+@inject IHttpClientFactory HttpClients
+@inject IDialogService Dialogs
+
+<section class="execution-groups-editor" aria-label="Tenant execution groups" data-testid="execution-groups-editor">
+    <MudAlert Severity="Severity.Info" Dense="true">Groups save independently with <strong>Save group</strong>. Saving or cancelling tenant changes does not undo a saved group.</MudAlert>
+    @if (_error is not null) { <MudAlert Severity="Severity.Error" Dense="true" role="alert">@_error</MudAlert> }
+    @if (_message is not null) { <MudText Typo="Typo.body2" role="status">@_message</MudText> }
+    @if (_loading) { <MudProgressLinear Indeterminate="true" aria-label="Loading execution groups" /> }
+    @if (!_editing)
+    {
+        <div class="execution-groups-toolbar">
+            <MudTextField T="string" Value="_search" ValueChanged="SearchTextChangedAsync" DebounceInterval="300" Label="Search execution groups" Variant="Variant.Outlined" Margin="Margin.Dense" Immediate="true" OnKeyDown="SearchKeyAsync" />
+            <MudButton OnClick="SearchAsync" Disabled="_loading" Variant="Variant.Outlined">Search groups</MudButton>
+            <MudButton OnClick="NewGroupAsync" Disabled="_loading" Variant="Variant.Filled" Color="Color.Primary">New group</MudButton>
+        </div>
+        <MudText Typo="Typo.caption">@(_groups?.TotalCount ?? 0) groups</MudText>
+        @foreach (var group in _groups?.Items ?? [])
+        {
+            <MudPaper Outlined="true" Class="pa-3 my-2 execution-group-row" @key="group.Id">
+                <div class="execution-group-summary">
+                    <MudText Typo="Typo.subtitle2">@group.Name · @(group.Archived ? "Archived" : group.Enabled ? "Enabled" : "Disabled")</MudText>
+                    <MudText Typo="Typo.body2">@group.Description</MudText>
+                    <MudText Typo="Typo.caption">@(group.MemberCount == 0 ? "No members" : $"{group.MemberCount} members · {group.OnlineCount} online · {group.OfflineCount} offline") · Revision @group.Revision</MudText>
+                </div>
+                <MudButton OnClick="@(() => EditGroupAsync(group.Id))" Disabled="_loading" aria-label="@($"Edit execution group {group.Name}")">Edit group</MudButton>
+            </MudPaper>
+        }
+        @if (!_loading && (_groups?.Items.Count ?? 0) == 0) { <MudText Class="pa-4">No execution groups. Create a group and choose its clients.</MudText> }
+        <div class="execution-groups-toolbar">
+            <MudButton Disabled="@(_page <= 1 || _loading)" OnClick="PreviousAsync">Previous groups</MudButton>
+            <MudText Typo="Typo.caption">Page @_page</MudText>
+            <MudButton Disabled="@(_groups?.NextPage is null || _loading)" OnClick="NextAsync">Next groups</MudButton>
+            <MudButton OnClick="LoadGroupsAsync" Disabled="_loading">Reload groups</MudButton>
+        </div>
+    }
+    else
+    {
+        <div class="execution-groups-toolbar">
+            <MudButton OnClick="BackAsync" Disabled="_saving" StartIcon="@Icons.Material.Filled.ArrowBack">All groups</MudButton>
+            <MudText Typo="Typo.subtitle1">@(_editingId is null ? "New execution group" : _name)</MudText>
+            @if (_revision is not null) { <MudText Typo="Typo.caption">Revision @_revision</MudText> }
+        </div>
+        <fieldset disabled="@_saving" class="execution-group-fields">
+            <MudTextField T="string" Value="_name" ValueChanged="NameChangedAsync" Label="Group name" HelperText="Required to save this group." MaxLength="200" Variant="Variant.Outlined" Immediate="true" />
+            <MudTextField T="string" Value="_description" ValueChanged="DescriptionChangedAsync" Label="Group description" Lines="2" MaxLength="2048" Variant="Variant.Outlined" Immediate="true" />
+            <MudSwitch T="bool" Value="_enabled" ValueChanged="EnabledChangedAsync" Label="Group enabled" Color="Color.Primary" />
+            <MudSwitch T="bool" Value="_archived" ValueChanged="ArchivedChangedAsync" Label="Group archived" />
+            <MudText Typo="Typo.body2">Every selected member runs the full job workflow. Membership does not grant execution permission.</MudText>
+            @if (_members.Count == 0) { <MudText Typo="Typo.caption">No members. You can save this setup state; a job cannot run an empty group.</MudText> }
+            <JobNodePicker TenantId="TenantId" Value="_members" ValueChanged="MembersChangedAsync" Disabled="_saving" />
+        </fieldset>
+        <div class="execution-groups-toolbar">
+            <MudButton OnClick="SaveAsync" Disabled="@(_saving || string.IsNullOrWhiteSpace(_name))" Color="Color.Primary" Variant="Variant.Filled">@(_saving ? "Saving group…" : "Save group")</MudButton>
+            @if (_editingId is not null)
+            {
+                <MudButton OnClick="ReloadGroupAsync" Disabled="_saving">Reload group</MudButton>
+                <MudButton OnClick="DeleteAsync" Disabled="_saving" Color="Color.Error">Delete group</MudButton>
+            }
+        </div>
+    }
+</section>
+
+@code {
+    [Parameter] public int TenantId { get; set; }
+    [Parameter] public EventCallback<bool> DirtyChanged { get; set; }
+    private JobTargetsApiClient Api => _api ??= new(HttpClients);
+    private JobTargetsApiClient? _api;
+    private ExecutionGroupPageDto? _groups;
+    private int _page = 1;
+    private bool _editing, _loading, _saving;
+    private long _listGeneration;
+    private Guid? _editingId;
+    private long? _revision;
+    private string _name = "", _search = "";
+    private string? _description, _error, _message;
+    private bool _enabled = true, _archived;
+    private IReadOnlyList<Guid> _members = [];
+    private string _savedDraft = "";
+    private string Draft => System.Text.Json.JsonSerializer.Serialize(new { _name, _description, _enabled, _archived, Members = _members.Order().ToArray() });
+    private readonly CancellationTokenSource _dispose = new();
+    private bool Dirty => _editing && Draft != _savedDraft;
+
+    protected override Task OnInitializedAsync() => LoadGroupsAsync();
+    private async Task LoadGroupsAsync()
+    {
+        _loading = true; _error = null;
+        var generation = ++_listGeneration;
+        try { var groups = await Api.GetGroupsAsync(TenantId, _search, _page, _dispose.Token); if (generation == _listGeneration) _groups = groups; }
+        catch (OperationCanceledException) when (_dispose.IsCancellationRequested) { _message = null; }
+        catch (Exception ex) { if (generation == _listGeneration) _error = ex.Message; }
+        finally { if (generation == _listGeneration) _loading = false; }
+    }
+    private async Task NewGroupAsync()
+    {
+        _editingId = null; _revision = null; _name = ""; _description = null; _enabled = true; _archived = false; _members = [];
+        _error = null; _message = null; _editing = true; _savedDraft = Draft;
+        await DirtyChanged.InvokeAsync(false);
+    }
+    private async Task EditGroupAsync(Guid id)
+    {
+        _loading = true; _error = null; _message = null;
+        try
+        {
+            var details = await Api.GetGroupAsync(TenantId, id, _dispose.Token);
+            var group = details.Group;
+            _editingId = group.Id; _revision = group.Revision; _name = group.Name; _description = group.Description;
+            _enabled = group.Enabled; _archived = group.Archived; _members = details.Members.Select(node => node.AgentId).ToArray();
+            _editing = true; _savedDraft = Draft;
+            await DirtyChanged.InvokeAsync(false);
+        }
+        catch (OperationCanceledException) when (_dispose.IsCancellationRequested) { _message = null; }
+        catch (Exception ex) { _error = ex.Message; }
+        finally { _loading = false; }
+    }
+    private async Task SaveAsync()
+    {
+        if (_saving || string.IsNullOrWhiteSpace(_name)) return;
+        _saving = true; _error = null; _message = null;
+        try
+        {
+            var saved = await Api.SaveGroupAsync(TenantId, _editingId, new(_name.Trim(), _description, _enabled, _archived, _members, _revision), _dispose.Token);
+            _editingId = saved.Group.Id; _revision = saved.Group.Revision; _name = saved.Group.Name; _description = saved.Group.Description;
+            _members = saved.Members.Select(node => node.AgentId).ToArray();
+            _savedDraft = Draft; await DirtyChanged.InvokeAsync(false);
+            _message = $"Group saved · {_members.Count} members · revision {_revision}.";
+        }
+        catch (OperationCanceledException) when (_dispose.IsCancellationRequested) { _message = null; }
+        catch (Exception ex) { _error = ex.Message; }
+        finally { _saving = false; }
+    }
+    private async Task<bool> ConfirmDiscardAsync() => !Dirty || await Dialogs.ShowMessageBoxAsync("Unsaved group changes", "Discard the unsaved group draft? Saved groups are unaffected.", yesText: "Discard group draft", cancelText: "Keep editing") == true;
+    private async Task BackAsync()
+    {
+        if (!await ConfirmDiscardAsync()) return;
+        _editing = false; await DirtyChanged.InvokeAsync(false); await LoadGroupsAsync();
+    }
+    private async Task ReloadGroupAsync()
+    {
+        if (_editingId is { } id && await ConfirmDiscardAsync()) await EditGroupAsync(id);
+    }
+    private async Task DeleteAsync()
+    {
+        if (_editingId is not { } id || _revision is not { } revision || await Dialogs.ShowMessageBoxAsync("Delete execution group", "Delete this group? Referenced groups must be retired or archived first.", yesText: "Delete group", cancelText: "Keep group") != true) return;
+        _saving = true; _error = null;
+        try
+        {
+            await Api.DeleteGroupAsync(TenantId, id, revision, _dispose.Token);
+            _editing = false; await DirtyChanged.InvokeAsync(false); await LoadGroupsAsync();
+        }
+        catch (OperationCanceledException) when (_dispose.IsCancellationRequested) { _message = null; }
+        catch (Exception ex) { _error = ex.Message; }
+        finally { _saving = false; }
+    }
+    private Task NameChangedAsync(string value) { _name = value; return NotifyDirtyAsync(); }
+    private Task DescriptionChangedAsync(string? value) { _description = value; return NotifyDirtyAsync(); }
+    private Task EnabledChangedAsync(bool value) { _enabled = value; return NotifyDirtyAsync(); }
+    private Task ArchivedChangedAsync(bool value) { _archived = value; return NotifyDirtyAsync(); }
+    private Task MembersChangedAsync(IReadOnlyList<Guid> value) { _members = value; return NotifyDirtyAsync(); }
+    private Task NotifyDirtyAsync() => DirtyChanged.InvokeAsync(Dirty);
+    private Task SearchAsync() { _page = 1; return LoadGroupsAsync(); }
+    private Task SearchTextChangedAsync(string? value) { _search = value ?? ""; return SearchAsync(); }
+    private Task SearchKeyAsync(KeyboardEventArgs args) => args.Key == "Enter" ? SearchAsync() : Task.CompletedTask;
+    private Task PreviousAsync() { _page = Math.Max(1, _page - 1); return LoadGroupsAsync(); }
+    private Task NextAsync() { _page = _groups?.NextPage ?? _page; return LoadGroupsAsync(); }
+    public void Dispose() { _dispose.Cancel(); _dispose.Dispose(); }
+}
