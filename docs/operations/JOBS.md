@@ -44,6 +44,7 @@ does not mean all nodes; selecting all is deliberate.
 
 | Filter | Meaning |
 | --- | --- |
+| `.*` | Every authorized node in the tenant; the explicit `all: true` form is equivalent. |
 | `lab-node-01 lab-node-02` | Either exact hostname or registered name; ambiguous names need IDs. |
 | `hostname: lab-node-01,lab-node-02` | Either exact hostname. |
 | `tags: TestSystem` | Exact case-insensitive tag membership. |
@@ -60,8 +61,11 @@ repeated clauses for the same property are OR alternatives. Exclusions always
 win. Quote literals containing spaces, operators, colons, slashes or quotes.
 Either single or double quotes delimit a literal; backslash escapes the
 following character. Inside a regex, `\/` escapes its delimiter and other
-backslashes retain regex meaning. Only explicit `/.../` operands are regular
-expressions. Invalid/unsupported expressions, ambiguity, exhausted work or
+backslashes retain regex meaning. Use the builder's **Regex** switch or explicit
+`/.../` operands for regular expressions. Bare `.*` is an all-nodes shorthand
+and can be combined with property clauses or exclusions; quote `".*"` to match
+that exact node name. Parameter values remain literal, including `.*`.
+Invalid/unsupported expressions, ambiguity, exhausted work or
 regex bounds, and no matches are errors rather than partial results.
 
 The property catalogue returned by the server is authoritative. Version 1

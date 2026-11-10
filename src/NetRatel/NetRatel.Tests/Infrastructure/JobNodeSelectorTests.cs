@@ -31,6 +31,9 @@ public sealed class JobNodeSelectorTests
     [InlineData("tags: Staging tags: Windows", 3)]
     [InlineData("hostname: /node-01$/,/node-03$/", 2)]
     [InlineData("all: true !tags: Excluded", 4)]
+    [InlineData(".*", 5)]
+    [InlineData(".* !tags: Excluded", 4)]
+    [InlineData("/^lab-node-0[1-3]$/", 3)]
     [InlineData("displayname: \"Friendly 1\"", 1)]
     public void One_grammar_defines_exact_property_tag_regex_exclusion_and_repeat_semantics(string filter, int count)
     {
@@ -54,6 +57,21 @@ public sealed class JobNodeSelectorTests
         JobNodeFilterEvaluator.Resolve(bound, [special, Inventory[1]]).Should().ContainSingle(x => x.AgentId == special.AgentId);
         JobNodeFilterEvaluator.Resolve(JobNodeFilterParser.Bind(template, new Dictionary<string, string[]> { ["TAG"] = ["Staging", "Windows"] }), Inventory)
             .Should().HaveCount(3);
+    }
+
+    [Fact]
+    public void All_wildcard_includes_nodes_without_names_but_quoted_and_bound_wildcards_stay_literal()
+    {
+        var literal = Inventory[0] with { Hostname = ".*", Name = null };
+        var unnamed = Inventory[1] with { Hostname = "", Name = null };
+        JobNodeFilterEvaluator.Resolve(JobNodeFilterParser.Parse(".*"), [literal, unnamed])
+            .Should().HaveCount(2);
+        JobNodeFilterEvaluator.Resolve(JobNodeFilterParser.Parse("\".*\""), [literal, unnamed])
+            .Should().ContainSingle(node => node.AgentId == literal.AgentId);
+        var bound = JobNodeFilterParser.Bind(JobNodeFilterParser.Parse("hostname: @option.host@"),
+            new Dictionary<string, string[]> { ["host"] = [".*"] });
+        JobNodeFilterEvaluator.Resolve(bound, [literal, unnamed])
+            .Should().ContainSingle(node => node.AgentId == literal.AgentId);
     }
 
     [Theory]

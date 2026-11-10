@@ -5,6 +5,7 @@
 @implements IDisposable
 @inject IJobApiClient JobApi
 @inject IJobRunStreamService RunStream
+@inject ILogger<JobRunNodeDetails> Logger
 
 <section class="node-run-details" aria-label="@($"Steps and output for {Node.Hostname}")" data-node-agent-id="@Node.AgentId">
     @if (_error is not null) { <MudAlert Severity="Severity.Warning" Dense="true">@_error <MudButton Size="Size.Small" OnClick="LoadAsync">Retry node details</MudButton></MudAlert> }
@@ -122,10 +123,15 @@
                 var active = CurrentStep();
                 if (active is not null) ViewState.ExpandedSteps.Add(active.Step.Id);
             }
-            foreach (var state in _steps.Where(state => ViewState.ExpandedSteps.Contains(state.Step.Id) && !state.InspectingPages)) await LoadLogAsync(state);
+            // Live snapshots may replace the list while an output request is awaited.
+            foreach (var state in _steps.Where(state => ViewState.ExpandedSteps.Contains(state.Step.Id) && !state.InspectingPages).ToArray()) await LoadLogAsync(state);
         }
         catch (OperationCanceledException) when (_dispose.IsCancellationRequested) { _liveState = "Closed"; }
-        catch (Exception ex) { _error = ex.Message; }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Could not refresh steps for job run {ParentRunId}, node {AgentId}", ParentRunId, Node.AgentId);
+            _error = "This node’s steps could not be refreshed. Your output and selection are retained.";
+        }
         finally { _loading = false; }
     }
     private void MergeSteps(IReadOnlyList<JobStepRunDto> steps)
@@ -256,7 +262,7 @@
                             }
                         }
                         if (Following) await FollowCurrentAsync();
-                        foreach (var state in _steps.Where(state => ViewState.ExpandedSteps.Contains(state.Step.Id) && state.Log is null && !state.LogAttempted)) await LoadLogAsync(state);
+                        foreach (var state in _steps.Where(state => ViewState.ExpandedSteps.Contains(state.Step.Id) && state.Log is null && !state.LogAttempted).ToArray()) await LoadLogAsync(state);
                     }
                     StateHasChanged();
                 });
