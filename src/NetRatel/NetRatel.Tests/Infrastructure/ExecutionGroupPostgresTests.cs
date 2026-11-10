@@ -24,7 +24,12 @@ public sealed class ExecutionGroupPostgresTests(PostgreSqlPersistenceFixture pos
         await using var db = await CreateAsync(ct);
         var ids = await SeedAsync(db, ct);
         var service = Service(db);
-        var created = await service.CreateAsync(7, new("Test systems", null, true, false, []), Manager, ct);
+        ExecutionGroupDetailsDto created;
+        await using (var reviewedMutation = await db.Database.BeginTransactionAsync(ct))
+        {
+            created = await service.CreateAsync(7, new("Test systems", null, true, false, []), Manager, ct);
+            await reviewedMutation.CommitAsync(ct);
+        }
         created.Group.MemberCount.Should().Be(0);
         var saved = await service.UpdateAsync(7, created.Group.Id, new("Five test systems", "synthetic", true, false, ids, created.Group.Revision), Manager, ct);
         saved!.Group.Id.Should().Be(created.Group.Id); saved.Group.Revision.Should().Be(2);

@@ -218,7 +218,8 @@ public sealed class ExecutionGroupService(OrchestratorDbContext db, IEffectiveAc
         {
             return await db.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
             {
-                await using var transaction = db.Database.IsRelational() ? await db.Database.BeginTransactionAsync(ct).ConfigureAwait(false) : null;
+                await using var transaction = db.Database.IsRelational() && db.Database.CurrentTransaction is null
+                    ? await db.Database.BeginTransactionAsync(ct).ConfigureAwait(false) : null;
                 var result = await operation().ConfigureAwait(false);
                 if (transaction is not null) await transaction.CommitAsync(ct).ConfigureAwait(false);
                 return result;

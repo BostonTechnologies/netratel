@@ -132,6 +132,25 @@ public sealed class JobNodeSelectorTests
             new() { Source = JobTargetSource.ExplicitNodes, AgentIds = [Ids[0]] }, null, null, null, null, CancellationToken.None))).Code.Should().Be("target_node_unavailable");
     }
 
+    [Fact]
+    public async Task Canonical_directory_separates_reported_hostname_and_registered_name_and_rejects_foreign_ids()
+    {
+        await using var db = Db();
+        db.Agents.AddRange(new Agent { Id = Ids[0], TenantId = 7, Name = "registered-only", Tags = ["TestSystem"] },
+            new Agent { Id = Ids[1], TenantId = 8, Name = "foreign", Tags = ["TestSystem"] });
+        await db.SaveChangesAsync();
+        var directory = new JobNodeDirectory(db);
+        var inventory = await directory.ReadAsync(7, null, false, CancellationToken.None);
+        inventory.Should().ContainSingle(); inventory[0].Hostname.Should().BeEmpty();
+        JobNodeFilterEvaluator.Resolve(JobNodeFilterParser.Parse("registered-only"), inventory).Should().ContainSingle();
+        Assert.Throws<JobTargetValidationException>(() => JobNodeFilterEvaluator.Resolve(JobNodeFilterParser.Parse("hostname: registered-only"), inventory))
+            .Code.Should().Be("target_no_matches");
+        var resolver = new JobTargetResolver(db, directory);
+        (await Assert.ThrowsAsync<JobTargetValidationException>(() => resolver.ResolveAsync(7,
+            new() { Source = JobTargetSource.ExplicitNodes, AgentIds = [Ids[0], Ids[1]] }, null, null, null, null, CancellationToken.None)))
+            .Code.Should().Be("target_node_unavailable");
+    }
+
     private static OrchestratorDbContext Db() => new(new DbContextOptionsBuilder<OrchestratorDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);
     private sealed class Directory(IReadOnlyList<JobNodeInventoryDto> nodes) : IJobNodeDirectory
     {
