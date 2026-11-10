@@ -1,10 +1,10 @@
 # ADR 0006: immutable job target plans and durable node orchestration
 
-Status: accepted, 10 November 2026. Scope: [execution groups and multi-node jobs](https://github.com/BostonTechnologies/netratel/issues/696).
+Status: accepted, 10 November 2026; HA admission amended by [#716](https://github.com/BostonTechnologies/netratel/issues/716). Scope: [execution groups and multi-node jobs](https://github.com/BostonTechnologies/netratel/issues/696).
 
 ## Context
 
-Native run authority, cancellation, physical dispatch receipts and protected execution inputs bind one AgentId to one execution. A group is an explicit tenant-owned set, not a pool from which an executor is chosen. Reusing a native run for several agents would confuse authority, callbacks, output and recovery.
+Native run authority, cancellation, physical dispatch receipts and protected execution inputs bind one AgentId to one execution. The initial schema-one group assumption was corrected by #716: an HA Group is an explicit tenant-owned availability pool, from which one healthy authorized worker runs a fresh invocation. Explicit nodes, filters and runtime lists retain multi-node execution. Reusing a native run for several agents would confuse authority, callbacks, output and recovery.
 
 ## Decision
 
@@ -16,7 +16,15 @@ The server resolves and authorizes the complete set before admitting a run. `Job
 
 `JobAggregateControls` stores a revision fence and durable stop/cancel gate. PostgreSQL serializes slot claims and gate transitions; no transaction spans native execution. A claim committed before the gate closes is active work; no claim may commit afterward. Native acceptance with a lost response is not evidence of failure or termination. Recovery may resume NeverStarted targets. Claimed/admitted or ambiguous native identities are observed and reconciled through their original controls and receipts, never replayed as new physical execution.
 
-Thread Count defaults to 1 and accepts 1 through 100. It limits whole node workflows, not individual steps or simultaneous invocations of the same job. The configured count is retained; effective concurrency is bounded by target count and explicit capacity. Enabled steps remain sequential inside each node.
+For explicit nodes, filters and runtime lists, Thread Count defaults to 1 and accepts 1 through 100. It limits whole node workflows, not individual steps or simultaneous invocations of the same job. The configured count is retained; effective concurrency is bounded by target count and explicit capacity. An HA invocation has one physical target and effective concurrency 1 regardless of its saved Thread Count. Enabled steps remain sequential inside each node.
+
+## HA admission amendment
+
+Fresh HA resolutions use target-plan schema 2. Preview binds the complete eligible authorized worker pool and reports one execution target; it does not choose a worker or advance balancing. During admission, a PostgreSQL group-row lock serializes the durable round-robin cursor across API instances. Current committed connection leases and authentication expiry determine worker availability. Cursor advance, the selected-worker plan, parent and single-node queue commit in the same transaction. Membership revisions do not change when the cursor rotates. Unchanged healthy pools divide 100 admissions 50/50 across two workers or 25 each across four; this balances invocation counts rather than CPU time.
+
+The selected plan binds its one worker to the approved frozen pool and digest. Schema-2 HA hashes exclude only volatile online hints; group revision, identities, metadata, definition and settings remain bound. Validated invocation-only subsets also bind their exact identities without changing the saved policy. Reviewed execution retains confirmation, current per-agent grants and atomic quotas across every eligible policy. Recovery compares the persisted selected-worker proof against the approved policy; it never chooses a replacement after physical admission. Duplicate delivery and original-execution reruns keep their selected worker.
+
+The `ExecutionGroup = 1` wire identifier and routes remain compatible. Schema-one hashes and already accepted admissions retain their original frozen targets and behavior; the correction does not rewrite history. An empty healthy pool fails admission before creating a parent. Native uncertainty, cancellation, timeout and receipt safeguards below continue to apply to that one worker.
 
 ## Deadlines and terminal outcomes
 
