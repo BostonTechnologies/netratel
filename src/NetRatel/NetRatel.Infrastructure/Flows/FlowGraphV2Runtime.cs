@@ -94,7 +94,7 @@ public sealed class FlowGraphV2Runtime(IFlowNodeExecutionStore checkpoints, IFlo
             if (current is null || current.Progress == FlowNodeProgress.Completed)
             {
                 var values = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
-                foreach (var pair in node.Inputs ?? new Dictionary<string, FlowInputBindingDto>())
+                foreach (var pair in FlowJobTargetBindings.Mappings(node))
                 {
                     if (pair.Value.Source == FlowInputSource.SecretReference && node.Kind is FlowNodeKind.RunJob or FlowNodeKind.RunLibraryScript) continue;
                     var resolved = FlowValueEvaluation.Resolve(pair.Value, lease.Event.ExecutionEvent, lease.Event.Data,
@@ -119,7 +119,7 @@ public sealed class FlowGraphV2Runtime(IFlowNodeExecutionStore checkpoints, IFlo
             var state = current!;
             // Re-evaluate missing inputs after a prepared-node restart; prior outputs and event are immutable.
             if (inputError is null)
-                foreach (var pair in node.Inputs ?? new Dictionary<string, FlowInputBindingDto>())
+                foreach (var pair in FlowJobTargetBindings.Mappings(node))
                     if (!(pair.Value.Source == FlowInputSource.SecretReference && node.Kind is FlowNodeKind.RunJob or FlowNodeKind.RunLibraryScript) &&
                         !state.Inputs.ContainsKey(pair.Key)) { inputError = pair.Value.Source == FlowInputSource.SecretReference ? "secret-reference-unavailable" : "node-input-unavailable"; break; }
             if (node.Kind == FlowNodeKind.InvestigateWithAi &&
@@ -421,7 +421,9 @@ public sealed class FlowGraphV2Runtime(IFlowNodeExecutionStore checkpoints, IFlo
             terminal.TenantId != lease.Event.TenantId || terminal.ExecutionId != receipt.ExecutionId ||
             terminal.SourceKind != (receipt.Kind == ExecutionAdmissionKind.Job ? FlowExecutionSourceKind.Job : FlowExecutionSourceKind.Script) ||
             terminal.Outcome != expected || terminal.Causation?.FlowRunId != lease.RunId || terminal.Causation.NodeId != node.Id ||
-            terminal.Causation.ParentEventId != lease.Event.ExecutionEvent?.EventId)
+            terminal.Causation.ParentEventId != lease.Event.ExecutionEvent?.EventId ||
+            terminal.Aggregate?.TargetPlanDigest != receipt.TargetPlanDigest ||
+            receipt.DefinitionDigest is not null && !string.Equals(terminal.Definition.ContentHash, receipt.DefinitionDigest, StringComparison.OrdinalIgnoreCase))
             return new(FlowExecutionActionDisposition.Unknown, "execution-terminal-fact-conflict", receipt);
         return result;
     }

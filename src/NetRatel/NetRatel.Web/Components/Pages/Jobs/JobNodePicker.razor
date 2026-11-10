@@ -1,0 +1,151 @@
+@using NetRatel.Shared
+@using NetRatel.Shared.Contracts.Jobs
+@implements IDisposable
+@inject IHttpClientFactory HttpClients
+
+<section class="node-picker" aria-label="Client membership" data-testid="job-node-picker">
+    <div class="node-picker-toolbar">
+        <MudTextField T="string" Value="_search" ValueChanged="SearchTextChangedAsync" DebounceInterval="300" Label="Search hostname, display name, tag, OS or architecture" Variant="Variant.Outlined" Margin="Margin.Dense" Immediate="true" Disabled="Disabled" OnKeyDown="SearchKeyAsync" />
+        <MudButton OnClick="SearchAsync" Disabled="@(_loading || Disabled)" Variant="Variant.Outlined">Search clients</MudButton>
+        <MudButton OnClick="ToggleSelectedAsync" Disabled="Disabled" Variant="@(_selectedOnly ? Variant.Filled : Variant.Outlined)">@(_selectedOnly ? "Available clients" : $"Selected members ({_selected.Count})")</MudButton>
+    </div>
+    <MudText Typo="Typo.caption" role="status">@_selected.Count selected across all pages and searches. Offline clients stay selected.</MudText>
+    @if (_error is not null)
+    {
+        <MudAlert Severity="Severity.Error" Dense="true">@_error <MudButton OnClick="ReloadAsync" Size="Size.Small">Retry clients</MudButton></MudAlert>
+    }
+    @if (_loading) { <MudProgressLinear Indeterminate="true" aria-label="Loading clients" /> }
+    <div class="node-picker-actions">
+        @if (!_selectedOnly)
+        {
+            <MudButton Size="Size.Small" OnClick="SelectVisibleAsync" Disabled="@(Disabled || _loading || _items.Count == 0)">Select visible (@_items.Count(node => node.IsEnabled))</MudButton>
+            <MudButton Size="Size.Small" OnClick="ClearVisibleAsync" Disabled="@(Disabled || _loading)">Clear visible</MudButton>
+        }
+        <MudText Typo="Typo.caption">@(_selectedOnly ? $"Selected members: {_selected.Count}" : $"{_total} matching clients")</MudText>
+    </div>
+    <div class="node-picker-list">
+        @foreach (var node in _items)
+        {
+            <div class="node-picker-row" @key="node.AgentId">
+                <MudCheckBox T="bool" Value="_selected.Contains(node.AgentId)" ValueChanged="@(value => SetSelectedAsync(node.AgentId, value))" Disabled="@(Disabled || !node.IsEnabled && !_selected.Contains(node.AgentId))" aria-label="@(SelectionLabel(node))" />
+                <div class="node-picker-identity">
+                    <MudText Typo="Typo.body2"><strong>@NodeName(node)</strong> @if (!string.IsNullOrWhiteSpace(node.DisplayName) && node.DisplayName != node.Hostname) { <span> · @node.DisplayName</span> }</MudText>
+                    @if (string.IsNullOrWhiteSpace(node.Hostname) && !string.IsNullOrWhiteSpace(node.Name)) { <MudText Typo="Typo.caption">Registered name: @node.Name</MudText> }
+                    <MudText Typo="Typo.caption">@node.OperatingSystem · @(node.Environment?.ToShortLabel() ?? "Environment unspecified") · @(node.IsOnline ? "Online" : "Offline") @if (!node.IsEnabled) { <span> · Unavailable: @node.UnavailableReason</span> }</MudText>
+                    <MudText Typo="Typo.caption" Class="node-picker-tags">@string.Join(" · ", node.Tags)</MudText>
+                </div>
+                @if (_selectedOnly) { <MudButton Size="Size.Small" OnClick="@(() => SetSelectedAsync(node.AgentId, false))" Disabled="Disabled" aria-label="@($"Remove {NodeName(node)}")">Remove</MudButton> }
+            </div>
+        }
+        @if (!_loading && _items.Count == 0) { <MudText Typo="Typo.body2" Class="pa-3">@(_selectedOnly ? "No selected members." : "No clients match this search.")</MudText> }
+        @if (_selectedOnly)
+        {
+            @foreach (var id in _unavailablePage)
+            {
+                <div class="node-picker-row" @key="id"><MudText Typo="Typo.body2">Saved client @id · Metadata unavailable</MudText><MudButton Size="Size.Small" OnClick="@(() => SetSelectedAsync(id, false))" Disabled="Disabled">Remove unavailable member</MudButton></div>
+            }
+        }
+    </div>
+    <div class="node-picker-pagination">
+        <MudButton Disabled="@(_page <= 1 || _loading)" OnClick="PreviousAsync">Previous clients</MudButton>
+        <MudText Typo="Typo.caption">Page @_page</MudText>
+        <MudButton Disabled="@(_page * 25 >= _total || _loading)" OnClick="NextAsync">Next clients</MudButton>
+    </div>
+</section>
+
+@code {
+    [Parameter] public int TenantId { get; set; }
+    [Parameter] public ClientEnvironment? Environment { get; set; }
+    [Parameter] public IReadOnlyList<Guid> Value { get; set; } = [];
+    [Parameter] public EventCallback<IReadOnlyList<Guid>> ValueChanged { get; set; }
+    [Parameter] public bool Disabled { get; set; }
+    private JobTargetsApiClient Api => _api ??= new(HttpClients);
+    private JobTargetsApiClient? _api;
+    private readonly HashSet<Guid> _selected = [];
+    private readonly Dictionary<Guid, JobNodeInventoryDto> _identities = [];
+    private IReadOnlyList<JobNodeInventoryDto> _items = [];
+    private IReadOnlyList<Guid> _unavailablePage = [];
+    private int _loadedTenant, _page = 1, _total;
+    private ClientEnvironment? _loadedEnvironment;
+    private bool _selectedOnly, _loading;
+    private string _search = "";
+    private string? _error;
+    private readonly CancellationTokenSource _dispose = new();
+    private long _generation;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        var scopeChanged = _loadedTenant != TenantId || _loadedEnvironment != Environment;
+        var changed = !_selected.SetEquals(Value);
+        if (!scopeChanged && !changed) return;
+        _loadedTenant = TenantId;
+        _loadedEnvironment = Environment;
+        _selected.Clear();
+        _selected.UnionWith(Value);
+        if (scopeChanged) { _identities.Clear(); _page = 1; _search = ""; }
+        if (TenantId > 0) await ReloadAsync();
+    }
+
+    private async Task ReloadAsync()
+    {
+        if (TenantId <= 0) return;
+        var generation = ++_generation;
+        _loading = true; _error = null;
+        try
+        {
+            // Keep the complete selection as IDs; hydrate metadata only for the current Selected page.
+            var selectedPage = _selectedOnly ? _selected.Order().Skip((_page - 1) * 25).Take(25).ToArray() : [];
+            var missing = selectedPage.Where(id => !_identities.ContainsKey(id)).ToArray();
+            foreach (var batch in missing.Chunk(100))
+            {
+                var found = await Api.GetNodeIdentitiesAsync(TenantId, batch, _dispose.Token);
+                if (generation != _generation) return;
+                foreach (var node in found) _identities[node.AgentId] = node;
+            }
+            if (_selectedOnly)
+            {
+                _total = _selected.Count;
+                _items = selectedPage.Where(_identities.ContainsKey).Select(id => _identities[id]).ToArray();
+                _unavailablePage = selectedPage.Where(id => !_identities.ContainsKey(id)).ToArray();
+            }
+            else
+            {
+                var result = await Api.GetNodesAsync(TenantId, _search, _page, Environment, _dispose.Token);
+                if (generation != _generation) return;
+                _total = result.TotalCount; _items = result.Items;
+                _unavailablePage = [];
+                foreach (var node in _items) _identities[node.AgentId] = node;
+            }
+        }
+        catch (OperationCanceledException) when (_dispose.IsCancellationRequested) { _items = []; }
+        catch (Exception ex) { if (generation == _generation) _error = ex.Message; }
+        finally { if (generation == _generation) _loading = false; }
+    }
+
+    private async Task SetSelectedAsync(Guid id, bool selected)
+    {
+        if (Disabled) return;
+        if (selected) _selected.Add(id); else _selected.Remove(id);
+        await ValueChanged.InvokeAsync(_selected.Order().ToArray());
+        if (_selectedOnly) await ReloadAsync();
+    }
+    private async Task SelectVisibleAsync()
+    {
+        foreach (var node in _items.Where(node => node.IsEnabled)) _selected.Add(node.AgentId);
+        await ValueChanged.InvokeAsync(_selected.Order().ToArray());
+    }
+    private async Task ClearVisibleAsync()
+    {
+        foreach (var node in _items) _selected.Remove(node.AgentId);
+        await ValueChanged.InvokeAsync(_selected.Order().ToArray());
+    }
+    private Task SearchAsync() { _page = 1; _selectedOnly = false; return ReloadAsync(); }
+    private Task SearchTextChangedAsync(string? value) { _search = value ?? ""; return SearchAsync(); }
+    private Task SearchKeyAsync(KeyboardEventArgs args) => args.Key == "Enter" ? SearchAsync() : Task.CompletedTask;
+    private Task ToggleSelectedAsync() { _page = 1; _selectedOnly = !_selectedOnly; return ReloadAsync(); }
+    private Task PreviousAsync() { _page = Math.Max(1, _page - 1); return ReloadAsync(); }
+    private Task NextAsync() { _page++; return ReloadAsync(); }
+    private static string NodeName(JobNodeInventoryDto node) => !string.IsNullOrWhiteSpace(node.Hostname) ? node.Hostname : "Hostname unavailable";
+    private static string SelectionLabel(JobNodeInventoryDto node) => !string.IsNullOrWhiteSpace(node.Hostname) ? $"Select {node.Hostname}" : $"Select client {node.AgentId} ({node.DisplayName}; hostname unavailable)";
+    public void Dispose() { _dispose.Cancel(); _dispose.Dispose(); }
+}

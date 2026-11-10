@@ -5,10 +5,13 @@ using NetRatel.Infrastructure.Persistence;
 using NetRatel.Shared.Contracts.Tasks;
 using NetRatel.Shared.Security;
 using System.Text.Json;
+using Microsoft.Extensions.Configuration;
+using NetRatel.Shared.Contracts.Jobs;
 
 namespace NetRatel.Infrastructure.Services;
 
-public sealed class JobRunService(OrchestratorDbContext db, IDataProtectionProvider protection) : IJobRunService
+public sealed class JobRunService(OrchestratorDbContext db, IDataProtectionProvider protection,
+    IConfiguration? configuration = null) : IJobRunService
 {
     private const int TaskActivityInsertAttempts = 4;
     private readonly OrchestratorDbContext _db = db;
@@ -16,6 +19,34 @@ public sealed class JobRunService(OrchestratorDbContext db, IDataProtectionProvi
     private readonly Dictionary<ulong, (ulong JobId, int? TenantId, JobRunInputProtection.Sensitivity Metadata)> _submissions = [];
     private readonly Dictionary<ulong, McpOperatorJobExecutionSnapshot> _mcpSnapshots = [];
     private readonly Dictionary<ulong, PinnedJobExecutionSnapshot> _pinnedSnapshots = [];
+    private readonly Dictionary<ulong, JobTargetNode> _nodeContexts = [];
+
+    public void BindNodeExecutionContext(ulong runId, JobTargetNode node)
+    {
+        var frozen = node with { Tags = Array.AsReadOnly(node.Tags.ToArray()) };
+        if (!_nodeContexts.TryAdd(runId, frozen) && JsonSerializer.Serialize(_nodeContexts[runId]) != JsonSerializer.Serialize(frozen))
+            throw new InvalidOperationException("A native node execution context is immutable.");
+    }
+
+    public async Task<JobTargetNode?> GetNodeExecutionContextAsync(ulong runId, CancellationToken ct = default)
+    {
+        var run = await _db.JobRuns.AsNoTracking().SingleOrDefaultAsync(row => row.Id == checked((long)runId), ct);
+        var context = run?.ProtectedExecutionJson is null ? null : _protection.ForExecution(run).NodeContext;
+        if (context is not null && (run!.IsAggregate || context.AgentId != run.AgentId))
+            throw new InvalidOperationException("The protected node context differs from its native run identity.");
+        return context;
+    }
+
+    public async Task<JobResolvedTargetPlan?> GetResolvedTargetPlanAsync(ulong runId, CancellationToken ct = default)
+    {
+        var row = await _db.JobRuns.AsNoTracking().SingleOrDefaultAsync(row => row.Id == checked((long)runId), ct);
+        if (row?.TargetPlanJson is null) return null;
+        var plan = ReadTargetPlan(row);
+        if (plan is null || plan.ComputeDigest() != row.TargetPlanDigest || plan.DefinitionDigest != row.DefinitionDigest ||
+            plan.TenantId != row.TenantId || plan.JobId != checked((ulong)row.JobId))
+            throw new InvalidOperationException("The admitted target plan differs from the protected run identity.");
+        return plan;
+    }
 
     public void BindPinnedExecutionSnapshot(ulong runId, PinnedJobExecutionSnapshot snapshot)
     {
@@ -82,15 +113,19 @@ public sealed class JobRunService(OrchestratorDbContext db, IDataProtectionProvi
     public async Task<IReadOnlyList<JobRunInfo>> ListAsync(CancellationToken ct = default)
     {
         await ProtectLegacyAsync(null, ct);
-        return (await _db.JobRuns.AsNoTracking().Where(x => x.ParentRunId == null).OrderByDescending(x => x.CreatedAtUtc).ToListAsync(ct))
-            .Select(Map).ToList();
+        var rows = await _db.JobRuns.AsNoTracking().Where(x => x.ParentRunId == null).OrderByDescending(x => x.CreatedAtUtc).ToListAsync(ct);
+        var aggregateIds = rows.Where(row => row.IsAggregate).Select(row => row.Id).ToArray();
+        var counts = await _db.Set<JobRunNodeRecord>().AsNoTracking().Where(node => aggregateIds.Contains(node.ParentRunId))
+            .GroupBy(node => new { node.ParentRunId, node.State }).Select(group => new { group.Key.ParentRunId, group.Key.State, Count = group.Count() }).ToArrayAsync(ct);
+        return rows.Select(row => row.IsAggregate ? Map(row) with { NodeCounts = Counts(counts.Where(count => count.ParentRunId == row.Id)
+            .ToDictionary(count => count.State, count => count.Count)) } : Map(row)).ToList();
     }
 
     public async Task<JobRunInfo?> GetAsync(ulong runId, CancellationToken ct = default)
     {
         await ProtectLegacyAsync((long)runId, ct);
         var row = await _db.JobRuns.AsNoTracking().FirstOrDefaultAsync(x => x.Id == (long)runId, ct);
-        return row is null ? null : Map(row);
+        return row is null ? null : await EnrichAsync(Map(row), ct);
     }
 
     public async Task<string?> GetExecutionInputsAsync(ulong runId, CancellationToken ct = default)
@@ -113,7 +148,7 @@ public sealed class JobRunService(OrchestratorDbContext db, IDataProtectionProvi
         var run = await _db.JobRuns.AsNoTracking().Include(x => x.Steps).Include(x => x.Activities)
             .FirstOrDefaultAsync(x => x.Id == (long)runId, ct);
         if (run is null) return null;
-        return new JobRunDetails(Map(run),
+        return new JobRunDetails(await EnrichAsync(Map(run), ct),
             run.Steps.OrderBy(x => x.Ordinal).ThenBy(x => x.Id)
                 .Select(x => Map(x) with { Error = _protection.Diagnostic(run, x.Error) }).ToList(),
             run.Activities.OrderBy(x => x.CreatedAtUtc).ThenBy(x => x.Id)
@@ -122,6 +157,10 @@ public sealed class JobRunService(OrchestratorDbContext db, IDataProtectionProvi
 
     public async Task DeleteAsync(ulong runId, CancellationToken ct = default)
     {
+        var retention = await _db.JobRuns.AsNoTracking().Where(row => row.Id == checked((long)runId))
+            .Select(row => new { row.IsAggregate, row.ParentRunId }).SingleOrDefaultAsync(ct);
+        if (retention is null) return;
+        JobRunHistoryRetention.RequireDeletable(retention.IsAggregate, retention.ParentRunId is not null);
         var run = await _db.JobRuns
             .Include(x => x.Steps)
             .Include(x => x.Activities)
@@ -192,6 +231,58 @@ public sealed class JobRunService(OrchestratorDbContext db, IDataProtectionProvi
         }).ToList();
     }
 
+    public async Task<IReadOnlyList<JobTaskLogInfo>> GetLogsPageAsync(string requestId, long afterSequence,
+        int pageSize, CancellationToken ct = default)
+    {
+        var activity = await _db.JobTaskActivities.FirstOrDefaultAsync(row => row.RequestId == requestId, ct);
+        if (activity is not null) await ProtectLegacyTaskAsync(activity, ct);
+        var run = await FindActivityRunAsync(requestId, ct);
+        if (run is not null && run.ProtectedExecutionJson is null)
+        {
+            await ProtectLegacyAsync(run.Id, ct);
+            run = await FindActivityRunAsync(requestId, ct);
+        }
+        var rows = await _db.JobTaskLogs.AsNoTracking().Where(row => row.RequestId == requestId && row.Sequence > afterSequence)
+            .OrderBy(row => row.Sequence).ThenBy(row => row.Id).Take(Math.Clamp(pageSize, 1, 1000)).ToArrayAsync(ct);
+        return rows.Select(row => Map(row) with { Message = ProjectLog(activity, run, row) }).ToArray();
+    }
+
+    public async Task<ExecutionLogDto> GetForwardLogsPageAsync(string requestId, string? cursor, int limit,
+        int maximumBytes, CancellationToken ct = default)
+    {
+        JobLogPageBuilder.ValidateBounds(limit, maximumBytes);
+        var after = JobLogPageBuilder.ParseCursor(cursor);
+        var activity = await _db.JobTaskActivities.FirstOrDefaultAsync(row => row.RequestId == requestId, ct);
+        if (activity is null) return new(requestId, null, null, null, []);
+        await ProtectLegacyTaskAsync(activity, ct);
+        var run = await FindActivityRunAsync(requestId, ct);
+        if (run is not null && run.ProtectedExecutionJson is null)
+        {
+            await ProtectLegacyAsync(run.Id, ct);
+            run = await FindActivityRunAsync(requestId, ct);
+        }
+        var rows = await _db.JobTaskLogs.AsNoTracking().Where(row => row.RequestId == requestId && row.TenantId == activity.TenantId &&
+                (row.Sequence > after.Sequence || row.Sequence == after.Sequence && row.Id > after.Id))
+            .OrderBy(row => row.Sequence).ThenBy(row => row.Id).Take(limit + 1).ToArrayAsync(ct);
+        var page = JobLogPageBuilder.Build(requestId, rows.Select(row => Map(row) with
+            { Message = ProjectLog(activity, run, row) }).ToArray(), cursor, limit, maximumBytes);
+        if (rows.Length == 0 && cursor is null && activity is not null)
+        {
+            var safe = await SanitizeActivityAsync(activity, ct);
+            if (!string.IsNullOrWhiteSpace(safe.ResultJson))
+            {
+                var text = OperatorOutputRedactor.Redact(safe.ResultJson);
+                var plain = JobLogPageBuilder.Utf8Prefix(text, maximumBytes);
+                page = page with
+                {
+                    Plain = plain, ExitCode = safe.ExitCode, Truncated = plain.Length != text.Length,
+                    FullOutputUrl = $"/tasks/request/{Uri.EscapeDataString(requestId)}"
+                };
+            }
+        }
+        return page;
+    }
+
     public async Task<JobRunInfo> UpsertRunAsync(UpsertJobRunCommand command, CancellationToken ct = default)
     {
         var row = await _db.JobRuns.FirstOrDefaultAsync(x => x.Id == (long)command.RunId, ct);
@@ -210,6 +301,22 @@ public sealed class JobRunService(OrchestratorDbContext db, IDataProtectionProvi
 
         if (!isNew && (row.JobId != (long)command.JobId || row.TenantId != command.TenantId))
             throw new InvalidOperationException("The submitted run identity cannot change.");
+        if (!isNew && command.IsAggregate is { } replacement && replacement != row.IsAggregate)
+            throw new InvalidOperationException("An admitted native run cannot become an aggregate, or an aggregate become native.");
+        if (isNew) row.IsAggregate = command.IsAggregate ?? false;
+        if (row.IsAggregate && (command.AgentId is not null || row.ParentRunId is not null))
+            throw new InvalidOperationException("An aggregate parent has no singular native Agent target.");
+        if (command.TargetPlan is { } plan)
+        {
+            plan.Validate();
+            if (!row.IsAggregate || plan.JobId != command.JobId || plan.TenantId != command.TenantId ||
+                row.TargetPlanDigest is { } existingDigest && existingDigest != plan.ComputeDigest())
+                throw new InvalidOperationException("The server-owned target plan differs from its immutable parent identity.");
+            row.TargetPlanJson = JsonSerializer.Serialize(plan, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+            row.TargetPlanDigest = plan.ComputeDigest(); row.DefinitionDigest = plan.DefinitionDigest;
+        }
+        if (row.IsAggregate && row.TargetPlanJson is null)
+            throw new InvalidOperationException("An aggregate requires its complete admitted target plan before protected inputs are captured.");
         var capture = row.ProtectedExecutionJson is null;
         var existingHistory = capture && !isNew;
         row.JobId = (long)command.JobId;
@@ -252,13 +359,14 @@ public sealed class JobRunService(OrchestratorDbContext db, IDataProtectionProvi
             }
             _mcpSnapshots.TryGetValue(command.RunId, out var mcpSnapshot);
             _pinnedSnapshots.TryGetValue(command.RunId, out var pinnedSnapshot);
+            _nodeContexts.TryGetValue(command.RunId, out var nodeContext);
             if (mcpSnapshot is not null)
                 metadata = metadata with { DefinitionRevision = mcpSnapshot.ComputeDigest() };
             if (pinnedSnapshot is not null)
                 metadata = metadata with { DefinitionRevision = pinnedSnapshot.ComputeDigest() };
             _protection.Store(row, metadata,
                 existingHistory ? row.InputsJson : command.InputsJson,
-                existingHistory ? row.OptionsJson : command.OptionsJson, mcpSnapshot, pinnedSnapshot);
+                existingHistory ? row.OptionsJson : command.OptionsJson, mcpSnapshot, pinnedSnapshot, nodeContext);
         }
         row.Error = _protection.Diagnostic(row, NormalizeNullable(command.Error));
 
@@ -758,8 +866,10 @@ public sealed class JobRunService(OrchestratorDbContext db, IDataProtectionProvi
     private static bool IsUniqueViolation(DbUpdateException ex)
         => DatabaseExceptionClassifier.IsUniqueViolation(ex);
 
-    private static JobRunInfo Map(JobRunRecord row)
-        => new(
+    private JobRunInfo Map(JobRunRecord row)
+    {
+        var plan = ReadTargetPlan(row);
+        return new(
             (ulong)row.Id,
             (ulong)row.JobId,
             row.TenantId,
@@ -784,8 +894,32 @@ public sealed class JobRunService(OrchestratorDbContext db, IDataProtectionProvi
             IsAggregate = row.IsAggregate,
             ParentRunId = row.ParentRunId is { } parent ? checked((ulong)parent) : null,
             TargetPlanDigest = row.TargetPlanDigest,
-            DefinitionDigest = row.DefinitionDigest
+            DefinitionDigest = row.DefinitionDigest,
+            TargetSource = plan?.Target.Source,
+            ExecutionPolicy = plan?.ExecutionPolicy,
+            TargetCount = plan?.Nodes.Count ?? (row.AgentId is null ? 0 : 1),
+            EffectiveConcurrency = plan is not null ? Math.Min(plan.Nodes.Count,
+                Math.Min(plan.ExecutionPolicy.ThreadCount, Math.Clamp(configuration?.GetValue<int?>("Jobs:Aggregate:MaximumActiveNodes") ?? 100, 1, 100))) : row.AgentId is null ? 0 : 1
         };
+    }
+
+    private static JobResolvedTargetPlan? ReadTargetPlan(JobRunRecord row) => row.TargetPlanJson is null ? null :
+        JsonSerializer.Deserialize<JobResolvedTargetPlan>(row.TargetPlanJson, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+
+    private async Task<JobRunInfo> EnrichAsync(JobRunInfo run, CancellationToken ct)
+    {
+        if (!run.IsAggregate) return run;
+        var counts = await _db.Set<JobRunNodeRecord>().AsNoTracking().Where(node => node.ParentRunId == checked((long)run.Id))
+            .GroupBy(node => node.State).Select(group => new { State = group.Key, Count = group.Count() }).ToDictionaryAsync(value => value.State, value => value.Count, ct);
+        return run with { NodeCounts = Counts(counts) };
+    }
+
+    private static JobRunNodeCountsDto Counts(IReadOnlyDictionary<JobRunNodeState, int> counts) => new(
+        counts.GetValueOrDefault(JobRunNodeState.NeverStarted),
+        counts.GetValueOrDefault(JobRunNodeState.Claimed) + counts.GetValueOrDefault(JobRunNodeState.Running),
+        counts.GetValueOrDefault(JobRunNodeState.Succeeded), counts.GetValueOrDefault(JobRunNodeState.Failed),
+        counts.GetValueOrDefault(JobRunNodeState.Skipped), counts.GetValueOrDefault(JobRunNodeState.Cancelled),
+        counts.GetValueOrDefault(JobRunNodeState.TimedOut), counts.GetValueOrDefault(JobRunNodeState.Unknown));
 
     private static JobStepRunInfo Map(JobStepRunRecord row)
         => new(

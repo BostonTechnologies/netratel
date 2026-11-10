@@ -3,7 +3,9 @@ using System.Text.Json;
 using Bunit;
 using Microsoft.AspNetCore.Components.Web;
 using Microsoft.Extensions.DependencyInjection;
+using MudBlazor.Services;
 using NetRatel.Shared.Contracts.Flows;
+using NetRatel.Shared.Contracts.Jobs;
 using NetRatel.Web.Components.Pages.Flows;
 using NetRatel.Web.Services.Flows;
 using Xunit;
@@ -222,6 +224,45 @@ public sealed class FlowAuthoringFieldsTests : AsyncBunitContext
         cut.Render(p => p.Add(component => component.Node, node with { ExecutionAction = node.ExecutionAction! with { Target = null } }));
         Assert.Contains("Bound endpoint not configured", cut.Find("[data-testid=flow-job-bound-target]").TextContent, StringComparison.Ordinal);
         Assert.DoesNotContain("Source event endpoint", cut.Find("[data-testid=flow-job-bound-target]").TextContent, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Runtime_Job_Target_Offers_The_Trusted_Event_Client_And_Literal_Mapping_Without_Saving_Or_Dispatching()
+    {
+        Services.AddHttpClient();
+        Services.AddMudServices(options => options.PopoverOptions.CheckForPopoverProvider = false);
+        JSInterop.Mode = JSRuntimeMode.Loose;
+        var trigger = new FlowNodeDto(Guid.NewGuid(), FlowNodeKind.AlertRaised, "Low disk", new(0, 0));
+        var node = new FlowNodeDto(Guid.NewGuid(), FlowNodeKind.RunJob, "Investigate low disk space", new(300, 0))
+        {
+            ExecutionAction = new(FlowExecutionSourceKind.Job, new("42", "Investigate low disk space"))
+            {
+                JobTarget = new() { Source = JobTargetSource.RuntimeInput, RuntimeInput = new(JobRuntimeTargetKind.ClientId, "ClientId") },
+                JobExecutionPolicy = new(2), Parameters = [],
+                TargetBinding = new(JobRuntimeTargetKind.ClientId, new(FlowInputSource.Event, FlowDataType.Text, "alert.agentId"))
+            }
+        };
+        var graph = new FlowGraphDto(2, [trigger, node], [new(trigger.Id, "event", node.Id, "in")], new());
+        FlowNodeDto? changed = null;
+        var cut = Render<FlowExecutionActionFields>(p => p.Add(component => component.TenantId, 17)
+            .Add(component => component.Node, node).Add(component => component.Graph, graph)
+            .Add(component => component.Changed, value => changed = value));
+        Assert.Contains("Provided at run time", cut.Find("[data-testid=flow-job-target-policy]").TextContent, StringComparison.Ordinal);
+        Assert.Empty(cut.FindAll("[data-testid=flow-job-bound-target]"));
+        Assert.Contains("Targets supplied when the job runs", cut.Find("[data-testid=job-target-preview]").TextContent, StringComparison.Ordinal);
+        Assert.Contains("alert.agentId", cut.Find("[data-testid=flow-binding-event]").InnerHtml, StringComparison.Ordinal);
+        Assert.DoesNotContain("alert.clientName", cut.Find("[data-testid=flow-binding-event]").InnerHtml, StringComparison.Ordinal);
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-binding-source]").ChangeAsync(new() { Value = nameof(FlowInputSource.Literal) }));
+        cut.Render(p => p.Add(component => component.Node, changed!));
+        var clientId = Guid.NewGuid().ToString("D");
+        await cut.InvokeAsync(() => cut.Find("[data-testid=flow-binding-literal]").ChangeAsync(new() { Value = clientId }));
+        Assert.Equal(clientId, changed!.ExecutionAction!.TargetBinding!.Value.Literal!.Value.GetString());
+        Assert.Null(changed.ExecutionAction.Target);
+        Assert.Null(changed.Inputs);
+        Assert.Equal(JobRuntimeTargetKind.ClientId, changed.ExecutionAction.TargetBinding.Kind);
+        Assert.Equal(0, _api.SaveCalls);
+        Assert.Equal(0, _api.PublishCalls);
+        Assert.Equal(0, _api.TargetSearchCalls);
     }
 
     [Fact]

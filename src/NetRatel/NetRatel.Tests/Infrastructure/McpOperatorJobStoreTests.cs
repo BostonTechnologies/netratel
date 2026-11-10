@@ -6,12 +6,62 @@ using NetRatel.Application.Jobs;
 using NetRatel.Application.Operations;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Infrastructure.Services;
+using NetRatel.Shared.Contracts.Jobs;
 using Xunit;
 
 namespace NetRatel.Tests.Infrastructure;
 
 public sealed class McpOperatorJobStoreTests
 {
+    [Fact]
+    public async Task Owned_source_retirement_waits_for_an_unmaterialized_reviewed_admission_to_settle()
+    {
+        await using var db = CreateDb(); var fixture = await CreateFixtureAsync(db); var store = new McpOperatorJobStore(db);
+        var job = await store.CreateAsync(new(fixture.Decision, fixture.Audit, new("pending-source", "/"), fixture.Now), CancellationToken.None);
+        var id = Guid.NewGuid(); var access = fixture.Decision.Request;
+        db.McpOperatorIdempotencyRecords.Add(new() { Id = id, Environment = access.Environment, Subject = fixture.Principal.Subject,
+            ClientId = fixture.Principal.ClientId!, TenantId = fixture.TenantId, AgentId = fixture.AgentId,
+            TargetSetDigest = access.TargetSetDigest!, PolicyId = fixture.Decision.MatchingPolicyIds.Single(), PolicyVersion = 4,
+            OperationFamily = McpOperatorOperationFamily.JobExecution, Operation = "netratel_job_runs/start", IdempotencyKey = "fixture-key",
+            PayloadHash = new string('A', 64), Outcome = McpOperatorIdempotencyOutcome.Pending, CreatedAtUtc = fixture.Now, Version = 1 });
+        db.Add(new McpReviewedJobAdmissionRecord { IdempotencyId = id, TenantId = fixture.TenantId, JobId = job.JobId,
+            CreatedAtUtc = fixture.Now, ProtectedSubmissionJson = "fixture-protected-material" });
+        await db.SaveChangesAsync();
+        await Assert.ThrowsAsync<InvalidOperationException>(() => store.DeleteAsync(job.JobId, job.Version,
+            fixture.Decision, fixture.Audit, fixture.Now, CancellationToken.None));
+        (await db.Jobs.SingleAsync()).DeletedAtUtc.Should().BeNull();
+        (await db.McpOperatorIdempotencyRecords.SingleAsync()).Outcome = McpOperatorIdempotencyOutcome.Failed;
+        await db.SaveChangesAsync();
+        (await store.DeleteAsync(job.JobId, job.Version, fixture.Decision, fixture.Audit, fixture.Now, CancellationToken.None)).Should().NotBeNull();
+        (await db.Set<McpReviewedJobAdmissionRecord>().CountAsync()).Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Managed_job_writes_reuse_canonical_tenant_target_integrity_before_mutating_definitions()
+    {
+        await using var db = CreateDb();
+        var fixture = await CreateFixtureAsync(db); var store = new McpOperatorJobStore(db);
+        var groupId = Guid.NewGuid();
+        db.ExecutionGroups.Add(new() { Id = groupId, TenantId = fixture.TenantId + 1,
+            Name = "Foreign group", NormalizedName = "FOREIGN GROUP", CreatedAtUtc = fixture.Now, UpdatedAtUtc = fixture.Now });
+        await db.SaveChangesAsync();
+        var draft = new McpOperatorJobDraft("integrity", "/") { Target = new() { Source = JobTargetSource.ExecutionGroup, ExecutionGroupId = groupId } };
+        var denied = await Assert.ThrowsAsync<JobTargetValidationException>(() => store.CreateAsync(
+            new(fixture.Decision, fixture.Audit, draft, fixture.Now), CancellationToken.None));
+        denied.Code.Should().Be("target_group_unavailable");
+        (await db.Jobs.CountAsync()).Should().Be(0);
+        var job = await store.CreateAsync(new(fixture.Decision, fixture.Audit, new("legacy", "/"), fixture.Now), CancellationToken.None);
+        var replacement = await Assert.ThrowsAsync<JobTargetValidationException>(() => store.ReplaceAsync(
+            new(job.JobId, job.Version, fixture.Decision, fixture.Audit, draft, fixture.Now), CancellationToken.None));
+        replacement.Code.Should().Be("target_group_unavailable");
+        db.ChangeTracker.Clear();
+        (await db.Jobs.SingleAsync()).Name.Should().Be("legacy");
+        (await db.McpOperatorJobs.SingleAsync()).Version.Should().Be(job.Version);
+        var missing = draft with { Target = new() { Source = JobTargetSource.ExplicitNodes, AgentIds = [Guid.NewGuid()] } };
+        (await Assert.ThrowsAsync<JobTargetValidationException>(() => store.ValidateDraftAsync(fixture.Decision, missing, CancellationToken.None)))
+            .Code.Should().Be("target_node_unavailable");
+    }
+
     [Fact]
     public async Task Deleting_an_executed_step_preserves_run_history_and_unrelated_step_links()
     {

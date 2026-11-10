@@ -21,7 +21,7 @@ namespace NetRatel.API.Endpoints.Client;
 /// steps, revision checks, policy re-evaluation, preview/confirm, and run
 /// ownership are all enforced here before the established job authority runs.
 /// </summary>
-public static class McpOperatorJobEndpoints
+public static partial class McpOperatorJobEndpoints
 {
     private const string JobsTool = "netratel_jobs";
     private const string RunsTool = "netratel_job_runs";
@@ -50,6 +50,9 @@ public static class McpOperatorJobEndpoints
         group.MapGet("/runs/{runId:long}", GetRunAsync);
         group.MapGet("/runs/{runId:long}/steps", RunStepsAsync);
         group.MapGet("/runs/{runId:long}/logs", RunLogsAsync);
+        group.MapGet("/runs/{runId:long}/nodes", RunNodesAsync);
+        group.MapGet("/runs/{runId:long}/nodes/{nodeAgentId:guid}/steps", NodeStepsAsync);
+        group.MapGet("/runs/{runId:long}/nodes/{nodeAgentId:guid}/steps/{stepRunId:long}/logs", NodeLogsAsync);
         group.MapPost("/{jobId:long}/runs/preview", PreviewStartAsync);
         group.MapPost("/{jobId:long}/runs/confirm", ConfirmStartAsync);
         group.MapPost("/runs/{runId:long}/cancel/preview", PreviewCancelAsync);
@@ -160,6 +163,7 @@ public static class McpOperatorJobEndpoints
             await admission.RecordAcceptedAsync(context.Request, cancellationToken).ConfigureAwait(false);
             return Results.Ok(new McpOperatorJobValidation(draft.Name.Trim(), draft.FolderPath.Trim(), context.Decision.MatchingPolicyIds.Single(), Decimal(context.Decision.SelectedPolicyVersion!.Value), context.Decision.Request.TargetSetDigest!, context.CorrelationId));
         }
+        catch (JobTargetValidationException error) { return Failure(error.Code, context); }
         catch (ArgumentException) { return Failure("job_invalid", context); }
         catch (McpOperatorAdmissionRejectedException rejection) { return Failure(rejection.FailureCode, context); }
     }
@@ -241,6 +245,11 @@ public static class McpOperatorJobEndpoints
             await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Failed, rejection.FailureCode, CancellationToken.None).ConfigureAwait(false);
             return Failure(rejection.FailureCode, context);
         }
+        catch (JobTargetValidationException error)
+        {
+            await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Failed, error.Code, CancellationToken.None).ConfigureAwait(false);
+            return Failure(error.Code, context);
+        }
         catch (InvalidOperationException)
         {
             await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Failed, "job_active_run_conflict", CancellationToken.None).ConfigureAwait(false);
@@ -259,7 +268,20 @@ public static class McpOperatorJobEndpoints
         try
         {
             await admission.RecordAcceptedAsync(context.Request, cancellationToken).ConfigureAwait(false);
-            return Results.Ok((await jobs.ListRunsOwnedAsync(jobId, tenantId, agentId, context.Request.Principal, context.Request.McpResource!, context.Request.McpInstance!, cancellationToken).ConfigureAwait(false)).Select(ToRunSummary));
+            var owned = await jobs.ListRunsOwnedAsync(jobId, tenantId, agentId, context.Request.Principal,
+                context.Request.McpResource!, context.Request.McpInstance!, cancellationToken).ConfigureAwait(false);
+            var visible = new List<McpOperatorJobRunSummary>();
+            foreach (var run in owned)
+            {
+                if (run.IsAggregate)
+                {
+                    try { await RequireParentTargetsAsync(run.RunId, context, admission,
+                        http.RequestServices.GetRequiredService<NetRatel.Infrastructure.Persistence.OrchestratorDbContext>(), cancellationToken).ConfigureAwait(false); }
+                    catch (McpOperatorAdmissionRejectedException) { continue; }
+                }
+                visible.Add(ToRunSummary(run));
+            }
+            return Results.Ok(visible);
         }
         catch (McpOperatorAdmissionRejectedException rejection) { return Failure(rejection.FailureCode, context); }
     }
@@ -275,7 +297,17 @@ public static class McpOperatorJobEndpoints
         {
             await admission.RecordAcceptedAsync(context.Request, cancellationToken).ConfigureAwait(false);
             var run = await GetOwnedRunAsync(runId, jobs, context, cancellationToken).ConfigureAwait(false);
-            return run is null ? Failure("job_run_not_found", context) : Results.Ok(ToRunSummary(run));
+            if (run?.IsAggregate == true) await RequireParentTargetsAsync(runId, context, admission,
+                http.RequestServices.GetRequiredService<NetRatel.Infrastructure.Persistence.OrchestratorDbContext>(), cancellationToken).ConfigureAwait(false);
+            if (run is null) return Failure("job_run_not_found", context);
+            var summary = ToRunSummary(run);
+            if (run.IsAggregate)
+            {
+                var canonical = await http.RequestServices.GetRequiredService<IJobRunService>().GetAsync(run.RunId, cancellationToken).ConfigureAwait(false);
+                if (canonical is not null) summary = summary with { ExecutionPolicy = canonical.ExecutionPolicy,
+                    EffectiveConcurrency = canonical.EffectiveConcurrency, NodeCounts = canonical.NodeCounts };
+            }
+            return Results.Ok(summary);
         }
         catch (McpOperatorAdmissionRejectedException rejection) { return Failure(rejection.FailureCode, context); }
     }
@@ -290,7 +322,9 @@ public static class McpOperatorJobEndpoints
         try
         {
             await admission.RecordAcceptedAsync(context.Request, cancellationToken).ConfigureAwait(false);
-            if (await GetOwnedRunAsync(runId, jobs, context, cancellationToken).ConfigureAwait(false) is null) return Failure("job_run_not_found", context);
+            var owned = await GetOwnedRunAsync(runId, jobs, context, cancellationToken).ConfigureAwait(false);
+            if (owned is null) return Failure("job_run_not_found", context);
+            if (owned.IsAggregate) return Failure("node_identity_required", context);
             var details = await runs.GetDetailsAsync(runId, cancellationToken).ConfigureAwait(false);
             return details is null ? Failure("job_run_not_found", context) : Results.Ok(details.Steps);
         }
@@ -307,7 +341,9 @@ public static class McpOperatorJobEndpoints
         try
         {
             await admission.RecordAcceptedAsync(context.Request, cancellationToken).ConfigureAwait(false);
-            if (await GetOwnedRunAsync(runId, jobs, context, cancellationToken).ConfigureAwait(false) is null) return Failure("job_run_not_found", context);
+            var owned = await GetOwnedRunAsync(runId, jobs, context, cancellationToken).ConfigureAwait(false);
+            if (owned is null) return Failure("job_run_not_found", context);
+            if (owned.IsAggregate) return Failure("node_identity_required", context);
             var details = await runs.GetDetailsAsync(runId, cancellationToken).ConfigureAwait(false);
             if (details is null) return Failure("job_run_not_found", context);
             var logs = new List<McpOperatorJobLogLine>();
@@ -322,64 +358,122 @@ public static class McpOperatorJobEndpoints
         catch (McpOperatorAdmissionRejectedException rejection) { return Failure(rejection.FailureCode, context); }
     }
 
-    private static async Task<IResult> PreviewStartAsync(int tenantId, Guid agentId, long jobId, McpOperatorJobRunRequest request, HttpContext http, IHostEnvironment environment,
+    internal static async Task<IResult> PreviewStartAsync(int tenantId, Guid agentId, long jobId, McpOperatorJobRunRequest request, HttpContext http, IHostEnvironment environment,
         [FromServices] IClientPresenceRouter presence, IMcpOperatorRouteAdmission admission, IMcpOperatorConfirmationService confirmations,
         McpOperatorLocalAgentOptions localAgents, IAgentCommandAuthorityDispatcher dispatcher, IMcpOperatorJobStore jobs, CancellationToken cancellationToken)
     {
-        var result = await TryContextAsync(RunsTool, "start", tenantId, agentId, http, environment, presence, admission, localAgents, dispatcher, true, cancellationToken).ConfigureAwait(false);
+        var result = await TryContextAsync(RunsTool, "start", tenantId, agentId, http, environment, presence, admission, localAgents, dispatcher, false, cancellationToken).ConfigureAwait(false);
         if (result.Failure is { } failure) return failure;
         var context = result.Context!;
-        var startValidation = await CanStartAsync(jobId, request, jobs, context, cancellationToken).ConfigureAwait(false);
+        var startValidation = await CanStartAsync(jobId, request, jobs, context, http, cancellationToken).ConfigureAwait(false);
         if (startValidation.FailureCode is { } startFailure) return Failure(startFailure, context);
         try
         {
-            var plan = await confirmations.CreatePlanAsync(new McpOperatorConfirmationPlanRequest(context.Decision, RunHash(startValidation.Snapshot!, request)), cancellationToken).ConfigureAwait(false);
-            return Results.Ok(new McpOperatorJobRunPreview(plan.PlanToken, plan.IdempotencyKey, plan.ExpiresAtUtc, plan.ConfirmationClass, Decimal(jobId), context.Decision.Request.TargetSetDigest!, 1, context.CorrelationId));
+            var plan = await confirmations.CreatePlanAsync(new McpOperatorConfirmationPlanRequest(context.Decision, RunHash(startValidation.Snapshot!, request))
+            { JobRequestHash = JobRequestHash(jobId, request) }, cancellationToken).ConfigureAwait(false);
+            return Results.Ok(new McpOperatorJobRunPreview(plan.PlanToken, plan.IdempotencyKey, plan.ExpiresAtUtc, plan.ConfirmationClass, Decimal(jobId), context.Decision.Request.TargetSetDigest!, startValidation.Snapshot!.TargetPlan?.Nodes.Count ?? 1, context.CorrelationId)
+            { TargetPlanDigest = startValidation.Snapshot.TargetPlan?.ComputeDigest(), ExecutionPolicy = startValidation.Snapshot.TargetPlan?.ExecutionPolicy,
+                ResolvedTargets = startValidation.Snapshot.TargetPlan?.Nodes, DefinitionDigest = startValidation.Snapshot.TargetPlan?.DefinitionDigest,
+                GroupRevision = startValidation.Snapshot.TargetPlan?.GroupRevision?.ToString(CultureInfo.InvariantCulture) });
         }
         catch (ArgumentException) { return Failure("confirmation_plan_invalid", context); }
     }
 
-    private static async Task<IResult> ConfirmStartAsync(int tenantId, Guid agentId, long jobId, McpOperatorJobRunRequest request, HttpContext http, IHostEnvironment environment,
+    internal static async Task<IResult> ConfirmStartAsync(int tenantId, Guid agentId, long jobId, McpOperatorJobRunRequest request, HttpContext http, IHostEnvironment environment,
         [FromServices] IClientPresenceRouter presence, IMcpOperatorRouteAdmission admission, IMcpOperatorConfirmationService confirmations,
         McpOperatorLocalAgentOptions localAgents, IAgentCommandAuthorityDispatcher dispatcher, IMcpOperatorJobStore jobs, IAkkaJobAuthorityService authority, CancellationToken cancellationToken)
     {
-        var result = await TryContextAsync(RunsTool, "start", tenantId, agentId, http, environment, presence, admission, localAgents, dispatcher, true, cancellationToken).ConfigureAwait(false);
+        var result = await TryContextAsync(RunsTool, "start", tenantId, agentId, http, environment, presence, admission, localAgents, dispatcher, false, cancellationToken).ConfigureAwait(false);
         if (result.Failure is { } failure) return failure;
         var context = result.Context!;
         if (!HasPlan(request.PlanToken, request.IdempotencyKey)) return Failure("confirmation_plan_invalid", context);
-        var startValidation = await CanStartAsync(jobId, request, jobs, context, cancellationToken).ConfigureAwait(false);
+        if (!MatchesStartDelegation(http, jobId, request)) return Failure("delegated_identity_invalid", context);
+        var retained = await confirmations.TryJobReplayAsync(request.PlanToken!, request.IdempotencyKey!, JobRequestHash(jobId, request),
+            context.Decision, cancellationToken).ConfigureAwait(false);
+        if (retained?.FailureCode is { } retainedFailure) return Failure(retainedFailure, context);
+        if (retained is { IsReplay: true })
+        {
+            var replayed = await ReplayAggregateStartAsync(jobId, retained, jobs, context, http, confirmations, admission, cancellationToken).ConfigureAwait(false);
+            if (replayed is not null) return replayed;
+        }
+        var startValidation = await CanStartAsync(jobId, request, jobs, context, http, cancellationToken).ConfigureAwait(false);
         if (startValidation.FailureCode is { } startFailure) return Failure(startFailure, context);
-        var confirmation = await confirmations.ConfirmAsync(new McpOperatorConfirmationRequest(request.PlanToken!, request.IdempotencyKey!, RunHash(startValidation.Snapshot!, request), context.Decision), cancellationToken).ConfigureAwait(false);
+        var confirmation = await confirmations.ConfirmAsync(new McpOperatorConfirmationRequest(request.PlanToken!, request.IdempotencyKey!, RunHash(startValidation.Snapshot!, request), context.Decision)
+        { JobTargetQuotas = McpAggregateExecutionAuthority.Quotas(startValidation.Snapshot!),
+            JobTargetPlanDigest = startValidation.Snapshot!.TargetPlan?.ComputeDigest(),
+            JobSubmission = startValidation.Snapshot.TargetPlan is null ? null : Submission(startValidation.Snapshot, request) }, cancellationToken).ConfigureAwait(false);
         if (confirmation.FailureCode is { } code) return Failure(code, context);
-        if (confirmation.IsReplay) return await ReplayRunStartAsync(confirmation, jobs, context, cancellationToken).ConfigureAwait(false);
-        if (!confirmation.IsNewDispatch || confirmation.IdempotencyId is not { } idempotencyId) return Failure("confirmation_plan_invalid", context);
+        if (confirmation.IsReplay && (startValidation.Snapshot!.TargetPlan is null || confirmation.Outcome != McpOperatorIdempotencyOutcome.Pending))
+            return await ReplayRunStartAsync(confirmation, jobs, context, cancellationToken).ConfigureAwait(false);
+        if ((!confirmation.IsNewDispatch && !confirmation.IsReplay) || confirmation.IdempotencyId is not { } idempotencyId) return Failure("confirmation_plan_invalid", context);
         try
         {
             var audit = await admission.RecordAcceptedAsync(context.Request, cancellationToken).ConfigureAwait(false);
-            var currentValidation = await CanStartAsync(jobId, request, jobs, context, cancellationToken).ConfigureAwait(false);
-            if (currentValidation.FailureCode is { } currentFailure)
-                throw new McpOperatorAdmissionRejectedException(currentFailure);
-            if (currentValidation.Snapshot!.ComputeDigest() != startValidation.Snapshot!.ComputeDigest())
-                throw new McpOperatorAdmissionRejectedException("confirmation_plan_stale");
+            if (startValidation.Snapshot!.TargetPlan is { } admittedPlan)
+            {
+                var verifier = http.RequestServices.GetRequiredService<IMcpAggregateExecutionAuthority>();
+                foreach (var target in admittedPlan.Nodes)
+                    await verifier.RequireAllowedAsync(startValidation.Snapshot, target.AgentId, cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                var currentValidation = await CanStartAsync(jobId, request, jobs, context, http, cancellationToken).ConfigureAwait(false);
+                if (currentValidation.FailureCode is { } currentFailure)
+                    throw new McpOperatorAdmissionRejectedException(currentFailure);
+                if (currentValidation.Snapshot!.ComputeDigest() != startValidation.Snapshot.ComputeDigest())
+                    throw new McpOperatorAdmissionRejectedException("confirmation_plan_stale");
+            }
             var inputsJson = JsonSerializer.Serialize(request.Inputs ?? new Dictionary<string, string>());
-            var run = await authority.StartReviewedMcpAsync(startValidation.Snapshot,
-                new RunJobRequest($"mcp-reviewed:{context.Request.Principal.Subject}", inputsJson, null), cancellationToken).ConfigureAwait(false);
-            var owned = await jobs.RecordStartedRunAsync(jobId, run.Id, idempotencyId, context.Decision, audit, DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false);
+            var submitted = startValidation.Snapshot! with { ReviewIdempotencyId = idempotencyId };
+            var run = await authority.StartReviewedMcpAsync(submitted,
+                new RunJobRequest($"mcp-reviewed:{context.Request.Principal.Subject}", inputsJson, null)
+                { RuntimeTarget = request.RuntimeTarget, ExpectedTargetPlanDigest = submitted.TargetPlan?.ComputeDigest() }, cancellationToken).ConfigureAwait(false);
+            var owned = submitted.TargetPlan is null
+                ? await jobs.RecordStartedRunAsync(jobId, run.Id, idempotencyId, context.Decision, audit, DateTimeOffset.UtcNow, cancellationToken).ConfigureAwait(false)
+                : await jobs.RecordAdmittedRunAsync(idempotencyId, run.Id, cancellationToken).ConfigureAwait(false);
             await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Succeeded, run.Id.ToString(), cancellationToken).ConfigureAwait(false);
-            return Results.Accepted($"/api/v2/mcp/operator/agents/{tenantId}/{agentId:D}/jobs/runs/{run.Id}", new McpOperatorJobRunResult(run.Id.ToString(), owned.State, false, context.CorrelationId));
+            return Results.Accepted($"/api/v2/mcp/operator/agents/{tenantId}/{agentId:D}/jobs/runs/{run.Id}", new McpOperatorJobRunResult(run.Id.ToString(), owned.State, confirmation.IsReplay, context.CorrelationId));
         }
         catch (AgentJobGatewaySessionUnavailableException)
         {
+            if (startValidation.Snapshot!.TargetPlan is not null)
+            {
+                var recovered = await ReplayAggregateStartAsync(jobId, new(false, true, null, idempotencyId,
+                    McpOperatorIdempotencyOutcome.Pending, null), jobs, context, http, confirmations, admission, cancellationToken).ConfigureAwait(false);
+                if (recovered is not null) return recovered;
+                return Failure("agent_job_session_unavailable", context);
+            }
             await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Failed, "agent_job_session_unavailable", CancellationToken.None).ConfigureAwait(false);
             return Failure("agent_job_session_unavailable", context);
         }
+        catch (ExecutionAdmissionDeniedException)
+        {
+            if (startValidation.Snapshot!.TargetPlan is not null)
+                await confirmations.FailReviewedJobBeforeParentAsync(idempotencyId, "job_current_authority_denied", cancellationToken).ConfigureAwait(false);
+            return Failure("job_current_authority_denied", context);
+        }
         catch (McpOperatorAdmissionRejectedException rejection)
         {
+            if (startValidation.Snapshot!.TargetPlan is not null)
+            {
+                var recovered = await ReplayAggregateStartAsync(jobId, new(false, true, null, idempotencyId,
+                    McpOperatorIdempotencyOutcome.Pending, null), jobs, context, http, confirmations, admission, cancellationToken).ConfigureAwait(false);
+                if (recovered is not null) return recovered;
+                await confirmations.FailReviewedJobBeforeParentAsync(idempotencyId, "job_current_authority_denied", cancellationToken).ConfigureAwait(false);
+                return Failure(rejection.FailureCode, context);
+            }
             await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Failed, rejection.FailureCode, CancellationToken.None).ConfigureAwait(false);
             return Failure(rejection.FailureCode, context);
         }
         catch (InvalidOperationException)
         {
+            if (startValidation.Snapshot!.TargetPlan is not null)
+            {
+                var recovered = await ReplayAggregateStartAsync(jobId, new(false, true, null, idempotencyId,
+                    McpOperatorIdempotencyOutcome.Pending, null), jobs, context, http, confirmations, admission, cancellationToken).ConfigureAwait(false);
+                if (recovered is not null) return recovered;
+                return Failure("job_start_rejected", context);
+            }
             await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Failed, "job_start_rejected", CancellationToken.None).ConfigureAwait(false);
             return Failure("job_start_rejected", context);
         }
@@ -409,16 +503,33 @@ public static class McpOperatorJobEndpoints
         [FromServices] IClientPresenceRouter presence, IMcpOperatorRouteAdmission admission, IMcpOperatorConfirmationService confirmations,
         McpOperatorLocalAgentOptions localAgents, IAgentCommandAuthorityDispatcher dispatcher, IMcpOperatorJobStore jobs, bool requiresGateway, CancellationToken cancellationToken)
     {
-        var result = await TryContextAsync(RunsTool, action, tenantId, agentId, http, environment, presence, admission, localAgents, dispatcher, requiresGateway, cancellationToken).ConfigureAwait(false);
+        var result = await TryContextAsync(RunsTool, action, tenantId, agentId, http, environment, presence, admission, localAgents, dispatcher, false, cancellationToken).ConfigureAwait(false);
         if (result.Failure is { } failure) return failure;
         var context = result.Context!;
         if (http.TryGetMcpOperatorDelegation(out var delegation) && delegation?.ReplayBinding is not null) return Failure("delegated_identity_invalid", context);
         var run = await GetOwnedRunAsync(runId, jobs, context, cancellationToken).ConfigureAwait(false);
+        if (requiresGateway && run is { IsAggregate: false })
+        {
+            var gatewayFailure = await LegacyGatewayFailureAsync(context, http, cancellationToken).ConfigureAwait(false);
+            if (gatewayFailure is not null) return Failure(gatewayFailure, context);
+        }
+        if (run?.IsAggregate == true)
+        {
+            try { await RequireParentTargetsAsync(runId, context, admission,
+                http.RequestServices.GetRequiredService<NetRatel.Infrastructure.Persistence.OrchestratorDbContext>(), cancellationToken).ConfigureAwait(false); }
+            catch (McpOperatorAdmissionRejectedException error) { return Failure(error.FailureCode, context); }
+        }
+        if (action == "delete" && run is not null)
+        {
+            try { JobRunHistoryRetention.RequireDeletable(run.IsAggregate, false); }
+            catch (JobAggregateHistoryRetainedException error) { return Failure(error.Code, context); }
+        }
         if (run is null || run.TargetSetDigest != context.Decision.Request.TargetSetDigest || (action == "cancel" && IsTerminal(run.State)) || (action == "delete" && !IsTerminal(run.State))) return Failure("job_run_action_invalid", context);
         try
         {
             var plan = await confirmations.CreatePlanAsync(new McpOperatorConfirmationPlanRequest(context.Decision, RunActionHash(action, runId, request.Reason)), cancellationToken).ConfigureAwait(false);
-            return Results.Ok(new McpOperatorJobRunPreview(plan.PlanToken, plan.IdempotencyKey, plan.ExpiresAtUtc, plan.ConfirmationClass, Decimal(run.JobId), context.Decision.Request.TargetSetDigest!, 1, context.CorrelationId));
+            return Results.Ok(new McpOperatorJobRunPreview(plan.PlanToken, plan.IdempotencyKey, plan.ExpiresAtUtc, plan.ConfirmationClass, Decimal(run.JobId), context.Decision.Request.TargetSetDigest!, run.TargetCount, context.CorrelationId)
+            { TargetPlanDigest = run.TargetPlanDigest, ExecutionPolicy = run.ExecutionPolicy });
         }
         catch (ArgumentException) { return Failure("confirmation_plan_invalid", context); }
     }
@@ -427,17 +538,42 @@ public static class McpOperatorJobEndpoints
         [FromServices] IClientPresenceRouter presence, IMcpOperatorRouteAdmission admission, IMcpOperatorConfirmationService confirmations,
         McpOperatorLocalAgentOptions localAgents, IAgentCommandAuthorityDispatcher dispatcher, IMcpOperatorJobStore jobs, IAkkaJobAuthorityService authority, CancellationToken cancellationToken)
     {
-        var result = await TryContextAsync(RunsTool, action, tenantId, agentId, http, environment, presence, admission, localAgents, dispatcher, action == "cancel", cancellationToken).ConfigureAwait(false);
+        var result = await TryContextAsync(RunsTool, action, tenantId, agentId, http, environment, presence, admission, localAgents, dispatcher, false, cancellationToken).ConfigureAwait(false);
         if (result.Failure is { } failure) return failure;
         var context = result.Context!;
         if (!HasPlan(request.PlanToken, request.IdempotencyKey)) return Failure("confirmation_plan_invalid", context);
         if (!MatchesRunActionDelegation(http, action, runId, request)) return Failure("delegated_identity_invalid", context);
+        if (action == "cancel" && await jobs.GetRunOwnedForReplayAsync(runId, tenantId, agentId, context.Request.Principal,
+            context.Request.McpResource!, context.Request.McpInstance!, cancellationToken).ConfigureAwait(false) is { IsAggregate: false })
+        {
+            var gatewayFailure = await LegacyGatewayFailureAsync(context, http, cancellationToken).ConfigureAwait(false);
+            if (gatewayFailure is not null) return Failure(gatewayFailure, context);
+        }
+        var replayOwned = await jobs.GetRunOwnedForReplayAsync(runId, tenantId, agentId, context.Request.Principal,
+            context.Request.McpResource!, context.Request.McpInstance!, cancellationToken).ConfigureAwait(false);
+        if (replayOwned is { IsAggregate: true })
+        {
+            try { await RequireParentTargetsAsync(runId, context, admission,
+                http.RequestServices.GetRequiredService<NetRatel.Infrastructure.Persistence.OrchestratorDbContext>(), cancellationToken).ConfigureAwait(false); }
+            catch (McpOperatorAdmissionRejectedException error) { return Failure(error.FailureCode, context); }
+        }
         var confirmationRequest = new McpOperatorConfirmationRequest(request.PlanToken!, request.IdempotencyKey!, RunActionHash(action, runId, request.Reason), context.Decision);
         var replayRequest = confirmationRequest with { ReplayOnly = true };
         var replay = await confirmations.ConfirmAsync(replayRequest, cancellationToken).ConfigureAwait(false);
         if (replay.FailureCode is { } replayCode) return Failure(replayCode, context);
         if (replay.IsReplay) return await ReplayRunActionAsync(runId, replay, jobs, context, cancellationToken).ConfigureAwait(false);
         var run = await GetOwnedRunAsync(runId, jobs, context, cancellationToken).ConfigureAwait(false);
+        if (run?.IsAggregate == true)
+        {
+            try { await RequireParentTargetsAsync(runId, context, admission,
+                http.RequestServices.GetRequiredService<NetRatel.Infrastructure.Persistence.OrchestratorDbContext>(), cancellationToken).ConfigureAwait(false); }
+            catch (McpOperatorAdmissionRejectedException error) { return Failure(error.FailureCode, context); }
+        }
+        if (action == "delete" && run is not null)
+        {
+            try { JobRunHistoryRetention.RequireDeletable(run.IsAggregate, false); }
+            catch (JobAggregateHistoryRetainedException error) { return Failure(error.Code, context); }
+        }
         if (run is null || run.TargetSetDigest != context.Decision.Request.TargetSetDigest || (action == "cancel" && IsTerminal(run.State)) || (action == "delete" && !IsTerminal(run.State)))
         {
             // Cancellation can finish, or deletion can hide the run, while the
@@ -483,6 +619,11 @@ public static class McpOperatorJobEndpoints
             await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Failed, rejection.FailureCode, CancellationToken.None).ConfigureAwait(false);
             return Failure(rejection.FailureCode, context);
         }
+        catch (JobAggregateHistoryRetainedException retained)
+        {
+            await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Failed, retained.Code, CancellationToken.None).ConfigureAwait(false);
+            return Failure(retained.Code, context);
+        }
         catch (InvalidOperationException)
         {
             await confirmations.CompleteAsync(idempotencyId, McpOperatorIdempotencyOutcome.Failed, "job_run_action_invalid", CancellationToken.None).ConfigureAwait(false);
@@ -496,6 +637,7 @@ public static class McpOperatorJobEndpoints
         {
             if (request.Job is null || request.JobId is not null || request.ExpectedVersion is not null) return MutationValidation.Invalid;
             try { await jobs.ValidateDraftAsync(context.Decision, request.Job, cancellationToken).ConfigureAwait(false); return MutationValidation.Valid; }
+            catch (JobTargetValidationException error) { return new(error.Code); }
             catch (ArgumentException) { return MutationValidation.Invalid; }
         }
         if (request.JobId is not > 0 || request.ExpectedVersion is not > 0) return MutationValidation.Invalid;
@@ -506,6 +648,7 @@ public static class McpOperatorJobEndpoints
         {
             if (request.Job is null) return MutationValidation.Invalid;
             try { await jobs.ValidateDraftAsync(context.Decision, request.Job, cancellationToken).ConfigureAwait(false); return MutationValidation.Valid; }
+            catch (JobTargetValidationException error) { return new(error.Code); }
             catch (ArgumentException) { return MutationValidation.Invalid; }
         }
         if (action == "delete") return request.Parameter is null && request.Step is null ? MutationValidation.Valid : MutationValidation.Invalid;
@@ -515,7 +658,8 @@ public static class McpOperatorJobEndpoints
             {
                 if (request.Parameter is null || (action == "param_add" && request.ParameterId is not null) || (action == "param_update" && request.ParameterId is not > 0)) return MutationValidation.Invalid;
                 try { await jobs.ValidateParameterAsync(request.Parameter, cancellationToken).ConfigureAwait(false); return MutationValidation.Valid; }
-                catch (ArgumentException) { return MutationValidation.Invalid; }
+                catch (JobTargetValidationException error) { return new(error.Code); }
+            catch (ArgumentException) { return MutationValidation.Invalid; }
             }
             return action switch
             {
@@ -529,7 +673,8 @@ public static class McpOperatorJobEndpoints
             {
                 if (request.Step is null || (action == "step_add" && request.StepId is not null) || (action == "step_update" && request.StepId is not > 0)) return MutationValidation.Invalid;
                 try { await jobs.ValidateStepAsync(request.Step, context.Decision, cancellationToken).ConfigureAwait(false); return MutationValidation.Valid; }
-                catch (ArgumentException) { return MutationValidation.Invalid; }
+                catch (JobTargetValidationException error) { return new(error.Code); }
+            catch (ArgumentException) { return MutationValidation.Invalid; }
             }
             return action switch
             {
@@ -565,6 +710,8 @@ public static class McpOperatorJobEndpoints
     private static async Task<IResult> ReplayMutationAsync(string action, McpOperatorJobMutationRequest request, McpOperatorConfirmationAdmission confirmation, IMcpOperatorJobStore jobs, McpOperatorJobContext context, CancellationToken cancellationToken)
     {
         if (confirmation.Outcome == McpOperatorIdempotencyOutcome.Pending) return Failure("idempotency_pending", context);
+        if (confirmation.Outcome == McpOperatorIdempotencyOutcome.Failed && confirmation.ResultReference == "job_current_authority_denied")
+            return Failure("job_current_authority_denied", context);
         if (confirmation.Outcome != McpOperatorIdempotencyOutcome.Succeeded || ReadMutationReference(confirmation.ResultReference) is not { } recorded ||
             (action != "create" && request.JobId != recorded.JobId)) return Failure("idempotency_replay_unavailable", context);
         var job = await jobs.GetOwnedForReplayAsync(recorded.JobId, context.TenantId, context.AgentId,
@@ -589,7 +736,7 @@ public static class McpOperatorJobEndpoints
     private static bool PositiveDecimal(string? value, out long parsed) =>
         long.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out parsed) && parsed > 0;
 
-    private static async Task<JobRunStartValidation> CanStartAsync(long jobId, McpOperatorJobRunRequest request, IMcpOperatorJobStore jobs, McpOperatorJobContext context, CancellationToken cancellationToken)
+    private static async Task<JobRunStartValidation> CanStartAsync(long jobId, McpOperatorJobRunRequest request, IMcpOperatorJobStore jobs, McpOperatorJobContext context, HttpContext http, CancellationToken cancellationToken)
     {
         // The signed start action requires current job.manage and script.edit
         // application grants at exchange and route ingress. Keep its Execute
@@ -597,12 +744,28 @@ public static class McpOperatorJobEndpoints
         // scripts, without impersonating the public scripts/get operation.
         var snapshot = await jobs.GetExecutionSnapshotAsync(jobId, context.Decision, cancellationToken).ConfigureAwait(false);
         if (snapshot is null) return JobRunStartValidation.Invalid;
-        return InputsAreValid(snapshot.InputSchema, request.Inputs) ? new JobRunStartValidation(null, snapshot) : JobRunStartValidation.Invalid;
+        if (!InputsAreValid(snapshot.InputSchema, request.Inputs)) return JobRunStartValidation.Invalid;
+        if (snapshot.Definition.Job.Target is null && snapshot.Definition.Job.ExecutionPolicy is null)
+        {
+            if (request.RuntimeTarget is not null) return new("job_fixed_target_override", null);
+            var gatewayFailure = await LegacyGatewayFailureAsync(context, http, cancellationToken).ConfigureAwait(false);
+            return gatewayFailure is null ? new(null, snapshot) : new(gatewayFailure, null);
+        }
+        try
+        {
+            var reviewed = await http.RequestServices.GetRequiredService<McpAggregateExecutionAuthority>()
+                .ReviewAsync(snapshot, context.Request, request.Inputs, request.RuntimeTarget, http, cancellationToken).ConfigureAwait(false);
+            return new(null, reviewed);
+        }
+        catch (JobTargetValidationException error) { return new(error.Code, null); }
+        catch (McpOperatorAdmissionRejectedException error) { return new(error.FailureCode, null); }
     }
 
     private static async Task<IResult> ReplayRunStartAsync(McpOperatorConfirmationAdmission confirmation, IMcpOperatorJobStore jobs, McpOperatorJobContext context, CancellationToken cancellationToken)
     {
         if (confirmation.Outcome == McpOperatorIdempotencyOutcome.Pending) return Failure("idempotency_pending", context);
+        if (confirmation.Outcome == McpOperatorIdempotencyOutcome.Failed && confirmation.ResultReference == "job_current_authority_denied")
+            return Failure("job_current_authority_denied", context);
         if (confirmation.Outcome != McpOperatorIdempotencyOutcome.Succeeded || !ulong.TryParse(confirmation.ResultReference, out var runId)) return Failure("idempotency_replay_unavailable", context);
         var run = await GetOwnedRunAsync(runId, jobs, context, cancellationToken).ConfigureAwait(false);
         return run is null ? Failure("idempotency_replay_unavailable", context) : Results.Ok(new McpOperatorJobRunResult(runId.ToString(), run.State, true, context.CorrelationId));
@@ -615,6 +778,8 @@ public static class McpOperatorJobEndpoints
             context.Request.McpResource!, context.Request.McpInstance!, cancellationToken).ConfigureAwait(false);
         if (run is null || run.TargetSetDigest != context.Decision.Request.TargetSetDigest) return Failure("idempotency_replay_unavailable", context);
         if (confirmation.Outcome == McpOperatorIdempotencyOutcome.Pending) return Failure("idempotency_pending", context);
+        if (confirmation.Outcome == McpOperatorIdempotencyOutcome.Failed && confirmation.ResultReference == "job_current_authority_denied")
+            return Failure("job_current_authority_denied", context);
         if (confirmation.Outcome != McpOperatorIdempotencyOutcome.Succeeded || ReadRunActionReference(confirmation.ResultReference) is not { } recorded ||
             recorded.RunId != runId) return Failure("idempotency_replay_unavailable", context);
         // Integer-only legacy receipts can report only the current owned run
@@ -687,7 +852,21 @@ public static class McpOperatorJobEndpoints
     private static string MutationHash(string action, McpOperatorJobMutationRequest request) =>
         McpOperatorJobConfirmationPayload.MutationHash(action, JsonSerializer.SerializeToElement(request));
     private static string RunHash(McpOperatorJobExecutionSnapshot snapshot, McpOperatorJobRunRequest request) =>
-        Hash(JsonSerializer.Serialize(new { jobId = snapshot.Definition.Job.Id, executionSnapshot = snapshot.ComputeDigest(), request.Inputs }));
+        snapshot.TargetPlan is null && request.RuntimeTarget is null
+            ? Hash(JsonSerializer.Serialize(new { jobId = snapshot.Definition.Job.Id, executionSnapshot = snapshot.ComputeDigest(), request.Inputs }))
+            : Submission(snapshot, request).ComputePayloadHash();
+    private static McpReviewedJobSubmission Submission(McpOperatorJobExecutionSnapshot snapshot, McpOperatorJobRunRequest request) =>
+        new(snapshot, new RunJobRequest($"mcp-reviewed:{snapshot.Subject}", JsonSerializer.Serialize(request.Inputs ?? new Dictionary<string, string>()), null)
+        { RuntimeTarget = request.RuntimeTarget, ExpectedTargetPlanDigest = snapshot.TargetPlan?.ComputeDigest() });
+    private static string JobRequestHash(long jobId, McpOperatorJobRunRequest request) =>
+        McpOperatorJobConfirmationPayload.RunStartRequestHash(jobId, request.Inputs, request.RuntimeTarget);
+    private static bool MatchesStartDelegation(HttpContext http, long jobId, McpOperatorJobRunRequest request)
+    {
+        if (!http.TryGetMcpOperatorDelegation(out var delegation) || delegation is not { ObjectTargetResolutionEnabled: true }) return true;
+        if (delegation.ObjectReference != jobId.ToString(CultureInfo.InvariantCulture)) return false;
+        return delegation.ReplayBinding is not { } binding || McpOperatorJobConfirmationPayload.TryCreateBinding(RunsTool, "start",
+            JsonSerializer.SerializeToElement(new { jobId, request.Inputs, request.RuntimeTarget, request.PlanToken, request.IdempotencyKey }), out var actual) && actual == binding;
+    }
     private static string RunActionHash(string action, ulong runId, string? reason) =>
         McpOperatorJobConfirmationPayload.RunActionHash(action, runId, reason);
 
@@ -762,23 +941,36 @@ public static class McpOperatorJobEndpoints
         return System.Text.RegularExpressions.Regex.Replace(bounded, @"(?i)(bearer\s+|password\s*[=:]\s*|secret\s*[=:]\s*|token\s*[=:]\s*)[^\s;]+", "$1[REDACTED]");
     }
     private static void SetEtag(HttpContext http, long version) => http.Response.Headers.ETag = $"\"{version}\"";
-    private static McpOperatorJobSummary ToSummary(McpOperatorJobLease job) => new(Decimal(job.JobId), job.TenantId, job.AgentId, job.Name, job.FolderPath, job.Description, job.PolicyId, Decimal(job.PolicyVersion), job.TargetSetDigest, job.CreatedAtUtc, job.UpdatedAtUtc, Decimal(job.Version));
+    private static McpOperatorJobSummary ToSummary(McpOperatorJobLease job) => new(Decimal(job.JobId), job.TenantId, job.AgentId, job.Name, job.FolderPath, job.Description, job.PolicyId, Decimal(job.PolicyVersion), job.TargetSetDigest, job.CreatedAtUtc, job.UpdatedAtUtc, Decimal(job.Version)) { Target = job.Target, ExecutionPolicy = job.ExecutionPolicy };
     private static McpOperatorJobParameterView ToParameterView(McpOperatorJobParameter parameter) => new(Decimal(parameter.Id), parameter.Name, parameter.Type, parameter.Required, parameter.Description, parameter.DefaultValue, parameter.Options, parameter.SecretReference);
     private static McpOperatorJobStepView ToStepView(McpOperatorJobStep step) => new(Decimal(step.Id), step.Ordinal, Decimal(step.ScriptId), Decimal(step.ScriptVersion), step.ScriptContentHash, step.Enabled);
-    private static McpOperatorJobRunSummary ToRunSummary(McpOperatorJobRunLease run) => new(Decimal(run.RunId), Decimal(run.JobId), run.State, run.CurrentStepOrdinal, run.CreatedAtUtc, run.StartedAtUtc, run.CompletedAtUtc, run.FailureCode, run.IsCancellationRequested, run.CorrelationId);
+    private static McpOperatorJobRunSummary ToRunSummary(McpOperatorJobRunLease run) => new(Decimal(run.RunId), Decimal(run.JobId), run.State, run.CurrentStepOrdinal, run.CreatedAtUtc, run.StartedAtUtc, run.CompletedAtUtc, run.FailureCode, run.IsCancellationRequested, run.CorrelationId)
+        { IsAggregate = run.IsAggregate, TargetCount = run.TargetCount, TargetPlanDigest = run.TargetPlanDigest,
+            ExecutionPolicy = run.ExecutionPolicy };
     private static string Decimal(long value) => value.ToString(System.Globalization.CultureInfo.InvariantCulture);
     private static string Decimal(ulong value) => value.ToString(System.Globalization.CultureInfo.InvariantCulture);
     private static string? Decimal(long? value) => value?.ToString(System.Globalization.CultureInfo.InvariantCulture);
     private static McpOperatorJobContext MinimalContext(string tool, string operation, int tenantId, Guid agentId, string correlationId) => new(null!, null!, McpOperationAccessScopeNames.Canonical(McpOperationAccessCatalog.Find(tool, operation)!.RequiredScope), tool, operation, tenantId, agentId, correlationId);
+
+    private static string Remediation(string code) => code switch
+    {
+        "node_identity_required" => "List the parent nodes, then use node_steps and node_logs with that nodeAgentId and its exact native stepRunId.",
+        "node_log_cursor_invalid" or "node_log_page_invalid" => "Use the exact nextCursor returned by the previous output page, limit 1–1000, and maximumBytes 1–65536.",
+        "aggregate_history_retained" or "aggregate_node_history_retained" => "Parent and native node history is retained to preserve target and execution receipt identity. Inspect the parent or cancel an active parent.",
+        "job_target_quota_exhausted" => "Wait for admitted plans under the policy's shared target quota to settle, or review the policy capacity. No targets from this request were admitted.",
+        "job_fixed_target_override" => "Runtime target values require a saved RuntimeInput target source. Edit the job target source and preview the complete plan again.",
+        "confirmation_plan_stale" => "Preview the complete current target plan again; its source, membership, definition or reviewed policy changed before admission.",
+        _ => "Review explicit job ownership, the current ETag, exact library-script revision, current job.manage and script.edit grants, active target policy, and the job gateway for execution."
+    };
 
     private static IResult Failure(string code, McpOperatorJobContext context)
     {
         var status = code switch
         {
             "delegated_identity_required" or "delegated_identity_invalid" => StatusCodes.Status401Unauthorized,
-            "job_not_found" or "job_run_not_found" => StatusCodes.Status404NotFound,
-            "job_invalid" or "job_run_invalid" or "job_run_action_invalid" => StatusCodes.Status400BadRequest,
-            "job_etag_mismatch" or "job_active_run_conflict" or "job_start_rejected" or "job_cancel_rejected" or "confirmation_plan_invalid" or "confirmation_plan_stale" or "confirmation_plan_expired" or "idempotency_conflict" or "idempotency_pending" or "idempotency_replay_unavailable" => StatusCodes.Status409Conflict,
+            "job_not_found" or "job_run_not_found" or "job_node_not_found" or "job_step_run_not_found" => StatusCodes.Status404NotFound,
+            "job_invalid" or "job_run_invalid" or "job_run_action_invalid" or "node_identity_required" or "job_fixed_target_override" or "job_node_page_invalid" or "target_tenant_required" or "target_group_unavailable" or "target_node_unavailable" or "node_log_cursor_invalid" or "node_log_page_invalid" or "job_node_output_unavailable" or "job_target_limit_exceeded" or "job_target_quota_invalid" => StatusCodes.Status400BadRequest,
+            "aggregate_history_retained" or "aggregate_node_history_retained" or "job_target_quota_exhausted" or "job_etag_mismatch" or "job_active_run_conflict" or "job_start_rejected" or "job_cancel_rejected" or "confirmation_plan_invalid" or "confirmation_plan_stale" or "confirmation_plan_expired" or "idempotency_conflict" or "idempotency_pending" or "idempotency_replay_unavailable" => StatusCodes.Status409Conflict,
             "target_offline" or "capability_unavailable" or "agent_job_session_unavailable" => StatusCodes.Status503ServiceUnavailable,
             _ => StatusCodes.Status403Forbidden
         };
@@ -798,7 +990,7 @@ public static class McpOperatorJobEndpoints
         {
             ["success"] = false,
             ["summary"] = "MCP operator job access was not admitted.",
-            ["failure"] = new { code, layer, retryable = code is "target_offline" or "capability_unavailable" or "agent_job_session_unavailable", requiredScopes = new[] { context.RequiredScope }, requiredOperation = $"{context.Tool}/{context.Operation}", target = code == "tenant_not_authorized" ? null : new { context.TenantId, context.AgentId }, remediation = "Review explicit job ownership, the current ETag, exact library-script revision, current job.manage and script.edit grants, active target policy, and the job gateway for execution." },
+            ["failure"] = new { code, layer, retryable = code is "target_offline" or "capability_unavailable" or "agent_job_session_unavailable", requiredScopes = new[] { context.RequiredScope }, requiredOperation = $"{context.Tool}/{context.Operation}", target = code == "tenant_not_authorized" ? null : new { context.TenantId, context.AgentId }, remediation = Remediation(code) },
             ["correlationId"] = context.CorrelationId
         });
     }
@@ -824,17 +1016,42 @@ public static class McpOperatorJobEndpoints
 [JsonNumberHandling(JsonNumberHandling.AllowReadingFromString)]
 public sealed record McpOperatorJobMutationRequest(McpOperatorJobDraft? Job = null, long? JobId = null, long? ExpectedVersion = null, long? ParameterId = null, McpOperatorJobParameter? Parameter = null, long? StepId = null, McpOperatorJobStep? Step = null, int? Ordinal = null, string? PlanToken = null, string? IdempotencyKey = null);
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
-public sealed record McpOperatorJobRunRequest(IReadOnlyDictionary<string, string>? Inputs = null, string? PlanToken = null, string? IdempotencyKey = null);
+public sealed record McpOperatorJobRunRequest(IReadOnlyDictionary<string, string>? Inputs = null, string? PlanToken = null, string? IdempotencyKey = null)
+{
+    public JobRuntimeTargetInput? RuntimeTarget { get; init; }
+}
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record McpOperatorJobRunActionRequest(string? Reason = null, string? PlanToken = null, string? IdempotencyKey = null);
-public sealed record McpOperatorJobSummary(string JobId, int TenantId, Guid AgentId, string Name, string FolderPath, string? Description, Guid PolicyId, string PolicyVersion, string TargetSetDigest, DateTimeOffset CreatedAtUtc, DateTimeOffset UpdatedAtUtc, string Version);
+public sealed record McpOperatorJobSummary(string JobId, int TenantId, Guid AgentId, string Name, string FolderPath, string? Description, Guid PolicyId, string PolicyVersion, string TargetSetDigest, DateTimeOffset CreatedAtUtc, DateTimeOffset UpdatedAtUtc, string Version)
+{
+    public JobTargetDefinition? Target { get; init; }
+    public JobExecutionPolicy? ExecutionPolicy { get; init; }
+}
 public sealed record McpOperatorJobParameterView(string? ParameterId, string Name, string Type, bool Required, string? Description, string? DefaultValue, IReadOnlyList<string>? Options, string? SecretReference);
 public sealed record McpOperatorJobStepView(string? StepId, int? Ordinal, string ScriptId, string ScriptVersion, string ScriptContentHash, bool Enabled);
 public sealed record McpOperatorJobDetails(McpOperatorJobSummary Job, IReadOnlyList<McpOperatorJobParameterView> Parameters, IReadOnlyList<McpOperatorJobStepView> Steps);
 public sealed record McpOperatorJobValidation(string Name, string FolderPath, Guid PolicyId, string PolicyVersion, string TargetSetDigest, string CorrelationId);
 public sealed record McpOperatorJobPreview(string PlanToken, string IdempotencyKey, DateTimeOffset ExpiresAtUtc, McpOperatorConfirmationClass ConfirmationClass, string Action, string? JobId, string? ExpectedVersion, string TargetSetDigest, string CorrelationId);
 public sealed record McpOperatorJobMutationResult(string JobId, string Version, string? ItemId, bool Deleted, bool Replayed, string CorrelationId);
-public sealed record McpOperatorJobRunPreview(string PlanToken, string IdempotencyKey, DateTimeOffset ExpiresAtUtc, McpOperatorConfirmationClass ConfirmationClass, string JobId, string TargetSetDigest, int TargetCount, string CorrelationId);
+public sealed record McpOperatorJobRunPreview(string PlanToken, string IdempotencyKey, DateTimeOffset ExpiresAtUtc, McpOperatorConfirmationClass ConfirmationClass, string JobId, string TargetSetDigest, int TargetCount, string CorrelationId)
+{
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<JobTargetNode>? ResolvedTargets { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public string? DefinitionDigest { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public string? GroupRevision { get; init; }
+    public string? TargetPlanDigest { get; init; }
+    public JobExecutionPolicy? ExecutionPolicy { get; init; }
+}
 public sealed record McpOperatorJobRunResult(string JobRunId, string State, bool Replayed, string CorrelationId);
-public sealed record McpOperatorJobRunSummary(string JobRunId, string JobId, string State, int CurrentStepOrdinal, DateTimeOffset CreatedAtUtc, DateTimeOffset? StartedAtUtc, DateTimeOffset? CompletedAtUtc, string? FailureCode, bool CancellationRequested, string CorrelationId);
+public sealed record McpOperatorJobRunSummary(string JobRunId, string JobId, string State, int CurrentStepOrdinal, DateTimeOffset CreatedAtUtc, DateTimeOffset? StartedAtUtc, DateTimeOffset? CompletedAtUtc, string? FailureCode, bool CancellationRequested, string CorrelationId)
+{
+    public bool IsAggregate { get; init; }
+    public int TargetCount { get; init; } = 1;
+    public string? TargetPlanDigest { get; init; }
+    public JobExecutionPolicy? ExecutionPolicy { get; init; }
+    public int? EffectiveConcurrency { get; init; }
+    public JobRunNodeCountsDto? NodeCounts { get; init; }
+}
 public sealed record McpOperatorJobLogLine(string RequestId, string Stream, string Message, long Sequence, DateTimeOffset TimestampUtc);

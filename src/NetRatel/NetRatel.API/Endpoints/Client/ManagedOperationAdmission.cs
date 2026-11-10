@@ -8,6 +8,7 @@ using NetRatel.API.Gateway;
 using NetRatel.API.Security.Authorization;
 using NetRatel.API.Security.Integration;
 using NetRatel.Application.Operations;
+using NetRatel.Application.Jobs;
 using NetRatel.Application.Presence;
 using NetRatel.Infrastructure.Identity;
 using NetRatel.Infrastructure.Identity.Authorization;
@@ -78,6 +79,9 @@ internal sealed partial class ManagedOperationAdmission(
                 actor.CorrelationId, actor.RequestId, digest, McpResource: actor.Resource, McpInstance: instance,
                 Tool: descriptor.Tool, TenantVisible: visible, TargetResolved: exists), cancellationToken).ConfigureAwait(false);
         }
+        if (descriptor.Tool == "netratel_job_targets")
+            return await AdmitJobDiscoveryAsync(descriptor, request, actor.User, decision, actor.ServicePrincipal,
+                http, cancellationToken).ConfigureAwait(false);
         if (!decision.IsAllowed)
             return Denied(decision.FailureCode ?? "policy_denied");
         var admitted = new ManagedOperationAdmissionResult(actor.User, decision, route, actor.ServicePrincipal, null);
@@ -90,6 +94,7 @@ internal sealed partial class ManagedOperationAdmission(
 
     public async Task RecordAcceptedAsync(ManagedOperationAdmissionResult admitted, CancellationToken cancellationToken)
     {
+        if (admitted.AuthorizedJobAgentIds is not null) return; // Read-only per-target discovery; no tenant execution grant is synthesized.
         if (admitted.OfflineOccurrence is { } occurrence &&
             !await OfflineOccurrenceExistsAsync(occurrence, cancellationToken).ConfigureAwait(false))
             throw new McpOperatorAdmissionRejectedException("monitoring_occurrence_unavailable");
@@ -194,4 +199,5 @@ internal sealed record ManagedOperationAdmissionResult(ClaimsPrincipal? User, Mc
 {
     public IReadOnlyList<McpOperatorRouteAccessRequest> ContextRoutes { get; init; } = [];
     public ManagedOfflineOccurrence? OfflineOccurrence { get; init; }
+    public IReadOnlySet<Guid>? AuthorizedJobAgentIds { get; init; }
 }

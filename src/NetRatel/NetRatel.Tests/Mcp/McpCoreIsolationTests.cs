@@ -158,10 +158,10 @@ public sealed class McpCoreIsolationTests
         var httpToolNames = httpTools.Select(tool => tool.GetProperty("Name").GetString()).ToArray();
         var stdioToolNames = stdioTools.Select(tool => tool.GetProperty("Name").GetString()).ToArray();
 
-        httpToolNames.Should().HaveCount(27).And.NotContain(["netratel_config", "netratel_remote_support_v2", "netratel_connectivity", "netratel_events"]);
-        stdioToolNames.Should().HaveCount(29).And.Contain(["netratel_config", "netratel_remote_support_v2"]);
-        httpToolNames.Should().Contain(["netratel_services", "netratel_monitoring", "netratel_flows", "netratel_ai", "netratel_software"]);
-        stdioToolNames.Should().Contain(["netratel_services", "netratel_monitoring", "netratel_flows", "netratel_ai", "netratel_software"]);
+        httpToolNames.Should().HaveCount(29).And.NotContain(["netratel_config", "netratel_remote_support_v2", "netratel_connectivity", "netratel_events"]);
+        stdioToolNames.Should().HaveCount(31).And.Contain(["netratel_config", "netratel_remote_support_v2"]);
+        httpToolNames.Should().Contain(["netratel_services", "netratel_monitoring", "netratel_flows", "netratel_ai", "netratel_software", "netratel_execution_groups", "netratel_job_targets"]);
+        stdioToolNames.Should().Contain(["netratel_services", "netratel_monitoring", "netratel_flows", "netratel_ai", "netratel_software", "netratel_execution_groups", "netratel_job_targets"]);
         httpDocument.RootElement.GetProperty("toolCount").GetInt32().Should().Be(httpTools.Length);
         stdioDocument.RootElement.GetProperty("toolCount").GetInt32().Should().Be(stdioTools.Length);
 
@@ -215,7 +215,7 @@ public sealed class McpCoreIsolationTests
 
         var cataloguedTools = document.RootElement.GetProperty("tools").EnumerateArray().ToArray();
         var cataloguedNames = cataloguedTools.Select(tool => tool.GetProperty("Name").GetString()).ToArray();
-        cataloguedNames.Should().Contain(["netratel_clients", "netratel_files", "netratel_client_logs", "netratel_client_telemetry", "netratel_scripts", "netratel_terminal", "netratel_onboarding"])
+        cataloguedNames.Should().Contain(["netratel_clients", "netratel_files", "netratel_client_logs", "netratel_client_telemetry", "netratel_scripts", "netratel_terminal", "netratel_onboarding", "netratel_execution_groups", "netratel_job_targets"])
             .And.NotContain("netratel_marker_jobs");
         cataloguedTools.Single(tool => tool.GetProperty("Name").GetString() == "netratel_scripts")
             .GetProperty("operations").EnumerateArray()
@@ -299,7 +299,7 @@ public sealed class McpCoreIsolationTests
             .ToArray();
 
         sharedHttpToolNames.Should().Equal(cataloguedHttpToolNames);
-        sharedHttpToolNames.Should().HaveCount(33).And.Contain("netratel_software");
+        sharedHttpToolNames.Should().HaveCount(35).And.Contain(["netratel_software", "netratel_execution_groups", "netratel_job_targets"]);
         sharedHttpToolNames.Should().NotContain("netratel_config");
         sharedHttpToolNames.Should().Contain("netratel_remote_support_v2");
         sharedHttpToolNames.Should().Contain("netratel_computer_use");
@@ -351,11 +351,11 @@ public sealed class McpCoreIsolationTests
         var productionTools = NetRatelMcpToolDefinitions.CreateForHttp("prod")
             .ToDictionary(tool => tool.ProtocolTool.Name, StringComparer.Ordinal);
 
-        tools.Should().HaveCount(32);
-        productionTools.Should().HaveCount(32);
+        tools.Should().HaveCount(34);
+        productionTools.Should().HaveCount(34);
         tools.Should().ContainKey("netratel_computer_use");
         productionTools.Should().ContainKey("netratel_computer_use");
-        tools.Should().ContainKeys("netratel_services", "netratel_monitoring", "netratel_flows", "netratel_ai", "netratel_software");
+        tools.Should().ContainKeys("netratel_services", "netratel_monitoring", "netratel_flows", "netratel_ai", "netratel_software", "netratel_execution_groups", "netratel_job_targets");
         tools.Should().ContainKeys("netratel_commands", "netratel_connectivity", "netratel_events", "netratel_requests");
         tools.Should().NotContainKey("netratel_marker_jobs");
         productionTools.Should().NotContainKey("netratel_marker_jobs", "marker jobs are a Development-only QA compatibility contract, not a Production operator capability");
@@ -545,7 +545,7 @@ public sealed class McpCoreIsolationTests
             .ToDictionary(tool => tool.ProtocolTool.Name, StringComparer.Ordinal);
         var jobRuns = AlternativesByOperation(developmentTools["netratel_job_runs"].ProtocolTool.InputSchema);
         jobRuns.Keys.Should().BeEquivalentTo(["list", "query", "get", "steps", "logs"]);
-        jobRuns.Should().NotContainKeys("start", "cancel", "delete", "cleanup_cancelled_tasks");
+        jobRuns.Should().NotContainKeys("nodes", "node_steps", "node_logs", "start", "cancel", "delete", "cleanup_cancelled_tasks");
         jobRuns["list"].GetProperty("properties").GetProperty("request").GetProperty("additionalProperties").GetBoolean().Should().BeFalse();
         jobRuns["query"].GetProperty("properties").GetProperty("request").GetProperty("properties").GetProperty("pageSize").GetProperty("maximum").GetInt32().Should().Be(100);
     }
@@ -573,7 +573,11 @@ public sealed class McpCoreIsolationTests
         var runs = AlternativesByOperation(tools["netratel_job_runs"].ProtocolTool.InputSchema);
 
         jobs.Keys.Should().BeEquivalentTo(["list", "get", "details", "params", "steps", "create", "update", "delete", "param_add", "param_update", "param_delete", "step_add", "step_update", "step_reorder", "step_delete"]);
-        runs.Keys.Should().BeEquivalentTo(["list", "query", "get", "steps", "logs", "start", "cancel", "delete"]);
+        runs.Keys.Should().BeEquivalentTo(["list", "query", "get", "steps", "logs", "nodes", "node_steps", "node_logs", "start", "cancel", "delete"]);
+        AlternativesByOperation(tools["netratel_execution_groups"].ProtocolTool.InputSchema).Keys.Should()
+            .BeEquivalentTo(["list", "get", "create", "update", "delete", "membership"]);
+        AlternativesByOperation(tools["netratel_job_targets"].ProtocolTool.InputSchema).Keys.Should()
+            .BeEquivalentTo(["properties", "groups", "group", "nodes", "identities", "preview", "resolve_preview", "validate"]);
         var create = jobs["create"].GetProperty("properties").GetProperty("request");
         create.GetProperty("additionalProperties").GetBoolean().Should().BeFalse();
         create.GetProperty("required").EnumerateArray().Select(value => value.GetString()).Should().Equal("tenantId", "agentId", "job");

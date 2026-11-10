@@ -538,6 +538,7 @@ public sealed partial class McpOperatorPolicyAdministration(OrchestratorDbContex
         ValidatePositive(constraints.MaxJobTargetCount, nameof(constraints.MaxJobTargetCount));
         ValidatePositive(constraints.MaxTaskTargetCount, nameof(constraints.MaxTaskTargetCount));
         ValidatePositive(constraints.MaxFanOut, nameof(constraints.MaxFanOut));
+        ValidatePositive(constraints.MaxConcurrentJobTargets, nameof(constraints.MaxConcurrentJobTargets));
         ValidatePositive(constraints.MaxOnboardingCodeLifetimeSeconds, nameof(constraints.MaxOnboardingCodeLifetimeSeconds));
         ValidatePositive(constraints.MaxOnboardingCodeUses, nameof(constraints.MaxOnboardingCodeUses));
         if (constraints.AllowedTargetClassifications?.Any(classification => !Enum.IsDefined(classification)) == true ||

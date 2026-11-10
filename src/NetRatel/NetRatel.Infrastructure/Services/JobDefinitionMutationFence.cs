@@ -12,6 +12,13 @@ internal static class JobDefinitionMutationFence
             ? await db.Database.BeginTransactionAsync(ct)
             : null;
 
+    internal static Task<bool> HasPendingReviewedAdmissionAsync(OrchestratorDbContext db, long jobId, CancellationToken ct) =>
+        (from material in db.Set<McpReviewedJobAdmissionRecord>().AsNoTracking()
+         join receipt in db.McpOperatorIdempotencyRecords.AsNoTracking() on material.IdempotencyId equals receipt.Id
+         where material.JobId == jobId && receipt.TenantId == material.TenantId &&
+             receipt.Outcome == NetRatel.Application.Operations.McpOperatorIdempotencyOutcome.Pending
+         select material.IdempotencyId).AnyAsync(ct);
+
     internal static async Task<bool> LockActiveAsync(OrchestratorDbContext db, long jobId, CancellationToken ct)
     {
         if (db.Database.IsRelational())

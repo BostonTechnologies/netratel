@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text.Json;
+using NetRatel.Shared.Contracts.Jobs;
 
 namespace NetRatel.Application.Jobs;
 
@@ -16,7 +17,8 @@ public static class JobRunProjectionHash
             foreach (var property in value.GetType().GetProperties())
             {
                 // Storage-protection evidence is not part of the accepted execution result.
-                if (property.Name is nameof(JobRunInfo.InputProtectionStatus) or nameof(JobRunInfo.SubmittedDefinitionRevision)) continue;
+                if (property.Name is nameof(JobRunInfo.InputProtectionStatus) or nameof(JobRunInfo.SubmittedDefinitionRevision) ||
+                    value is JobRunInfo && property.Name == nameof(JobRunInfo.EffectiveConcurrency)) continue;
                 // Schema-one native hashes predate aggregate projections. Presentation defaults
                 // (including TargetCount=1) must not rewrite an already accepted terminal receipt.
                 if (value is JobRunInfo { IsAggregate: false, ParentRunId: null, TargetPlanDigest: null } &&
@@ -37,6 +39,22 @@ public static class JobRunProjectionHash
             Activities = details.Activities.OrderBy(x => x.Id).Select(activity => Shape(activity,
                 "Environment", "StartedAtUtc", "ExitCode", "TargetDisplayName", "TargetHostName", "TargetName",
                 "ScriptName", "ScriptType", "CommandLabel", "ScriptContentHash"))
+        });
+        return Convert.ToHexStringLower(SHA256.HashData(bytes));
+    }
+
+    /// <summary>Aggregate receipts bind each node identity and final fact, including equal-ordinal native workflows.</summary>
+    public static string ComputeAggregate(JobRunDetails details, IReadOnlyList<JobRunNodeDto> nodes)
+    {
+        if (!details.Run.IsAggregate || details.Run.AgentId is not null ||
+            nodes.Count != details.Run.TargetCount || nodes.Any(node => node.ParentRunId != details.Run.Id) ||
+            nodes.Select(node => node.AgentId).Distinct().Count() != nodes.Count)
+            throw new ArgumentException("An aggregate terminal projection requires the complete committed node set.");
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(new
+        {
+            Version = 1,
+            Parent = Compute(details),
+            Nodes = nodes.OrderBy(node => node.Ordinal).ThenBy(node => node.AgentId)
         });
         return Convert.ToHexStringLower(SHA256.HashData(bytes));
     }

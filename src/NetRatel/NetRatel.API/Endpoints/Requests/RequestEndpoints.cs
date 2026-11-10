@@ -75,6 +75,7 @@ public static class RequestEndpoints
             IRequestEventBus requestEvents,
             IJobDefinitionService jobs,
             IAkkaJobAuthorityService jobAuthority,
+            [FromServices] JobAggregateOrchestrator aggregates,
             [FromServices] OrchestratorDbContext db,
             CancellationToken ct) =>
         {
@@ -90,10 +91,28 @@ public static class RequestEndpoints
                 return Results.NotFound(new { code = "job_not_found" });
             }
             if (!await CanManageAsync(http, access, job.TenantId, ct)) return Results.Forbid();
-            if (job.TenantId is null || job.AgentId is null)
+            if (job.TenantId is null || job.AgentId is null && job.Target is null)
                 return Results.Conflict(new { code = "job_target_requires_current_agent" });
-            if ((request.TenantId.HasValue && request.TenantId != job.TenantId) ||
-                (request.AgentId.HasValue && request.AgentId != job.AgentId))
+            if (request.TenantId.HasValue && request.TenantId != job.TenantId)
+                return Results.Conflict(new { code = "request_target_must_match_job_target" });
+            var protectedAgent = request.AgentId ?? job.AgentId;
+            if (job.Target is not null)
+            {
+                try
+                {
+                    var plan = protectedAgent is { } selected
+                        ? await aggregates.PlanRequestAsync(job.Id, request.JobInputsJson, selected, ct)
+                        : await aggregates.PlanAsync(job.Id, new("request:preview", request.JobInputsJson, null), ct);
+                    if (plan.Nodes.Count != 1 || protectedAgent is { } expected && plan.Nodes[0].AgentId != expected)
+                        return Results.Conflict(new { code = "request_target_set_mismatch", detail = "A public Request requires exactly one protected target." });
+                    protectedAgent = plan.Nodes[0].AgentId;
+                }
+                catch (JobTargetValidationException error)
+                { return Results.Json(new { code = error.Code, detail = error.Message }, statusCode: error.StatusCode); }
+                catch (ArgumentException error)
+                { return Results.BadRequest(new { code = "request_target_invalid", detail = error.Message }); }
+            }
+            else if (protectedAgent != job.AgentId)
                 return Results.Conflict(new { code = "request_target_must_match_job_target" });
 
             RequestInfo created;
@@ -101,7 +120,7 @@ public static class RequestEndpoints
                 ? await db.Database.BeginTransactionAsync(ct) : null)
             {
                 created = await requests.CreateAsync(new CreateRequestCommand(request.SourceSystem!, string.Empty,
-                    request.ResolveJobDefinitionId(), request.JobInputsJson, job.TenantId, job.AgentId), ct);
+                    request.ResolveJobDefinitionId(), request.JobInputsJson, job.TenantId, protectedAgent), ct);
                 await ExecutionLifecycleOutbox.RecordSubmittedRequestIntentAsync(db, created, ct);
                 await db.SaveChangesAsync(ct);
                 if (submission is not null) await submission.CommitAsync(ct);

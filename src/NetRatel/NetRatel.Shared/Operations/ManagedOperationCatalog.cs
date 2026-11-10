@@ -3,6 +3,7 @@ using System.Text.Json.Serialization;
 using System.Text;
 using NetRatel.Shared.Contracts;
 using NetRatel.Shared.Contracts.Flows;
+using NetRatel.Shared.Contracts.Jobs;
 using NetRatel.Shared.Contracts.Monitoring;
 using NetRatel.Shared.Contracts.Netclaw;
 using NetRatel.Shared.Contracts.Services;
@@ -66,6 +67,20 @@ public static class ManagedOperationCatalog
 
     public static IReadOnlyList<ManagedOperationDescriptor> Operations { get; } =
     [
+        new("netratel_execution_groups", "list", "tenant.admin", false, false, typeof(JobTargetDirectoryRequest)),
+        new("netratel_execution_groups", "get", "tenant.admin", false, false, IdProperty: "groupId"),
+        new("netratel_execution_groups", "create", "tenant.admin", true, false, typeof(ExecutionGroupWriteDto)),
+        new("netratel_execution_groups", "update", "tenant.admin", true, false, typeof(ExecutionGroupWriteDto), "groupId"),
+        new("netratel_execution_groups", "delete", "tenant.admin", true, false, typeof(ExecutionGroupDeleteRequest), "groupId"),
+        new("netratel_execution_groups", "membership", "tenant.admin", true, false, typeof(ExecutionGroupMembershipWriteDto), "groupId"),
+        new("netratel_job_targets", "properties", "job.manage", false, false),
+        new("netratel_job_targets", "groups", "job.manage", false, false, typeof(JobTargetDirectoryRequest)),
+        new("netratel_job_targets", "group", "job.manage", false, false, IdProperty: "groupId"),
+        new("netratel_job_targets", "nodes", "job.manage", false, false, typeof(JobTargetDirectoryRequest)),
+        new("netratel_job_targets", "identities", "job.manage", false, false, typeof(JobTargetIdentitiesRequest)),
+        new("netratel_job_targets", "preview", "job.manage", false, false, typeof(JobNodePreviewRequest)),
+        new("netratel_job_targets", "resolve_preview", "job.manage", false, false, typeof(JobTargetPreviewRequest)),
+        new("netratel_job_targets", "validate", "job.manage", false, false, typeof(JobNodePreviewRequest)),
         new("netratel_software", "policy", "telemetry.read", false, false),
         new("netratel_software", "set_policy", "tenant.admin", true, false, typeof(SoftwareInventoryPolicy)),
         new("netratel_software", "status", "telemetry.read", false, true),

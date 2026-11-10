@@ -122,7 +122,10 @@ public sealed record McpOperatorPolicyConstraintsV2(
     int? MaxOnboardingCodeUses = null,
     McpOperatorPolicyConfirmationClassV2? RequiredConfirmationClass = null,
     bool? DestructiveOperationsAllowed = null,
-    bool? AllowActiveTenantDeletion = null);
+    bool? AllowActiveTenantDeletion = null)
+{
+    public int? MaxConcurrentJobTargets { get; init; }
+}
 
 /// <summary>Closed, reviewed draft accepted by the policy create and replace operations.</summary>
 public sealed record McpOperatorPolicyDraftV2(
@@ -363,6 +366,7 @@ public sealed class McpOperatorPolicyV2Client(INetRatelMcpOutboundClient client)
         ValidatePositive(constraints.MaxJobTargetCount, "policy maxJobTargetCount");
         ValidatePositive(constraints.MaxTaskTargetCount, "policy maxTaskTargetCount");
         ValidatePositive(constraints.MaxFanOut, "policy maxFanOut");
+        ValidatePositive(constraints.MaxConcurrentJobTargets, "policy maxConcurrentJobTargets");
         ValidatePositive(constraints.MaxOnboardingCodeLifetimeSeconds, "policy maxOnboardingCodeLifetimeSeconds");
         ValidatePositive(constraints.MaxOnboardingCodeUses, "policy maxOnboardingCodeUses");
         if (constraints.AllowedTargetClassifications?.Any(classification => !IsTargetClassification(classification)) == true ||
@@ -387,6 +391,7 @@ public sealed class McpOperatorPolicyV2Client(INetRatelMcpOutboundClient client)
         Add(body, "maxJobTargetCount", constraints.MaxJobTargetCount);
         Add(body, "maxTaskTargetCount", constraints.MaxTaskTargetCount);
         Add(body, "maxFanOut", constraints.MaxFanOut);
+        Add(body, "maxConcurrentJobTargets", constraints.MaxConcurrentJobTargets);
         if (constraints.AllowedTargetClassifications is not null)
             body["allowedTargetClassifications"] = new JsonArray(constraints.AllowedTargetClassifications.Select(value => JsonValue.Create((short)value)).ToArray());
         Add(body, "maxOnboardingCodeLifetimeSeconds", constraints.MaxOnboardingCodeLifetimeSeconds);

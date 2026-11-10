@@ -19,6 +19,12 @@ public static class JobEndpoints
     public static IEndpointRouteBuilder MapJobEndpoints(this IEndpointRouteBuilder app)
     {
         var group = app.MapGroup("/api/v1/jobs").WithTags("Jobs").RequireAuthorization();
+        group.AddEndpointFilter(async (context, next) =>
+        {
+            try { return await next(context); }
+            catch (JobTargetValidationException error)
+            { return Results.Json(new { code = error.Code, detail = error.Message }, statusCode: error.StatusCode); }
+        });
         group.MapGet("/", async (HttpContext http, IJobDefinitionService jobs, ITenantService tenants, [FromServices] IEffectiveAccessService access, [FromServices] OrchestratorDbContext db, [FromQuery] string? folder, [FromQuery] string? search, CancellationToken ct) =>
         {
             var agentLookup = await db.Agents.AsNoTracking().ToDictionaryAsync(x => x.Id, ct);
@@ -52,6 +58,9 @@ public static class JobEndpoints
             if (request.Environment is { } environment && !Enum.IsDefined(environment)) return Results.ValidationProblem(new Dictionary<string, string[]> { ["environment"] = ["Environment is invalid."] });
             var options = JobSchedulePolicy.MergeOptionsJson(JobExecutionRuntimePolicy.MergeOptionsJson(null, JobExecutionRuntimePolicy.FromValues(request.ExpectedRuntimeSeconds, request.GraceSeconds, request.HardTimeoutSeconds)), request.Schedule);
             options = JobExecutionContextPolicy.MergeOptionsJson(options, request.Environment);
+            options = JobScheduleAuthority.Capture(options, http.User);
+            try { JobTargetScheduleValidation.RequireComplete(request.Target, options, []); }
+            catch (JobTargetValidationException error) { return Results.Json(new { code = error.Code, detail = error.Message }, statusCode: error.StatusCode); }
             var created = await jobs.CreateAsync(new CreateJobDefinitionCommand(request.Name.Trim(), NormalizeFolder(request.FolderPath), request.Description, request.TenantId, string.Empty, options, request.AgentId) { Target = request.Target, ExecutionPolicy = request.ExecutionPolicy }, ct);
             await RecordAsync(events, correlation, NetRatelEventTypes.Job.Created, created, "created", ct);
             return Results.Created($"/api/v1/jobs/{created.Id}", MapJob(created, new Dictionary<int, string>(), await db.Agents.AsNoTracking().ToDictionaryAsync(x => x.Id, ct)));
@@ -65,9 +74,16 @@ public static class JobEndpoints
             var target = request.Target ?? (request.AgentId.HasValue ? null : current.Target);
             if (!await CanManageAsync(http, access, targetTenant, ct)) return Results.Forbid();
             var targetError = await ValidateTargetAsync(db, targetTenant, targetAgent, target, request.ExecutionPolicy ?? current.ExecutionPolicy, ct); if (targetError is not null) return targetError;
-            var options = JobSchedulePolicy.MergeOptionsJson(JobExecutionRuntimePolicy.MergeOptionsJson(current.OptionsJson, JobExecutionRuntimePolicy.FromValues(request.ExpectedRuntimeSeconds, request.GraceSeconds, request.HardTimeoutSeconds)), request.Schedule);
+            var savedRuntime = JobExecutionRuntimePolicy.FromJob(current);
+            var options = JobExecutionRuntimePolicy.MergeOptionsJson(current.OptionsJson,
+                JobExecutionRuntimePolicy.FromValues(request.ExpectedRuntimeSeconds ?? savedRuntime.ExpectedRuntimeSeconds,
+                    request.GraceSeconds ?? savedRuntime.GraceSeconds, request.HardTimeoutSeconds ?? savedRuntime.HardTimeoutSeconds));
+            if (request.Schedule is not null) options = JobSchedulePolicy.MergeOptionsJson(options, request.Schedule);
             if (request.Environment is { } environment && !Enum.IsDefined(environment)) return Results.ValidationProblem(new Dictionary<string, string[]> { ["environment"] = ["Environment is invalid."] });
             options = JobExecutionContextPolicy.MergeOptionsJson(options, request.Environment);
+            options = JobScheduleAuthority.Capture(options, http.User);
+            try { JobTargetScheduleValidation.RequireComplete(target, options, (await jobs.ListParamsAsync(id, ct)).Select(parameter => new KeyValuePair<string, string?>(parameter.Name, parameter.DefaultValue))); }
+            catch (JobTargetValidationException error) { return Results.Json(new { code = error.Code, detail = error.Message }, statusCode: error.StatusCode); }
             var updated = await jobs.UpdateAsync(new UpdateJobDefinitionCommand(id, request.Name, request.FolderPath is null ? null : NormalizeFolder(request.FolderPath), request.Description, targetTenant, string.Empty, options, request.Target is null ? targetAgent : request.AgentId) { Target = request.Target, ExecutionPolicy = request.ExecutionPolicy }, ct);
             await RecordAsync(events, correlation, NetRatelEventTypes.Job.StateChanged, updated!, "updated", ct);
             return Results.Ok(MapJob(updated!, new Dictionary<int, string>(), await db.Agents.AsNoTracking().ToDictionaryAsync(x => x.Id, ct)));

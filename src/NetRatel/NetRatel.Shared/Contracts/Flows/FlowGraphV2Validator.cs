@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using NetRatel.Shared.Contracts.Jobs;
 
 namespace NetRatel.Shared.Contracts.Flows;
 
@@ -97,10 +98,41 @@ public static class FlowGraphV2Validator
                     if (action.SourceKind != expectedSource || !ValidDefinition(action.Definition) ||
                         action.TimeoutMinutes is < 1 or > FlowGraphV2Limits.MaximumOperationMinutes || !Enum.IsDefined(action.Environment) ||
                         action.WorkingDirectory is not null && !Text(action.WorkingDirectory, 1024) ||
-                        action.Target is { AgentId: null } || action.Target?.AgentId == Guid.Empty)
+                        action.Target is { AgentId: null } || action.Target?.AgentId == Guid.Empty ||
+                        action.JobTargetEnvironment is { } jobEnvironment && !Enum.IsDefined(jobEnvironment))
                         Error("execution-action", node.Id);
-                    if (node.Kind == FlowNodeKind.RunJob && complete && action.Target?.AgentId is null)
-                        Error("job-bound-target-required", node.Id);
+                    if (node.Kind == FlowNodeKind.RunJob)
+                    {
+                        if (action.JobTarget is null)
+                        {
+                            if (complete && action.Target?.AgentId is null) Error("job-bound-target-required", node.Id);
+                            if (action.TargetBinding is not null || action.JobExecutionPolicy is not null || action.JobTargetEnvironment is not null) Error("job-target-policy-required", node.Id);
+                        }
+                        else
+                        {
+                            if (action.Target is not null || !ValidJobTarget(action.JobTarget) || !ValidJobPolicy(action.JobExecutionPolicy))
+                                Error("job-target-policy", node.Id);
+                            var runtime = action.JobTarget.RuntimeInput;
+                            if (action.TargetBinding is { } targetBinding)
+                            {
+                                var expectedType = FlowJobTargetBindingValues.DataType(targetBinding.Kind);
+                                if (action.JobTarget.Source != JobTargetSource.RuntimeInput || runtime?.Kind != targetBinding.Kind ||
+                                    targetBinding.Value is null || targetBinding.Value.DataType != expectedType ||
+                                    targetBinding.Value.Source == FlowInputSource.SecretReference ||
+                                    targetBinding.AllOf && targetBinding.Kind is not (JobRuntimeTargetKind.Tag or JobRuntimeTargetKind.Tags))
+                                    Error("job-target-binding", node.Id);
+                                if (targetBinding.Value is { Source: FlowInputSource.Literal, Literal: { } literal } &&
+                                    !FlowJobTargetBindingValues.TryCreate(targetBinding, literal, out _)) Error("job-target-literal", node.Id);
+                                if (targetBinding.Kind is JobRuntimeTargetKind.ClientId or JobRuntimeTargetKind.ClientIds &&
+                                    targetBinding.Value is { Source: FlowInputSource.Event } source &&
+                                    source.Path is not ("alert.agentId" or "event.target.agentId")) Error("job-target-event-path", node.Id);
+                            }
+                            else if (complete && action.JobTarget.Source == JobTargetSource.RuntimeInput && runtime?.DefaultValues is not { Count: > 0 })
+                                Error("job-target-binding-required", node.Id);
+                        }
+                    }
+                    else if (action.JobTarget is not null || action.JobExecutionPolicy is not null || action.TargetBinding is not null || action.JobTargetEnvironment is not null)
+                        Error("job-target-source", node.Id);
                     if (pinned && (action.Definition is null || action.Definition.Revision is null || !Hash(action.Definition.ContentHash) ||
                         !Text(action.PinnedSnapshotReference, 512) || action.Parameters is null))
                         Error("execution-definition-not-pinned", node.Id);
@@ -131,7 +163,7 @@ public static class FlowGraphV2Validator
                 Error("rerun-settings-required", node.Id);
 
             if (node.Inputs is { } inputs &&
-                (inputs.Count > FlowGraphV2Limits.MaximumBindings || inputs.Any(pair => !Identifier(pair.Key) || !ValidBinding(pair.Value))))
+                (inputs.Count + (node.ExecutionAction?.TargetBinding is null ? 0 : 1) > FlowGraphV2Limits.MaximumBindings || inputs.Any(pair => pair.Key == "$netratel.jobTarget" || !Identifier(pair.Key) || !ValidBinding(pair.Value))))
                 Error("input-binding", node.Id);
             if (node.Kind is not (FlowNodeKind.RunJob or FlowNodeKind.RunLibraryScript) &&
                 node.Inputs?.Values.Any(binding => binding is { Source: FlowInputSource.SecretReference }) == true)
@@ -214,7 +246,8 @@ public static class FlowGraphV2Validator
         {
             if (executionSource is true && node.Kind == FlowNodeKind.Condition && node.Condition is not null)
                 Error("condition-source", node.Id);
-            var bindings = (node.Inputs?.Values ?? []).Concat(node.Predicate is { } predicate ? [predicate.Input] : []);
+            var bindings = (node.Inputs?.Values ?? []).Concat(node.Predicate is { } predicate ? [predicate.Input] : [])
+                .Concat(node.ExecutionAction?.TargetBinding is { } target ? [target.Value] : []);
             foreach (var binding in bindings)
             {
                 if (!ValidBinding(binding)) { Error("input-binding", node.Id); continue; }
@@ -282,6 +315,18 @@ public static class FlowGraphV2Validator
         Text(definition.Id, 128) && (definition.Name is null || Text(definition.Name, 512)) &&
         (definition.Revision is null || Text(definition.Revision, 128)) &&
         (definition.ContentHash is null || Hash(definition.ContentHash));
+    private static bool ValidJobTarget(JobTargetDefinition target)
+    {
+        try { target.Validate(); return true; }
+        catch (ArgumentException) { return false; }
+    }
+    private static bool ValidJobPolicy(JobExecutionPolicy? policy)
+    {
+        if (policy is null) return false;
+        try { policy.Validate(); return true; }
+        catch (ArgumentException) { return false; }
+    }
+
     private static bool ValidBinding(FlowInputBindingDto? binding)
     {
         if (binding is null || !Enum.IsDefined(binding.Source) || !Enum.IsDefined(binding.DataType)) return false;

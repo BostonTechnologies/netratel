@@ -19,12 +19,36 @@ public sealed class FlowExecutionAuthority(OrchestratorDbContext db, IFlowExecut
         CancellationToken cancellationToken)
     {
         identity.Validate();
-        if (pinnedDefinition.TenantId != identity.TenantId || pinnedDefinition.AgentId is not { } agentId ||
-            agentId == Guid.Empty ||
+        if (pinnedDefinition.TenantId != identity.TenantId ||
+            pinnedDefinition.Target is null && pinnedDefinition.AgentId is null || pinnedDefinition.AgentId == Guid.Empty ||
             !await db.Jobs.AsNoTracking().AnyAsync(job => job.Id == checked((long)pinnedDefinition.Id) &&
                 job.TenantId == identity.TenantId, cancellationToken))
             throw new ExecutionAdmissionDeniedException("The pinned source definition is no longer available in its authorized tenant.");
-        await RequireAsync(identity, NetRatelPermissions.JobManagement, agentId, cancellationToken);
+        if (pinnedDefinition.Target is not null)
+        {
+            try { pinnedDefinition.Target.Validate(); }
+            catch (ArgumentException) { throw new ExecutionAdmissionDeniedException("The pinned target policy is invalid."); }
+            if (pinnedDefinition.AgentId is not null)
+                throw new ExecutionAdmissionDeniedException("A target policy cannot retain a singular execution authority.");
+            await RequireTenantAsync(identity, NetRatelPermissions.JobManagement, cancellationToken);
+        }
+        else await RequireAsync(identity, NetRatelPermissions.JobManagement, pinnedDefinition.AgentId!.Value, cancellationToken);
+    }
+
+    public async Task RequireTargetsAllowedAsync(ExecutionAdmissionIdentity identity, JobDefinitionInfo pinnedDefinition,
+        IReadOnlyList<Guid> agentIds, CancellationToken cancellationToken)
+    {
+        await RequireAllowedAsync(identity, pinnedDefinition, cancellationToken);
+        if (agentIds.Count is < 1 or > 10000 || agentIds.Any(id => id == Guid.Empty) ||
+            agentIds.Distinct().Count() != agentIds.Count ||
+            pinnedDefinition.Target is null && (agentIds.Count != 1 || agentIds[0] != pinnedDefinition.AgentId))
+            throw new ExecutionAdmissionDeniedException("The complete admitted target set is invalid.");
+        var ids = agentIds.ToArray();
+        var eligible = await db.Agents.AsNoTracking().CountAsync(agent => agent.TenantId == identity.TenantId &&
+            ids.Contains(agent.Id) && agent.IsEnabled && agent.Status == AgentStatus.Active && agent.DeletedAtUtc == null &&
+            agent.RevokedAtUtc == null && agent.SupersededAtUtc == null && agent.SupersededByAgentId == null, cancellationToken);
+        if (eligible != ids.Length)
+            throw new ExecutionAdmissionDeniedException("Current execution authority does not cover the complete admitted target set.");
     }
 
     public async Task RequireScriptAsync(ExecutionAdmissionIdentity identity, ulong scriptId, Guid agentId, CancellationToken cancellationToken)
@@ -153,22 +177,22 @@ public sealed class FlowExecutionAuthority(OrchestratorDbContext db, IFlowExecut
 
     private async Task RequireAsync(ExecutionAdmissionIdentity identity, string permission, Guid agentId, CancellationToken ct)
     {
-        identity.Validate();
-        var authority = new FlowExecutionAuthorityDto(identity.PrincipalId, identity.IntegrationCredentialId);
-        if (!await verifier.AuthorizeAsync(identity.TenantId, authority, ct) ||
-            !await access.AuthorizeAsync(Principal(authority), permission, identity.TenantId, ct) ||
-            !await db.Tenants.AsNoTracking().AnyAsync(tenant => tenant.Id == identity.TenantId && tenant.DeletedAtUtc == null, ct) ||
-            !await db.Agents.AsNoTracking().AnyAsync(agent => agent.TenantId == identity.TenantId && agent.Id == agentId &&
+        await RequireTenantAsync(identity, permission, ct);
+        if (!await db.Agents.AsNoTracking().AnyAsync(agent => agent.TenantId == identity.TenantId && agent.Id == agentId &&
                 agent.IsEnabled && agent.Status == AgentStatus.Active && agent.DeletedAtUtc == null &&
                 agent.RevokedAtUtc == null && agent.SupersededAtUtc == null && agent.SupersededByAgentId == null, ct))
             throw new ExecutionAdmissionDeniedException("Current execution permission or target authority was revoked.");
     }
 
-    private static ClaimsPrincipal Principal(FlowExecutionAuthorityDto authority)
+    private async Task RequireTenantAsync(ExecutionAdmissionIdentity identity, string permission, CancellationToken ct)
     {
-        var claims = new List<Claim> { new("netratel_principal_id", authority.PrincipalId) };
-        if (authority.IntegrationCredentialId is not null)
-            claims.Add(new("netratel_integration_credential_id", authority.IntegrationCredentialId));
-        return new(new ClaimsIdentity(claims, "FlowKeyedExecution"));
+        identity.Validate();
+        var authority = new FlowExecutionAuthorityDto(identity.PrincipalId, identity.IntegrationCredentialId);
+        if (!await verifier.AuthorizeAsync(identity.TenantId, authority, ct) ||
+            !await access.AuthorizeAsync(Principal(authority), permission, identity.TenantId, ct) ||
+            !await db.Tenants.AsNoTracking().AnyAsync(tenant => tenant.Id == identity.TenantId && tenant.DeletedAtUtc == null, ct))
+            throw new ExecutionAdmissionDeniedException("Current execution permission was revoked.");
     }
+
+    private static ClaimsPrincipal Principal(FlowExecutionAuthorityDto authority) => FlowAuthorityPrincipal.Create(authority);
 }

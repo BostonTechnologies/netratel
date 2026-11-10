@@ -234,7 +234,8 @@ public sealed class McpOperatorAuthorization(OrchestratorDbContext db) : IMcpOpe
         if (!request.TargetOnline && !AllowsOfflineManagedOperation(request))
             return McpOperatorDecision.Denied(request, "target_offline", McpOperatorAuthorizationLayer.Target, [selected.Id]);
 
-        return new McpOperatorDecision(true, null, null, [selected.Id], constraints, request.TargetSetDigest, request, selected.Version, IsDevelopmentPolicy(selected));
+        return new McpOperatorDecision(true, null, null, [selected.Id], constraints, request.TargetSetDigest, request, selected.Version, IsDevelopmentPolicy(selected))
+        { ConstraintsPolicyId = constraintPolicy.Id, ConstraintsPolicyVersion = constraintPolicy.Version };
     }
 
     private static List<McpOperatorPolicyRecord> MatchingOperations(IEnumerable<McpOperatorPolicyRecord> targets,
@@ -266,6 +267,9 @@ public sealed class McpOperatorAuthorization(OrchestratorDbContext db) : IMcpOpe
     private static bool AllowsOfflineManagedOperation(McpOperatorAccessRequest request)
     {
         if (request.Tool is null) return false;
+        // A job target's availability must be retained in its immutable plan;
+        // native dispatch records an unavailable outcome when that node's slot starts.
+        if (request.Tool == "netratel_job_runs" && request.Operation == "netratel_job_runs/start") return true;
         var name = request.Operation[(request.Operation.LastIndexOf('/') + 1)..];
         return ManagedOperationCatalog.Find(request.Tool, name) is { RequiresOnlineClient: false };
     }

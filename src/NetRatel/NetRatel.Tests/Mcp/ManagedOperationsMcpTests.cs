@@ -12,7 +12,7 @@ using Xunit;
 
 namespace NetRatel.Tests.Mcp;
 
-public sealed class ManagedOperationsMcpTests
+public sealed partial class ManagedOperationsMcpTests
 {
     [Theory]
     [InlineData(NetRatelMcpTransport.Stdio)]
@@ -254,9 +254,15 @@ public sealed class ManagedOperationsMcpTests
     private sealed class RecordingClient : INetRatelMcpApiClient
     {
         public bool Deny { get; init; }
+        public bool AllowDirectReads { get; init; }
         public JsonNode? Reply { get; set; }
         public List<(string Path, JsonNode? Body)> Calls { get; } = [];
-        public Task<JsonNode?> GetAsync(string path, CancellationToken cancellationToken = default) => throw new InvalidOperationException("Managed operations must use their dedicated adapter.");
+        public Task<JsonNode?> GetAsync(string path, CancellationToken cancellationToken = default)
+        {
+            if (!AllowDirectReads) throw new InvalidOperationException("Managed operations must use their dedicated adapter.");
+            Calls.Add((path, null));
+            return Task.FromResult<JsonNode?>(new JsonObject());
+        }
         public Task<JsonNode?> SendAsync(HttpMethod method, string path, JsonNode? body = null, CancellationToken cancellationToken = default)
         {
             method.Should().Be(HttpMethod.Post);

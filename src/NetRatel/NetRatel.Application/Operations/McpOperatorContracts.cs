@@ -178,7 +178,12 @@ public sealed record McpOperatorConstraints(
     int? MaxOnboardingCodeUses = null,
     McpOperatorConfirmationClass? RequiredConfirmationClass = null,
     bool? DestructiveOperationsAllowed = null,
-    bool? AllowActiveTenantDeletion = null);
+    bool? AllowActiveTenantDeletion = null)
+{
+    /// <summary>Optional shared quota for admitted targets across unfinished reviewed job plans.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? MaxConcurrentJobTargets { get; init; }
+}
 
 [JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
 [JsonSerializable(typeof(McpOperatorConstraints))]
@@ -508,6 +513,8 @@ public sealed record McpOperatorDecision(
     /// <summary>Trusted account-adapter authority; never accepted from request JSON.</summary>
     [JsonIgnore]
     public McpOperatorAccountAuthority? AccountAuthority { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public Guid? ConstraintsPolicyId { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public long? ConstraintsPolicyVersion { get; init; }
 
     public static McpOperatorDecision Denied(
         McpOperatorAccessRequest request,
@@ -532,7 +539,11 @@ public enum McpOperatorIdempotencyOutcome : short
 public sealed record McpOperatorConfirmationPlanRequest(
     McpOperatorDecision Decision,
     string PayloadHash,
-    DateTimeOffset? ExpiresAtUtc = null);
+    DateTimeOffset? ExpiresAtUtc = null)
+{
+    /// <summary>Exact public launch inputs, independently bound for retained original-plan replay.</summary>
+    [JsonIgnore] public string? JobRequestHash { get; init; }
+}
 
 /// <summary>
 /// Opaque plan and idempotency credentials returned from a mutation preview.
@@ -558,7 +569,14 @@ public sealed record McpOperatorConfirmationRequest(
     /// unconsumed plan returns neither a replay nor a new dispatch admission.
     /// </summary>
     public bool ReplayOnly { get; init; }
+    /// <summary>Server-resolved policy reservations for the entire immutable job plan.</summary>
+    [JsonIgnore] public IReadOnlyList<McpJobTargetQuota>? JobTargetQuotas { get; init; }
+    [JsonIgnore] public string? JobTargetPlanDigest { get; init; }
+    [JsonIgnore] public NetRatel.Application.Jobs.McpReviewedJobSubmission? JobSubmission { get; init; }
 }
+
+public sealed record McpJobTargetQuota(Guid PolicyId, long PolicyVersion, int TargetCount,
+    int? MaximumConcurrentJobTargets);
 
 /// <summary>
 /// Result of confirmation-plan consumption and idempotency admission. Routes
@@ -589,6 +607,20 @@ public interface IMcpOperatorConfirmationService
     Task<McpOperatorConfirmationAdmission> ConfirmAsync(
         McpOperatorConfirmationRequest request,
         CancellationToken cancellationToken);
+
+    Task<McpOperatorConfirmationAdmission?> TryJobReplayAsync(string planToken, string idempotencyKey,
+        string jobRequestHash, McpOperatorDecision currentDecision, CancellationToken cancellationToken)
+        => Task.FromResult<McpOperatorConfirmationAdmission?>(null);
+
+    Task<NetRatel.Application.Jobs.McpReviewedJobSubmission?> GetReviewedJobSubmissionAsync(
+        Guid idempotencyId, McpOperatorDecision currentDecision, CancellationToken cancellationToken)
+        => Task.FromResult<NetRatel.Application.Jobs.McpReviewedJobSubmission?>(null);
+
+    /// <summary>Trusted recovery only; no public request can supply execution material.</summary>
+    Task<NetRatel.Application.Jobs.McpReviewedJobSubmission?> ReadReviewedJobForRecoveryAsync(Guid idempotencyId, CancellationToken ct)
+        => Task.FromResult<NetRatel.Application.Jobs.McpReviewedJobSubmission?>(null);
+    Task<bool> FailReviewedJobBeforeParentAsync(Guid idempotencyId, string failureCode, CancellationToken ct)
+        => Task.FromResult(false);
 
     Task CompleteAsync(
         Guid idempotencyId,
@@ -1169,7 +1201,13 @@ public sealed record McpOperatorJobDraft(
     string Name,
     string FolderPath,
     string? Description = null,
-    string? OptionsJson = null);
+    string? OptionsJson = null)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public NetRatel.Shared.Contracts.Jobs.JobTargetDefinition? Target { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public NetRatel.Shared.Contracts.Jobs.JobExecutionPolicy? ExecutionPolicy { get; init; }
+}
 
 /// <summary>
 /// One typed job parameter. Secret parameters carry only a named opaque
@@ -1225,7 +1263,11 @@ public sealed record McpOperatorJobLease(
     bool IsDeleted,
     DateTimeOffset CreatedAtUtc,
     DateTimeOffset UpdatedAtUtc,
-    long Version);
+    long Version)
+{
+    public NetRatel.Shared.Contracts.Jobs.JobTargetDefinition? Target { get; init; }
+    public NetRatel.Shared.Contracts.Jobs.JobExecutionPolicy? ExecutionPolicy { get; init; }
+}
 
 /// <summary>Bounded, owner-scoped run view with decimal-safe identifiers.</summary>
 public sealed record McpOperatorJobRunLease(
@@ -1245,7 +1287,13 @@ public sealed record McpOperatorJobRunLease(
     string? FailureCode,
     bool IsCancellationRequested,
     bool IsDeleted,
-    long Version);
+    long Version)
+{
+    public string? TargetPlanDigest { get; init; }
+    public int TargetCount { get; init; } = 1;
+    public bool IsAggregate { get; init; }
+    public NetRatel.Shared.Contracts.Jobs.JobExecutionPolicy? ExecutionPolicy { get; init; }
+}
 
 public sealed record McpOperatorJobCreateRequest(
     McpOperatorDecision Decision,
@@ -1337,6 +1385,9 @@ public interface IMcpOperatorJobStore
     /// <summary>Checks current run ownership, including retained deletion tombstones, for an authenticated action replay.</summary>
     Task<McpOperatorJobRunLease?> GetRunOwnedForReplayAsync(ulong runId, int tenantId, Guid agentId, McpOperatorPrincipal principal, string mcpResource, string mcpInstance, CancellationToken cancellationToken);
     Task<IReadOnlyList<McpOperatorJobRunLease>> ListRunsOwnedAsync(long? jobId, int tenantId, Guid agentId, McpOperatorPrincipal principal, string mcpResource, string mcpInstance, CancellationToken cancellationToken);
+    /// <summary>Repairs ownership of an already accepted parent using its original durable admission audit.</summary>
+    Task<McpOperatorJobRunLease> RecordAdmittedRunAsync(Guid idempotencyId, ulong runId, CancellationToken ct)
+        => throw new InvalidOperationException("Reviewed admission recovery is unavailable.");
     Task<McpOperatorJobRunLease> RecordStartedRunAsync(long jobId, ulong runId, Guid idempotencyId, McpOperatorDecision decision, McpOperatorAcceptedAudit acceptedAudit, DateTimeOffset occurredAtUtc, CancellationToken cancellationToken);
     Task<McpOperatorJobRunLease?> RecordCancellationRequestedAsync(ulong runId, McpOperatorDecision decision, McpOperatorAcceptedAudit acceptedAudit, DateTimeOffset occurredAtUtc, CancellationToken cancellationToken);
     Task<McpOperatorJobRunLease?> DeleteRunAsync(ulong runId, McpOperatorDecision decision, McpOperatorAcceptedAudit acceptedAudit, DateTimeOffset occurredAtUtc, CancellationToken cancellationToken);

@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using NetRatel.Shared.Contracts.Jobs;
 
 namespace NetRatel.AgentClient;
 
@@ -9,7 +10,11 @@ public sealed record McpOperatorJobDraftV2(
     string Name,
     string FolderPath,
     string? Description = null,
-    string? OptionsJson = null);
+    string? OptionsJson = null)
+{
+    public JobTargetDefinition? Target { get; init; }
+    public JobExecutionPolicy? ExecutionPolicy { get; init; }
+}
 
 /// <summary>
 /// A bounded V2 job parameter. Secret parameters name only an opaque
@@ -50,7 +55,10 @@ public sealed record McpOperatorJobMutationV2(
     int? Ordinal = null);
 
 /// <summary>Typed inputs used when previewing or starting one V2 job run.</summary>
-public sealed record McpOperatorJobRunV2(IReadOnlyDictionary<string, string>? Inputs = null);
+public sealed record McpOperatorJobRunV2(IReadOnlyDictionary<string, string>? Inputs = null)
+{
+    public JobRuntimeTargetInput? RuntimeTarget { get; init; }
+}
 
 /// <summary>Optional bounded rationale for a V2 job-run cancellation or deletion.</summary>
 public sealed record McpOperatorJobRunActionV2(string? Reason = null);
@@ -81,12 +89,22 @@ public interface IMcpOperatorJobV2Client
     Task<JsonNode?> ConfirmRunActionAsync(McpOperatorV2Target target, string action, long runId, McpOperatorJobRunActionV2 request, string planToken, string idempotencyKey, CancellationToken cancellationToken = default);
 }
 
+public interface IMcpOperatorJobNodeV2Client
+{
+    Task<JsonNode?> GetNodesAsync(McpOperatorV2Target target, long runId, int page = 1, int pageSize = 50, CancellationToken cancellationToken = default);
+    Task<JsonNode?> GetNodeStepsAsync(McpOperatorV2Target target, long runId, Guid nodeAgentId, CancellationToken cancellationToken = default);
+    Task<JsonNode?> GetNodeLogsAsync(McpOperatorV2Target target, long runId, Guid nodeAgentId, long stepRunId, CancellationToken cancellationToken = default);
+    Task<JsonNode?> GetNodeLogsPageAsync(McpOperatorV2Target target, long runId, Guid nodeAgentId, long stepRunId, string? cursor = null, int limit = 500, int maximumBytes = 65536, CancellationToken cancellationToken = default);
+}
+
 /// <summary>
 /// Route-bound V2 job facade. It derives every API path from an exact
 /// tenant-agent pair and cannot dispatch through legacy job routes.
 /// </summary>
-public sealed class McpOperatorJobV2Client(INetRatelMcpOutboundClient client) : IMcpOperatorJobV2Client
+public sealed class McpOperatorJobV2Client(INetRatelMcpOutboundClient client) : IMcpOperatorJobV2Client, IMcpOperatorJobNodeV2Client
 {
+    private static readonly JsonSerializerOptions JobTargetWireOptions = new(JsonSerializerDefaults.Web)
+    { Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() } };
     private const int MaximumParameters = 32;
     private const int MaximumSteps = 64;
     private readonly INetRatelMcpOutboundClient _client = client ?? throw new ArgumentNullException(nameof(client));
@@ -129,6 +147,30 @@ public sealed class McpOperatorJobV2Client(INetRatelMcpOutboundClient client) : 
 
     public Task<JsonNode?> GetRunLogsAsync(McpOperatorV2Target target, long runId, CancellationToken cancellationToken = default) =>
         _client.GetAsync($"{RunPath(target, runId)}/logs", cancellationToken);
+
+    public Task<JsonNode?> GetNodesAsync(McpOperatorV2Target target, long runId, int page = 1, int pageSize = 50, CancellationToken cancellationToken = default)
+    {
+        if (page < 1 || pageSize is < 1 or > 100) throw McpOperatorTaskV2Client.Invalid("node page");
+        return _client.GetAsync($"{RunPath(target, runId)}/nodes?page={page}&pageSize={pageSize}", cancellationToken);
+    }
+
+    public Task<JsonNode?> GetNodeStepsAsync(McpOperatorV2Target target, long runId, Guid nodeAgentId, CancellationToken cancellationToken = default)
+    {
+        if (nodeAgentId == Guid.Empty) throw McpOperatorTaskV2Client.Invalid("nodeAgentId");
+        return _client.GetAsync($"{RunPath(target, runId)}/nodes/{nodeAgentId:D}/steps", cancellationToken);
+    }
+
+    public Task<JsonNode?> GetNodeLogsAsync(McpOperatorV2Target target, long runId, Guid nodeAgentId, long stepRunId, CancellationToken cancellationToken = default)
+        => GetNodeLogsPageAsync(target, runId, nodeAgentId, stepRunId, cancellationToken: cancellationToken);
+
+    public Task<JsonNode?> GetNodeLogsPageAsync(McpOperatorV2Target target, long runId, Guid nodeAgentId, long stepRunId,
+        string? cursor = null, int limit = 500, int maximumBytes = 65536, CancellationToken cancellationToken = default)
+    {
+        if (nodeAgentId == Guid.Empty || stepRunId <= 0 || limit is < 1 or > 1000 || maximumBytes is < 1 or > 65536 || cursor?.Length > 64)
+            throw McpOperatorTaskV2Client.Invalid("node log page");
+        var query = $"?limit={limit}&maximumBytes={maximumBytes}" + (cursor is null ? "" : $"&cursor={Uri.EscapeDataString(cursor)}");
+        return _client.GetAsync($"{RunPath(target, runId)}/nodes/{nodeAgentId:D}/steps/{stepRunId}/logs{query}", cancellationToken);
+    }
 
     public Task<JsonNode?> PreviewStartRunAsync(McpOperatorV2Target target, long jobId, McpOperatorJobRunV2 run, CancellationToken cancellationToken = default) =>
         SendStartRunAsync(target, jobId, run, false, null, null, cancellationToken);
@@ -288,13 +330,18 @@ public sealed class McpOperatorJobV2Client(INetRatelMcpOutboundClient client) : 
         var folderPath = NormalizeRequiredText(draft.FolderPath, 512, "job folderPath");
         var description = NormalizeOptionalText(draft.Description, 512, "job description");
         var optionsJson = NormalizeOptionsJson(draft.OptionsJson);
-        return new JsonObject
+        draft.Target?.Validate();
+        draft.ExecutionPolicy?.Validate();
+        var body = new JsonObject
         {
             ["name"] = name,
             ["folderPath"] = folderPath,
             ["description"] = description,
             ["optionsJson"] = optionsJson
         };
+        if (draft.Target is not null) body["target"] = JsonSerializer.SerializeToNode(draft.Target, JobTargetWireOptions);
+        if (draft.ExecutionPolicy is not null) body["executionPolicy"] = JsonSerializer.SerializeToNode(draft.ExecutionPolicy, JobTargetWireOptions);
+        return body;
     }
 
     private static JsonObject ParameterBody(McpOperatorJobParameterV2 parameter)
@@ -382,7 +429,16 @@ public sealed class McpOperatorJobV2Client(INetRatelMcpOutboundClient client) : 
             inputs[pair.Key] = pair.Value;
         }
 
-        return new JsonObject { ["inputs"] = inputs };
+        var body = new JsonObject { ["inputs"] = inputs };
+        if (run.RuntimeTarget is { } runtime)
+        {
+            if (!Enum.IsDefined(runtime.Kind) || runtime.Values.Count is < 1 or > 10_000 ||
+                runtime.Values.Any(value => string.IsNullOrWhiteSpace(value) || value.Length > 1024 || value.Any(char.IsControl)) ||
+                runtime.AllOf && runtime.Kind is not (JobRuntimeTargetKind.Tag or JobRuntimeTargetKind.Tags))
+                throw McpOperatorTaskV2Client.Invalid("runtime target");
+            body["runtimeTarget"] = JsonSerializer.SerializeToNode(runtime, JobTargetWireOptions);
+        }
+        return body;
     }
 
     private static JsonObject RunActionBody(McpOperatorJobRunActionV2 request)

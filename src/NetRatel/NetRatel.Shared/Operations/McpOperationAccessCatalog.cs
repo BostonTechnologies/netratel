@@ -159,7 +159,7 @@ public static class McpOperationAccessCatalog
         .. Register(McpOperationAccessScope.Observe, "netratel_client_telemetry", "snapshot", "stream_window"),
         .. Register(McpOperationAccessScope.Read, "netratel_jobs", "list", "get", "details", "params", "steps"),
         .. Register(McpOperationAccessScope.Write, "netratel_jobs", "create", "update", "delete", "param_add", "param_update", "param_delete", "step_add", "step_update", "step_reorder", "step_delete"),
-        .. Register(McpOperationAccessScope.Observe, "netratel_job_runs", "list", "query", "get", "steps", "logs"),
+        .. Register(McpOperationAccessScope.Observe, "netratel_job_runs", "list", "query", "get", "steps", "logs", "nodes", "node_steps", "node_logs"),
         .. Register(McpOperationAccessScope.Execute, "netratel_job_runs", "start", "cancel", "delete"),
         .. Register(McpOperationAccessScope.Execute, "netratel_marker_jobs", "create", "run", "cancel", "delete"),
         .. Register(McpOperationAccessScope.Admin, "netratel_tenants", McpOperationMinimumRole.Administrator, "list", "get", "create", "update", "delete"),

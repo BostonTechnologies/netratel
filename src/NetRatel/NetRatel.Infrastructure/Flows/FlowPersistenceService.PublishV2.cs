@@ -33,9 +33,7 @@ public sealed partial class FlowPersistenceService
             subscription.DefinitionReferences?.Any(reference => reference.SourceKind == FlowExecutionSourceKind.Script) == true)
             return new(FlowWriteDisposition.Invalid, Code: "execution-trigger-source-unavailable");
         var access = services.GetRequiredService<IEffectiveAccessService>();
-        var claims = new List<Claim> { new("netratel_principal_id", authority.PrincipalId) };
-        if (authority.IntegrationCredentialId is { } credential) claims.Add(new("netratel_integration_credential_id", credential));
-        var principal = new ClaimsPrincipal(new ClaimsIdentity(claims, "FlowPublish"));
+        var principal = FlowAuthorityPrincipal.Create(authority);
         foreach (var permission in (sources ?? []).Select(source => source == FlowExecutionSourceKind.Script
             ? NetRatelPermissions.ScriptExecute : NetRatelPermissions.JobManagement).Distinct())
             if (!await access.AuthorizeAsync(principal, permission, row.TenantId, ct).ConfigureAwait(false))

@@ -1,6 +1,9 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Data;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.AspNetCore.DataProtection;
+using NetRatel.Application.Jobs;
 using NetRatel.Application.Operations;
 using NetRatel.Infrastructure.Persistence;
 
@@ -11,7 +14,7 @@ namespace NetRatel.Infrastructure.Services;
 /// identity, policy, target-set, and canonical payload hashes; it never stores
 /// a command, file body, script body, or operation result content.
 /// </summary>
-public sealed class McpOperatorConfirmationService(OrchestratorDbContext db) : IMcpOperatorConfirmationService
+public sealed partial class McpOperatorConfirmationService(OrchestratorDbContext db, IDataProtectionProvider? protection = null, IMcpOperatorAuthorization? authorization = null) : IMcpOperatorConfirmationService
 {
     private const int MinimumPlanLifetimeSeconds = 30;
     private const int MaximumPlanLifetimeSeconds = 600;
@@ -23,6 +26,8 @@ public sealed class McpOperatorConfirmationService(OrchestratorDbContext db) : I
     {
         ArgumentNullException.ThrowIfNull(request);
         ValidatePreview(request);
+        if (request.JobRequestHash is { } jobRequestHash && !IsSha256(jobRequestHash))
+            throw new ArgumentException("The job replay request hash is invalid.");
 
         var now = DateTimeOffset.UtcNow;
         var expiresAtUtc = request.ExpiresAtUtc ?? now.AddMinutes(5);
@@ -51,6 +56,7 @@ public sealed class McpOperatorConfirmationService(OrchestratorDbContext db) : I
             Operation = access.Operation,
             ConfirmationClass = access.ConfirmationClass,
             PayloadHash = request.PayloadHash,
+            JobRequestHash = request.JobRequestHash,
             IdempotencyKey = idempotencyKey,
             CreatedAtUtc = now,
             ExpiresAtUtc = expiresAtUtc,
@@ -68,7 +74,106 @@ public sealed class McpOperatorConfirmationService(OrchestratorDbContext db) : I
             access.TargetSetDigest);
     }
 
-    public async Task<McpOperatorConfirmationAdmission> ConfirmAsync(
+    public async Task<McpOperatorConfirmationAdmission?> TryJobReplayAsync(string planToken, string idempotencyKey,
+        string jobRequestHash, McpOperatorDecision currentDecision, CancellationToken cancellationToken)
+    {
+        if (!IsOpaqueToken(planToken) || !IsOpaqueToken(idempotencyKey) || !IsSha256(jobRequestHash) || !IsUsableDecision(currentDecision))
+            return McpOperatorConfirmationAdmission.Denied("confirmation_plan_invalid");
+        var plan = await _db.McpOperatorConfirmationPlans.AsNoTracking().SingleOrDefaultAsync(
+            candidate => candidate.TokenHash == Hash(planToken), cancellationToken).ConfigureAwait(false);
+        if (plan is null || plan.JobRequestHash is null) return null; // Old singleton receipts retain their existing format.
+        var access = currentDecision.Request;
+        if (plan.Operation != "netratel_job_runs/start" || plan.IdempotencyKey != idempotencyKey || plan.JobRequestHash != jobRequestHash ||
+            plan.Environment != access.Environment || plan.Subject != access.Principal.Subject || plan.ClientId != ClientId(access) ||
+            plan.McpResource != access.McpResource || plan.McpInstance != access.McpInstance || plan.TenantId != access.TenantId ||
+            plan.AgentId != access.AgentId || plan.Operation != access.Operation || plan.OperationFamily != access.OperationFamily)
+            return McpOperatorConfirmationAdmission.Denied("idempotency_conflict");
+        var existing = await FindIdempotencyAsync(plan, cancellationToken).ConfigureAwait(false);
+        // Expiration bounds unused previews. An already admitted receipt retains
+        // its exact original identity, inputs and protected plan after group edits.
+        return existing is null ? null : AdmissionFor(existing, plan);
+    }
+
+    public Task<McpOperatorConfirmationAdmission> ConfirmAsync(
+        McpOperatorConfirmationRequest request,
+        CancellationToken cancellationToken) => request.JobTargetQuotas is { Count: > 0 }
+        ? ConfirmJobTargetsAsync(request, cancellationToken)
+        : ConfirmCoreAsync(request, cancellationToken);
+
+    private async Task<McpOperatorConfirmationAdmission> ConfirmJobTargetsAsync(
+        McpOperatorConfirmationRequest request, CancellationToken cancellationToken)
+    {
+        var quotas = request.JobTargetQuotas!;
+        if (request.JobTargetPlanDigest is not { Length: 64 } digest || !digest.All(char.IsAsciiHexDigit) ||
+            quotas.Count > 10000 || quotas.Select(quota => quota.PolicyId).Distinct().Count() != quotas.Count ||
+            quotas.Any(quota => quota.PolicyId == Guid.Empty || quota.PolicyVersion <= 0 || quota.TargetCount is < 1 or > 10000 ||
+                quota.MaximumConcurrentJobTargets is <= 0))
+            return McpOperatorConfirmationAdmission.Denied("job_target_quota_invalid");
+
+        await using var transaction = _db.Database.IsRelational()
+            ? await _db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken).ConfigureAwait(false)
+            : null;
+        // Lock in a stable order. All quota consumers and policy mutations use the
+        // same persisted policy rows, so simultaneous whole-plan confirmations
+        // cannot each observe the same remaining capacity.
+        foreach (var quota in quotas.OrderBy(quota => quota.PolicyId))
+        {
+            var policy = _db.Database.IsRelational()
+                ? await _db.McpOperatorPolicies.FromSqlInterpolated($"SELECT * FROM \"McpOperatorPolicies\" WHERE \"Id\" = {quota.PolicyId} FOR UPDATE")
+                    .AsNoTracking().SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false)
+                : await _db.McpOperatorPolicies.AsNoTracking().SingleOrDefaultAsync(policy => policy.Id == quota.PolicyId, cancellationToken).ConfigureAwait(false);
+            if (policy is null || policy.Version != quota.PolicyVersion || policy.DisabledAtUtc is not null ||
+                policy.LifecycleState != McpOperatorPolicyLifecycleState.Active || policy.ExpiresAtUtc <= DateTimeOffset.UtcNow)
+                return McpOperatorConfirmationAdmission.Denied("confirmation_plan_stale");
+        }
+
+        // The same source-row fence is used by both definition retirement paths.
+        // Holding it through the admission commit makes the accepted material
+        // visible to deletion before the source lock can be acquired elsewhere.
+        if (request.JobSubmission is { } submitted &&
+            (!await JobDefinitionMutationFence.LockActiveAsync(_db, checked((long)submitted.Snapshot.Definition.Job.Id), cancellationToken).ConfigureAwait(false) ||
+             !await _db.Jobs.AsNoTracking().AnyAsync(job => job.Id == checked((long)submitted.Snapshot.Definition.Job.Id) &&
+                 job.TenantId == request.CurrentDecision.Request.TenantId, cancellationToken).ConfigureAwait(false)))
+            return McpOperatorConfirmationAdmission.Denied("job_not_found");
+
+        var replay = await ConfirmCoreAsync(request with { ReplayOnly = true }, cancellationToken).ConfigureAwait(false);
+        if (replay.IsReplay || replay.FailureCode is not null || request.ReplayOnly)
+        {
+            if (transaction is not null) await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return replay;
+        }
+
+        foreach (var quota in quotas.Where(quota => quota.MaximumConcurrentJobTargets.HasValue))
+        {
+            var active = await (from reserved in _db.Set<McpJobTargetReservationRecord>().AsNoTracking()
+                                join admitted in _db.McpOperatorIdempotencyRecords.AsNoTracking() on reserved.IdempotencyId equals admitted.Id
+                                where reserved.PolicyId == quota.PolicyId &&
+                                    (admitted.Outcome == McpOperatorIdempotencyOutcome.Pending ||
+                                     admitted.Outcome == McpOperatorIdempotencyOutcome.Succeeded &&
+                                     _db.McpOperatorJobRuns.Any(owned => owned.IdempotencyId == admitted.Id &&
+                                         _db.JobRuns.Any(run => run.Id == owned.JobRunId &&
+                                             run.Status != (int)JobRunState.Succeeded && run.Status != (int)JobRunState.Failed &&
+                                             run.Status != (int)JobRunState.Cancelled && run.Status != (int)JobRunState.TimedOut)))
+                                select (long)reserved.TargetCount).SumAsync(cancellationToken).ConfigureAwait(false);
+            if (active + quota.TargetCount > quota.MaximumConcurrentJobTargets)
+                return McpOperatorConfirmationAdmission.Denied("job_target_quota_exhausted");
+        }
+
+        var confirmation = await ConfirmCoreAsync(request, cancellationToken).ConfigureAwait(false);
+        if (confirmation.IsNewDispatch && confirmation.IdempotencyId is { } id)
+        {
+            foreach (var quota in quotas)
+                _db.Add(new McpJobTargetReservationRecord
+                { IdempotencyId = id, PolicyId = quota.PolicyId, TargetCount = quota.TargetCount, TargetPlanDigest = digest });
+            if (request.JobSubmission is { } submission)
+                await SaveReviewedSubmissionAsync(id, submission, request, cancellationToken).ConfigureAwait(false);
+            await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        }
+        if (transaction is not null) await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return confirmation;
+    }
+
+    private async Task<McpOperatorConfirmationAdmission> ConfirmCoreAsync(
         McpOperatorConfirmationRequest request,
         CancellationToken cancellationToken)
     {
@@ -156,6 +261,7 @@ public sealed class McpOperatorConfirmationService(OrchestratorDbContext db) : I
         var record = await _db.McpOperatorIdempotencyRecords.SingleOrDefaultAsync(
             candidate => candidate.Id == idempotencyId, cancellationToken).ConfigureAwait(false)
             ?? throw new KeyNotFoundException("The operator idempotency admission was not found.");
+        await _db.Entry(record).ReloadAsync(cancellationToken).ConfigureAwait(false);
         if (record.Outcome != McpOperatorIdempotencyOutcome.Pending)
         {
             if (record.Outcome != outcome || !string.Equals(record.ResultReference, resultReference, StringComparison.Ordinal))
@@ -167,7 +273,12 @@ public sealed class McpOperatorConfirmationService(OrchestratorDbContext db) : I
         record.ResultReference = resultReference;
         record.CompletedAtUtc = DateTimeOffset.UtcNow;
         record.Version++;
-        await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        try { await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false); }
+        catch (DbUpdateConcurrencyException)
+        {
+            await _db.Entry(record).ReloadAsync(cancellationToken).ConfigureAwait(false);
+            if (record.Outcome != outcome || !string.Equals(record.ResultReference, resultReference, StringComparison.Ordinal)) throw;
+        }
     }
 
     private async Task<McpOperatorIdempotencyRecord?> FindIdempotencyAsync(

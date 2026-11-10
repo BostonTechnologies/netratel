@@ -67,6 +67,9 @@ public sealed record ExecutionAdmissionBinding(ExecutionAdmissionIdentity Identi
 
 public interface IExecutionAdmissionStore
 {
+    Task<ExecutionAdmissionBinding?> FindByIdentityAsync(ExecutionAdmissionIdentity identity,
+        ExecutionAdmissionKind kind, CancellationToken cancellationToken)
+        => Task.FromResult<ExecutionAdmissionBinding?>(null);
     Task<ExecutionAdmissionBinding> ReserveAsync(ExecutionAdmissionSubmission submission, Func<string> allocateExecutionId, CancellationToken cancellationToken);
     Task<ExecutionAdmissionBinding?> FindByExecutionAsync(ExecutionAdmissionKind kind, string executionId, CancellationToken cancellationToken);
     Task RecordAuthorityDeniedAsync(ExecutionAdmissionKind kind, string executionId, CancellationToken cancellationToken);
@@ -81,6 +84,11 @@ public interface IExecutionAdmissionStore
 public interface IKeyedExecutionAuthority
 {
     Task RequireAllowedAsync(ExecutionAdmissionIdentity identity, JobDefinitionInfo pinnedDefinition, CancellationToken cancellationToken);
+    Task RequireTargetsAllowedAsync(ExecutionAdmissionIdentity identity, JobDefinitionInfo pinnedDefinition,
+        IReadOnlyList<Guid> agentIds, CancellationToken cancellationToken)
+        => agentIds.Count == 1 && pinnedDefinition.AgentId == agentIds[0]
+            ? RequireAllowedAsync(identity, pinnedDefinition, cancellationToken)
+            : throw new ExecutionAdmissionDeniedException("Whole-target current authority is unavailable.");
     Task RequireContinuationAsync(ExecutionAdmissionIdentity identity, CancellationToken cancellationToken)
         => throw new ExecutionAdmissionDeniedException("Current persisted source admission is unavailable.");
     Task RequireFirstDispatchAsync(ExecutionAdmissionIdentity identity, FlowRunLease? lease, CancellationToken cancellationToken)
@@ -124,6 +132,10 @@ public sealed record PinnedJobExecutionSnapshot(JobDefinitionDetails Definition,
 
 public sealed record KeyedJobAdmissionRequest(ExecutionAdmissionIdentity Identity, PinnedJobExecutionSnapshot Snapshot, RunJobRequest Request)
 {
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public JobResolvedTargetPlan? TargetPlan { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DateTimeOffset? ActionDeadlineAtUtc { get; init; }
     // The transport lease changes across worker recovery and is not part of pinned execution semantics.
     [JsonIgnore] public FlowRunLease? FlowLease { get; init; }
 }

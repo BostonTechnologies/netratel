@@ -188,11 +188,6 @@ public sealed class FlowExecutionEventAdmission(IFlowExecutionAuthorityVerifier 
     private static bool Same(FlowExecutionEventDto left, FlowExecutionEventDto right) =>
         JsonSerializer.Serialize(left, FlowExecutionEventJsonContext.Default.FlowExecutionEventDto) ==
         JsonSerializer.Serialize(right, FlowExecutionEventJsonContext.Default.FlowExecutionEventDto);
-    private static ClaimsPrincipal Principal(FlowExecutionAuthorityDto authority)
-    {
-        var claims = new List<Claim> { new("netratel_principal_id", authority.PrincipalId) };
-        if (authority.IntegrationCredentialId is not null) claims.Add(new("netratel_integration_credential_id", authority.IntegrationCredentialId));
-        return new(new ClaimsIdentity(claims, "FlowDispatch"));
-    }
+    private static ClaimsPrincipal Principal(FlowExecutionAuthorityDto authority) => FlowAuthorityPrincipal.Create(authority);
     private static FlowSourceProofResult Deny(string code) => new(new(false, code));
 }

@@ -14,17 +14,25 @@ public sealed class HangfireJobDispatcherTests
     {
         var authority = new RecordingAuthority();
         var dispatcher = new HangfireJobDispatcher(authority);
-
-        await dispatcher.RunScheduledJobAsync(42);
+        using (JobScheduleOccurrenceContext.Enter("synthetic-background-job-42"))
+            await dispatcher.RunScheduledJobAsync(42);
 
         authority.JobId.Should().Be(42);
         authority.Request.Should().Be(new RunJobRequest("hangfire:schedule", null, null));
+        authority.OccurrenceId.Should().Be("synthetic-background-job-42");
+        JobScheduleOccurrenceContext.Current.Should().BeNull();
     }
 
     private sealed class RecordingAuthority : IAkkaJobAuthorityService
     {
         public ulong? JobId { get; private set; }
         public RunJobRequest? Request { get; private set; }
+        public string? OccurrenceId { get; private set; }
+        public Task<JobRunInfo> StartScheduledAsync(ulong jobId, string occurrenceId, CancellationToken cancellationToken)
+        {
+            OccurrenceId = occurrenceId;
+            return StartAsync(jobId, new("hangfire:schedule", null, null), cancellationToken);
+        }
 
         public Task<JobRunInfo> StartAsync(ulong jobId, RunJobRequest request, CancellationToken cancellationToken)
         {

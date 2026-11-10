@@ -14,6 +14,19 @@ namespace NetRatel.Infrastructure.Services;
 /// <summary>Commits a stable canonical execution identity before a dispatcher can expose physical work.</summary>
 public sealed class ExecutionAdmissionStore(OrchestratorDbContext db, IDataProtectionProvider protection, TimeProvider clock) : IExecutionAdmissionStore
 {
+    public async Task<ExecutionAdmissionBinding?> FindByIdentityAsync(ExecutionAdmissionIdentity identity,
+        ExecutionAdmissionKind kind, CancellationToken cancellationToken)
+    {
+        identity.Validate();
+        var row = await db.Set<ExecutionAdmissionRecord>().AsNoTracking()
+            .SingleOrDefaultAsync(record => record.ActionKey == identity.ActionKey, cancellationToken);
+        if (row is null) return null;
+        var binding = Project(row);
+        if (binding.Identity != identity || binding.Kind != kind)
+            throw new ExecutionAdmissionDeniedException("The action key belongs to another execution identity.");
+        return binding;
+    }
+
     public async Task<ExecutionAdmissionBinding> ReserveAsync(ExecutionAdmissionSubmission submission,
         Func<string> allocateExecutionId, CancellationToken cancellationToken)
     {

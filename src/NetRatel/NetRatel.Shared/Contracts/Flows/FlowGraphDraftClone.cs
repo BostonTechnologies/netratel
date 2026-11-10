@@ -17,7 +17,11 @@ public static class FlowGraphDraftClone
                 Actions = node.Actions?.Select(action => action with { Id = Guid.NewGuid() }).ToArray(),
                 Inputs = node.Inputs?.ToDictionary(pair => pair.Key, pair => Binding(pair.Value), StringComparer.Ordinal),
                 Predicate = node.Predicate is { } predicate ? predicate with { Input = Binding(predicate.Input) } : null,
-                ExecutionAction = node.ExecutionAction is { } action ? action with { PinnedSnapshotReference = null } : null,
+                ExecutionAction = node.ExecutionAction is { } action ? action with
+                {
+                    PinnedSnapshotReference = null,
+                    TargetBinding = action.TargetBinding is { } target ? target with { Value = Binding(target.Value) } : null
+                } : null,
                 AiSettings = node.AiSettings is { } settings ? settings with { PinnedPrompts = null } : null
             }).ToArray(),
             Edges = graph.Edges.Select(edge => edge with

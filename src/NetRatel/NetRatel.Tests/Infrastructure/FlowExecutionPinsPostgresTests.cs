@@ -14,6 +14,7 @@ using NetRatel.Infrastructure.Identity.Authorization;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Infrastructure.Services;
 using NetRatel.Shared.Contracts.Flows;
+using NetRatel.Shared.Contracts.Jobs;
 using Xunit;
 
 namespace NetRatel.Tests.Infrastructure;
@@ -262,6 +263,55 @@ public sealed class FlowExecutionPinsPostgresTests(PostgreSqlPersistenceFixture 
         Assert.Empty(await db.FlowVersions.ToArrayAsync());
         Assert.Empty(await db.JobTaskActivities.ToArrayAsync());
         Assert.Empty(await db.Set<ExecutionAdmissionRecord>().ToArrayAsync());
+    }
+
+    [Fact]
+    public async Task Runtime_job_pin_retains_target_schema_policy_and_trusted_mapping_without_binding_a_fake_AgentId()
+    {
+        await using var db = new OrchestratorDbContext(_options);
+        var target = new JobTargetDefinition { Source = JobTargetSource.RuntimeInput,
+            RuntimeInput = new(JobRuntimeTargetKind.ClientId, "ClientId") };
+        var job = await new JobDefinitionService(db).CreateAsync(new("Investigate low disk space", "/", null, 7, "", OptionsJson: """{"executionEnvironment":2}""")
+        { Target = target, ExecutionPolicy = new(2, JobNodeFailurePolicy.ContinueRemaining) });
+        var node = new FlowNodeDto(Guid.NewGuid(), FlowNodeKind.RunJob, "Investigate event client", new(300, 0))
+        { ExecutionAction = new(FlowExecutionSourceKind.Job, new(job.Id.ToString(), job.Name))
+            { JobTarget = target, TargetBinding = new(JobRuntimeTargetKind.ClientId,
+                new(FlowInputSource.Event, FlowDataType.Text, "alert.agentId")) } };
+        var versionId = Guid.NewGuid();
+        var capture = await Service(db).CaptureAsync(7, new("operator"), versionId, new(2, [node], [], new()));
+        var captured = capture.Graph.Nodes[0].ExecutionAction!;
+        Assert.Null(captured.Target);
+        Assert.Equal(target, captured.JobTarget);
+        Assert.Equal(new JobExecutionPolicy(2, JobNodeFailurePolicy.ContinueRemaining), captured.JobExecutionPolicy);
+        Assert.Equal(NetRatel.Shared.ClientEnvironment.Prod, captured.JobTargetEnvironment);
+        var flowId = Guid.NewGuid();
+        db.FlowDefinitions.Add(new() { Id = flowId, TenantId = 7, Name = "Synthetic runtime target", DraftJson = FlowGraphSerialization.Serialize(capture.Graph) });
+        db.FlowVersions.Add(new() { Id = versionId, FlowId = flowId, TenantId = 7, VersionNumber = 1,
+            GraphJson = FlowGraphSerialization.Serialize(capture.Graph), ProtectedExecutionPinsJson = capture.ProtectedPinsJson,
+            ConfigurationHash = FlowGraphSerialization.Hash(capture.Graph), PublishedBy = "operator", PublishedAtUtc = DateTimeOffset.UtcNow });
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+        var pin = await Service(db).ResolveAsync(7, versionId, node.Id);
+        Assert.Null(pin!.Target);
+        Assert.Null(pin.Job!.Definition.Job.AgentId);
+        Assert.Equal("alert.agentId", pin.TargetBinding!.Value.Path);
+        Assert.Equal(JobRuntimeTargetKind.ClientId, pin.Job.Definition.Job.Target!.RuntimeInput!.Kind);
+        Assert.Empty(await db.JobRuns.ToArrayAsync());
+        Assert.Empty(await db.Set<ExecutionAdmissionRecord>().ToArrayAsync());
+
+        var agent = Guid.NewGuid();
+        db.Agents.Add(new() { Id = agent, TenantId = 7, Name = "synthetic-policy-worker", CreatedAtUtc = DateTimeOffset.UtcNow });
+        await db.SaveChangesAsync();
+        var legacy = await new JobDefinitionService(db).CreateAsync(new("Singleton with execution policy", "/", null, 7, "", AgentId: agent)
+            { ExecutionPolicy = new(2) });
+        var policyNode = new FlowNodeDto(Guid.NewGuid(), FlowNodeKind.RunJob, "Policy singleton", new(0, 0))
+            { ExecutionAction = new(FlowExecutionSourceKind.Job, new(legacy.Id.ToString(), legacy.Name)) };
+        var policyCapture = await Service(db).CaptureAsync(7, new("operator"), Guid.NewGuid(), new(2, [policyNode], [], new()));
+        var effective = policyCapture.Graph.Nodes[0].ExecutionAction!;
+        Assert.Null(effective.Target);
+        Assert.Equal(JobTargetSource.ExplicitNodes, effective.JobTarget!.Source);
+        Assert.Equal(agent, Assert.Single(effective.JobTarget.AgentIds!));
+        Assert.Equal(2, effective.JobExecutionPolicy!.ThreadCount);
     }
 
     private FlowExecutionDefinitionPins Service(OrchestratorDbContext db)

@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using System.Text.Json;
 using AwesomeAssertions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
@@ -10,6 +11,33 @@ namespace NetRatel.Tests.Infrastructure;
 
 public sealed class EffectiveAccessServiceTests
 {
+    [Fact]
+    public async Task Saved_job_authority_rehydrates_only_current_validated_external_roles_and_attenuates_credentials()
+    {
+        await using var db = CreateDb();
+        var saved = new ApplicationPrincipal
+        {
+            Id = "principal-a", ExternalIssuer = "https://identity.example.test", ExternalSubject = "synthetic-operator",
+            ExternalAuthorityClaimsJson = JsonSerializer.Serialize(new[] { new ExternalAuthorityClaim("roles", "Operator") }),
+            ExternalAuthorityIssuedAtUtc = DateTimeOffset.UtcNow.AddMinutes(-1), ExternalAuthorityExpiresAtUtc = DateTimeOffset.UtcNow.AddMinutes(5)
+        };
+        db.ApplicationPrincipals.Add(saved);
+        var credential = Credential("scheduled-job-credential");
+        credential.Grants.Add(new() { CredentialId = credential.Id, TenantId = 7, Permission = NetRatelPermissions.JobManagement });
+        db.IntegrationCredentials.Add(credential); await db.SaveChangesAsync();
+        var access = new EffectiveAccessService(db, Configuration());
+        var identity = new ClaimsPrincipal(new ClaimsIdentity([new("netratel_principal_id", saved.Id)], "NetclawSavedAuthority"));
+        var attenuated = new ClaimsPrincipal(new ClaimsIdentity([new("netratel_principal_id", saved.Id),
+            new("netratel_integration_credential_id", credential.Id)], "NetclawSavedAuthority"));
+        identity.Claims.Should().NotContain(claim => claim.Type == "roles");
+        (await access.AuthorizeAsync(identity, NetRatelPermissions.JobManagement, 7)).Should().BeTrue();
+        (await access.AuthorizeAsync(attenuated, NetRatelPermissions.JobManagement, 7)).Should().BeTrue();
+        (await access.AuthorizeAsync(attenuated, NetRatelPermissions.JobManagement, 8)).Should().BeFalse();
+        credential.RevokedAtUtc = DateTimeOffset.UtcNow; await db.SaveChangesAsync();
+        (await access.AuthorizeAsync(attenuated, NetRatelPermissions.JobManagement, 7)).Should().BeFalse();
+        saved.ExternalAuthorityExpiresAtUtc = DateTimeOffset.UtcNow.AddSeconds(-1); await db.SaveChangesAsync();
+        (await access.AuthorizeAsync(identity, NetRatelPermissions.JobManagement, 7)).Should().BeFalse();
+    }
     [Fact]
     public async Task Flow_deletion_is_independent_and_current_credential_expiry_revocation_and_owner_grants_are_enforced()
     {

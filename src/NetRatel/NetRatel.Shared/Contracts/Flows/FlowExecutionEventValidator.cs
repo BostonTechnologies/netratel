@@ -40,6 +40,21 @@ public static class FlowExecutionEventValidator
         Text(value.Provenance, 128, "provenance");
         Definition(value.Definition, "definition");
         Target(value.Target, "target");
+        if (value.Aggregate is { } aggregate)
+        {
+            Hash(aggregate.TargetPlanDigest, "target_plan_hash");
+            var counts = aggregate.Counts;
+            if (value.SourceKind != FlowExecutionSourceKind.Job ||
+                value.Target?.AgentId != aggregate.LegacyTargetAgentId ||
+                aggregate.LegacyTargetAgentId is { } legacy && (legacy == Guid.Empty || aggregate.TargetCount != 1) ||
+                aggregate.TargetCount is < 1 or > 10000 || aggregate.TargetPlanDigest is not { Length: 64 } || counts is null ||
+                counts.Queued != 0 || counts.Running != 0 || counts.Succeeded < 0 || counts.Failed < 0 || counts.Skipped < 0 ||
+                counts.Cancelled < 0 || counts.TimedOut < 0 || counts.Unknown < 0 ||
+                (long)counts.Succeeded + counts.Failed + counts.Skipped + counts.Cancelled + counts.TimedOut + counts.Unknown != aggregate.TargetCount)
+                issues.Add("event_aggregate_invalid");
+            if (value.Outcome == FlowExecutionOutcome.Succeeded && counts?.Succeeded != aggregate.TargetCount)
+                issues.Add("event_aggregate_success_mismatch");
+        }
         if (value.CompletedAtUtc < value.StartedAtUtc) issues.Add("event_timing_invalid");
         if (value.Causation is { } cause)
         {
@@ -59,10 +74,17 @@ public static class FlowExecutionEventValidator
             Required(replay.SourceAttemptId, "replay_attempt_id");
             Text(replay.InputsReference, 512, "replay_inputs_reference");
             Text(replay.UnsupportedReason, 128, "replay_unsupported_reason");
+            Hash(replay.TargetPlanDigest, "replay_target_plan_hash");
+            if (replay.TargetPlanDigest is not null && (replay.SourceKind != FlowExecutionSourceKind.Job ||
+                value.Aggregate?.TargetPlanDigest != replay.TargetPlanDigest && !(value.SourceKind == FlowExecutionSourceKind.Request &&
+                    replay.Target?.AgentId is not null && replay.Target.AgentId == value.Target?.AgentId)))
+                issues.Add("event_replay_target_plan_mismatch");
             if (replay.Supported && (string.IsNullOrWhiteSpace(replay.Definition?.Id) ||
                 string.IsNullOrWhiteSpace(replay.Definition?.Revision) || replay.Definition?.ContentHash is not { Length: 64 } ||
-                replay.SourceKind is not (FlowExecutionSourceKind.Job or FlowExecutionSourceKind.Script) || replay.Target?.AgentId is null ||
-                string.IsNullOrWhiteSpace(replay.InputsReference) || replay.Target.AgentId != value.Target?.AgentId ||
+                replay.SourceKind is not (FlowExecutionSourceKind.Job or FlowExecutionSourceKind.Script) ||
+                replay.Target?.AgentId is null && !(replay.SourceKind == FlowExecutionSourceKind.Job &&
+                    value.Aggregate is not null && replay.TargetPlanDigest == value.Aggregate.TargetPlanDigest) ||
+                string.IsNullOrWhiteSpace(replay.InputsReference) || replay.Target?.AgentId != value.Target?.AgentId ||
                 !string.Equals(replay.InputsReference, replay.SourceKind switch
                 {
                     FlowExecutionSourceKind.Job => "job-run:" + replay.SourceExecutionId,

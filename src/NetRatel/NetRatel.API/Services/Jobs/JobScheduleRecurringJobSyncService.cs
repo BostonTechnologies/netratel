@@ -22,7 +22,7 @@ public sealed class JobScheduleRecurringJobSyncService(
 
         recurringJobs.AddOrUpdate<HangfireJobDispatcher>(
             recurringJobId,
-            dispatcher => dispatcher.RunScheduledJobAsync(job.Id, CancellationToken.None),
+            dispatcher => dispatcher.RunScheduledJobAsync(job.Id, null, CancellationToken.None),
             schedule.ToCronExpression(),
             new RecurringJobOptions
             {

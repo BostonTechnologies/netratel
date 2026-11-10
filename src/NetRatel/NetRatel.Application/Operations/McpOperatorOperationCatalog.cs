@@ -65,7 +65,7 @@ public static class McpOperatorOperationCatalog
         .. Register(McpOperatorOperationFamily.Observability, McpOperatorConfirmationClass.None, "netratel_client_telemetry", "snapshot", "stream_window"),
         .. Register(McpOperatorOperationFamily.AutomationRead, McpOperatorConfirmationClass.None, "netratel_jobs", "list", "get", "details", "params", "steps"),
         .. Register(McpOperatorOperationFamily.AutomationWrite, McpOperatorConfirmationClass.StandardMutation, "netratel_jobs", "create", "update", "delete", "param_add", "param_update", "param_delete", "step_add", "step_update", "step_reorder", "step_delete"),
-        .. Register(McpOperatorOperationFamily.JobExecution, McpOperatorConfirmationClass.None, "netratel_job_runs", "list", "query", "get", "steps", "logs"),
+        .. Register(McpOperatorOperationFamily.JobExecution, McpOperatorConfirmationClass.None, "netratel_job_runs", "list", "query", "get", "steps", "logs", "nodes", "node_steps", "node_logs"),
         .. Register(McpOperatorOperationFamily.JobExecution, McpOperatorConfirmationClass.RemoteExecution, "netratel_job_runs", "start"),
         .. Register(McpOperatorOperationFamily.JobExecution, McpOperatorConfirmationClass.StandardMutation, "netratel_job_runs", "cancel"),
         .. Register(McpOperatorOperationFamily.JobExecution, McpOperatorConfirmationClass.Destructive, "netratel_job_runs", "delete"),

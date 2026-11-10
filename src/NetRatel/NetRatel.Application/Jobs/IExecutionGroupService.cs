@@ -7,6 +7,9 @@ public interface IExecutionGroupService
 {
     Task<ExecutionGroupPageDto> ListAsync(int tenantId, string? search, int page, int pageSize, ClaimsPrincipal principal, CancellationToken cancellationToken);
     Task<ExecutionGroupDetailsDto?> GetAsync(int tenantId, Guid groupId, ClaimsPrincipal principal, CancellationToken cancellationToken);
+    Task<ExecutionGroupPageDto> ListForTargetsAsync(int tenantId, string? search, int page, int pageSize,
+        IReadOnlySet<Guid> authorizedAgentIds, ClaimsPrincipal principal, CancellationToken cancellationToken)
+        => throw new NotSupportedException("Policy-filtered execution group discovery is unavailable.");
     Task<ExecutionGroupDetailsDto> CreateAsync(int tenantId, ExecutionGroupWriteDto request, ClaimsPrincipal principal, CancellationToken cancellationToken);
     Task<ExecutionGroupDetailsDto?> UpdateAsync(int tenantId, Guid groupId, ExecutionGroupWriteDto request, ClaimsPrincipal principal, CancellationToken cancellationToken);
     Task<ExecutionGroupDetailsDto?> ChangeMembershipAsync(int tenantId, Guid groupId, ExecutionGroupMembershipWriteDto request, ClaimsPrincipal principal, CancellationToken cancellationToken);

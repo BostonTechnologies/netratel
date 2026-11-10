@@ -13,17 +13,30 @@ namespace NetRatel.Infrastructure.Services;
 public sealed class ExecutionGroupService(OrchestratorDbContext db, IEffectiveAccessService access,
     IJobNodeDirectory directory, IEnumerable<IExecutionGroupReferenceProvider> referenceProviders, TimeProvider clock) : IExecutionGroupService
 {
-    public async Task<ExecutionGroupPageDto> ListAsync(int tenantId, string? search, int page, int pageSize,
+    public Task<ExecutionGroupPageDto> ListAsync(int tenantId, string? search, int page, int pageSize,
         ClaimsPrincipal principal, CancellationToken cancellationToken)
+        => ListCoreAsync(tenantId, search, page, pageSize, principal, null, cancellationToken);
+    public Task<ExecutionGroupPageDto> ListForTargetsAsync(int tenantId, string? search, int page, int pageSize,
+        IReadOnlySet<Guid> authorizedAgentIds, ClaimsPrincipal principal, CancellationToken cancellationToken)
+        => ListCoreAsync(tenantId, search, page, pageSize, principal, authorizedAgentIds, cancellationToken);
+    private async Task<ExecutionGroupPageDto> ListCoreAsync(int tenantId, string? search, int page, int pageSize,
+        ClaimsPrincipal principal, IReadOnlySet<Guid>? authorizedAgentIds, CancellationToken cancellationToken)
     {
         await RequireReadAsync(tenantId, principal, cancellationToken).ConfigureAwait(false);
         RequirePage(page, pageSize);
+        await using var readTransaction = authorizedAgentIds is not null && db.Database.IsRelational() && db.Database.CurrentTransaction is null
+            ? await db.Database.BeginTransactionAsync(System.Data.IsolationLevel.RepeatableRead, cancellationToken).ConfigureAwait(false) : null;
         if (search?.Length > 256) throw Invalid("execution_group_search_too_large", "Search is limited to 256 characters.");
         var query = db.ExecutionGroups.AsNoTracking().Where(x => x.TenantId == tenantId);
         if (!string.IsNullOrWhiteSpace(search))
         {
             var term = NormalizeName(search);
             query = query.Where(x => x.NormalizedName.Contains(term));
+        }
+        if (authorizedAgentIds is not null)
+        {
+            var permitted = authorizedAgentIds.ToArray();
+            query = query.Where(group => !group.Members.Any(member => !permitted.Contains(member.AgentId)));
         }
         var total = await query.CountAsync(cancellationToken).ConfigureAwait(false);
         var records = await query.OrderBy(x => x.NormalizedName).ThenBy(x => x.Id).Skip((page - 1) * pageSize).Take(pageSize).ToArrayAsync(cancellationToken).ConfigureAwait(false);
@@ -33,8 +46,10 @@ public sealed class ExecutionGroupService(OrchestratorDbContext db, IEffectiveAc
         var memberIds = members.Select(x => x.AgentId).ToHashSet();
         var inventory = await directory.ReadAsync(tenantId, memberIds, true, cancellationToken).ConfigureAwait(false);
         var online = inventory.Where(x => x.IsOnline).Select(x => x.AgentId).ToHashSet();
-        return new(records.Select(record => Map(record, members.Where(x => x.GroupId == record.Id).Select(x => x.AgentId), online)).ToArray(),
+        var result = new ExecutionGroupPageDto(records.Select(record => Map(record, members.Where(x => x.GroupId == record.Id).Select(x => x.AgentId), online)).ToArray(),
             page, pageSize, total, (long)page * pageSize < total ? page + 1 : null);
+        if (readTransaction is not null) await readTransaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return result;
     }
 
     public async Task<ExecutionGroupDetailsDto?> GetAsync(int tenantId, Guid groupId, ClaimsPrincipal principal, CancellationToken cancellationToken)

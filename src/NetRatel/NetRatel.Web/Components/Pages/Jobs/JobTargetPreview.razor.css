@@ -1,0 +1,4 @@
+.job-target-preview { display:flex; flex-direction:column; gap:10px; min-width:0; }
+.job-target-preview-pages { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
+::deep .job-target-preview-row, ::deep .job-target-preview-digest { overflow-wrap:anywhere; }
+@media(max-width:599px) { .job-target-preview-pages ::deep .mud-button-root { min-height:44px; } }

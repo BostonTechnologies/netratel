@@ -404,6 +404,7 @@ public static class NetRatelMcpOutboundServiceCollectionExtensions
         services.AddSingleton<IMcpOperatorClientV2Client, McpOperatorClientV2Client>();
         services.AddSingleton<IMcpOperatorCommandV2Client, McpOperatorCommandV2Client>();
         services.AddSingleton<IMcpOperatorJobV2Client, McpOperatorJobV2Client>();
+        services.AddSingleton<IMcpOperatorJobNodeV2Client, McpOperatorJobV2Client>();
         services.AddSingleton<IMcpOperatorObservabilityV2Client, McpOperatorObservabilityV2Client>();
         services.AddSingleton<IMcpOperatorScriptV2Client, McpOperatorScriptV2Client>();
         services.AddSingleton<IMcpOperatorFileV2Client, McpOperatorFileV2Client>();
