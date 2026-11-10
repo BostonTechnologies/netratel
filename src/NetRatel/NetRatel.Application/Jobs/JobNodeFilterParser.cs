@@ -49,7 +49,11 @@ public static class JobNodeFilterParser
             {
                 Operands = term.Operands.Select(operand =>
                 {
-                    if (operand.Kind != JobNodeFilterOperandKind.Parameter) { boundCount++; return operand; }
+                    if (operand.Kind != JobNodeFilterOperandKind.Parameter)
+                    {
+                        if (++boundCount > MaximumOperands) throw Error("target_filter_too_complex", "Bound target operands exceed 128 values.");
+                        return operand;
+                    }
                     if (!values.TryGetValue(operand.Value, out var supplied) || supplied is null || supplied.Length == 0 ||
                         supplied.Any(value => string.IsNullOrWhiteSpace(value) || value.Length > MaximumLiteralLength))
                         throw Error("target_parameter_required", $"The declared target parameter '{operand.Value}' needs bounded literal values.");

@@ -27,6 +27,8 @@ public static class JobNodeFilterEvaluator
         {
             foreach (var literal in LiteralValues(operand))
             {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (timer.Elapsed > EvaluationBudget) throw Error("target_filter_budget_exhausted", "The complete filter evaluation exceeded its 500ms budget.");
                 if (inventory.Count(node => Equal(node.Hostname, literal) || Equal(node.Name, literal)) > 1)
                     throw Error("target_name_ambiguous", "An exact node name identifies more than one authorized client; select stable IDs instead.");
             }
@@ -48,6 +50,8 @@ public static class JobNodeFilterEvaluator
             }
         }
         catch (RegexMatchTimeoutException) { throw Error("target_filter_budget_exhausted", "Regex evaluation exceeded its bounded evaluation budget."); }
+        cancellationToken.ThrowIfCancellationRequested();
+        if (timer.Elapsed > EvaluationBudget) throw Error("target_filter_budget_exhausted", "The complete filter evaluation exceeded its 500ms budget.");
         if (selected.Count == 0) throw Error("target_no_matches", "The selector matches no authorized nodes.");
         return selected.DistinctBy(x => x.AgentId).OrderBy(x => x.Hostname, StringComparer.OrdinalIgnoreCase).ThenBy(x => x.AgentId).ToArray();
 

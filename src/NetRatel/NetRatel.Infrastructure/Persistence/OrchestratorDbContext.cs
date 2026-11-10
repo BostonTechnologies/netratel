@@ -56,6 +56,9 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
     public DbSet<SecretRecord> Secrets => Set<SecretRecord>();
     public DbSet<ScriptDefinition> Scripts => Set<ScriptDefinition>();
     public DbSet<ScriptParameterDefinition> ScriptParameters => Set<ScriptParameterDefinition>();
+    public DbSet<ExecutionGroupRecord> ExecutionGroups => Set<ExecutionGroupRecord>();
+    public DbSet<ExecutionGroupMemberRecord> ExecutionGroupMembers => Set<ExecutionGroupMemberRecord>();
+    public DbSet<ExecutionGroupAuditRecord> ExecutionGroupAudits => Set<ExecutionGroupAuditRecord>();
     public DbSet<JobDefinition> Jobs => Set<JobDefinition>();
     public DbSet<JobParameterDefinition> JobParameters => Set<JobParameterDefinition>();
     public DbSet<JobStepDefinition> JobSteps => Set<JobStepDefinition>();
@@ -214,6 +217,7 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
         modelBuilder.ConfigureServiceIdentityModel();
         modelBuilder.ConfigurePairingModel();
         modelBuilder.ConfigureManagedOrchestrationModel();
+        modelBuilder.ConfigureExecutionGroupModel();
         modelBuilder.ConfigureJobRunControlModel();
         modelBuilder.ConfigureJobAggregateModel();
         modelBuilder.ConfigureJobGatewayLifecycleReceiptModel();
