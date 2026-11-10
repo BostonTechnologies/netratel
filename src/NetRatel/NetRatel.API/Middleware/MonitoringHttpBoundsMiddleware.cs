@@ -3,29 +3,34 @@ using NetRatel.API.Services.Monitoring;
 
 namespace NetRatel.API.Middleware;
 
-public sealed record MonitoringHttpBounds;
+public sealed record MonitoringHttpBounds
+{
+    public long MaximumBytes { get; init; } = MonitoringApiService.MaximumHttpBytes;
+    public string ErrorCode { get; init; } = "monitoring_payload_capacity_exceeded";
+}
 
 /// <summary>Caps monitoring JSON before binding, without changing artifact/file upload limits.</summary>
 public sealed class MonitoringHttpBoundsMiddleware(RequestDelegate next)
 {
     public async Task InvokeAsync(HttpContext http)
     {
-        if (http.GetEndpoint()?.Metadata.GetMetadata<MonitoringHttpBounds>() is null) { await next(http).ConfigureAwait(false); return; }
-        const long maximum = MonitoringApiService.MaximumHttpBytes;
-        if (http.Request.ContentLength > maximum) { await RejectAsync(http).ConfigureAwait(false); return; }
+        var bounds = http.GetEndpoint()?.Metadata.GetMetadata<MonitoringHttpBounds>();
+        if (bounds is null) { await next(http).ConfigureAwait(false); return; }
+        var maximum = bounds.MaximumBytes;
+        if (http.Request.ContentLength > maximum) { await RejectAsync(http, bounds.ErrorCode).ConfigureAwait(false); return; }
         var feature = http.Features.Get<IHttpMaxRequestBodySizeFeature>();
         if (feature is { IsReadOnly: false }) feature.MaxRequestBodySize = maximum;
         var original = http.Request.Body;
         using var bounded = new BoundedBody(original, maximum);
         http.Request.Body = bounded;
         try { await next(http).ConfigureAwait(false); }
-        catch (MonitoringBodyTooLargeException) when (!http.Response.HasStarted) { await RejectAsync(http).ConfigureAwait(false); }
-        catch (BadHttpRequestException exception) when (exception.StatusCode == StatusCodes.Status413PayloadTooLarge && !http.Response.HasStarted) { await RejectAsync(http).ConfigureAwait(false); }
+        catch (MonitoringBodyTooLargeException) when (!http.Response.HasStarted) { await RejectAsync(http, bounds.ErrorCode).ConfigureAwait(false); }
+        catch (BadHttpRequestException exception) when (exception.StatusCode == StatusCodes.Status413PayloadTooLarge && !http.Response.HasStarted) { await RejectAsync(http, bounds.ErrorCode).ConfigureAwait(false); }
         finally { http.Request.Body = original; }
     }
 
-    private static Task RejectAsync(HttpContext http) => Results.Problem(statusCode: StatusCodes.Status413PayloadTooLarge,
-        title: "monitoring_payload_capacity_exceeded").ExecuteAsync(http);
+    private static Task RejectAsync(HttpContext http, string code) => Results.Problem(statusCode: StatusCodes.Status413PayloadTooLarge,
+        title: code).ExecuteAsync(http);
 
     private sealed class MonitoringBodyTooLargeException : Exception { }
 

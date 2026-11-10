@@ -48,6 +48,9 @@ public sealed class JobDefinitionService(OrchestratorDbContext db) : IJobDefinit
     public async Task<JobDefinitionInfo> CreateAsync(CreateJobDefinitionCommand command, CancellationToken ct = default)
     {
         ValidateTargetReplacement(command.Target, command.AgentId, command.ExecutionPolicy);
+        await using var transaction = await JobDefinitionMutationFence.BeginAsync(_db, ct);
+        await JobTargetDefinitionGuard.RequireAsync(_db, command.TenantId, command.Target, ct);
+        JobTargetScheduleValidation.RequireComplete(command.Target, command.OptionsJson, []);
         var now = DateTimeOffset.UtcNow;
         var job = new JobDefinition
         {
@@ -66,6 +69,7 @@ public sealed class JobDefinitionService(OrchestratorDbContext db) : IJobDefinit
 
         _db.Jobs.Add(job);
         await _db.SaveChangesAsync(ct);
+        if (transaction is not null) await transaction.CommitAsync(ct);
         return Map(job);
     }
 
@@ -80,6 +84,12 @@ public sealed class JobDefinitionService(OrchestratorDbContext db) : IJobDefinit
         }
 
         ValidateTargetReplacement(command.Target, command.AgentId, command.ExecutionPolicy);
+        var effectiveTarget = command.Target ?? (command.AgentId.HasValue ? null : ReadTarget(job.TargetJson));
+        await JobTargetDefinitionGuard.RequireAsync(_db, command.TenantId ?? job.TenantId, effectiveTarget, ct);
+        var parameterDefaults = await _db.JobParameters.AsNoTracking().Where(x => x.JobId == job.Id)
+            .Select(x => new { x.Name, x.DefaultValue }).ToArrayAsync(ct);
+        JobTargetScheduleValidation.RequireComplete(effectiveTarget, command.OptionsJson ?? job.OptionsJson,
+            parameterDefaults.Select(x => new KeyValuePair<string, string?>(x.Name, x.DefaultValue)));
         if (command.Target is { } target)
         {
             job.TargetJson = JsonSerializer.Serialize(target, JobTargetJsonContext.Default.JobTargetDefinition);
@@ -96,7 +106,7 @@ public sealed class JobDefinitionService(OrchestratorDbContext db) : IJobDefinit
         if (command.Name is not null) job.Name = command.Name.Trim();
         if (command.FolderPath is not null) job.FolderPath = NormalizeFolder(command.FolderPath);
         if (command.Description is not null) job.Description = NormalizeNullable(command.Description);
-        if (command.TenantId.HasValue || command.TenantId is null) job.TenantId = command.TenantId;
+        if (command.TenantId.HasValue) job.TenantId = command.TenantId;
         if (command.Target is null && command.ClientIdentity is not null) job.ClientIdentity = command.ClientIdentity.Trim();
         if (command.OptionsJson is not null) job.OptionsJson = NormalizeNullable(command.OptionsJson);
         job.UpdatedAtUtc = DateTimeOffset.UtcNow;
@@ -170,6 +180,7 @@ public sealed class JobDefinitionService(OrchestratorDbContext db) : IJobDefinit
             OptionsJson = NormalizeNullable(command.OptionsJson)
         };
 
+        await RequireParameterScheduleAsync(row.JobId, null, row.Name, row.DefaultValue, ct);
         _db.JobParameters.Add(row);
         await _db.SaveChangesAsync(ct);
         if (transaction is not null) await transaction.CommitAsync(ct);
@@ -190,6 +201,7 @@ public sealed class JobDefinitionService(OrchestratorDbContext db) : IJobDefinit
         await entry.ReloadAsync(ct);
         if (entry.State == EntityState.Detached) return null;
 
+        await RequireParameterScheduleAsync(row.JobId, row.Id, command.Name?.Trim() ?? row.Name, command.DefaultValue ?? row.DefaultValue, ct);
         if (command.Name is not null) row.Name = command.Name.Trim();
         if (command.Type is not null) row.Type = NormalizeParamType(command.Type);
         if (command.Required.HasValue) row.Required = command.Required.Value;
@@ -216,6 +228,7 @@ public sealed class JobDefinitionService(OrchestratorDbContext db) : IJobDefinit
         await entry.ReloadAsync(ct);
         if (entry.State == EntityState.Detached) return false;
 
+        await RequireParameterScheduleAsync(row.JobId, row.Id, null, null, ct);
         _db.JobParameters.Remove(row);
         await _db.SaveChangesAsync(ct);
         if (transaction is not null) await transaction.CommitAsync(ct);
@@ -387,6 +400,16 @@ public sealed class JobDefinitionService(OrchestratorDbContext db) : IJobDefinit
         await _db.SaveChangesAsync(ct);
         if (transaction is not null) await transaction.CommitAsync(ct);
         return true;
+    }
+
+    private async Task RequireParameterScheduleAsync(long jobId, long? replacedId, string? name, string? defaultValue, CancellationToken ct)
+    {
+        var job = await _db.Jobs.AsNoTracking().SingleAsync(x => x.Id == jobId, ct);
+        var parameters = await _db.JobParameters.AsNoTracking().Where(x => x.JobId == jobId && x.Id != replacedId)
+            .Select(x => new { x.Name, x.DefaultValue }).ToArrayAsync(ct);
+        var defaults = parameters.Select(x => new KeyValuePair<string, string?>(x.Name, x.DefaultValue)).ToList();
+        if (name is not null) defaults.Add(new(name, defaultValue));
+        JobTargetScheduleValidation.RequireComplete(ReadTarget(job.TargetJson), job.OptionsJson, defaults);
     }
 
     private static void ValidateTargetReplacement(JobTargetDefinition? target, Guid? agentId, JobExecutionPolicy? executionPolicy)

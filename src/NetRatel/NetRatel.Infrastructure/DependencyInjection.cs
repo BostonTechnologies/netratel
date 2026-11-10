@@ -68,6 +68,10 @@ public static class DependencyInjection
         services.AddScoped<INetRatelNotificationService, NetRatelNotificationService>();
         services.AddScoped<IEventRecorder, OutboxEventRecorder>();
         services.AddScoped<IEventPublisher, InternalEventPublisher>();
+        services.AddScoped<IExecutionGroupService, ExecutionGroupService>();
+        services.AddScoped<IExecutionGroupReferenceProvider, PublishedFlowExecutionGroupReferences>();
+        services.AddScoped<IJobNodeDirectory, JobNodeDirectory>();
+        services.AddScoped<IJobTargetResolver, JobTargetResolver>();
         services.AddScoped<IJobDefinitionService, JobDefinitionService>();
         services.AddScoped<IJobRunService, JobRunService>();
         services.AddScoped<IExecutionAdmissionStore, ExecutionAdmissionStore>();
