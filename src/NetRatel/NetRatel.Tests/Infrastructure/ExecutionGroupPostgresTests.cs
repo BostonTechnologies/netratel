@@ -37,6 +37,7 @@ public sealed class ExecutionGroupPostgresTests(PostgreSqlPersistenceFixture pos
         (await service.GetAsync(7, created.Group.Id, Manager, ct))!.Members.Select(x => x.AgentId).Should().BeEquivalentTo(ids);
         (await db.ExecutionGroupAudits.OrderBy(x => x.Revision).Select(x => x.Operation).ToArrayAsync(ct)).Should().Equal("created", "updated");
         (await new ManagerAccess().AuthorizeAsync(Manager, NetRatelPermissions.ScriptExecute, 7, ct)).Should().BeFalse();
+        (await new ManagerAccess().AuthorizeAsync(Manager, NetRatelPermissions.JobManagement, 7, ct)).Should().BeFalse();
         var duplicate = await Assert.ThrowsAsync<JobTargetValidationException>(() => service.UpdateAsync(7, created.Group.Id,
             new("Five test systems", null, true, false, [ids[0], ids[0]], saved.Group.Revision), Manager, ct));
         duplicate.Code.Should().Be("execution_group_duplicate_member");
@@ -108,7 +109,7 @@ public sealed class ExecutionGroupPostgresTests(PostgreSqlPersistenceFixture pos
         first.IsEnabled = true; await db.SaveChangesAsync(ct);
         db.Jobs.Add(new() { Id = 41, Name = "Referenced job", TenantId = 7, TargetJson = JsonSerializer.Serialize(target), CreatedAtUtc = DateTimeOffset.UtcNow, UpdatedAtUtc = DateTimeOffset.UtcNow }); await db.SaveChangesAsync(ct);
         var blockedJob = await Assert.ThrowsAsync<ExecutionGroupReferencedException>(() => service.DeleteAsync(7, group.Group.Id, 3, Manager, ct));
-        blockedJob.References.Should().Contain(x => x.Kind == "job" && x.Id == "41");
+        blockedJob.References.Should().ContainSingle(x => x.Kind == "restricted" && x.Id == string.Empty);
         (await db.Jobs.SingleAsync(ct)).DeletedAtUtc = DateTimeOffset.UtcNow;
         var flowId = Guid.NewGuid();
         db.FlowDefinitions.Add(new() { Id = flowId, TenantId = 7, Name = "Retained Flow", DraftJson = "{}", CreatedAtUtc = DateTimeOffset.UtcNow, UpdatedAtUtc = DateTimeOffset.UtcNow });
@@ -139,7 +140,7 @@ public sealed class ExecutionGroupPostgresTests(PostgreSqlPersistenceFixture pos
     private sealed class ManagerAccess : IEffectiveAccessService
     {
         public Task<bool> AuthorizeAsync(ClaimsPrincipal principal, string permission, int? tenantId, CancellationToken cancellationToken = default) =>
-            Task.FromResult(tenantId == 7 && permission is NetRatelPermissions.TenantAdministration or NetRatelPermissions.JobManagement or NetRatelPermissions.FlowRead);
+            Task.FromResult(tenantId == 7 && permission is NetRatelPermissions.TenantAdministration or NetRatelPermissions.FlowRead);
         public Task<EffectiveAccessSnapshot> GetSnapshotAsync(ClaimsPrincipal principal, int? tenantId, CancellationToken cancellationToken = default) => throw new NotSupportedException();
         public Task ReconcileBuiltInRolesAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
