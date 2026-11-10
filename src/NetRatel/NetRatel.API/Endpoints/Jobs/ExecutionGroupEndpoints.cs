@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
 using NetRatel.API.Services.Jobs;
+using NetRatel.API.Middleware;
 using NetRatel.Application.Jobs;
 using NetRatel.Shared.Contracts.Jobs;
 
@@ -9,7 +10,7 @@ public static class ExecutionGroupEndpoints
 {
     public static IEndpointRouteBuilder MapExecutionGroupEndpoints(this IEndpointRouteBuilder app)
     {
-        var groups = app.MapGroup("/api/v2/tenants/{tenantId:int}/execution-groups").WithTags("Execution groups").RequireAuthorization();
+        var groups = app.MapGroup("/api/v2/tenants/{tenantId:int}/execution-groups").WithTags("Execution groups").RequireAuthorization().WithMetadata(TargetBounds());
         groups.MapGet("/", (int tenantId, string? search, int? page, int? pageSize, HttpContext http, IExecutionGroupService service, CancellationToken ct) =>
             Result(() => service.ListAsync(tenantId, search, page ?? 1, pageSize ?? 50, http.User, ct)));
         groups.MapGet("/{groupId:guid}", (int tenantId, Guid groupId, HttpContext http, IExecutionGroupService service, CancellationToken ct) =>
@@ -22,7 +23,7 @@ public static class ExecutionGroupEndpoints
             Result(() => service.ChangeMembershipAsync(tenantId, groupId, request, http.User, ct)));
         groups.MapDelete("/{groupId:guid}", (int tenantId, Guid groupId, long expectedRevision, HttpContext http, IExecutionGroupService service, CancellationToken ct) =>
             Delete(() => service.DeleteAsync(tenantId, groupId, expectedRevision, http.User, ct)));
-        var targets = app.MapGroup("/api/v2/tenants/{tenantId:int}/job-targets").WithTags("Job targets").RequireAuthorization();
+        var targets = app.MapGroup("/api/v2/tenants/{tenantId:int}/job-targets").WithTags("Job targets").RequireAuthorization().WithMetadata(TargetBounds());
         targets.MapGet("/nodes", (int tenantId, string? search, int? page, int? pageSize, HttpContext http, JobTargetApiService service, CancellationToken ct) =>
             Result(() => service.SearchAsync(tenantId, search, page ?? 1, pageSize ?? 50, http.User, ct)));
         targets.MapPost("/nodes/identities", (int tenantId, [FromBody] IReadOnlyList<Guid> request, HttpContext http, JobTargetApiService service, CancellationToken ct) =>
@@ -37,6 +38,8 @@ public static class ExecutionGroupEndpoints
             Result(() => service.PropertiesAsync(tenantId, http.User, ct)));
         return app;
     }
+    private static MonitoringHttpBounds TargetBounds() => new() { MaximumBytes = 1024 * 1024, ErrorCode = "target_payload_capacity_exceeded" };
+
     private static async Task<IResult> Result<T>(Func<Task<T>> operation, bool created = false)
     {
         try
