@@ -99,11 +99,15 @@ public sealed record PinnedJobExecutionSnapshot(JobDefinitionDetails Definition,
 
     public void Validate(int tenantId)
     {
-        if (Definition.Job.Id == 0 || Definition.Job.TenantId != tenantId || Definition.Job.AgentId is not { } agent || agent == Guid.Empty ||
+        if (Definition.Job.Id == 0 || Definition.Job.TenantId != tenantId || Definition.Job.Target is null && (Definition.Job.AgentId is not { } agent || agent == Guid.Empty) ||
             Definition.Steps.Count > 128 || Scripts.Count > 128 ||
             Definition.Steps.Any(step => step.JobId != Definition.Job.Id || step.Enabled && step.Type is not (JobStepKind.RunCommand or JobStepKind.LibraryScript)) ||
             Scripts.GroupBy(script => script.Script.Id).Any(group => group.Count() != 1))
             throw new ArgumentException("The pinned job definition or bound target is invalid.");
+        if (Definition.Job.Target is not null && Definition.Job.AgentId is not null)
+            throw new ArgumentException("A pinned target definition cannot be combined with legacy AgentId.");
+        Definition.Job.Target?.Validate();
+        Definition.Job.ExecutionPolicy?.Validate();
         foreach (var script in Scripts)
         {
             if (script.Script.Id == 0 || script.Script.SourceRevision <= 0 ||

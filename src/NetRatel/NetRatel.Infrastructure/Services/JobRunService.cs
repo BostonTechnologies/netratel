@@ -82,7 +82,7 @@ public sealed class JobRunService(OrchestratorDbContext db, IDataProtectionProvi
     public async Task<IReadOnlyList<JobRunInfo>> ListAsync(CancellationToken ct = default)
     {
         await ProtectLegacyAsync(null, ct);
-        return (await _db.JobRuns.AsNoTracking().OrderByDescending(x => x.CreatedAtUtc).ToListAsync(ct))
+        return (await _db.JobRuns.AsNoTracking().Where(x => x.ParentRunId == null).OrderByDescending(x => x.CreatedAtUtc).ToListAsync(ct))
             .Select(Map).ToList();
     }
 
@@ -779,7 +779,13 @@ public sealed class JobRunService(OrchestratorDbContext db, IDataProtectionProvi
             row.TargetHostName,
             row.TargetName,
             JobRunInputProtection.Metadata(row).Provenance,
-            JobRunInputProtection.Metadata(row).DefinitionRevision);
+            JobRunInputProtection.Metadata(row).DefinitionRevision)
+        {
+            IsAggregate = row.IsAggregate,
+            ParentRunId = row.ParentRunId is { } parent ? checked((ulong)parent) : null,
+            TargetPlanDigest = row.TargetPlanDigest,
+            DefinitionDigest = row.DefinitionDigest
+        };
 
     private static JobStepRunInfo Map(JobStepRunRecord row)
         => new(

@@ -2,6 +2,8 @@ using System.Linq.Expressions;
 using Microsoft.EntityFrameworkCore;
 using NetRatel.Application.Jobs;
 using NetRatel.Infrastructure.Persistence;
+using NetRatel.Shared.Contracts.Jobs;
+using System.Text.Json;
 
 namespace NetRatel.Infrastructure.Services;
 
@@ -45,6 +47,7 @@ public sealed class JobDefinitionService(OrchestratorDbContext db) : IJobDefinit
 
     public async Task<JobDefinitionInfo> CreateAsync(CreateJobDefinitionCommand command, CancellationToken ct = default)
     {
+        ValidateTargetReplacement(command.Target, command.AgentId, command.ExecutionPolicy);
         var now = DateTimeOffset.UtcNow;
         var job = new JobDefinition
         {
@@ -52,8 +55,10 @@ public sealed class JobDefinitionService(OrchestratorDbContext db) : IJobDefinit
             FolderPath = NormalizeFolder(command.FolderPath),
             Description = NormalizeNullable(command.Description),
             TenantId = command.TenantId,
-            AgentId = command.AgentId,
-            ClientIdentity = command.ClientIdentity.Trim(),
+            AgentId = command.Target is null ? command.AgentId : null,
+            TargetJson = command.Target is null ? null : JsonSerializer.Serialize(command.Target, JobTargetJsonContext.Default.JobTargetDefinition),
+            ExecutionPolicyJson = command.ExecutionPolicy is null ? null : JsonSerializer.Serialize(command.ExecutionPolicy, JobTargetJsonContext.Default.JobExecutionPolicy),
+            ClientIdentity = command.Target is null ? command.ClientIdentity.Trim() : string.Empty,
             OptionsJson = NormalizeNullable(command.OptionsJson),
             CreatedAtUtc = now,
             UpdatedAtUtc = now
@@ -74,12 +79,25 @@ public sealed class JobDefinitionService(OrchestratorDbContext db) : IJobDefinit
             return null;
         }
 
+        ValidateTargetReplacement(command.Target, command.AgentId, command.ExecutionPolicy);
+        if (command.Target is { } target)
+        {
+            job.TargetJson = JsonSerializer.Serialize(target, JobTargetJsonContext.Default.JobTargetDefinition);
+            job.AgentId = null;
+            job.ClientIdentity = string.Empty;
+        }
+        else if (command.AgentId.HasValue)
+        {
+            job.AgentId = command.AgentId;
+            job.TargetJson = null;
+        }
+        if (command.ExecutionPolicy is { } executionPolicy)
+            job.ExecutionPolicyJson = JsonSerializer.Serialize(executionPolicy, JobTargetJsonContext.Default.JobExecutionPolicy);
         if (command.Name is not null) job.Name = command.Name.Trim();
         if (command.FolderPath is not null) job.FolderPath = NormalizeFolder(command.FolderPath);
         if (command.Description is not null) job.Description = NormalizeNullable(command.Description);
         if (command.TenantId.HasValue || command.TenantId is null) job.TenantId = command.TenantId;
-        if (command.AgentId.HasValue) job.AgentId = command.AgentId;
-        if (command.ClientIdentity is not null) job.ClientIdentity = command.ClientIdentity.Trim();
+        if (command.Target is null && command.ClientIdentity is not null) job.ClientIdentity = command.ClientIdentity.Trim();
         if (command.OptionsJson is not null) job.OptionsJson = NormalizeNullable(command.OptionsJson);
         job.UpdatedAtUtc = DateTimeOffset.UtcNow;
 
@@ -371,6 +389,19 @@ public sealed class JobDefinitionService(OrchestratorDbContext db) : IJobDefinit
         return true;
     }
 
+    private static void ValidateTargetReplacement(JobTargetDefinition? target, Guid? agentId, JobExecutionPolicy? executionPolicy)
+    {
+        target?.Validate();
+        executionPolicy?.Validate();
+        if (target is not null && agentId is not null)
+            throw new ArgumentException("A target definition cannot be combined with legacy AgentId.");
+    }
+
+    private static JobTargetDefinition? ReadTarget(string? json)
+        => json is null ? null : JsonSerializer.Deserialize(json, JobTargetJsonContext.Default.JobTargetDefinition);
+    private static JobExecutionPolicy? ReadExecutionPolicy(string? json)
+        => json is null ? null : JsonSerializer.Deserialize(json, JobTargetJsonContext.Default.JobExecutionPolicy);
+
     private static string NormalizeFolder(string folder)
     {
         if (string.IsNullOrWhiteSpace(folder)) return "/";
@@ -397,7 +428,11 @@ public sealed class JobDefinitionService(OrchestratorDbContext db) : IJobDefinit
             row.CreatedAtUtc,
             row.UpdatedAtUtc,
             row.OptionsJson,
-            row.AgentId);
+            row.AgentId)
+        {
+            Target = ReadTarget(row.TargetJson),
+            ExecutionPolicy = ReadExecutionPolicy(row.ExecutionPolicyJson)
+        };
 
     private static JobParameterInfo Map(JobParameterDefinition row)
         => new(
@@ -433,7 +468,11 @@ public sealed class JobDefinitionService(OrchestratorDbContext db) : IJobDefinit
             row.CreatedAtUtc,
             row.UpdatedAtUtc,
             row.OptionsJson,
-            row.AgentId);
+            row.AgentId)
+        {
+            Target = ReadTarget(row.TargetJson),
+            ExecutionPolicy = ReadExecutionPolicy(row.ExecutionPolicyJson)
+        };
 
     private static Expression<Func<JobParameterDefinition, JobParameterInfo>> MapParam() =>
         row => new JobParameterInfo(
