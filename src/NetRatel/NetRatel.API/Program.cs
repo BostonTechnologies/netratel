@@ -923,6 +923,12 @@ builder.Services.AddRatelDeskReceiverAdapter(builder.Configuration);
 builder.Services.AddNotificationConnectors();
 builder.Services.AddNetclawInvestigations();
 builder.Services.AddScoped<ManagedOperationAdmission>();
+builder.Services.ConfigureHttpJsonOptions(JobTargetHttpJson.Configure);
+builder.Services.AddScoped<McpJobTargetPolicyReader>();
+builder.Services.AddScoped<McpAggregateExecutionAuthority>();
+builder.Services.AddScoped<McpReviewedJobAdmissionRecovery>();
+builder.Services.AddHostedService<McpReviewedJobAdmissionRecoveryWorker>();
+builder.Services.AddScoped<NetRatel.Application.Jobs.IMcpAggregateExecutionAuthority>(services => services.GetRequiredService<McpAggregateExecutionAuthority>());
 builder.Services.AddIdentityCore<LocalUser>(options =>
     {
         options.User.RequireUniqueEmail = true;

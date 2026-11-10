@@ -50,9 +50,9 @@ public sealed class FlowExecutionDefinitionCatalog(OrchestratorDbContext db, IFl
         if (sourceKind == FlowExecutionSourceKind.Job)
         {
             var row = await db.Jobs.AsNoTracking().Where(job => job.Id == id && job.TenantId == tenantId)
-                .Select(job => new { job.AgentId }).SingleOrDefaultAsync(cancellationToken);
+                .Select(job => new { job.AgentId, job.TargetJson, job.ExecutionPolicyJson }).SingleOrDefaultAsync(cancellationToken);
             if (row is null) return null;
-            agentId = row.AgentId;
+            agentId = row.TargetJson is null && row.ExecutionPolicyJson is null ? row.AgentId : null;
         }
         else if (!await db.Scripts.AsNoTracking().AnyAsync(script => script.Id == id, cancellationToken)) return null;
         var node = new FlowNodeDto(Guid.NewGuid(), sourceKind == FlowExecutionSourceKind.Job ? FlowNodeKind.RunJob :
@@ -108,10 +108,9 @@ public sealed class FlowExecutionDefinitionCatalog(OrchestratorDbContext db, IFl
     {
         if (kind is not (FlowExecutionSourceKind.Job or FlowExecutionSourceKind.Script))
             throw new NotSupportedException("Requests are lifecycle sources, not runnable library definitions.");
-        var claims = new List<Claim> { new("netratel_principal_id", authority.PrincipalId) };
-        if (authority.IntegrationCredentialId is not null) claims.Add(new("netratel_integration_credential_id", authority.IntegrationCredentialId));
+
         if (!await verifier.AuthorizeAsync(tenantId, authority, ct) ||
-            !await access.AuthorizeAsync(new(new ClaimsIdentity(claims, "FlowDefinitionCatalog")),
+            !await access.AuthorizeAsync(FlowAuthorityPrincipal.Create(authority),
                 kind == FlowExecutionSourceKind.Job ? NetRatelPermissions.JobManagement : NetRatelPermissions.ScriptExecute, tenantId, ct))
             throw new ExecutionAdmissionDeniedException("Current definition access is unavailable.");
     }

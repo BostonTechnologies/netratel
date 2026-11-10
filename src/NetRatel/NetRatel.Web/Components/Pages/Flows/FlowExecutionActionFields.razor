@@ -1,6 +1,7 @@
 @using System.Globalization
 @using NetRatel.Shared
 @using NetRatel.Shared.Contracts.Flows
+@using NetRatel.Shared.Contracts.Jobs
 @using NetRatel.Web.Services.Flows
 
 <section class="flow-execution-fields" data-testid="flow-execution-action-fields">
@@ -29,8 +30,35 @@ else
             <label>Maximum wait (minutes)<input type="number" min="1" max="@FlowGraphV2Limits.MaximumOperationMinutes" value="@action.TimeoutMinutes" @onchange="SetTimeout" data-testid="flow-execution-timeout" /></label>
             @if (Node.Kind == FlowNodeKind.RunJob)
             {
-                <p data-testid="flow-job-bound-target"><strong>Job endpoint:</strong> @(action.Target is null ? "Bound endpoint not configured" : TargetName(action.Target))</p>
-                <p class="flow-execution-help">This job retains its configured tenant and endpoint.</p>
+                @if (action.JobTarget is { } jobTarget)
+                {
+                    <p data-testid="flow-job-target-policy"><strong>Job targets:</strong> @TargetPolicyName(jobTarget)</p>
+                    @if (jobTarget.Source == JobTargetSource.RuntimeInput && jobTarget.RuntimeInput is { } runtime)
+                    {
+                        <FlowInputBindingField @key="@(Node.Id.ToString() + ":runtime-target")" NodeId="Node.Id"
+                            Label="@("Target · " + TargetKindName(runtime.Kind))" DataType="TargetDataType(runtime.Kind)"
+                            Value="@(action.TargetBinding?.Value)" ValueChanged="SetJobTargetBinding"
+                            EventFields="TargetEventFields(runtime.Kind)" Producers="_producers" Disabled="Disabled" />
+                        <p class="flow-execution-help">The mapped value is a typed literal target. A client ID from the source event identifies that event's client. All selected clients are checked when this action runs.</p>
+                        @if (runtime.DefaultValues is { Count: > 0 })
+                        { <p class="flow-execution-help">The job's saved target default applies when no mapping is selected.</p> }
+                    }
+                    else
+                    {
+                        <p class="flow-execution-help">Fresh actions resolve the job's current group or filter membership. An admitted action retains its original target plan.</p>
+                    }
+                    @if (action.JobExecutionPolicy is { } policy)
+                    { <p>Thread Count @policy.ThreadCount · @(policy.NodeFailurePolicy == JobNodeFailurePolicy.StopRemaining ? "Stop starting remaining nodes after a node fails" : "Continue remaining nodes, then fail the run")</p> }
+                    <NetRatel.Web.Components.Pages.Jobs.JobTargetPreview TenantId="TenantId" Target="jobTarget"
+                        ExecutionPolicy="action.JobExecutionPolicy" RuntimeTarget="PreviewRuntimeTarget(action)"
+                        Parameters="PreviewParameters()" Environment="@(action.Environment == ClientEnvironment.None ? action.JobTargetEnvironment : action.Environment)"
+                        Disabled="Disabled" ButtonLabel="Preview pinned job targets" />
+                }
+                else
+                {
+                    <p data-testid="flow-job-bound-target"><strong>Job endpoint:</strong> @(action.Target is null ? "Bound endpoint not configured" : TargetName(action.Target))</p>
+                    <p class="flow-execution-help">This job retains its configured tenant and endpoint.</p>
+                }
             }
             else
             {
@@ -113,9 +141,52 @@ else
             TimeoutMinutes = previous.TimeoutMinutes, Environment = previous.Environment, WorkingDirectory = previous.WorkingDirectory,
             Target = Source == FlowExecutionSourceKind.Script ? previous.Target : selected.Target
         };
+        if (selected.JobTarget is { Source: JobTargetSource.RuntimeInput, RuntimeInput: { } runtime })
+        {
+            var binding = previous?.TargetBinding?.Kind == runtime.Kind ? previous.TargetBinding :
+                runtime.Kind == JobRuntimeTargetKind.ClientId ? new FlowJobTargetBindingDto(runtime.Kind,
+                    new(FlowInputSource.Event, FlowDataType.Text, _eventFields.Any(field => field.Path == "alert.agentId")
+                        ? "alert.agentId" : "event.target.agentId"), runtime.AllOf) : null;
+            selected = selected with { TargetBinding = binding };
+        }
         _choosing = false; _error = null;
         await Changed.InvokeAsync(Node with { ExecutionAction = selected with { PinnedSnapshotReference = null } });
     }
+    private static string TargetPolicyName(JobTargetDefinition target) => target.Source switch
+    {
+        JobTargetSource.ExecutionGroup => "Execution group · all members at admission",
+        JobTargetSource.ExplicitNodes => $"Selected nodes · {target.AgentIds?.Count ?? 0}",
+        JobTargetSource.NodeFilter => "Node filter · " + target.Filter,
+        JobTargetSource.RuntimeInput => "Provided at run time",
+        _ => "Unsupported target policy"
+    };
+    private static string TargetKindName(JobRuntimeTargetKind kind) => kind switch
+    {
+        JobRuntimeTargetKind.ClientId => "Client ID", JobRuntimeTargetKind.ClientIds => "Client IDs",
+        JobRuntimeTargetKind.Hostname => "Hostname", JobRuntimeTargetKind.Hostnames => "Hostnames",
+        JobRuntimeTargetKind.Tag => "Tag", JobRuntimeTargetKind.Tags => "Tags", _ => "Target"
+    };
+    private static FlowDataType TargetDataType(JobRuntimeTargetKind kind) => FlowJobTargetBindingValues.DataType(kind);
+    private static JobRuntimeTargetInput? PreviewRuntimeTarget(FlowExecutionActionSettingsDto action) =>
+        action.TargetBinding is { Value.Source: FlowInputSource.Literal, Value.Literal: { } literal } binding &&
+        FlowJobTargetBindingValues.TryCreate(binding, literal, out var target) ? target : null;
+    private IReadOnlyDictionary<string, string[]> PreviewParameters()
+    {
+        var values = new Dictionary<string, string[]>(StringComparer.Ordinal);
+        foreach (var pair in Node.Inputs ?? new Dictionary<string, FlowInputBindingDto>())
+            if (pair.Value is { Source: FlowInputSource.Literal, Literal: { } value })
+            {
+                if (value.ValueKind == System.Text.Json.JsonValueKind.String) values[pair.Key] = [value.GetString()!];
+                else if (value.ValueKind == System.Text.Json.JsonValueKind.Array && value.EnumerateArray().All(item => item.ValueKind == System.Text.Json.JsonValueKind.String))
+                    values[pair.Key] = value.EnumerateArray().Select(item => item.GetString()!).ToArray();
+            }
+        return values;
+    }
+    private IReadOnlyList<FlowBindingFieldDto> TargetEventFields(JobRuntimeTargetKind kind) => kind is
+        JobRuntimeTargetKind.ClientId or JobRuntimeTargetKind.ClientIds
+        ? _eventFields.Where(field => field.Path is "alert.agentId" or "event.target.agentId").ToArray() : _eventFields;
+    private Task SetJobTargetBinding(FlowInputBindingDto? value) => Node.ExecutionAction is { JobTarget.RuntimeInput: { } runtime } action
+        ? SetAction(action with { TargetBinding = value is null ? null : new(runtime.Kind, value, runtime.AllOf) }) : Task.CompletedTask;
     private Task SetAction(FlowExecutionActionSettingsDto action) => Disabled ? Task.CompletedTask :
         Changed.InvokeAsync(Node with { ExecutionAction = action with { PinnedSnapshotReference = null } });
     private Task SetTargetMode(ChangeEventArgs args) => Node.ExecutionAction is { } action

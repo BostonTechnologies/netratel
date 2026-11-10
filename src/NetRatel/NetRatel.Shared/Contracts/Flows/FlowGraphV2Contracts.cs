@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using NetRatel.Shared.Contracts.Jobs;
 
 namespace NetRatel.Shared.Contracts.Flows;
 
@@ -65,12 +66,23 @@ public sealed record FlowExecutionActionSettingsDto(FlowExecutionSourceKind Sour
     public string? PinnedSnapshotReference { get; init; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public IReadOnlyList<FlowParameterDefinitionDto>? Parameters { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public JobTargetDefinition? JobTarget { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public JobExecutionPolicy? JobExecutionPolicy { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public NetRatel.Shared.ClientEnvironment? JobTargetEnvironment { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public FlowJobTargetBindingDto? TargetBinding { get; init; }
     public int TimeoutMinutes { get; init; } = 60;
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public NetRatel.Shared.ClientEnvironment Environment { get; init; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? WorkingDirectory { get; init; }
 }
+
+/// <summary>One typed value mapping, evaluated as data under the existing bounded Flow binding contract.</summary>
+public sealed record FlowJobTargetBindingDto(JobRuntimeTargetKind Kind, FlowInputBindingDto Value, bool AllOf = false);
 
 public sealed record FlowRerunSettingsDto(int MaximumAttempts = 1, int TimeoutMinutes = 60);
 

@@ -26,6 +26,8 @@ internal sealed class JobRunInputProtection(IDataProtectionProvider protection)
     {
         [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
         public PinnedJobExecutionSnapshot? PinnedSnapshot { get; init; }
+        [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+        public NetRatel.Shared.Contracts.Jobs.JobTargetNode? NodeContext { get; init; }
     }
 
     public static Sensitivity Capture(JobDefinition? definition, IEnumerable<JobParameterDefinition> parameters)
@@ -51,29 +53,57 @@ internal sealed class JobRunInputProtection(IDataProtectionProvider protection)
     }
 
     public void Store(JobRunRecord run, Sensitivity metadata, string? inputs, string? options, McpOperatorJobExecutionSnapshot? mcpSnapshot = null,
-        PinnedJobExecutionSnapshot? pinnedSnapshot = null)
+        PinnedJobExecutionSnapshot? pinnedSnapshot = null, NetRatel.Shared.Contracts.Jobs.JobTargetNode? nodeContext = null)
     {
         if (pinnedSnapshot is not null)
         {
             pinnedSnapshot.Validate(run.TenantId ?? 0);
             var digest = pinnedSnapshot.ComputeDigest();
             if (pinnedSnapshot.Definition.Job.Id != checked((ulong)run.JobId) ||
-                pinnedSnapshot.Definition.Job.AgentId != run.AgentId || digest != metadata.DefinitionRevision)
+                (run.IsAggregate ? !AggregateSourceMatches(run, pinnedSnapshot.Definition.Job, digest) :
+                    pinnedSnapshot.Definition.Job.AgentId != run.AgentId) || digest != metadata.DefinitionRevision)
                 throw new InvalidOperationException("The protected replay source differs from its immutable run binding.");
             metadata = metadata with { PinnedReplayDefinitionHash = digest };
         }
         else if (metadata.PinnedReplayDefinitionHash is not null)
             throw new InvalidOperationException("A replay marker requires a protected complete source snapshot.");
+        if (mcpSnapshot is not null && (mcpSnapshot.Definition.Job.Id != checked((ulong)run.JobId) ||
+            mcpSnapshot.Definition.Job.TenantId != run.TenantId ||
+            (run.IsAggregate ? !AggregateSourceMatches(run, mcpSnapshot.Definition.Job, mcpSnapshot.ComputeDefinitionDigest()) ||
+                mcpSnapshot.TargetPlan?.ComputeDigest() != run.TargetPlanDigest : mcpSnapshot.Definition.Job.AgentId != run.AgentId)))
+            throw new InvalidOperationException("The reviewed protected source differs from its immutable run and target plan.");
+        if (nodeContext is not null && (run.IsAggregate || run.AgentId != nodeContext.AgentId))
+            throw new InvalidOperationException("The protected node context differs from its exact native Agent target.");
         run.InputSensitivityJson = JsonSerializer.Serialize(metadata);
-        run.ProtectedExecutionJson = Protector(run).Protect(JsonSerializer.Serialize(new Execution(inputs, options, mcpSnapshot) { PinnedSnapshot = pinnedSnapshot }));
+        run.ProtectedExecutionJson = Protector(run).Protect(JsonSerializer.Serialize(new Execution(inputs, options, mcpSnapshot)
+            { PinnedSnapshot = pinnedSnapshot, NodeContext = nodeContext }));
         run.InputsJson = RedactInputs(inputs, metadata);
         run.OptionsJson = RedactOptions(options, metadata, SecretValues(inputs, metadata));
+    }
+
+    private static bool AggregateSourceMatches(JobRunRecord run, JobDefinitionInfo definition, string digest)
+    {
+        if (!run.IsAggregate || run.AgentId is not null || run.ParentRunId is not null || run.TargetPlanJson is null ||
+            definition.Id != checked((ulong)run.JobId) || definition.TenantId != run.TenantId) return false;
+        var plan = JsonSerializer.Deserialize<NetRatel.Shared.Contracts.Jobs.JobResolvedTargetPlan>(run.TargetPlanJson,
+            new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        if (plan is null || plan.TenantId != run.TenantId || plan.JobId != checked((ulong)run.JobId) ||
+            plan.DefinitionDigest != digest || run.DefinitionDigest != digest || plan.ComputeDigest() != run.TargetPlanDigest) return false;
+        var target = definition.Target;
+        if (target is null)
+        {
+            if (definition.AgentId is not { } original || plan.Nodes.Count != 1 || plan.Nodes[0].AgentId != original) return false;
+            target = NetRatel.Shared.Contracts.Jobs.JobTargetDefinition.FromLegacy(original);
+        }
+        var expected = new NetRatel.Shared.Contracts.Jobs.JobResolvedTargetPlan(plan.Version, plan.TenantId, plan.JobId,
+            digest, target, plan.GroupRevision, plan.Bindings, plan.Nodes, definition.ExecutionPolicy ?? new());
+        return expected.ComputeDigest() == plan.ComputeDigest();
     }
 
     public Execution ForExecution(JobRunRecord run)
     {
         if (run.ProtectedExecutionJson is null) return new(run.InputsJson, run.OptionsJson); // Unmigrated history: execution only.
-        try { return JsonSerializer.Deserialize<Execution>(Protector(run).Unprotect(run.ProtectedExecutionJson))
+        try { return McpReviewedJobSerialization.Deserialize<Execution>(Protector(run).Unprotect(run.ProtectedExecutionJson))
                 ?? throw new CryptographicException(); }
         catch (Exception ex) when (ex is CryptographicException or JsonException)
         { throw new InvalidOperationException("Protected run execution material is unavailable; restore the original Data Protection key ring."); }
@@ -184,7 +214,7 @@ internal sealed class JobRunInputProtection(IDataProtectionProvider protection)
                     }
             }
         }
-        catch (JsonException) { }
+        catch (JsonException) { return values.Distinct(StringComparer.Ordinal).OrderByDescending(s => s.Length).ToArray(); }
         return values.Distinct(StringComparer.Ordinal).OrderByDescending(s => s.Length).ToArray();
     }
 
@@ -226,7 +256,7 @@ internal sealed class JobRunInputProtection(IDataProtectionProvider protection)
                     }
             }
         }
-        catch (JsonException) { }
+        catch (JsonException) { return Replace(value); }
         return Replace(value);
         string Replace(string text)
         {

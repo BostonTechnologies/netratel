@@ -8,6 +8,7 @@ using NetRatel.Infrastructure.Flows;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Infrastructure.Services;
 using NetRatel.Shared.Contracts.Flows;
+using NetRatel.Shared.Contracts.Jobs;
 using NetRatel.Shared.Contracts.Tasks;
 using NetRatel.Tests.Infrastructure;
 using Xunit;
@@ -542,6 +543,132 @@ public sealed class FlowExecutionLifecycleOutboxTests
 
     private static FlowExecutionEventDto Read(OutboxMessage row) =>
         JsonSerializer.Deserialize(row.PayloadJson, FlowExecutionEventJsonContext.Default.FlowExecutionEventDto)!;
+    [Fact]
+    public async Task Five_node_parent_emits_one_terminal_fact_and_internal_native_children_do_not_multiply_recovery_events()
+    {
+        await using var db = Memory();
+        var now = DateTimeOffset.UtcNow;
+        var parent = new JobRunRecord { Id = 500, JobId = 41, TenantId = 7, IsAggregate = true,
+            Status = (int)JobRunState.Succeeded, CreatedAtUtc = now, StartedAtUtc = now, CompletedAtUtc = now,
+            TargetPlanDigest = new string('A', 64), DefinitionDigest = new string('B', 64), StartedBy = "flow-action" };
+        db.JobRuns.Add(parent);
+        for (var index = 1; index <= 5; index++)
+        {
+            var agent = Guid.NewGuid();
+            var nativeId = 500 + index;
+            db.JobRuns.Add(new() { Id = nativeId, JobId = 41, ParentRunId = parent.Id, AgentId = agent,
+                TenantId = 7, Status = (int)JobRunState.Succeeded, CreatedAtUtc = now, CurrentStepOrdinal = 2 });
+            db.Set<JobRunNodeRecord>().Add(new() { ParentRunId = parent.Id, TenantId = 7, AgentId = agent,
+                NativeRunId = nativeId, Ordinal = index, State = JobRunNodeState.Succeeded, StartedAtUtc = now, CompletedAtUtc = now,
+                TargetJson = JsonSerializer.Serialize(new JobTargetNode(agent, "synthetic-node-" + index, null, [])) });
+            db.JobTaskActivities.Add(new() { Id = 1000 + index, RequestId = "synthetic-child-script-" + index, TenantId = 7, AgentId = agent,
+                JobRunId = nativeId, TaskType = TaskKinds.ExecLibraryScript, Status = "Completed", ExitCode = 0, CreatedAtUtc = now });
+        }
+        await db.SaveChangesAsync();
+        Assert.Empty(await db.OutboxMessages.Where(row => row.Type == FlowExecutionEventLimits.OutboxType).ToArrayAsync());
+        var run = new JobRunInfo(500, 41, 7, "", "flow-action", JobRunState.Succeeded, 0, now, now, now, null, null, null)
+        { IsAggregate = true, TargetCount = 5, TargetPlanDigest = parent.TargetPlanDigest, DefinitionDigest = parent.DefinitionDigest,
+            NodeCounts = new(0, 0, 5, 0, 0, 0, 0, 0) };
+        var details = new JobRunDetails(run, [], []);
+        var nodes = await JobRunNodeProjection.ReadAsync(db, 500, default);
+        var hash = JobRunProjectionHash.ComputeAggregate(details, nodes);
+        await ExecutionLifecycleOutbox.RecordJobAsync(db, details, hash, now, default);
+        await ExecutionLifecycleOutbox.RecordJobAsync(db, details, hash, now, default);
+        var child = new JobRunDetails(run with { Id = 501, IsAggregate = false, ParentRunId = 500, AgentId = nodes[0].AgentId }, [], []);
+        await ExecutionLifecycleOutbox.RecordJobAsync(db, child, "unused-internal-child", now, default);
+        await db.SaveChangesAsync();
+        var fact = Read(Assert.Single(await db.OutboxMessages.Where(row => row.Type == FlowExecutionEventLimits.OutboxType).ToArrayAsync()));
+        Assert.Equal("500", fact.ExecutionId);
+        Assert.Null(fact.Target.AgentId);
+        Assert.Equal(5, fact.Aggregate!.TargetCount);
+        Assert.Equal(5, fact.Aggregate.Counts.Succeeded);
+        Assert.Equal(parent.TargetPlanDigest, fact.Aggregate.TargetPlanDigest);
+        Assert.True(FlowExecutionEventValidator.Validate(fact).Valid);
+    }
+
+    [Fact]
+    public async Task Singular_Request_correlates_only_the_exact_frozen_singleton_aggregate_target()
+    {
+        await using var db = Memory();
+        var now = DateTimeOffset.UtcNow;
+        var agent = Guid.NewGuid();
+        var target = new JobTargetDefinition { Source = JobTargetSource.RuntimeInput,
+            RuntimeInput = new(JobRuntimeTargetKind.ClientId, "ClientId") };
+        var plan = new JobResolvedTargetPlan(1, 7, 41, new string('B', 64), target, null, [],
+            [new(agent, "synthetic-request-node", null, [])], new());
+        var parent = new JobRunRecord { Id = 600, JobId = 41, TenantId = 7, IsAggregate = true, StartedBy = "synthetic-source",
+            Status = (int)JobRunState.Failed, CreatedAtUtc = now, TargetPlanJson = JsonSerializer.Serialize(plan),
+            TargetPlanDigest = plan.ComputeDigest(), DefinitionDigest = plan.DefinitionDigest };
+        db.JobRuns.Add(parent);
+        db.Set<JobRunNodeRecord>().Add(new() { ParentRunId = 600, TenantId = 7, AgentId = agent, Ordinal = 1,
+            State = JobRunNodeState.Failed, TargetJson = JsonSerializer.Serialize(plan.Nodes[0]), Reason = "Unavailable" });
+        await db.SaveChangesAsync();
+        var run = new JobRunInfo(600, 41, 7, "", "synthetic-source", JobRunState.Failed, 0, now, null, now, "Unavailable", null, null)
+        { IsAggregate = true, TargetCount = 1, TargetPlanDigest = plan.ComputeDigest(), DefinitionDigest = plan.DefinitionDigest };
+        var requests = new RequestService(db, new EphemeralDataProtectionProvider());
+        var request = await requests.CreateAsync(new("synthetic-source", "", "41", null, 7, agent));
+        await ExecutionLifecycleOutbox.RecordAcceptedRequestJobBindingAsync(db, request, run, default);
+        await db.SaveChangesAsync();
+        await requests.UpdateAsync(new(request.Id, null, null, null, "600", "Failed", "Unavailable", null, null, null));
+        var fact = Read(Assert.Single(await db.OutboxMessages.Where(row => row.Type == FlowExecutionEventLimits.OutboxType).ToArrayAsync()));
+        Assert.Equal(agent, fact.Target.AgentId);
+        Assert.Null(fact.Aggregate);
+        Assert.Equal("600", fact.ParentExecutionId);
+        Assert.Equal(plan.ComputeDigest(), fact.Replay!.TargetPlanDigest);
+        Assert.True(FlowExecutionEventValidator.Validate(fact).Valid);
+        var conflicting = await requests.CreateAsync(new("synthetic-source", "", "41", null, 7, Guid.NewGuid()));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => ExecutionLifecycleOutbox.RecordAcceptedRequestJobBindingAsync(db, conflicting, run, default));
+        Assert.Null(parent.AgentId);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Legacy_fixed_schedule_keeps_the_old_AgentIds_subscription_without_assigning_an_agent_to_the_parent(bool legacy)
+    {
+        await using var db = Memory();
+        var now = DateTimeOffset.UtcNow;
+        var agent = Guid.NewGuid();
+        var definition = new JobDefinitionInfo(41, "Synthetic scheduled workflow", "/", null, 7, "synthetic", now, now, null,
+            legacy ? agent : null)
+        { Target = legacy ? null : new() { Source = JobTargetSource.RuntimeInput, RuntimeInput = new(JobRuntimeTargetKind.ClientId, "ClientId") } };
+        var snapshot = new PinnedJobExecutionSnapshot(new(definition, [], []), []);
+        var node = new JobTargetNode(agent, "synthetic-scheduled.example.test", "Synthetic scheduled node", []);
+        var plan = new JobResolvedTargetPlan(1, 7, 41, snapshot.ComputeDigest(), definition.Target ?? JobTargetDefinition.FromLegacy(agent), null, [], [node], new());
+        var parent = new JobRunRecord { Id = 700, JobId = 41, TenantId = 7, AgentId = definition.AgentId,
+            StartedBy = "schedule", Status = (int)JobRunState.Succeeded, CreatedAtUtc = now, StartedAtUtc = now, CompletedAtUtc = now,
+            DefinitionDigest = snapshot.ComputeDigest(), TargetPlanDigest = plan.ComputeDigest(), TargetPlanJson = JsonSerializer.Serialize(plan) };
+        // Create genuine protected original source material before projecting the agentless logical parent.
+        new JobRunInputProtection(new EphemeralDataProtectionProvider()).Store(parent,
+            new("submitted-definition-v1", snapshot.ComputeDigest(), [], DefinitionName: definition.Name), "{}", null, pinnedSnapshot: snapshot);
+        parent.AgentId = null;
+        parent.IsAggregate = true;
+        db.JobRuns.Add(parent);
+        db.JobRuns.Add(new() { Id = 701, JobId = 41, TenantId = 7, ParentRunId = 700, AgentId = agent,
+            Status = (int)JobRunState.Succeeded, CurrentStepOrdinal = 1, CreatedAtUtc = now, StartedAtUtc = now, CompletedAtUtc = now });
+        db.Set<JobRunNodeRecord>().Add(new() { ParentRunId = 700, TenantId = 7, AgentId = agent, NativeRunId = 701,
+            Ordinal = 1, State = JobRunNodeState.Succeeded, TargetJson = JsonSerializer.Serialize(node), StartedAtUtc = now, CompletedAtUtc = now });
+        db.Set<JobAggregateControlRecord>().Add(new() { ParentRunId = 700, SourceKind = "legacy-schedule" });
+        await db.SaveChangesAsync();
+        var run = new JobRunInfo(700, 41, 7, "", "schedule", JobRunState.Succeeded, 0, now, now, now, null, "{}", null)
+        { IsAggregate = true, DefinitionDigest = snapshot.ComputeDigest(), TargetPlanDigest = plan.ComputeDigest(), TargetCount = 1,
+            NodeCounts = new(0, 0, 1, 0, 0, 0, 0, 0) };
+        var details = new JobRunDetails(run, [], []);
+        var projections = await JobRunNodeProjection.ReadAsync(db, 700, default);
+        await ExecutionLifecycleOutbox.RecordJobAsync(db, details, JobRunProjectionHash.ComputeAggregate(details, projections), now, default, snapshot);
+        await db.SaveChangesAsync();
+        var fact = Read(Assert.Single(await db.OutboxMessages.Where(row => row.Type == FlowExecutionEventLimits.OutboxType).ToArrayAsync()));
+        Assert.Null(parent.AgentId);
+        Assert.Equal(legacy ? agent : null, fact.Target.AgentId);
+        Assert.Equal(legacy ? agent : null, fact.Aggregate!.LegacyTargetAgentId);
+        Assert.Equal(plan.ComputeDigest(), fact.Aggregate.TargetPlanDigest);
+        Assert.True(fact.Replay!.Supported);
+        var oldSubscription = new FlowExecutionTriggerSettingsDto([FlowExecutionSourceKind.Job],
+            [FlowExecutionOutcome.Succeeded], FlowExecutionScope.AllInTenant) { AgentIds = [agent] };
+        Assert.Equal(legacy, FlowExecutionEventMatching.Matches(7, oldSubscription, fact, DateTimeOffset.MinValue));
+        Assert.True(FlowExecutionEventValidator.Validate(fact).Valid);
+    }
+
     private static OrchestratorDbContext Memory() => new(new DbContextOptionsBuilder<OrchestratorDbContext>()
         .UseInMemoryDatabase(Guid.NewGuid().ToString("N")).Options);
 }

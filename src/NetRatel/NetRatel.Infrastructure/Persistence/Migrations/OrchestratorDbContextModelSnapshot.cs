@@ -4055,6 +4055,32 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.ToTable("ManagedOrchestrationRequestBindings", (string)null);
                 });
 
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.McpJobTargetReservationRecord", b =>
+                {
+                    b.Property<Guid>("IdempotencyId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("PolicyId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("TargetCount")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("TargetPlanDigest")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.HasKey("IdempotencyId", "PolicyId");
+
+                    b.HasIndex("PolicyId");
+
+                    b.ToTable("McpJobTargetReservations", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_McpJobTargetReservations_Count", "\"TargetCount\" > 0 AND \"TargetCount\" <= 10000");
+                        });
+                });
+
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.McpOperatorAcceptedAuditRecord", b =>
                 {
                     b.Property<Guid>("Id")
@@ -4314,6 +4340,10 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                         .IsRequired()
                         .HasMaxLength(128)
                         .HasColumnType("character varying(128)");
+
+                    b.Property<string>("JobRequestHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
 
                     b.Property<string>("McpInstance")
                         .HasMaxLength(32)
@@ -5678,6 +5708,36 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.HasIndex("TenantId", "AgentId", "Subject", "ClientId", "State");
 
                     b.ToTable("McpOperatorTerminalSessions", (string)null);
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.McpReviewedJobAdmissionRecord", b =>
+                {
+                    b.Property<Guid>("IdempotencyId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("AcceptedAuditId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long>("JobId")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("ProtectedSubmissionJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("integer");
+
+                    b.HasKey("IdempotencyId");
+
+                    b.HasIndex("AcceptedAuditId");
+
+                    b.HasIndex("TenantId", "JobId");
+
+                    b.ToTable("McpReviewedJobAdmissions", (string)null);
                 });
 
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.MonitoringAuditRecord", b =>
@@ -8139,6 +8199,21 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                         .IsRequired();
                 });
 
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.McpJobTargetReservationRecord", b =>
+                {
+                    b.HasOne("NetRatel.Infrastructure.Persistence.McpOperatorIdempotencyRecord", null)
+                        .WithMany()
+                        .HasForeignKey("IdempotencyId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("NetRatel.Infrastructure.Persistence.McpOperatorPolicyRecord", null)
+                        .WithMany()
+                        .HasForeignKey("PolicyId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.McpOperatorAcceptedAuditRecord", b =>
                 {
                     b.HasOne("NetRatel.Infrastructure.Persistence.McpOperatorPolicyRecord", null)
@@ -8454,6 +8529,21 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.HasOne("NetRatel.Infrastructure.Persistence.McpOperatorPolicyRecord", null)
                         .WithMany()
                         .HasForeignKey("PolicyId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.McpReviewedJobAdmissionRecord", b =>
+                {
+                    b.HasOne("NetRatel.Infrastructure.Persistence.McpOperatorAcceptedAuditRecord", null)
+                        .WithMany()
+                        .HasForeignKey("AcceptedAuditId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("NetRatel.Infrastructure.Persistence.McpOperatorIdempotencyRecord", null)
+                        .WithMany()
+                        .HasForeignKey("IdempotencyId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
                 });

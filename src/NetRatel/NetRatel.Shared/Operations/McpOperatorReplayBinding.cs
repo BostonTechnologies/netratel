@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using NetRatel.Shared.Contracts.Jobs;
 
 namespace NetRatel.Shared.Operations;
 
@@ -29,7 +30,8 @@ public static class McpOperatorJobConfirmationPayload
     {
         PropertyNameCaseInsensitive = true,
         NumberHandling = JsonNumberHandling.AllowReadingFromString,
-        UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow
+        UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
+        Converters = { new JsonStringEnumConverter() }
     };
 
     public static bool IsMutation(string action) => action is "create" or "update" or "delete" or
@@ -71,6 +73,13 @@ public static class McpOperatorJobConfirmationPayload
                 idempotencyKey = body.IdempotencyKey;
                 payloadHash = MutationHash(operation, body);
             }
+            else if (tool == "netratel_job_runs" && operation == "start")
+            {
+                var body = request.Deserialize<RunStartBody>(ReadOptions);
+                if (body?.JobId is not > 0) return false;
+                planToken = body.PlanToken; idempotencyKey = body.IdempotencyKey;
+                payloadHash = RunStartRequestHash(body.JobId.Value, body.Inputs, body.RuntimeTarget);
+            }
             else if (tool == "netratel_job_runs" && operation is "cancel" or "delete")
             {
                 var body = request.Deserialize<RunActionBody>(ReadOptions);
@@ -90,6 +99,10 @@ public static class McpOperatorJobConfirmationPayload
             return false;
         }
     }
+
+    public static string RunStartRequestHash(long jobId, IReadOnlyDictionary<string, string>? inputs, JobRuntimeTargetInput? runtimeTarget) =>
+        McpOperatorReplayBinding.Hash(JsonSerializer.Serialize(new
+        { jobId, inputs = (inputs ?? new Dictionary<string, string>()).OrderBy(pair => pair.Key, StringComparer.Ordinal).ToArray(), runtimeTarget }));
 
     public static McpOperatorReplayBinding RunActionBinding(string action, ulong runId, string? reason, string planToken, string idempotencyKey) =>
         new(McpOperatorReplayBinding.Hash(planToken), McpOperatorReplayBinding.Hash(idempotencyKey), RunActionHash(action, runId, reason));
@@ -129,11 +142,18 @@ public static class McpOperatorJobConfirmationPayload
         long? StepId = null, JobStep? Step = null, int? Ordinal = null,
         string? PlanToken = null, string? IdempotencyKey = null, int? TenantId = null, Guid? AgentId = null);
 
-    private sealed record JobDraft(string Name, string FolderPath, string? Description = null, string? OptionsJson = null);
+    private sealed record JobDraft(string Name, string FolderPath, string? Description = null, string? OptionsJson = null)
+    {
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public JobTargetDefinition? Target { get; init; }
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public JobExecutionPolicy? ExecutionPolicy { get; init; }
+    }
     private sealed record JobParameter(string Name, string Type, bool Required, string? Description = null,
         string? DefaultValue = null, IReadOnlyList<string>? Options = null, string? SecretReference = null, long? Id = null);
     private sealed record JobStep(int? Ordinal, long ScriptId, long ScriptVersion, string ScriptContentHash,
         bool Enabled = true, long? Id = null);
+    private sealed record RunStartBody(long? JobId = null, IReadOnlyDictionary<string, string>? Inputs = null,
+        JobRuntimeTargetInput? RuntimeTarget = null, string? PlanToken = null, string? IdempotencyKey = null,
+        int? TenantId = null, Guid? AgentId = null);
     private sealed record RunActionBody(string? Reason = null, string? PlanToken = null, string? IdempotencyKey = null,
         ulong? JobRunId = null, int? TenantId = null, Guid? AgentId = null);
 }

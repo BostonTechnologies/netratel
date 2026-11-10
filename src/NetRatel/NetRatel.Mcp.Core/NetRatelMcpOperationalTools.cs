@@ -217,7 +217,7 @@ public sealed partial class NetRatelMcpOperationalTools
         {
             return operation switch
             {
-                "list" or "query" or "get" or "steps" or "logs" => ProductionJobRunReadAsync(operation, request, cancellationToken),
+                "list" or "query" or "get" or "steps" or "logs" or "nodes" or "node_steps" or "node_logs" => ProductionJobRunReadAsync(operation, request, cancellationToken),
                 "start" or "cancel" or "delete" => ProductionJobRunMutationAsync(operation, request, confirm, cancellationToken),
                 _ => Task.FromResult(Unsupported("netratel_job_runs", operation, ProductionJobRunOperations))
             };
@@ -560,7 +560,7 @@ public sealed partial class NetRatelMcpOperationalTools
     private static readonly string[] JobReadOperations = ["list", "get", "details", "params", "steps"];
     private static readonly string[] JobRunReadOperations = ["list", "query", "get", "steps", "logs"];
     private static readonly string[] ProductionJobOperations = ["list", "get", "details", "params", "steps", "create", "update", "delete", "param_add", "param_update", "param_delete", "step_add", "step_update", "step_reorder", "step_delete"];
-    private static readonly string[] ProductionJobRunOperations = ["list", "query", "get", "steps", "logs", "start", "cancel", "delete"];
+    private static readonly string[] ProductionJobRunOperations = ["list", "query", "get", "steps", "logs", "nodes", "node_steps", "node_logs", "start", "cancel", "delete"];
     private static readonly string[] DevelopmentMarkerJobOperations = ["create", "run", "cancel", "delete"];
     private static readonly string[] TenantReadOperations = ["list", "get"];
     private static readonly string[] ProductionTenantOperations = ["list", "get", "create", "update", "delete"];
@@ -2158,6 +2158,38 @@ public sealed partial class NetRatelMcpOperationalTools
             return GetAsync(RunsToolName, operation, ProductionJobRunOperations,
                 WithQuery(ProductionJobPath(tenantId, agentId, operation == "query" ? "/runs/query" : "/runs"), ("jobId", Format(jobId))), cancellationToken);
         }
+        if (operation is "nodes" or "node_steps" or "node_logs")
+        {
+            if (!TryPositiveUlong(payload, "jobRunId", out var parentId)) return Task.FromResult(Invalid("A parent jobRunId is required."));
+            var path = ProductionJobPath(tenantId, agentId, $"/runs/{parentId.ToString(CultureInfo.InvariantCulture)}/nodes");
+            if (operation == "nodes")
+            {
+                if (!ContainsOnly(payload, "tenantId", "agentId", "jobRunId", "page", "pageSize") ||
+                    !TryOptionalInt(payload, "page", 1, 100000, out var page) || !TryOptionalInt(payload, "pageSize", 1, 100, out var pageSize))
+                    return Task.FromResult(Invalid("Supply parent identity and bounded one-based page/pageSize."));
+                path = WithQuery(path, ("page", Format(page)), ("pageSize", Format(pageSize)));
+            }
+            else
+            {
+                if (!TryRequiredGuid(payload, "nodeAgentId", out var nodeAgentId) ||
+                    !(operation == "node_logs"
+                        ? ContainsOnly(payload, "tenantId", "agentId", "jobRunId", "nodeAgentId", "stepRunId", "cursor", "limit", "maximumBytes")
+                        : ContainsOnly(payload, "tenantId", "agentId", "jobRunId", "nodeAgentId")))
+                    return Task.FromResult(Invalid("Supply an exact nodeAgentId from the parent node list."));
+                path += $"/{nodeAgentId:D}/steps";
+                if (operation == "node_logs")
+                {
+                    if (!TryPositiveUlong(payload, "stepRunId", out var stepRunId)) return Task.FromResult(Invalid("An exact stepRunId from this node is required."));
+                    if (!TryOptionalString(payload, "cursor", 64, out var cursor) ||
+                        !TryOptionalInt(payload, "limit", 1, 1000, out var limit) ||
+                        !TryOptionalInt(payload, "maximumBytes", 1, 65536, out var maximumBytes))
+                        return Task.FromResult(Invalid("Supply the exact output cursor and bounded limit/maximumBytes."));
+                    path = WithQuery(path + $"/{stepRunId.ToString(CultureInfo.InvariantCulture)}/logs",
+                        ("cursor", cursor), ("limit", Format(limit)), ("maximumBytes", Format(maximumBytes)));
+                }
+            }
+            return GetAsync(RunsToolName, operation, ProductionJobRunOperations, path, cancellationToken);
+        }
         if (!ContainsOnly(payload, "tenantId", "agentId", "jobRunId") || !TryPositiveUlong(payload, "jobRunId", out var runId))
             return Task.FromResult(Invalid("request requires only tenantId, agentId, and a positive owned jobRunId."));
         var suffix = operation switch { "steps" => "/steps", "logs" => "/logs", _ => string.Empty };
@@ -2171,7 +2203,7 @@ public sealed partial class NetRatelMcpOperationalTools
             return Task.FromResult(Invalid("request requires a positive Production tenantId and persisted agentId UUID."));
         if (operation == "start")
         {
-            if (!TryPositiveLong(payload, "jobId", out var jobId) || !ContainsOnly(payload, "tenantId", "agentId", "jobId", "inputs", "planToken", "idempotencyKey"))
+            if (!TryPositiveLong(payload, "jobId", out var jobId) || !ContainsOnly(payload, "tenantId", "agentId", "jobId", "inputs", "runtimeTarget", "planToken", "idempotencyKey"))
                 return Task.FromResult(Invalid("Production job-runs.start requires tenantId, agentId, jobId, optional typed inputs, and plan credentials only after preview."));
             var body = CloneWithout(payload!, "tenantId", "agentId", "jobId");
             if (confirm && !TryPlanCredentials(body)) return Task.FromResult(Invalid("A confirmed Production job start requires unchanged opaque planToken and idempotencyKey from its preview."));

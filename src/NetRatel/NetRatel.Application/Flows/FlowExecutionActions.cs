@@ -1,13 +1,18 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using NetRatel.Application.Jobs;
+using NetRatel.Shared.Contracts.Jobs;
 using NetRatel.Shared.Contracts.Flows;
 
 namespace NetRatel.Application.Flows;
 
 public sealed record FlowExecutionPinsCapture(FlowGraphDto Graph, string? ProtectedPinsJson);
 public sealed record FlowPinnedExecutionDefinition(Guid NodeId, FlowNodeKind Kind, FlowExecutionDefinitionDto Definition,
-    FlowExecutionTargetDto? Target, PinnedJobExecutionSnapshot? Job = null, PinnedJobScriptSnapshot? Script = null);
+    FlowExecutionTargetDto? Target, PinnedJobExecutionSnapshot? Job = null, PinnedJobScriptSnapshot? Script = null)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public FlowJobTargetBindingDto? TargetBinding { get; init; }
+};
 
 public interface IFlowExecutionDefinitionPins
 {
@@ -36,7 +41,11 @@ public sealed record FlowExecutionActionRequest(FlowRunLease Lease, Guid NodeId,
     public bool AllowUnstartedDispatch { get; init; } = true;
 }
 public sealed record FlowExecutionActionReceipt(Guid ActionKey, ExecutionAdmissionKind Kind, string ExecutionId,
-    string? SourceExecutionId = null, int RecoveryAttempt = 0);
+    string? SourceExecutionId = null, int RecoveryAttempt = 0)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? DefinitionDigest { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? TargetPlanDigest { get; init; }
+}
 
 public sealed record FlowExecutionActionOutput(FlowExecutionDefinitionDto Definition, FlowExecutionTargetDto Target,
     string ExecutionId, string AttemptId, DateTimeOffset? StartedAtUtc = null, DateTimeOffset? CompletedAtUtc = null,

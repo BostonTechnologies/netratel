@@ -10,6 +10,14 @@ namespace NetRatel.Mcp.Core;
 
 public static partial class NetRatelMcpToolDefinitions
 {
+    private static JsonObject JobTargetContractSchema(Type type)
+    {
+        var options = new JsonSerializerOptions(ManagedOperationCatalog.JsonOptions)
+        { TypeInfoResolver = new DefaultJsonTypeInfoResolver() };
+        var schema = options.GetJsonSchemaAsNode(type);
+        return InlineManagedSchema(schema, schema, new HashSet<string>(StringComparer.Ordinal)).AsObject();
+    }
+
     private static RequestDefinition ManagedRequestSchema(ManagedOperationDescriptor operation)
     {
         var properties = new JsonObject

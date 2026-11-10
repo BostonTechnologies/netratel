@@ -126,7 +126,12 @@ public sealed record UpsertJobRunCommand(
     NetRatel.Shared.ClientEnvironment? Environment = null,
     string? TargetDisplayName = null,
     string? TargetHostName = null,
-    string? TargetName = null);
+    string? TargetName = null)
+{
+    // Server-owned admission material, never bound from a public RunJobRequest.
+    public bool? IsAggregate { get; init; }
+    public JobResolvedTargetPlan? TargetPlan { get; init; }
+}
 
 public sealed record UpsertJobStepRunCommand(
     ulong StepRunId,
@@ -217,6 +222,18 @@ public sealed record JobRunDetails(
 
 public interface IJobRunService
 {
+    void BindNodeExecutionContext(ulong runId, JobTargetNode node) { }
+    Task<JobTargetNode?> GetNodeExecutionContextAsync(ulong runId, CancellationToken ct = default)
+        => Task.FromResult<JobTargetNode?>(null);
+    async Task<ExecutionLogDto> GetForwardLogsPageAsync(string requestId, string? cursor, int limit,
+        int maximumBytes, CancellationToken ct = default)
+        => JobLogPageBuilder.Build(requestId, await GetLogsByRequestIdAsync(requestId, ct), cursor, limit, maximumBytes);
+    Task<JobResolvedTargetPlan?> GetResolvedTargetPlanAsync(ulong runId, CancellationToken ct = default)
+        => Task.FromResult<JobResolvedTargetPlan?>(null);
+    async Task<IReadOnlyList<JobTaskLogInfo>> GetLogsPageAsync(string requestId, long afterSequence,
+        int pageSize, CancellationToken ct = default)
+        => (await GetLogsByRequestIdAsync(requestId, ct)).Where(row => row.Sequence > afterSequence)
+            .OrderBy(row => row.Sequence).ThenBy(row => row.Id).Take(Math.Clamp(pageSize, 1, 1000)).ToArray();
     // Agent lifecycle ingress: protect output before creating any diagnostic copy.
     Task<string?> ProtectTaskOutputAsync(string requestId, string? output, CancellationToken ct = default)
         => Task.FromResult(output);

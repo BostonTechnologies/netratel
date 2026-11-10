@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using NetRatel.Shared.Contracts.Jobs;
 
 namespace NetRatel.Shared.Contracts.Flows;
 
@@ -22,7 +23,16 @@ public sealed record FlowExecutionCausationDto(string RootOccurrenceId, Guid? Pa
 /// </summary>
 public sealed record FlowExecutionReplayDescriptorDto(FlowExecutionSourceKind SourceKind,
     FlowExecutionDefinitionDto Definition, FlowExecutionTargetDto Target, string InputsReference,
-    string SourceExecutionId, string SourceAttemptId, bool Supported, string? UnsupportedReason = null);
+    string SourceExecutionId, string SourceAttemptId, bool Supported, string? UnsupportedReason = null)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? TargetPlanDigest { get; init; }
+}
+
+public sealed record FlowExecutionAggregateDto(int TargetCount, string TargetPlanDigest, JobRunNodeCountsDto Counts)
+{
+    // Only the canonical legacy fixed-target schedule writer may populate this compatibility identity.
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public Guid? LegacyTargetAgentId { get; init; }
+}
 
 /// <summary>
 /// Immutable execution facts, separate from AI findings and flow outputs. Decimal identifiers remain strings
@@ -33,6 +43,8 @@ public sealed record FlowExecutionEventDto(Guid EventId, Guid OccurrenceId, int 
     string AttemptId, FlowExecutionTargetDto Target, FlowExecutionOutcome Outcome, string RawStatus,
     DateTimeOffset OccurredAtUtc, DateTimeOffset ObservedAtUtc)
 {
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public FlowExecutionAggregateDto? Aggregate { get; init; }
     public int SchemaVersion { get; init; } = FlowExecutionEventLimits.SchemaVersion;
     public DateTimeOffset? StartedAtUtc { get; init; }
     public DateTimeOffset? CompletedAtUtc { get; init; }

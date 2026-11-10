@@ -11,6 +11,7 @@ using NetRatel.Infrastructure.Clients;
 using NetRatel.Infrastructure.Services;
 using NetRatel.Shared.Contracts.Tasks;
 using NetRatel.Shared.Contracts.Flows;
+using NetRatel.Shared.Contracts.Jobs;
 using NetRatel.Shared.Security;
 
 namespace NetRatel.Infrastructure.Flows;
@@ -116,7 +117,8 @@ public static class ExecutionLifecycleOutbox
             throw new InvalidOperationException("Accepted request binding requires the request link transaction.");
         if (request.TargetTenantId is not > 0 || request.TargetAgentId is not { } agent ||
             PositiveDecimal(request.JobDefinitionId) != run.JobId.ToString(CultureInfo.InvariantCulture) ||
-            request.TargetTenantId != run.TenantId || agent != run.AgentId || request.SourceSystem != run.StartedBy)
+            request.TargetTenantId != run.TenantId || request.SourceSystem != run.StartedBy ||
+            (run.IsAggregate ? !await IsExactRequestAggregateAsync(db, run, agent, ct) : agent != run.AgentId))
             throw new InvalidOperationException("The accepted request differs from its canonical job target.");
         var execution = run.Id.ToString(CultureInfo.InvariantCulture);
         var id = RequestBindingId(request.TargetTenantId.Value, request.Id);
@@ -192,8 +194,9 @@ public static class ExecutionLifecycleOutbox
     {
         if (details.Run.TenantId is not > 0 || FlowExecutionOutcomes.FromAuthoritativeStatus(details.Run.Status.ToString()) is null)
             return;
-        if (db.Database.IsNpgsql() && db.Database.CurrentTransaction is null ||
-            resultHash != JobRunProjectionHash.Compute(details))
+        var expectedHash = details.Run.IsAggregate ? JobRunProjectionHash.ComputeAggregate(details,
+            await JobRunNodeProjection.ReadAsync(db, checked((long)details.Run.Id), ct)) : JobRunProjectionHash.Compute(details);
+        if (db.Database.IsNpgsql() && db.Database.CurrentTransaction is null || resultHash != expectedHash)
             throw new InvalidOperationException("Request terminal projection requires the accepted job owner result.");
         var runId = details.Run.Id.ToString(CultureInfo.InvariantCulture);
         var tenant = details.Run.TenantId.Value.ToString(CultureInfo.InvariantCulture);
@@ -244,7 +247,7 @@ public static class ExecutionLifecycleOutbox
                 {
                     value = CorrelateJob(value, run);
                     if (FlowExecutionOutcomes.FromAuthoritativeStatus(value.RawStatus) == FlowExecutionOutcome.TimedOut)
-                        value = RequestTimeoutOutcome(value, run, Control(db, run.Id));
+                        value = RequestTimeoutOutcome(value, run, Control(db, run));
                 }
             }
             value = ApplyAdmission(value, Admission(db, value));
@@ -269,7 +272,7 @@ public static class ExecutionLifecycleOutbox
                 {
                     value = CorrelateJob(value, run);
                     if (FlowExecutionOutcomes.FromAuthoritativeStatus(value.RawStatus) == FlowExecutionOutcome.TimedOut)
-                        value = RequestTimeoutOutcome(value, run, await ControlAsync(db, run.Id, ct));
+                        value = RequestTimeoutOutcome(value, run, await ControlAsync(db, run, ct));
                 }
             }
             value = ApplyAdmission(value, await AdmissionAsync(db, value, ct));
@@ -292,7 +295,7 @@ public static class ExecutionLifecycleOutbox
         {
             value = CorrelateJob(value, run);
             if (FlowExecutionOutcomes.FromAuthoritativeStatus(value.RawStatus) == FlowExecutionOutcome.TimedOut)
-                value = RequestTimeoutOutcome(value, run, await ControlAsync(db, run.Id, ct));
+                value = RequestTimeoutOutcome(value, run, await ControlAsync(db, run, ct));
         }
         value = ApplyAdmission(value, await AdmissionAsync(db, value, ct));
         if (db.OutboxMessages.Local.Any(x => x.Id == value.EventId) ||
@@ -307,9 +310,12 @@ public static class ExecutionLifecycleOutbox
     public static async Task RecordJobAsync(OrchestratorDbContext db, JobRunDetails details, string resultHash,
         DateTimeOffset terminalReadyAtUtc, CancellationToken ct, PinnedJobExecutionSnapshot? pinnedSnapshot = null)
     {
-        if (details.Run.TenantId is not > 0) return;
+        if (details.Run.TenantId is not > 0 || details.Run.ParentRunId is not null) return;
+        var nodes = details.Run.IsAggregate
+            ? await JobRunNodeProjection.ReadAsync(db, checked((long)details.Run.Id), ct) : [];
+        var expectedHash = details.Run.IsAggregate ? JobRunProjectionHash.ComputeAggregate(details, nodes) : JobRunProjectionHash.Compute(details);
         var outcome = FlowExecutionOutcomes.FromAuthoritativeStatus(details.Run.Status.ToString());
-        if (outcome is null || resultHash != JobRunProjectionHash.Compute(details))
+        if (outcome is null || resultHash != expectedHash)
             throw new InvalidOperationException("A lifecycle event requires the accepted complete terminal result.");
         var row = await db.JobRuns.AsNoTracking().SingleAsync(x => x.Id == checked((long)details.Run.Id), ct);
         var metadata = JobRunInputProtection.Metadata(row);
@@ -320,15 +326,18 @@ public static class ExecutionLifecycleOutbox
         {
             pinnedSnapshot.Validate(row.TenantId!.Value);
             if (pinnedSnapshot.Definition.Job.Id != details.Run.JobId ||
-                pinnedSnapshot.Definition.Job.AgentId != row.AgentId ||
+                !row.IsAggregate && pinnedSnapshot.Definition.Job.AgentId != row.AgentId ||
+                row.IsAggregate && (row.AgentId is not null || !string.Equals(row.DefinitionDigest, pinnedSnapshot.ComputeDigest(), StringComparison.OrdinalIgnoreCase)) ||
                 !string.Equals(pinnedSnapshot.ComputeDigest(), metadata.DefinitionRevision, StringComparison.Ordinal))
                 throw new InvalidOperationException("The lifecycle replay descriptor differs from the accepted original job.");
             replayHash = pinnedSnapshot.ComputeDigest();
         }
         var definition = new FlowExecutionDefinitionDto(Decimal(row.JobId), Bound(metadata.DefinitionName, 512),
             metadata.DefinitionRevision, replayHash);
-        var target = new FlowExecutionTargetDto(row.AgentId, Bound(row.TargetDisplayName ?? row.TargetName, 512),
-            Bound(row.TargetHostName, 512));
+        var legacyTarget = row.IsAggregate ? await LegacyScheduleTargetAsync(db, row, pinnedSnapshot, nodes, ct) : null;
+        var target = legacyTarget is null
+            ? new FlowExecutionTargetDto(row.AgentId, Bound(row.TargetDisplayName ?? row.TargetName, 512), Bound(row.TargetHostName, 512))
+            : new FlowExecutionTargetDto(legacyTarget.AgentId, Bound(legacyTarget.DisplayName, 512), Bound(legacyTarget.Hostname, 512));
         var value = Create(row.TenantId!.Value, FlowExecutionSourceKind.Job, definition, id, id, target,
             outcome.Value, details.Run.Status.ToString(), occurred, terminalReadyAtUtc, details.Run.CompletedAtUtc ?? terminalReadyAtUtc) with
         {
@@ -340,12 +349,32 @@ public static class ExecutionLifecycleOutbox
             Reason = Bound(details.Run.Error, 512),
             Results = [new("job-result", id, resultHash, Available: true)],
             Replay = JobReplay(row, definition, target),
-            Provenance = "job-terminal-ready"
+            Provenance = "job-terminal-ready",
+            Aggregate = row.IsAggregate ? new(nodes.Count, row.TargetPlanDigest ??
+                throw new InvalidOperationException("The aggregate target plan digest is unavailable."),
+                details.Run.NodeCounts ?? Counts(nodes)) { LegacyTargetAgentId = legacyTarget?.AgentId } : null
         };
         value = ApplyAdmission(value, await AdmissionAsync(db, value, ct));
         if (db.OutboxMessages.Local.Any(x => x.Id == value.EventId) ||
             await db.OutboxMessages.AsNoTracking().AnyAsync(x => x.Id == value.EventId, ct)) return;
         Append(db, value);
+    }
+
+    private static async Task<JobTargetNode?> LegacyScheduleTargetAsync(OrchestratorDbContext db, JobRunRecord row,
+        PinnedJobExecutionSnapshot? original, IReadOnlyList<JobRunNodeDto> nodes, CancellationToken ct)
+    {
+        if (row.ProtectedExecutionJson is null || original?.Definition.Job is not { Target: null, AgentId: { } agent } ||
+            nodes.Count != 1 || nodes[0].AgentId != agent || nodes[0].ParentRunId != checked((ulong)row.Id)) return null;
+        var control = db.Set<JobAggregateControlRecord>().Local.SingleOrDefault(control => control.ParentRunId == row.Id) ??
+            await db.Set<JobAggregateControlRecord>().AsNoTracking().SingleOrDefaultAsync(control => control.ParentRunId == row.Id, ct);
+        if (control?.SourceKind != "legacy-schedule") return null;
+        var plan = JsonSerializer.Deserialize<JobResolvedTargetPlan>(row.TargetPlanJson ?? "null", new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        if (plan is null || plan.TenantId != row.TenantId || plan.JobId != checked((ulong)row.JobId) ||
+            plan.DefinitionDigest != original.ComputeDigest() || plan.ComputeDigest() != row.TargetPlanDigest ||
+            plan.Target.Source != JobTargetSource.ExplicitNodes || plan.Target.AgentIds is not { Count: 1 } ids || ids[0] != agent ||
+            plan.Nodes.Count != 1 || plan.Nodes[0].AgentId != agent)
+            throw new InvalidOperationException("A legacy schedule event requires its exact protected singleton target plan.");
+        return plan.Nodes[0];
     }
 
     public static FlowExecutionEventDto? RequestEvent(RequestRecord row, string? previousStatus, DateTimeOffset observedAtUtc)
@@ -437,8 +466,14 @@ public static class ExecutionLifecycleOutbox
             var previous = entry.State == EntityState.Added ? null : entry.Property(x => x.Status).OriginalValue;
             if (RequestEvent(entry.Entity, previous, observed) is { } value) candidates.Add((value, entry.Entity));
         }
-        foreach (var entry in db.ChangeTracker.Entries<JobTaskActivityRecord>().Where(HasScriptTransition))
+        var activities = db.ChangeTracker.Entries<JobTaskActivityRecord>().Where(HasScriptTransition).ToArray();
+        var runIds = activities.Where(entry => entry.Entity.JobRunId is not null).Select(entry => entry.Entity.JobRunId!.Value).Distinct().ToArray();
+        var internalRuns = db.JobRuns.Local.Where(run => run.ParentRunId != null).Select(run => run.Id).ToHashSet();
+        if (runIds.Length > 0)
+            internalRuns.UnionWith(db.JobRuns.AsNoTracking().Where(run => run.ParentRunId != null && runIds.Contains(run.Id)).Select(run => run.Id));
+        foreach (var entry in activities)
         {
+            if (entry.Entity.JobRunId is { } runId && internalRuns.Contains(runId)) continue;
             var previous = entry.State == EntityState.Added ? null : entry.Property(x => x.Status).OriginalValue;
             if (ScriptEvent(entry.Entity, previous, observed, ScriptTerminalEvidenceChanged(entry)) is { } value)
                 candidates.Add((value, null));
@@ -456,7 +491,11 @@ public static class ExecutionLifecycleOutbox
         // Correlation identifies the persisted accepted submission, not a fabricated terminal outcome.
         // Combined subscriptions wait for this known parent's terminal-ready result separately.
         return db.JobRuns.AsNoTracking().Where(run => run.Id == runId && run.JobId == jobId &&
-            run.TenantId == row.TargetTenantId && run.AgentId == row.TargetAgentId && run.StartedBy == row.SourceSystem);
+            run.TenantId == row.TargetTenantId && run.StartedBy == row.SourceSystem &&
+            (run.AgentId == row.TargetAgentId || run.IsAggregate && run.AgentId == null && run.TargetPlanDigest != null &&
+                db.Set<JobRunNodeRecord>().Count(node => node.ParentRunId == run.Id) == 1 &&
+                db.Set<JobRunNodeRecord>().Any(node => node.ParentRunId == run.Id && node.TenantId == row.TargetTenantId &&
+                    node.AgentId == row.TargetAgentId)));
     }
 
     private static JobRunRecord? LinkedJob(OrchestratorDbContext db, RequestRecord row) =>
@@ -464,6 +503,25 @@ public static class ExecutionLifecycleOutbox
 
     private static async Task<JobRunRecord?> LinkedJobAsync(OrchestratorDbContext db, RequestRecord row, CancellationToken ct) =>
         await HasTrustedBindingAsync(db, row, ct) ? await LinkedJobs(db, row).SingleOrDefaultAsync(ct) : null;
+
+    private static async Task<bool> IsExactRequestAggregateAsync(OrchestratorDbContext db, JobRunInfo run, Guid agentId, CancellationToken ct)
+    {
+        if (!run.IsAggregate || run.AgentId is not null || run.TargetCount != 1 || run.TargetPlanDigest is null) return false;
+        var row = db.JobRuns.Local.SingleOrDefault(row => row.Id == checked((long)run.Id)) ??
+            await db.JobRuns.AsNoTracking().SingleOrDefaultAsync(row => row.Id == checked((long)run.Id), ct);
+        if (row is not { IsAggregate: true, AgentId: null, TargetPlanJson: not null } || row.JobId != checked((long)run.JobId) ||
+            row.TenantId != run.TenantId || row.TargetPlanDigest != run.TargetPlanDigest || row.DefinitionDigest != run.DefinitionDigest) return false;
+        try
+        {
+            var plan = JsonSerializer.Deserialize<JobResolvedTargetPlan>(row.TargetPlanJson, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+            if (plan is null || plan.TenantId != run.TenantId || plan.JobId != run.JobId || plan.Nodes.Count != 1 ||
+                plan.Nodes[0].AgentId != agentId || plan.ComputeDigest() != row.TargetPlanDigest || plan.DefinitionDigest != row.DefinitionDigest) return false;
+            var nodes = await db.Set<JobRunNodeRecord>().AsNoTracking().Where(node => node.ParentRunId == row.Id)
+                .Select(node => new { node.TenantId, node.AgentId }).ToArrayAsync(ct);
+            return nodes.Length == 1 && nodes[0].TenantId == run.TenantId && nodes[0].AgentId == agentId;
+        }
+        catch (Exception error) when (error is JsonException or ArgumentException) { return false; }
+    }
 
     private static Guid RequestBindingId(int tenantId, int requestId) => Identity($"request-binding|{tenantId}|{requestId}");
 
@@ -551,17 +609,36 @@ public static class ExecutionLifecycleOutbox
         catch (JsonException) { return false; }
     }
 
-    private static JobRunControlRecord? Control(OrchestratorDbContext db, long runId) =>
-        db.Set<JobRunControlRecord>().Local.SingleOrDefault(x => x.RunId == runId) ??
-        db.Set<JobRunControlRecord>().AsNoTracking().SingleOrDefault(x => x.RunId == runId);
+    private sealed record JobTerminalProof(long RunId, DateTimeOffset? TerminalReadyAtUtc, string? TerminalResultHash);
 
-    private static Task<JobRunControlRecord?> ControlAsync(OrchestratorDbContext db, long runId, CancellationToken ct) =>
-        db.Set<JobRunControlRecord>().Local.SingleOrDefault(x => x.RunId == runId) is { } local
-            ? Task.FromResult<JobRunControlRecord?>(local)
-            : db.Set<JobRunControlRecord>().AsNoTracking().SingleOrDefaultAsync(x => x.RunId == runId, ct);
+    private static JobTerminalProof? Control(OrchestratorDbContext db, JobRunRecord run)
+    {
+        if (run.IsAggregate)
+        {
+            var aggregate = db.Set<JobAggregateControlRecord>().Local.SingleOrDefault(row => row.ParentRunId == run.Id) ??
+                db.Set<JobAggregateControlRecord>().AsNoTracking().SingleOrDefault(row => row.ParentRunId == run.Id);
+            return aggregate is null ? null : new(run.Id, aggregate.TerminalReadyAtUtc, aggregate.TerminalResultHash);
+        }
+        var native = db.Set<JobRunControlRecord>().Local.SingleOrDefault(row => row.RunId == run.Id) ??
+            db.Set<JobRunControlRecord>().AsNoTracking().SingleOrDefault(row => row.RunId == run.Id);
+        return native is null ? null : new(run.Id, native.TerminalReadyAtUtc, native.TerminalResultHash);
+    }
+
+    private static async Task<JobTerminalProof?> ControlAsync(OrchestratorDbContext db, JobRunRecord run, CancellationToken ct)
+    {
+        if (run.IsAggregate)
+        {
+            var aggregate = db.Set<JobAggregateControlRecord>().Local.SingleOrDefault(row => row.ParentRunId == run.Id) ??
+                await db.Set<JobAggregateControlRecord>().AsNoTracking().SingleOrDefaultAsync(row => row.ParentRunId == run.Id, ct);
+            return aggregate is null ? null : new(run.Id, aggregate.TerminalReadyAtUtc, aggregate.TerminalResultHash);
+        }
+        var native = db.Set<JobRunControlRecord>().Local.SingleOrDefault(row => row.RunId == run.Id) ??
+            await db.Set<JobRunControlRecord>().AsNoTracking().SingleOrDefaultAsync(row => row.RunId == run.Id, ct);
+        return native is null ? null : new(run.Id, native.TerminalReadyAtUtc, native.TerminalResultHash);
+    }
 
     private static FlowExecutionEventDto RequestTimeoutOutcome(FlowExecutionEventDto value, JobRunRecord run,
-        JobRunControlRecord? control)
+        JobTerminalProof? control)
     {
         if (FlowExecutionOutcomes.FromAuthoritativeStatus(value.RawStatus) != FlowExecutionOutcome.TimedOut ||
             run.Status != (int)JobRunState.TimedOut || control?.RunId != run.Id ||
@@ -602,15 +679,32 @@ public static class ExecutionLifecycleOutbox
         var metadata = JobRunInputProtection.Metadata(run);
         var definition = new FlowExecutionDefinitionDto(Decimal(run.JobId), Bound(metadata.DefinitionName, 512),
             metadata.DefinitionRevision, TrustedReplayHash(run, metadata));
+        JobTargetNode? singleton = null;
+        if (run.IsAggregate)
+        {
+            var plan = JsonSerializer.Deserialize<JobResolvedTargetPlan>(run.TargetPlanJson ?? "null",
+                new JsonSerializerOptions(JsonSerializerDefaults.Web));
+            if (plan is null || plan.TenantId != value.TenantId || plan.JobId != checked((ulong)run.JobId) ||
+                plan.ComputeDigest() != run.TargetPlanDigest || plan.Nodes.Count != 1 || plan.Nodes[0].AgentId != value.Target.AgentId)
+                throw new InvalidOperationException("The correlated Request does not have its exact protected singleton target plan.");
+            singleton = plan.Nodes[0];
+        }
         var target = new FlowExecutionTargetDto(value.Target.AgentId,
-            Bound(run.TargetDisplayName ?? run.TargetName ?? value.Target.DisplayName, 512),
-            Bound(run.TargetHostName ?? value.Target.HostName, 512));
+            Bound(singleton?.DisplayName ?? run.TargetDisplayName ?? run.TargetName ?? value.Target.DisplayName, 512),
+            Bound(singleton?.Hostname ?? run.TargetHostName ?? value.Target.HostName, 512));
         return value with
         {
             CorrelationId = "job-run:" + id, ParentExecutionId = id, RootExecutionId = id, AttemptId = id,
             Definition = definition, DefinitionSourceKind = FlowExecutionSourceKind.Job, Target = target, Replay = JobReplay(run, definition, target)
         };
     }
+
+    private static JobRunNodeCountsDto Counts(IReadOnlyList<JobRunNodeDto> nodes) => new(
+        nodes.Count(node => node.State == JobRunNodeState.NeverStarted),
+        nodes.Count(node => node.State is JobRunNodeState.Claimed or JobRunNodeState.Running),
+        nodes.Count(node => node.State == JobRunNodeState.Succeeded), nodes.Count(node => node.State == JobRunNodeState.Failed),
+        nodes.Count(node => node.State == JobRunNodeState.Skipped), nodes.Count(node => node.State == JobRunNodeState.Cancelled),
+        nodes.Count(node => node.State == JobRunNodeState.TimedOut), nodes.Count(node => node.State == JobRunNodeState.Unknown));
 
     private static string? TrustedReplayHash(JobRunRecord row, JobRunInputProtection.Sensitivity metadata) =>
         row.ProtectedExecutionJson is not null && metadata.PinnedReplayDefinitionHash is { Length: 64 } hash &&
@@ -621,9 +715,11 @@ public static class ExecutionLifecycleOutbox
         FlowExecutionDefinitionDto definition, FlowExecutionTargetDto target)
     {
         var id = Decimal(row.Id);
-        var supported = definition.ContentHash is { Length: 64 } && target.AgentId is not null && row.ProtectedExecutionJson is not null;
+        var supported = definition.ContentHash is { Length: 64 } && row.ProtectedExecutionJson is not null &&
+            (target.AgentId is not null || row.IsAggregate && row.TargetPlanDigest is { Length: 64 } && row.TargetPlanJson is not null);
         return new(FlowExecutionSourceKind.Job, definition, target, "job-run:" + id, id, id, supported,
-            supported ? null : "canonical_replay_material_unavailable");
+            supported ? null : "canonical_replay_material_unavailable")
+        { TargetPlanDigest = row.IsAggregate ? row.TargetPlanDigest : null };
     }
 
     private static FlowExecutionEventDto ApplyNativeScriptReplay(OrchestratorDbContext db, FlowExecutionEventDto value)

@@ -321,6 +321,17 @@ public sealed class JobTaskBridge
             payload.Preferred = ParseShellExecutor(step.Runner);
         }
 
+        try
+        {
+            payload.Command = JobNodeTemplateContext.ResolveCommand(payload.Command, payload.Preferred, inputs);
+            payload.WorkingDirectory = JobNodeTemplateContext.ResolveLiteral(payload.WorkingDirectory, inputs);
+        }
+        catch (ArgumentException exception)
+        {
+            error = exception.Message;
+            return false;
+        }
+
         if (string.IsNullOrWhiteSpace(payload.Command))
         {
             error = "Command text is required for RunCommand steps.";
@@ -428,6 +439,13 @@ public sealed class JobTaskBridge
             ComputeContentHash(execution.Script.Content));
 
         var parameters = BuildLibraryScriptParameters(inputs, payloadParameters, payload.Parameters);
+        try
+        {
+            foreach (var key in parameters.Keys.ToArray())
+                parameters[key] = JobNodeTemplateContext.ResolveLiteral(parameters[key], inputs)!;
+            payload.WorkingDirectory = JobNodeTemplateContext.ResolveLiteral(payload.WorkingDirectory, inputs);
+        }
+        catch (ArgumentException exception) { return (false, default, exception.Message); }
 
         payload.Parameters = parameters.Count > 0 ? parameters : new Dictionary<string, string>();
         payload.TimeoutSeconds = reviewedScript is null

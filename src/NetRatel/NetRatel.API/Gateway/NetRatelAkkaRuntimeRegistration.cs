@@ -10,6 +10,7 @@ using NetRatel.API.Services;
 using NetRatel.API.Services.Jobs;
 using NetRatel.API.Services.Flows;
 using NetRatel.Application.Scripts;
+using NetRatel.Application.Jobs;
 using NetRatel.Application.Flows;
 using NetRatel.API.Services.Terminal;
 using NetRatel.Akka.Configuration;
@@ -112,6 +113,13 @@ public static class NetRatelAkkaRuntimeRegistration
             serviceProvider.GetRequiredService<AgentCommandGatewaySessionRegistry>());
         services.TryAddSingleton<IAgentCommandAuthorityDispatcher, AgentCommandAuthorityDispatcher>();
         services.TryAddScoped<IAkkaJobAuthorityService, AkkaJobAuthorityService>();
+        services.AddHttpContextAccessor();
+        services.AddOptions<JobAggregateOptions>().Bind(configuration.GetSection(JobAggregateOptions.SectionName))
+            .Validate(value => value.MaximumActiveNodes is >= 1 and <= 100, "Aggregate node capacity must be between 1 and 100.")
+            .ValidateOnStart();
+        services.TryAddScoped<JobAggregateOrchestrator>();
+        services.TryAddScoped<IJobAggregatePump>(provider => provider.GetRequiredService<JobAggregateOrchestrator>());
+        services.AddHostedService<JobAggregateRecoveryWorker>();
         services.TryAddScoped<IKeyedScriptExecutionService, KeyedScriptExecutionService>();
         services.TryAddScoped<IFlowExecutionActionDispatcher, FlowExecutionActionDispatcher>();
         services.TryAddSingleton<AgentJobGatewaySessionRegistry>();

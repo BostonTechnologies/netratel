@@ -72,12 +72,13 @@ public sealed class McpOperationObjectTargetResolver(OrchestratorDbContext db) :
 
         var jobMutation = delegation.Tool == "netratel_jobs" && McpOperatorJobConfirmationPayload.IsMutation(delegation.Operation);
         var runAction = delegation.Tool == "netratel_job_runs" && delegation.Operation is "cancel" or "delete";
-        if (!jobMutation && !runAction) return false;
+        var jobStart = delegation.Tool == "netratel_job_runs" && delegation.Operation == "start";
+        if (!jobMutation && !runAction && !jobStart) return false;
 
         // A tombstone is an owner-bound receipt source only. Joining a run's
         // durable job record prevents another job with the same public id from
         // supplying identity after the original definition has been removed.
-        var owners = jobMutation
+        var owners = jobMutation || jobStart
             ? db.McpOperatorJobs.AsNoTracking().Where(job => job.JobId == identifier && job.DeletedAtUtc != null)
                 .Select(job => new ReplayOwner(job.TenantId, job.AgentId, job.Subject, job.ClientId, job.McpResource, job.McpInstance, job.TargetSetDigest))
             : from run in db.McpOperatorJobRuns.AsNoTracking()
@@ -95,11 +96,12 @@ public sealed class McpOperationObjectTargetResolver(OrchestratorDbContext db) :
             .SingleOrDefaultAsync(record => record.TokenHash == binding.PlanTokenHash, cancellationToken).ConfigureAwait(false);
         var now = DateTimeOffset.UtcNow;
         if (operation is null || plan?.ConsumedIdempotencyId is not { } receiptId || plan.ConsumedAtUtc is null ||
-            plan.ExpiresAtUtc <= now || plan.Subject != owner.Subject || plan.ClientId != owner.ClientId ||
+            (!jobStart && plan.ExpiresAtUtc <= now) || plan.Subject != owner.Subject || plan.ClientId != owner.ClientId ||
             plan.McpResource != owner.Resource || plan.McpInstance != owner.Instance ||
             plan.TenantId != owner.TenantId || plan.AgentId != owner.AgentId || plan.TargetSetDigest != owner.TargetSetDigest ||
             plan.Operation != $"{delegation.Tool}/{delegation.Operation}" || plan.OperationFamily != operation.OperationFamily ||
-            plan.ConfirmationClass != operation.ConfirmationClass || plan.PayloadHash != binding.PayloadHash ||
+            plan.ConfirmationClass != operation.ConfirmationClass ||
+            (jobStart ? plan.JobRequestHash : plan.PayloadHash) != binding.PayloadHash ||
             McpOperatorReplayBinding.Hash(plan.IdempotencyKey) != binding.IdempotencyKeyHash) return false;
 
         var receipt = await db.McpOperatorIdempotencyRecords.AsNoTracking()
@@ -110,7 +112,18 @@ public sealed class McpOperationObjectTargetResolver(OrchestratorDbContext db) :
             receipt.PolicyId != plan.PolicyId || receipt.PolicyVersion != plan.PolicyVersion ||
             receipt.OperationFamily != plan.OperationFamily || receipt.Operation != plan.Operation ||
             receipt.IdempotencyKey != plan.IdempotencyKey || receipt.PayloadHash != plan.PayloadHash ||
-            !ResultMatchesObject(receipt.ResultReference, identifier, jobMutation)) return false;
+            (!jobStart && !ResultMatchesObject(receipt.ResultReference, identifier, jobMutation))) return false;
+        if (jobStart)
+        {
+            if (!PositiveDecimal(receipt.ResultReference, out var runId) ||
+                !await (from run in db.McpOperatorJobRuns.AsNoTracking()
+                        join job in db.McpOperatorJobs.AsNoTracking() on run.JobRecordId equals job.Id
+                        where run.JobRunId == runId && run.IdempotencyId == receipt.Id && run.JobId == identifier &&
+                            job.JobId == identifier && job.TenantId == owner.TenantId && job.AgentId == owner.AgentId &&
+                            job.Subject == owner.Subject && job.ClientId == owner.ClientId && job.McpResource == owner.Resource &&
+                            job.McpInstance == owner.Instance
+                        select run.Id).AnyAsync(cancellationToken).ConfigureAwait(false)) return false;
+        }
 
         // This inexpensive withdrawal check is repeated at execution ingress.
         // Route admission and ReplayOnly still evaluate the complete current

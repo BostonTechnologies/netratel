@@ -18,6 +18,7 @@ public static partial class JobRunEndpoints
     public static IEndpointRouteBuilder MapJobRunEndpoints(this IEndpointRouteBuilder app)
     {
         var group = app.MapGroup("/api/v1/jobruns").WithTags("Job Runs").RequireAuthorization();
+        MapAggregateRoutes(group);
         group.MapGet("/{id:long}/stream", StreamRunAsync);
         group.MapPost("/start/{jobId:long}", async (ulong jobId, [FromBody] RunJobRequest request, HttpContext http, IJobDefinitionService jobs, [FromServices] IEffectiveAccessService access, IAkkaJobAuthorityService authority, IEventRecorder events, ICorrelationContext correlation, CancellationToken ct) =>
         {
@@ -30,6 +31,8 @@ public static partial class JobRunEndpoints
                 return Results.Ok(Map(run, string.Empty, null, null));
             }
             catch (KeyNotFoundException) { return Results.NotFound(); }
+            catch (JobTargetValidationException ex) { return Results.Json(new { code = ex.Code, detail = ex.Message }, statusCode: ex.StatusCode); }
+            catch (ArgumentException ex) { return Results.BadRequest(new { code = "job_target_invalid", detail = ex.Message }); }
             catch (InvalidOperationException ex) { return Results.Conflict(new { code = "job_authority_unavailable", detail = ex.Message }); }
         });
         group.MapPost("/{id:long}/cancel", async (ulong id, HttpContext http, [FromServices] IEffectiveAccessService access, IAkkaJobAuthorityService authority, IJobRunService runs, CancellationToken ct) =>
@@ -44,7 +47,9 @@ public static partial class JobRunEndpoints
         {
             var run = await runs.GetAsync(id, ct); if (run is null) return Results.NotFound();
             if (!await CanManageAsync(http, access, run.TenantId, ct)) return Results.Forbid();
-            await runs.DeleteAsync(id, ct); return Results.NoContent();
+            try { await runs.DeleteAsync(id, ct); return Results.NoContent(); }
+            catch (JobAggregateHistoryRetainedException error)
+            { return Results.Conflict(new { code = error.Code, detail = error.Message }); }
         });
         group.MapGet("/", async (HttpContext http, [FromServices] IEffectiveAccessService access, IJobRunService runs, IJobDefinitionService jobs, ITenantService tenants, [FromServices] OrchestratorDbContext db, [FromQuery] JobRunStatusDto? status, [FromQuery] ulong? jobId, [FromQuery] int? tenantId, [FromQuery] int? take, CancellationToken ct) =>
         {
@@ -56,7 +61,7 @@ public static partial class JobRunEndpoints
         {
             var run = await runs.GetAsync(id, ct); if (run is null) return Results.NotFound();
             if (!await CanManageAsync(http, access, run.TenantId, ct)) return Results.Forbid();
-            return Results.Ok((await BuildAsync(runs, jobs, tenants, db, ct)).First(x => x.Id == id));
+            return Results.Ok(await MapCurrentAsync(run, runs, tenants, db, ct));
         });
         group.MapGet("/query", async (HttpContext http, [FromServices] IEffectiveAccessService access, IJobRunService runs, IJobDefinitionService jobs, ITenantService tenants, [FromServices] OrchestratorDbContext db, [FromQuery] ulong? jobId, [FromQuery] int? tenantId, [FromQuery] Guid? agentId, [FromQuery] string? search, [FromQuery] JobRunStatusDto? status, [FromQuery] int page = 0, [FromQuery] int pageSize = 20, CancellationToken ct = default) =>
         {
@@ -65,16 +70,34 @@ public static partial class JobRunEndpoints
             if (!string.IsNullOrWhiteSpace(search)) q = q.Where(x => $"{x.JobName} {x.TenantDisplayName} {x.ClientDisplayName} {x.Id}".Contains(search, StringComparison.OrdinalIgnoreCase));
             var total = q.Count(); return Results.Ok(new PagedJobRunsDto(q.OrderByDescending(x => x.CreatedAtMicros).Skip(Math.Max(0, page) * Math.Clamp(pageSize, 1, 100)).Take(Math.Clamp(pageSize, 1, 100)).ToList(), total));
         });
-        group.MapGet("/{id:long}/steps", async (ulong id, HttpContext http, [FromServices] IEffectiveAccessService access, IJobRunService runs, CancellationToken ct) =>
+        group.MapGet("/{id:long}/steps", async (ulong id, HttpContext http, [FromServices] IEffectiveAccessService access, IJobRunService runs, OrchestratorDbContext db, CancellationToken ct) =>
         {
             var detail = await runs.GetDetailsAsync(id, ct); if (detail is null) return Results.NotFound();
             if (!await CanManageAsync(http, access, detail.Run.TenantId, ct)) return Results.Forbid();
+            if (detail.Run.IsAggregate)
+            {
+                var plan = await runs.GetResolvedTargetPlanAsync(id, ct);
+                if (plan?.Nodes.Count != 1) return Results.Conflict(new { code = "node_identity_required", detail = "Use the node-specific steps route for a multi-node run." });
+                var native = await FindNodeExecutionAsync(db, detail.Run, plan.Nodes[0].AgentId, ct);
+                if (native is null) return Results.Ok(Array.Empty<JobStepRunDto>());
+                detail = await runs.GetDetailsAsync(native.Value, ct);
+                if (detail is null) return Results.NotFound();
+            }
             return Results.Ok(detail.Steps.OrderBy(x => x.Ordinal).Select(x => MapStepRun(x, detail.Activities.FirstOrDefault(a => a.RequestId == x.TaskRequestId))));
         });
-        group.MapGet("/{id:long}/steps/{ordinal:int}/logs", async (ulong id, int ordinal, HttpContext http, [FromServices] IEffectiveAccessService access, IJobRunService runs, CancellationToken ct) =>
+        group.MapGet("/{id:long}/steps/{ordinal:int}/logs", async (ulong id, int ordinal, HttpContext http, [FromServices] IEffectiveAccessService access, IJobRunService runs, OrchestratorDbContext db, CancellationToken ct) =>
         {
-            var detail = await runs.GetDetailsAsync(id, ct); var step = detail?.Steps.FirstOrDefault(x => x.Ordinal == ordinal); if (step is null) return Results.NotFound();
-            if (!await CanManageAsync(http, access, detail!.Run.TenantId, ct)) return Results.Forbid();
+            var detail = await runs.GetDetailsAsync(id, ct); if (detail is null) return Results.NotFound();
+            if (!await CanManageAsync(http, access, detail.Run.TenantId, ct)) return Results.Forbid();
+            if (detail.Run.IsAggregate)
+            {
+                var plan = await runs.GetResolvedTargetPlanAsync(id, ct);
+                if (plan?.Nodes.Count != 1) return Results.Conflict(new { code = "node_identity_required", detail = "Use the node and step-run identities when reading output from a multi-node run." });
+                var native = await FindNodeExecutionAsync(db, detail.Run, plan.Nodes[0].AgentId, ct);
+                if (native is null) return Results.NotFound();
+                detail = await runs.GetDetailsAsync(native.Value, ct);
+            }
+            var step = detail?.Steps.SingleOrDefault(x => x.Ordinal == ordinal); if (step is null) return Results.NotFound();
             var activity = detail.Activities.FirstOrDefault(x => x.RequestId == step.TaskRequestId && x.TenantId == detail.Run.TenantId);
             var logs = activity is null || string.IsNullOrWhiteSpace(step.TaskRequestId)
                 ? Array.Empty<JobTaskLogInfo>() : (await runs.GetLogsByRequestIdAsync(step.TaskRequestId, ct)).Where(x => x.TenantId == detail.Run.TenantId).ToArray();
@@ -104,7 +127,14 @@ public static partial class JobRunEndpoints
             if (await access.AuthorizeAsync(principal, NetRatelPermissions.JobManagement, run.TenantId, ct)) visible.Add(run);
         return visible;
     }
-    internal static JobRunDto Map(JobRunInfo run, string jobName, string? tenantName, string? agentName) => new(run.Id, run.JobId, jobName, run.TenantId, run.ClientIdentity, run.StartedBy, (JobRunStatusDto)run.Status, run.CurrentStepOrdinal, Micros(run.CreatedAtUtc)!.Value, Micros(run.StartedAtUtc), Micros(run.CompletedAtUtc), run.Error, run.InputsJson, JobTemplateHelper.BuildOptions(run.OptionsJson, run.InputsJson), tenantName, run.TargetHostName ?? run.TargetDisplayName ?? run.TargetName ?? (string.IsNullOrWhiteSpace(agentName) ? null : $"Linked target: {agentName}"), run.Environment, run.AgentId, run.TargetDisplayName, run.TargetHostName, run.TargetName, run.InputProtectionStatus, run.SubmittedDefinitionRevision);
+    internal static JobRunDto Map(JobRunInfo run, string jobName, string? tenantName, string? agentName) => new(run.Id, run.JobId, jobName, run.TenantId, run.ClientIdentity, run.StartedBy, (JobRunStatusDto)run.Status, run.CurrentStepOrdinal, Micros(run.CreatedAtUtc)!.Value, Micros(run.StartedAtUtc), Micros(run.CompletedAtUtc), run.Error, run.InputsJson, JobTemplateHelper.BuildOptions(run.OptionsJson, run.InputsJson), tenantName, run.TargetHostName ?? run.TargetDisplayName ?? run.TargetName ?? (string.IsNullOrWhiteSpace(agentName) ? null : $"Linked target: {agentName}"), run.Environment, run.AgentId, run.TargetDisplayName, run.TargetHostName, run.TargetName, run.InputProtectionStatus, run.SubmittedDefinitionRevision)
+    {
+        IsAggregate = run.IsAggregate, ParentRunId = run.ParentRunId,
+        TargetPlanDigest = run.TargetPlanDigest, DefinitionDigest = run.DefinitionDigest,
+        TargetSource = run.TargetSource, ExecutionPolicy = run.ExecutionPolicy,
+        TargetCount = run.TargetCount, EffectiveConcurrency = run.EffectiveConcurrency,
+        NodeCounts = run.NodeCounts, NodesTotalCount = run.TargetCount
+    };
     private static bool Terminal(JobRunState s) => s is JobRunState.Succeeded or JobRunState.Failed or JobRunState.Cancelled or JobRunState.TimedOut or JobRunState.Unknown;
     private static long? Micros(DateTimeOffset? value) => value?.ToUnixTimeMilliseconds() * 1000;
 }

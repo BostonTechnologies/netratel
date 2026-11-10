@@ -241,11 +241,15 @@ public sealed record JobRunNodeDto(ulong ParentRunId, Guid AgentId, int Ordinal,
     public IReadOnlyList<string>? Tags { get; init; }
     public ClientEnvironment? Environment { get; init; }
     public int CurrentStepOrdinal { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? NativeTerminalResultHash { get; init; }
 }
 
 public sealed record PagedJobRunNodesDto(IReadOnlyList<JobRunNodeDto> Items, int TotalCount);
 
+[JsonSerializable(typeof(JobLaunchPreviewDto))]
 [JsonSerializable(typeof(JobTargetDefinition))]
+[JsonSerializable(typeof(JobLaunchPreviewDto))]
 [JsonSerializable(typeof(JobExecutionPolicy))]
 [JsonSerializable(typeof(JobRuntimeTargetInput))]
 [JsonSerializable(typeof(JobResolvedTargetPlan))]

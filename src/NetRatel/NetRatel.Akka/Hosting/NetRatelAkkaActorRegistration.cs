@@ -45,6 +45,8 @@ public sealed class ClientCommandRegion;
 /// <summary>Marker used for type-safe access to the local job region.</summary>
 public sealed class JobRuntimeRegion;
 
+public sealed class JobAggregateRegion;
+
 /// <summary>Marker used for type-safe access to the V2 remote-support authority router.</summary>
 public sealed class RemoteSupportSessionAuthorityRegion;
 
@@ -121,6 +123,10 @@ public static class NetRatelAkkaActorRegistration
                         "job-runtime");
                     registry.Register<JobRuntimeRegion>(jobRegion);
 
+                    registry.Register<JobAggregateRegion>(system.ActorOf(
+                        JobAggregateCoordinatorActor.Props(serviceProvider.GetRequiredService<IServiceScopeFactory>()),
+                        "job-aggregates"));
+
                     var remoteSupportShardRegion = options.Cluster.IsClustered
                         ? ClusterSharding.Get(system).Start(
                             RemoteSupportSessionMessageExtractor.RegionName,
@@ -163,6 +169,7 @@ public static class NetRatelAkkaActorRegistration
             new AkkaJobRuntimeRouter(
                 serviceProvider.GetRequiredService<IRequiredActor<JobRuntimeRegion>>(),
                 serviceProvider.GetRequiredService<NetRatelAkkaOptions>().AskTimeout));
+        services.AddSingleton<IJobAggregateWakeup, AkkaJobAggregateWakeup>();
         services.AddSingleton<IRemoteSupportLifecycleRouter>(serviceProvider =>
             new AkkaRemoteSupportLifecycleRouter(
                 serviceProvider.GetRequiredService<IRequiredActor<RemoteSupportSessionAuthorityRegion>>(),
@@ -173,6 +180,15 @@ public static class NetRatelAkkaActorRegistration
                 serviceProvider.GetRequiredService<IMonitoringStore>(), serviceProvider.GetRequiredService<NetRatelAkkaOptions>().AskTimeout));
 
         return services;
+    }
+}
+
+internal sealed class AkkaJobAggregateWakeup(IRequiredActor<JobAggregateRegion> region) : IJobAggregateWakeup
+{
+    public async Task WakeAsync(ulong parentRunId, CancellationToken cancellationToken)
+    {
+        var actor = await region.GetAsync(cancellationToken).ConfigureAwait(false);
+        actor.Tell(new WakeAggregateJob(parentRunId));
     }
 }
 

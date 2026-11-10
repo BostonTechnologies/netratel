@@ -8,6 +8,7 @@ using NetRatel.Application.Jobs;
 using NetRatel.Application.Scripts;
 using NetRatel.Infrastructure.Flows;
 using NetRatel.Infrastructure.Persistence;
+using NetRatel.Infrastructure.Services;
 using NetRatel.Shared.Contracts.Flows;
 using NetRatel.Shared.Contracts.Jobs;
 using NetRatel.Shared.Contracts.Tasks;
@@ -39,21 +40,26 @@ public sealed class FlowExecutionActionDispatcher(OrchestratorDbContext db, IFlo
             if (node.Kind == FlowNodeKind.RerunOriginalExecution) return await RerunAsync(request, identity, ct);
             var pin = await pins.ResolveAsync(identity.TenantId, identity.FlowVersionId, identity.NodeId, ct);
             if (pin is null || pin.Kind != node.Kind) return Result(FlowExecutionActionDisposition.Unsupported, "execution-pin-unavailable");
-            var inputs = FlowExecutionSecretReferences.MergeInputs(node, pin, Inputs(request.InputsJson));
+            var resolved = FlowJobTargetBindings.Split(node, Inputs(request.InputsJson));
+            var inputs = FlowExecutionSecretReferences.MergeInputs(node, pin, resolved.InputsJson);
             if (node.Kind == FlowNodeKind.RunJob && pin.Job is { } job)
             {
                 var timeout = node.ExecutionAction!.TimeoutMinutes * 60;
+                var aggregate = job.Definition.Job.Target is not null || job.Definition.Job.ExecutionPolicy is not null;
                 var run = await jobs.StartKeyedAsync(new(identity, job, new("flow-action", inputs,
-                    null, ExpectedRuntimeSeconds: timeout, GraceSeconds: 0, HardTimeoutSeconds: timeout,
+                    null, ExpectedRuntimeSeconds: aggregate ? null : timeout, GraceSeconds: aggregate ? null : 0,
+                    HardTimeoutSeconds: aggregate ? null : timeout,
                     Environment: node.ExecutionAction.Environment == NetRatel.Shared.ClientEnvironment.None
-                        ? null : node.ExecutionAction.Environment)) { FlowLease = request.Lease }, ct);
+                        ? null : node.ExecutionAction.Environment) { RuntimeTarget = resolved.Target })
+                    { FlowLease = request.Lease, ActionDeadlineAtUtc = aggregate ? request.DeadlineAtUtc : null }, ct);
                 return await ObserveAsync(request, new(request.ActionKey, ExecutionAdmissionKind.Job,
-                    run.Id.ToString(CultureInfo.InvariantCulture)), ct);
+                    run.Id.ToString(CultureInfo.InvariantCulture))
+                    { DefinitionDigest = run.DefinitionDigest, TargetPlanDigest = run.TargetPlanDigest }, ct);
             }
             if (node.Kind == FlowNodeKind.RunLibraryScript && pin.Script is { } script)
             {
                 var target = pin.Target?.AgentId ?? request.Lease.Event.ExecutionEvent?.Target.AgentId ??
-                    (request.Lease.Event.ExecutionEvent is null ? request.Lease.Event.Data.AgentId : null);
+                    (request.Lease.Event.ExecutionEvent is null ? request.Lease.Event.Data?.AgentId : null);
                 if (target is null || target == Guid.Empty) return Result(FlowExecutionActionDisposition.Unsupported, "script-target-unavailable");
                 var accepted = await scripts.StartKeyedAsync(new(identity, script, target.Value, Parameters(inputs),
                     node.ExecutionAction!.Environment, node.ExecutionAction.TimeoutMinutes * 60, node.ExecutionAction.WorkingDirectory)
@@ -107,9 +113,23 @@ public sealed class FlowExecutionActionDispatcher(OrchestratorDbContext db, IFlo
         var id = ulong.Parse(binding.ExecutionId, CultureInfo.InvariantCulture);
         var details = await runs.GetDetailsAsync(id, ct);
         if (details is null) return new(FlowExecutionActionDisposition.Pending, "job-reserved", receipt);
-        if (details.Run.TenantId != expected.TenantId || details.Run.AgentId != submitted.Snapshot.Definition.Job.AgentId ||
+        if (details.Run.TenantId != expected.TenantId || details.Run.AgentId != (details.Run.IsAggregate ? null : submitted.Snapshot.Definition.Job.AgentId) ||
             details.Run.JobId != submitted.Snapshot.Definition.Job.Id || details.Run.StartedBy != submitted.Request.StartedBy)
             return Result(FlowExecutionActionDisposition.Unknown, "job-receipt-binding-mismatch");
+        if (details.Run.IsAggregate)
+        {
+            var plan = submitted.TargetPlan;
+            if (plan is null || plan.TenantId != expected.TenantId || plan.JobId != details.Run.JobId || details.Run.AgentId is not null ||
+                !string.Equals(plan.DefinitionDigest, submitted.Snapshot.ComputeDigest(), StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(details.Run.DefinitionDigest, plan.DefinitionDigest, StringComparison.OrdinalIgnoreCase) ||
+                details.Run.TargetPlanDigest != plan.ComputeDigest() || receipt.TargetPlanDigest != details.Run.TargetPlanDigest ||
+                !string.Equals(receipt.DefinitionDigest, details.Run.DefinitionDigest, StringComparison.OrdinalIgnoreCase))
+                return Result(FlowExecutionActionDisposition.Unknown, "job-target-plan-receipt-mismatch");
+            await authority.RequireTargetsAllowedAsync(expected, submitted.Snapshot.Definition.Job,
+                plan.Nodes.Select(node => node.AgentId).ToArray(), ct);
+        }
+        else if (submitted.TargetPlan is not null || receipt.TargetPlanDigest is not null)
+            return Result(FlowExecutionActionDisposition.Unknown, "job-target-plan-receipt-mismatch");
         var disposition = details.Run.Status switch
         {
             JobRunState.Pending => FlowExecutionActionDisposition.Pending,
@@ -122,9 +142,28 @@ public sealed class FlowExecutionActionDispatcher(OrchestratorDbContext db, IFlo
         };
         if (disposition is not (FlowExecutionActionDisposition.Pending or FlowExecutionActionDisposition.Running))
         {
-            var control = await db.Set<JobRunControlRecord>().AsNoTracking().SingleOrDefaultAsync(control => control.RunId == checked((long)id), ct);
-            if (control?.TerminalReadyAtUtc is null) return new(FlowExecutionActionDisposition.Pending, "job-terminal-projection-pending", receipt);
-            if (control.TerminalResultHash != JobRunProjectionHash.Compute(details))
+            DateTimeOffset? ready;
+            string? acceptedHash;
+            string resultHash;
+            if (details.Run.IsAggregate)
+            {
+                var control = await db.Set<JobAggregateControlRecord>().AsNoTracking()
+                    .SingleOrDefaultAsync(control => control.ParentRunId == checked((long)id), ct);
+                ready = control?.TerminalReadyAtUtc; acceptedHash = control?.TerminalResultHash;
+                var nodes = await JobRunNodeProjection.ReadAsync(db, checked((long)id), ct);
+                if (submitted.TargetPlan is null || !nodes.Select(node => node.AgentId).ToHashSet()
+                    .SetEquals(submitted.TargetPlan.Nodes.Select(node => node.AgentId)))
+                    return Result(FlowExecutionActionDisposition.Unknown, "job-terminal-node-binding-mismatch");
+                resultHash = JobRunProjectionHash.ComputeAggregate(details, nodes);
+            }
+            else
+            {
+                var control = await db.Set<JobRunControlRecord>().AsNoTracking().SingleOrDefaultAsync(control => control.RunId == checked((long)id), ct);
+                ready = control?.TerminalReadyAtUtc; acceptedHash = control?.TerminalResultHash;
+                resultHash = JobRunProjectionHash.Compute(details);
+            }
+            if (ready is null) return new(FlowExecutionActionDisposition.Pending, "job-terminal-projection-pending", receipt);
+            if (acceptedHash != resultHash)
                 return new(FlowExecutionActionDisposition.Unknown, "job-terminal-projection-mismatch", receipt);
         }
         if (binding.AuthorityDeniedAtUtc is not null && details.Run.Status == JobRunState.Failed)
@@ -132,7 +171,7 @@ public sealed class FlowExecutionActionDispatcher(OrchestratorDbContext db, IFlo
         var terminal = await TerminalAsync(expected.TenantId, FlowExecutionSourceKind.Job, binding.ExecutionId, ct);
         var definition = new FlowExecutionDefinitionDto(submitted.Snapshot.Definition.Job.Id.ToString(CultureInfo.InvariantCulture),
             submitted.Snapshot.Definition.Job.Name, submitted.Snapshot.ComputeDigest(), submitted.Snapshot.ComputeDigest());
-        var projection = JobOutput(details);
+        var projection = details.Run.IsAggregate ? await AggregateOutputAsync(details, ct) : JobOutput(details);
         var output = new FlowExecutionActionOutput(definition, new(details.Run.AgentId, details.Run.TargetDisplayName, details.Run.TargetHostName),
             binding.ExecutionId, binding.ExecutionId, details.Run.StartedAtUtc, details.Run.CompletedAtUtc,
             projection.ExitCode, Summary: Bound(details.Run.Error), StandardOutput: projection.StandardOutput,
@@ -141,6 +180,32 @@ public sealed class FlowExecutionActionDispatcher(OrchestratorDbContext db, IFlo
         return new(disposition, "job-" + disposition.ToString().ToLowerInvariant(), Receipt(binding), output, terminal);
     }
 
+
+    private async Task<JobOutputProjection> AggregateOutputAsync(JobRunDetails details, CancellationToken ct)
+    {
+        const int maximumNodes = 8;
+        var nodes = await JobRunNodeProjection.ReadAsync(db, checked((long)details.Run.Id), ct, maximumNodes);
+        JsonElement Data(int included) => JsonSerializer.SerializeToElement(new
+        {
+            status = details.Run.Status.ToString(), targetCount = details.Run.TargetCount,
+            counts = details.Run.NodeCounts, targetPlanDigest = details.Run.TargetPlanDigest,
+            definitionDigest = details.Run.DefinitionDigest, configuredThreadCount = details.Run.ExecutionPolicy?.ThreadCount,
+            effectiveConcurrency = details.Run.EffectiveConcurrency, nodesIncluded = included,
+            nodesTruncated = included < details.Run.TargetCount,
+            nodes = nodes.Take(included).Select(node => new
+            {
+                agentId = node.AgentId, hostname = node.Hostname, ordinal = node.Ordinal,
+                nativeRunId = node.NativeRunId?.ToString(CultureInfo.InvariantCulture), state = node.State.ToString(),
+                reason = Bound(node.Reason), currentStep = node.CurrentStepOrdinal
+            })
+        }, Json);
+        var included = nodes.Count;
+        var data = Data(included);
+        while (included > 0 && Encoding.UTF8.GetByteCount(data.GetRawText()) > FlowGraphV2Limits.MaximumBindingBytes)
+            data = Data(--included);
+        // Native output is read through the node/step route. Never concatenate equal-ordinal output across nodes.
+        return new(data, null, null, null, included < details.Run.TargetCount);
+    }
 
     private sealed record JobOutputProjection(JsonElement Data, string? StandardOutput, string? StandardError,
         int? ExitCode, bool Truncated);
@@ -309,17 +374,40 @@ public sealed class FlowExecutionActionDispatcher(OrchestratorDbContext db, IFlo
         {
             var original = await runs.GetAsync(originalId, ct);
             var snapshot = await runs.GetPinnedExecutionSnapshotAsync(originalId, ct);
-            if (original?.TenantId != identity.TenantId || snapshot is null || original.AgentId != replay.Target.AgentId ||
-                snapshot.Definition.Job.AgentId != replay.Target.AgentId || snapshot.Definition.Job.Id.ToString(CultureInfo.InvariantCulture) != replay.Definition.Id ||
+            if (original?.TenantId != identity.TenantId || snapshot is null ||
+                !original.IsAggregate && (original.AgentId != replay.Target.AgentId || snapshot.Definition.Job.AgentId != replay.Target.AgentId) || snapshot.Definition.Job.Id.ToString(CultureInfo.InvariantCulture) != replay.Definition.Id ||
                 snapshot.ComputeDigest() != replay.Definition.Revision || snapshot.ComputeDigest() != replay.Definition.ContentHash)
                 return Result(FlowExecutionActionDisposition.Unsupported, "original-job-pin-unavailable");
-            await authority.RequireAllowedAsync(identity, snapshot.Definition.Job, ct);
+            JobResolvedTargetPlan? originalPlan = null;
+            if (original.IsAggregate)
+            {
+                var persisted = await db.JobRuns.AsNoTracking().Where(row => row.Id == checked((long)originalId) &&
+                    row.TenantId == identity.TenantId && row.IsAggregate).Select(row => row.TargetPlanJson).SingleOrDefaultAsync(ct);
+                if (persisted is null) return Result(FlowExecutionActionDisposition.Unsupported, "original-job-plan-unavailable");
+                originalPlan = JsonSerializer.Deserialize<JobResolvedTargetPlan>(persisted, Json);
+                if (originalPlan is null || originalPlan.TenantId != identity.TenantId || originalPlan.JobId != original.JobId ||
+                    originalPlan.ComputeDigest() != original.TargetPlanDigest || original.TargetPlanDigest != replay.TargetPlanDigest ||
+                    (source.Aggregate is { } aggregate ? aggregate.TargetPlanDigest != replay.TargetPlanDigest ||
+                        (replay.Target.AgentId is { } legacy && (aggregate.LegacyTargetAgentId != legacy || originalPlan.Nodes.Count != 1 || originalPlan.Nodes[0].AgentId != legacy)) :
+                        source.SourceKind != FlowExecutionSourceKind.Request || originalPlan.Nodes.Count != 1 ||
+                        originalPlan.Nodes[0].AgentId != source.Target.AgentId || replay.Target.AgentId != source.Target.AgentId) ||
+                    !string.Equals(originalPlan.DefinitionDigest, snapshot.ComputeDigest(), StringComparison.OrdinalIgnoreCase))
+                    return Result(FlowExecutionActionDisposition.Unsupported, "original-job-plan-unavailable");
+                await authority.RequireTargetsAllowedAsync(identity, snapshot.Definition.Job,
+                    originalPlan.Nodes.Select(node => node.AgentId).ToArray(), ct);
+            }
+            else if (replay.TargetPlanDigest is not null)
+                return Result(FlowExecutionActionDisposition.Unsupported, "original-job-plan-unavailable");
+            else await authority.RequireAllowedAsync(identity, snapshot.Definition.Job, ct);
             var seconds = (Node(request).Rerun?.TimeoutMinutes ?? 60) * 60;
             var run = await jobs.StartKeyedAsync(new(identity, snapshot, new("flow-rerun",
-                await runs.GetExecutionInputsAsync(originalId, ct), null, ExpectedRuntimeSeconds: seconds, GraceSeconds: 0,
-                HardTimeoutSeconds: seconds, Environment: original.Environment)) { FlowLease = request.Lease }, ct);
+                await runs.GetExecutionInputsAsync(originalId, ct), null, ExpectedRuntimeSeconds: original.IsAggregate ? null : seconds,
+                GraceSeconds: original.IsAggregate ? null : 0, HardTimeoutSeconds: original.IsAggregate ? null : seconds,
+                Environment: original.Environment))
+                { FlowLease = request.Lease, TargetPlan = originalPlan, ActionDeadlineAtUtc = original.IsAggregate ? request.DeadlineAtUtc : null }, ct);
             return await ObserveAsync(request, new(request.ActionKey, ExecutionAdmissionKind.Job,
-                run.Id.ToString(CultureInfo.InvariantCulture), replay.SourceExecutionId, identity.Causation.RecoveryAttempt), ct);
+                run.Id.ToString(CultureInfo.InvariantCulture), replay.SourceExecutionId, identity.Causation.RecoveryAttempt)
+                { DefinitionDigest = run.DefinitionDigest, TargetPlanDigest = run.TargetPlanDigest }, ct);
         }
         if (replay.SourceKind == FlowExecutionSourceKind.Script &&
             replay.InputsReference == "script-execution:" + replay.SourceExecutionId)
@@ -348,9 +436,16 @@ public sealed class FlowExecutionActionDispatcher(OrchestratorDbContext db, IFlo
         };
         identity.Validate(); return identity;
     }
-    private static FlowExecutionActionReceipt Receipt(ExecutionAdmissionBinding binding) =>
-        new(binding.Identity.ActionKey, binding.Kind, binding.ExecutionId, binding.Identity.Causation?.SourceExecutionId,
-            binding.Identity.Causation?.RecoveryAttempt ?? 0);
+    private static FlowExecutionActionReceipt Receipt(ExecutionAdmissionBinding binding)
+    {
+        var receipt = new FlowExecutionActionReceipt(binding.Identity.ActionKey, binding.Kind, binding.ExecutionId,
+            binding.Identity.Causation?.SourceExecutionId, binding.Identity.Causation?.RecoveryAttempt ?? 0);
+        if (binding.Kind != ExecutionAdmissionKind.Job) return receipt;
+        var submitted = JsonSerializer.Deserialize<KeyedJobAdmissionRequest>(binding.PayloadJson)
+            ?? throw new InvalidOperationException("The protected job submission is unavailable.");
+        return submitted.TargetPlan is not { } plan ? receipt : receipt with
+        { DefinitionDigest = plan.DefinitionDigest, TargetPlanDigest = plan.ComputeDigest() };
+    }
     private static FlowExecutionActionResult Result(FlowExecutionActionDisposition disposition, string code) => new(disposition, code);
     private static string Inputs(string? json)
     {

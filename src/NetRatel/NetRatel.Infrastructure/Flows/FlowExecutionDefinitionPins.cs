@@ -12,6 +12,7 @@ using NetRatel.Infrastructure.Identity.Authorization;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Infrastructure.Services;
 using NetRatel.Shared.Contracts.Flows;
+using NetRatel.Shared.Contracts.Jobs;
 
 namespace NetRatel.Infrastructure.Flows;
 
@@ -55,7 +56,23 @@ public sealed class FlowExecutionDefinitionPins(OrchestratorDbContext db, IJobEx
                 !await JobDefinitionMutationFence.LockActiveAsync(db, jobId, cancellationToken))
                 throw new FlowExecutionPinException("execution-definition-unavailable");
         }
-        // The job fences make this reference set stable until the publication commits.
+        // Group deletion uses the same row lock. Lock the complete sorted reference set before
+        // scripts and publication, so a retained immutable version cannot acquire a dangling group.
+        var targetPolicies = await db.Jobs.AsNoTracking().Where(job => jobIds.Contains(job.Id) && job.TargetJson != null)
+            .Select(job => job.TargetJson!).ToArrayAsync(cancellationToken);
+        var groupIds = targetPolicies.Select(json => JsonSerializer.Deserialize<JobTargetDefinition>(json, Json))
+            .Where(target => target?.Source == JobTargetSource.ExecutionGroup)
+            .Select(target => target!.ExecutionGroupId!.Value).Distinct().Order().ToArray();
+        foreach (var groupId in groupIds)
+        {
+            if (!db.Database.IsNpgsql()) throw new FlowExecutionPinException("execution-group-authority-unavailable");
+            var available = await db.Database.SqlQuery<Guid>($"""
+                SELECT "Id" AS "Value" FROM "ExecutionGroups"
+                WHERE "Id" = {groupId} AND "TenantId" = {tenantId} AND "Enabled" AND NOT "Archived" FOR UPDATE
+                """).ToArrayAsync(cancellationToken);
+            if (available.Length != 1) throw new FlowExecutionPinException("execution-group-unavailable");
+        }
+                // The job fences make this reference set stable until the publication commits.
         var referenced = await db.JobSteps.AsNoTracking().Where(step => jobIds.Contains(step.JobId) &&
             step.Enabled && step.Type == (int)JobStepKind.LibraryScript)
             .Select(step => new { step.ScriptId, step.PayloadJson }).ToArrayAsync(cancellationToken);
@@ -89,10 +106,24 @@ public sealed class FlowExecutionDefinitionPins(OrchestratorDbContext db, IJobEx
                 if (definition.Name is { Length: > 512 })
                     throw new FlowExecutionPinException("execution-definition-name-limit");
                 RequireSelectedRevision(selected.Definition, definition);
-                var target = await TargetAsync(tenantId, snapshot.Definition.Job.AgentId!.Value, cancellationToken);
-                if (selected.Target?.AgentId != target.AgentId)
-                    throw new FlowExecutionPinException("job-bound-target-conflict");
-                pin = new(node.Id, node.Kind, definition, target, Job: snapshot);
+                FlowExecutionTargetDto? target = null;
+                if (TargetPolicy(snapshot.Definition.Job) is { } targetPolicy)
+                {
+                    if (selected.Target is not null || selected.TargetBinding is not null &&
+                        (targetPolicy.Source != JobTargetSource.RuntimeInput || selected.TargetBinding.Kind != targetPolicy.RuntimeInput?.Kind))
+                        throw new FlowExecutionPinException("job-bound-target-conflict");
+                    if (selected.JobTarget is not null && !FlowJsonCanonical.Equal(selected.JobTarget, targetPolicy) ||
+                        selected.JobExecutionPolicy is not null && !FlowJsonCanonical.Equal(selected.JobExecutionPolicy,
+                            snapshot.Definition.Job.ExecutionPolicy ?? new JobExecutionPolicy()))
+                        throw new FlowExecutionPinException("job-target-policy-conflict");
+                }
+                else
+                {
+                    target = await TargetAsync(tenantId, snapshot.Definition.Job.AgentId!.Value, cancellationToken);
+                    if (selected.Target?.AgentId != target.AgentId || selected.TargetBinding is not null || selected.JobTarget is not null)
+                        throw new FlowExecutionPinException("job-bound-target-conflict");
+                }
+                pin = new(node.Id, node.Kind, definition, target, Job: snapshot) { TargetBinding = selected.TargetBinding };
                 parameters = snapshot.Definition.Params.Select(parameter =>
                     new FlowParameterDefinitionDto(parameter.Name, DataType(parameter.Type), parameter.Required)).ToArray();
             }
@@ -125,11 +156,17 @@ public sealed class FlowExecutionDefinitionPins(OrchestratorDbContext db, IJobEx
                 ExecutionAction = selected with
                 {
                     Definition = pin.Definition, Target = pin.Target,
+                    JobTarget = pin.Job is null ? null : TargetPolicy(pin.Job.Definition.Job),
+                    JobExecutionPolicy = pin.Job is null || TargetPolicy(pin.Job.Definition.Job) is null
+                        ? null : pin.Job.Definition.Job.ExecutionPolicy ?? new JobExecutionPolicy(),
+                    TargetBinding = pin.TargetBinding,
+                    JobTargetEnvironment = pin.Job is not null && TargetPolicy(pin.Job.Definition.Job) is not null
+                        ? JobExecutionEnvironment.FromOptions(pin.Job.Definition.Job.OptionsJson) : null,
                     PinnedSnapshotReference = Reference(versionId, node.Id), Parameters = parameters
                 }
             });
         }
-        var serialized = JsonSerializer.Serialize(new Pins(1, tenantId, versionId, pins), Json);
+        var serialized = JsonSerializer.Serialize(new Pins(pins.Any(pin => pin.Job is not null && TargetPolicy(pin.Job.Definition.Job) is not null) ? 2 : 1, tenantId, versionId, pins), Json);
         if (Encoding.UTF8.GetByteCount(serialized) > ExecutionAdmissionSubmission.MaximumPayloadBytes)
             throw new FlowExecutionPinException("execution-pins-limit");
         var protectedPins = Protector(tenantId, versionId).Protect(serialized);
@@ -151,7 +188,7 @@ public sealed class FlowExecutionDefinitionPins(OrchestratorDbContext db, IJobEx
         }
         catch (Exception error) when (error is CryptographicException or JsonException)
         { throw new FlowExecutionPinException("execution-pins-unavailable"); }
-        if (pins.SchemaVersion != 1 || pins.TenantId != tenantId || pins.VersionId != versionId ||
+        if (pins.SchemaVersion is not (1 or 2) || pins.TenantId != tenantId || pins.VersionId != versionId ||
             pins.Definitions.Count > FlowGraphV2Limits.MaximumNodes)
             throw new FlowExecutionPinException("execution-pins-context");
         var pin = pins.Definitions.SingleOrDefault(pin => pin.NodeId == nodeId);
@@ -161,10 +198,19 @@ public sealed class FlowExecutionDefinitionPins(OrchestratorDbContext db, IJobEx
         var node = graph.Nodes.SingleOrDefault(node => node.Id == nodeId);
         if (node?.Kind != pin.Kind || node.ExecutionAction?.Definition != pin.Definition ||
             node.ExecutionAction.PinnedSnapshotReference != Reference(versionId, nodeId) ||
-            node.ExecutionAction.Target != pin.Target)
+            node.ExecutionAction.Target != pin.Target ||
+            !FlowJsonCanonical.Equal(node.ExecutionAction.TargetBinding, pin.TargetBinding) ||
+            node.ExecutionAction.JobTargetEnvironment != (pin.Job is not null && TargetPolicy(pin.Job.Definition.Job) is not null
+                ? JobExecutionEnvironment.FromOptions(pin.Job.Definition.Job.OptionsJson) : null) ||
+            !FlowJsonCanonical.Equal(node.ExecutionAction.JobTarget, pin.Job is null ? null : TargetPolicy(pin.Job.Definition.Job)) ||
+            (pin.Job is not null && TargetPolicy(pin.Job.Definition.Job) is not null && !FlowJsonCanonical.Equal(node.ExecutionAction.JobExecutionPolicy,
+                pin.Job.Definition.Job.ExecutionPolicy ?? new JobExecutionPolicy())))
             throw new FlowExecutionPinException("execution-pins-context");
         return pin;
     }
+
+    private static JobTargetDefinition? TargetPolicy(JobDefinitionInfo job) => job.Target ??
+        (job.ExecutionPolicy is not null && job.AgentId is { } agent ? JobTargetDefinition.FromLegacy(agent) : null);
 
     private async Task<FlowExecutionTargetDto> TargetAsync(int tenantId, Guid agentId, CancellationToken ct)
     {
@@ -191,12 +237,7 @@ public sealed class FlowExecutionDefinitionPins(OrchestratorDbContext db, IJobEx
         _ => FlowDataType.Text
     };
 
-    private static ClaimsPrincipal Principal(FlowExecutionAuthorityDto authority)
-    {
-        var claims = new List<Claim> { new("netratel_principal_id", authority.PrincipalId) };
-        if (authority.IntegrationCredentialId is not null) claims.Add(new("netratel_integration_credential_id", authority.IntegrationCredentialId));
-        return new(new ClaimsIdentity(claims, "FlowExecutionPins"));
-    }
+    private static ClaimsPrincipal Principal(FlowExecutionAuthorityDto authority) => FlowAuthorityPrincipal.Create(authority);
     public static string Reference(Guid versionId, Guid nodeId) => $"flow-version:{versionId:N}/node:{nodeId:N}";
     private IDataProtector Protector(int tenantId, Guid versionId) => protection.CreateProtector(
         "NetRatel.FlowExecutionPins.v1", tenantId.ToString(CultureInfo.InvariantCulture), versionId.ToString("N"));

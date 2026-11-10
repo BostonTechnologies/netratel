@@ -1,0 +1,10 @@
+.node-picker { min-width:0; display:flex; flex-direction:column; gap:8px; }
+.node-picker-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
+.node-picker-toolbar ::deep .mud-input-control { flex:1 1 280px; min-width:0; }
+.node-picker-actions, .node-picker-pagination { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+.node-picker-list { min-width:0; max-height:440px; overflow:auto; border:1px solid var(--mud-palette-divider); border-radius:6px; }
+.node-picker-row { display:flex; align-items:center; gap:4px; padding:8px; min-height:60px; border-bottom:1px solid var(--mud-palette-divider); }
+.node-picker-identity { flex:1; min-width:0; overflow-wrap:anywhere; }
+.node-picker-tags { overflow-wrap:anywhere; color:var(--mud-palette-text-secondary); }
+.node-picker-row ::deep .mud-checkbox { flex:0 0 auto; }
+@media (max-width:599px) { .node-picker-toolbar ::deep .mud-button-root { flex:1 1 auto; } .node-picker-row { align-items:flex-start; flex-wrap:wrap; } .node-picker-row ::deep .mud-button-root { min-height:44px; } }

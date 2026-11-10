@@ -220,6 +220,7 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
         modelBuilder.ConfigureExecutionGroupModel();
         modelBuilder.ConfigureJobRunControlModel();
         modelBuilder.ConfigureJobAggregateModel();
+        modelBuilder.ConfigureMcpJobTargetReservations();
         modelBuilder.ConfigureJobGatewayLifecycleReceiptModel();
         modelBuilder.ConfigureClientConnectionOwnershipModel();
         modelBuilder.Entity<ClientConnectionEpochRecord>(entity =>
@@ -440,6 +441,7 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
         modelBuilder.Entity<McpOperatorConfirmationPlanRecord>(entity =>
         {
             entity.ToTable("McpOperatorConfirmationPlans");
+            entity.Property(row => row.JobRequestHash).HasMaxLength(64);
             entity.HasKey(x => x.Id);
             entity.Property(x => x.TokenHash).HasMaxLength(64).IsRequired();
             entity.Property(x => x.Environment).HasConversion<short>();

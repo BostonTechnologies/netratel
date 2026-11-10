@@ -129,7 +129,8 @@ public sealed class JobDefinitionService(OrchestratorDbContext db) : IJobDefinit
 
         // Retirement and new run admission share the row fence. Preserve the
         // definition and all historical work regardless of how the job was created.
-        if (await _db.JobRuns.AnyAsync(run => run.JobId == job.Id &&
+        if (await JobDefinitionMutationFence.HasPendingReviewedAdmissionAsync(_db, job.Id, ct) ||
+            await _db.JobRuns.AnyAsync(run => run.JobId == job.Id &&
                 run.Status != (int)JobRunState.Succeeded && run.Status != (int)JobRunState.Failed &&
                 run.Status != (int)JobRunState.Cancelled && run.Status != (int)JobRunState.TimedOut &&
                 run.Status != (int)JobRunState.Unknown, ct))

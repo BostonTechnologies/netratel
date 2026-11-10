@@ -58,7 +58,7 @@ public static class FlowExecutionPreview
                     UnavailableInputs = new { State = "unavailable", Code = "secret-reference-unavailable", Redacted = true, Count = redactedInputs }
                 };
             }
-            foreach (var binding in current.Inputs ?? new Dictionary<string, FlowInputBindingDto>())
+            foreach (var binding in FlowJobTargetBindings.Mappings(current))
             {
                 var resolved = FlowValueEvaluation.Resolve(binding.Value, request.Input, request.Alert, outputs);
                 if (!resolved.Available || resolved.Value is not { } value)
@@ -72,6 +72,16 @@ public static class FlowExecutionPreview
                     trace.Add(current, SnapshotInput(), null,
                         FlowTraceStepStatus.Unavailable, resolved.Code, outputUnavailable: true, errorCode: resolved.Code);
                     return Result(resolved.Code);
+                }
+                if (binding.Key == FlowJobTargetBindings.CheckpointKey)
+                {
+                    try { _ = FlowJobTargetBindings.Literal(current.ExecutionAction!.TargetBinding!, value); }
+                    catch (ArgumentException)
+                    {
+                        trace.Add(current, SnapshotInput(), null, FlowTraceStepStatus.Unavailable,
+                            "job-target-input-invalid", outputUnavailable: true, errorCode: "job-target-input-invalid");
+                        return Result("job-target-input-invalid");
+                    }
                 }
                 inputValues.Add(binding.Key, value);
             }

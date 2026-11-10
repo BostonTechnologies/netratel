@@ -31,7 +31,7 @@ using Xunit;
 
 namespace NetRatel.Tests.API;
 
-public sealed class McpOperatorJobStartEndpointTests
+public sealed partial class McpOperatorJobStartEndpointTests
 {
     private const string Resource = "https://mcp.example.test/mcp";
     private const string Subject = "job-operator";
@@ -350,7 +350,7 @@ public sealed class McpOperatorJobStartEndpointTests
         return (await response.Content.ReadFromJsonAsync<McpOperatorJobRunResult>())!;
     }
 
-    private static async Task<WebApplication> BuildAsync(string operation = "start", bool localDelegation = false)
+    private static async Task<WebApplication> BuildAsync(string operation = "start", bool localDelegation = false, bool persistedOutput = false)
     {
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = "Production" });
         builder.WebHost.UseTestServer();
@@ -366,7 +366,12 @@ public sealed class McpOperatorJobStartEndpointTests
         builder.Services.AddScoped<IMcpOperatorConfirmationService, McpOperatorConfirmationService>();
         builder.Services.AddSingleton<DispatchCounter>();
         builder.Services.AddScoped<IAkkaJobAuthorityService, RecordingAuthority>();
-        builder.Services.AddScoped<IJobRunService>(_ => throw new NotSupportedException());
+        if (persistedOutput)
+        {
+            builder.Services.AddSingleton<Microsoft.AspNetCore.DataProtection.IDataProtectionProvider>(new Microsoft.AspNetCore.DataProtection.EphemeralDataProtectionProvider());
+            builder.Services.AddScoped<IJobRunService, JobRunService>();
+        }
+        else builder.Services.AddScoped<IJobRunService>(_ => throw new NotSupportedException());
         builder.Services.AddSingleton<IClientPresenceRouter, Presence>();
         builder.Services.AddSingleton<IAgentCommandAuthorityDispatcher, Dispatcher>();
         builder.Services.AddSingleton<McpOperatorLocalAgentOptions>();
@@ -381,7 +386,7 @@ public sealed class McpOperatorJobStartEndpointTests
             app.Use(async (context, next) =>
             {
                 context.Items[McpOperatorDelegationMiddleware.HttpContextItemKey] = new McpOperatorDelegation(
-                    new McpOperatorDelegationIdentity(Subject, ClientId, null, [], ["AutomationOperator"], ["netratel.mcp.execute"]),
+                    new McpOperatorDelegationIdentity(Subject, ClientId, null, [], ["AutomationOperator"], persistedOutput ? ["netratel.mcp.execute", "netratel.mcp.observe"] : ["netratel.mcp.execute"]),
                     "mcp-service", "netratel_job_runs", operation, "start-request", DateTimeOffset.UtcNow.AddMinutes(1),
                     Resource, "prod", 42, AgentId, "start-correlation");
                 await next(context);

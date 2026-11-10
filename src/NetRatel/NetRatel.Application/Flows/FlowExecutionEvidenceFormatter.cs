@@ -94,10 +94,16 @@ public static class FlowExecutionEvidenceFormatter
             .Append("\nContent hash: ").Append(Safe(original.Definition.ContentHash, 64))
             .Append("\nExecution: ").Append(Safe(original.ExecutionId, FlowExecutionEventLimits.MaximumIdentifierLength))
             .Append("\nAttempt: ").Append(Safe(original.AttemptId, FlowExecutionEventLimits.MaximumIdentifierLength))
-            .Append("\nTarget: ").Append(Safe(original.Target.DisplayName ?? original.Target.HostName, 128))
-            .Append("\nHostname: ").Append(Safe(original.Target.HostName, 128))
-            .Append("\nAgent: ").Append(original.Target.AgentId?.ToString("D") ?? "Unavailable")
-            .Append("\nOccurred: ").Append(original.OccurredAtUtc.ToString("O", CultureInfo.InvariantCulture))
+            .Append("\nTarget: ").Append(Safe(TargetName(original), 128));
+        if (original.Aggregate is { } aggregate)
+            text.Append("\nTarget plan digest: ").Append(aggregate.TargetPlanDigest)
+                .Append("\nNode results: ").Append(aggregate.Counts.Succeeded).Append(" succeeded, ")
+                .Append(aggregate.Counts.Failed).Append(" failed, ").Append(aggregate.Counts.Skipped).Append(" skipped, ")
+                .Append(aggregate.Counts.Cancelled).Append(" cancelled, ").Append(aggregate.Counts.TimedOut).Append(" timed out, ")
+                .Append(aggregate.Counts.Unknown).Append(" unknown");
+        else text.Append("\nHostname: ").Append(Safe(original.Target.HostName, 128))
+            .Append("\nAgent: ").Append(original.Target.AgentId?.ToString("D") ?? "Unavailable");
+        text.Append("\nOccurred: ").Append(original.OccurredAtUtc.ToString("O", CultureInfo.InvariantCulture))
             .Append("\nObserved: ").Append(original.ObservedAtUtc.ToString("O", CultureInfo.InvariantCulture))
             .Append("\nStarted: ").Append(Timestamp(original.StartedAtUtc))
             .Append("\nCompleted: ").Append(Timestamp(original.CompletedAtUtc));
@@ -195,7 +201,7 @@ public static class FlowExecutionEvidenceFormatter
         if (attempt.TerminalEvent is { } terminal)
             text.Append("\nRecorded terminal outcome: ").Append(terminal.Outcome)
                 .Append("\nDefinition: ").Append(Safe(terminal.Definition.Name, 128))
-                .Append("\nTarget: ").Append(Safe(terminal.Target.DisplayName ?? terminal.Target.HostName, 128))
+                .Append("\nTarget: ").Append(Safe(TargetName(terminal), 128))
                 .Append("\nRaw status: ").Append(Safe(terminal.RawStatus, 64))
                 .Append("\nTerminal event: ").Append(terminal.EventId.ToString("D"))
                 .Append("\nExecution view: ").Append(ExecutionLink(terminal))
@@ -217,13 +223,25 @@ public static class FlowExecutionEvidenceFormatter
             terminal.ExecutionId == attempt.AcceptedExecutionId && terminal.ExecutionId != replay.SourceExecutionId &&
             terminal.AttemptId != replay.SourceAttemptId && terminal.ParentExecutionId == replay.SourceExecutionId &&
             terminal.RootExecutionId == (original.RootExecutionId ?? replay.SourceExecutionId) &&
-            terminal.SourceKind == replay.SourceKind && terminal.Target.AgentId == replay.Target.AgentId &&
+            terminal.SourceKind == replay.SourceKind && RerunTargetMatches(original, replay, terminal) &&
             terminal.Definition.Id == replay.Definition.Id && terminal.Definition.Revision == replay.Definition.Revision &&
             terminal.Definition.ContentHash == replay.Definition.ContentHash &&
             terminal.Causation is { } cause && cause.FlowRunId == runId && cause.NodeId == attempt.NodeId &&
             cause.ParentEventId == original.EventId && cause.RecoveryAttempt == attempt.Attempt &&
             cause.RootOccurrenceId == (original.Causation?.RootOccurrenceId ?? original.OccurrenceId.ToString("D"));
     }
+
+    private static bool RerunTargetMatches(FlowExecutionEventDto original, FlowExecutionReplayDescriptorDto replay,
+        FlowExecutionEventDto terminal) => replay.TargetPlanDigest is null
+            ? terminal.Aggregate is null && terminal.Target.AgentId == replay.Target.AgentId
+            : terminal.Aggregate is { } current && terminal.Target.AgentId == current.LegacyTargetAgentId &&
+                current.TargetPlanDigest == replay.TargetPlanDigest &&
+                (original.Aggregate is { } aggregate ? current.TargetCount == aggregate.TargetCount :
+                    original.SourceKind == FlowExecutionSourceKind.Request && replay.Target.AgentId is not null && current.TargetCount == 1);
+
+    private static string? TargetName(FlowExecutionEventDto value) => value.Aggregate is { } aggregate
+        ? aggregate.LegacyTargetAgentId is null ? aggregate.TargetCount.ToString(CultureInfo.InvariantCulture) + " nodes" :
+            value.Target.DisplayName ?? value.Target.HostName ?? "1 node" : value.Target.DisplayName ?? value.Target.HostName;
 
     private static bool HasNativeProvenance(FlowExecutionEventDto value) => value.SourceKind switch
     {
@@ -265,7 +283,7 @@ public static class FlowExecutionEvidenceFormatter
         {
             ["sourceKind"] = original.SourceKind.ToString(), ["definitionName"] = Inline(original.Definition.Name, 128),
             ["definitionRevision"] = Inline(original.Definition.Revision, 128), ["executionId"] = original.ExecutionId,
-            ["attemptId"] = original.AttemptId, ["targetName"] = Inline(original.Target.DisplayName ?? original.Target.HostName, 128),
+            ["attemptId"] = original.AttemptId, ["targetName"] = Inline(TargetName(original), 128),
             ["outcome"] = original.Outcome.ToString(), ["rawStatus"] = Inline(original.RawStatus, 128),
             ["reason"] = Safe(original.Reason, 512), ["exitCode"] = original.ExitCode?.ToString(CultureInfo.InvariantCulture) ?? "Unavailable",
             ["startedAt"] = Timestamp(original.StartedAtUtc), ["completedAt"] = Timestamp(original.CompletedAtUtc),

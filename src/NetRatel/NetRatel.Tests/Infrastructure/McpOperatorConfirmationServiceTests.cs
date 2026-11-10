@@ -8,7 +8,7 @@ using Xunit;
 
 namespace NetRatel.Tests.Infrastructure;
 
-public sealed class McpOperatorConfirmationServiceTests
+public sealed partial class McpOperatorConfirmationServiceTests
 {
     private static readonly CancellationToken Ct = CancellationToken.None;
     private const string Digest = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";

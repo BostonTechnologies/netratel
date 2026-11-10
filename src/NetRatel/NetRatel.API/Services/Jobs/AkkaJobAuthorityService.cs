@@ -26,6 +26,10 @@ namespace NetRatel.API.Services.Jobs;
 public interface IAkkaJobAuthorityService
 {
     Task<JobRunInfo> StartAsync(ulong jobId, RunJobRequest request, CancellationToken cancellationToken);
+    Task<JobRunInfo> StartScheduledAsync(ulong jobId, string occurrenceId, CancellationToken cancellationToken)
+        => StartAsync(jobId, new("hangfire:schedule", null, null), cancellationToken);
+    Task<JobRunInfo> StartAggregateNodeAsync(ulong nativeRunId, CancellationToken cancellationToken)
+        => throw new NotSupportedException("Durable aggregate node admission is unavailable.");
     Task<JobRunInfo> StartRequestAsync(ulong jobId, RunJobRequest request, int recordedRequestId, CancellationToken cancellationToken)
         => throw new CanonicalRequestAdmissionRejectedException("Canonical request admission is unavailable.");
     Task<JobRunInfo> StartKeyedAsync(KeyedJobAdmissionRequest admission, CancellationToken cancellationToken)
@@ -65,7 +69,9 @@ public sealed class AkkaJobAuthorityService(
     IKeyedExecutionAuthority? keyedAuthority = null,
     IJobExecutionSnapshotCapture? snapshotCapture = null,
     IRequestService? requests = null,
-    IScriptExecutionReplayStore? scriptReplayPins = null) : IAkkaJobAuthorityService
+    IScriptExecutionReplayStore? scriptReplayPins = null,
+    JobAggregateOrchestrator? aggregates = null,
+    IJobAggregateWakeup? aggregateWakeup = null) : IAkkaJobAuthorityService
 {
     private const string Authority = "akka";
     private const string Feature = "jobs";
@@ -126,7 +132,7 @@ public sealed class AkkaJobAuthorityService(
     private sealed class JobTransitionRejectedException(JobMessageResult result)
         : InvalidOperationException($"Job authority lifecycle transition was rejected: {result.Disposition}.");
 
-    public Task<JobRunInfo> StartAsync(ulong jobId, RunJobRequest request, CancellationToken cancellationToken)
+    public async Task<JobRunInfo> StartAsync(ulong jobId, RunJobRequest request, CancellationToken cancellationToken)
     {
         if (request.StartedBy?.Trim().StartsWith("mcp-reviewed:", StringComparison.Ordinal) == true)
             throw new InvalidOperationException("Reviewed MCP execution requires a server-owned snapshot.");
@@ -134,14 +140,74 @@ public sealed class AkkaJobAuthorityService(
             throw new InvalidOperationException("Managed service identity requires the recorded ingress entry point.");
         if (request.StartedBy?.Trim().StartsWith("flow-keyed:", StringComparison.Ordinal) == true)
             throw new InvalidOperationException("Flow execution identity requires canonical keyed admission.");
-        return StartCoreAsync(jobId, request, null, null, cancellationToken);
+        if (request.StartedBy?.Trim().StartsWith("aggregate-node:", StringComparison.Ordinal) == true)
+            throw new InvalidOperationException("Native aggregate node identities are server-owned.");
+        if (!string.IsNullOrWhiteSpace(request.ClientIdentityOverride))
+            throw new InvalidOperationException("A fixed job cannot be retargeted through ClientIdentityOverride.");
+        var definition = await jobDefinitions.GetAsync(jobId, cancellationToken);
+        if (definition?.Target is not null || definition?.ExecutionPolicy is not null)
+            return await (aggregates ?? throw new InvalidOperationException("Aggregate job admission is unavailable."))
+                .StartFreshAsync(jobId, request, cancellationToken);
+        if (request.RuntimeTarget is not null)
+            throw new InvalidOperationException("Runtime target values require a declared runtime target definition.");
+        return await StartCoreAsync(jobId, request, null, null, cancellationToken);
     }
+
+    public Task<JobRunInfo> StartScheduledAsync(ulong jobId, string occurrenceId, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(occurrenceId) || occurrenceId.Length > 128)
+            throw new ArgumentException("A stable scheduler occurrence identity is required.");
+        return (aggregates ?? throw new InvalidOperationException("Occurrence-safe schedule admission is unavailable."))
+            .StartFreshAsync(jobId, new("hangfire:schedule", null, null), cancellationToken, occurrenceId);
+    }
+
+    public Task<JobRunInfo> StartAggregateNodeAsync(ulong nativeRunId, CancellationToken cancellationToken)
+        => OwnAsync(nativeRunId, async ct =>
+        {
+            if (db is null || aggregates is null)
+                throw new ExecutionAdmissionDeniedException("Durable native node authority is unavailable.");
+            var run = await jobRuns.GetAsync(nativeRunId, ct)
+                ?? throw new KeyNotFoundException("The claimed native node intent is unavailable.");
+            if (run.ParentRunId is null || run.IsAggregate || run.AgentId is null)
+                throw new ExecutionAdmissionDeniedException("Only a persisted aggregate node may use this admission path.");
+            var control = await db.Set<JobRunControlRecord>().SingleAsync(row => row.RunId == checked((long)nativeRunId), ct);
+            // A repeated turn observes an admitted/ambiguous child. It cannot resend physical work.
+            if (run.Status != JobRunState.Pending || control.DispatchPreparedAtUtc is not null) return run;
+            try
+            {
+                await aggregates.RequireNodeAuthorityAsync(run, ct);
+                var pin = await jobRuns.GetPinnedExecutionSnapshotAsync(nativeRunId, ct);
+                var reviewed = await jobRuns.GetMcpExecutionSnapshotAsync(nativeRunId, ct);
+                if (pin is null && reviewed is null)
+                    throw new ExecutionAdmissionDeniedException("The admitted native definition is unavailable.");
+                var request = new RunJobRequest(run.StartedBy, await jobRuns.GetExecutionInputsAsync(run.Id, ct), null,
+                    Environment: run.Environment);
+                return await StartOwnedAsync(run.JobId, request, null, null, run.Id, ct,
+                    mcpSnapshot: reviewed, pinnedSnapshot: pin, preparedNativeIntent: true);
+            }
+            catch (Exception error) when (error is ExecutionAdmissionDeniedException or AgentJobGatewaySessionUnavailableException)
+            {
+                control = await db.Set<JobRunControlRecord>().SingleAsync(row => row.RunId == checked((long)nativeRunId), ct);
+                var current = (await jobRuns.GetAsync(nativeRunId, ct))!;
+                if (control.DispatchPreparedAtUtc is not null || IsTerminal(current.Status)) return current;
+                var reason = error is AgentJobGatewaySessionUnavailableException
+                    ? "Unavailable: the selected client has no current native job gateway; no execution was dispatched."
+                    : "execution-admission-denied: current target or configuring authority is unavailable; no execution was dispatched.";
+                if (await NextOwnedSequenceAsync(run.Id, ct) == 1)
+                    await RecordRunAsync(run, JobRunState.Pending, 0, run.CreatedAtUtc, null, null, 1, ct);
+                await FailBeforeDispatchAsync(run, ct, reason);
+                return (await jobRuns.GetAsync(run.Id, ct))!;
+            }
+        }, cancellationToken);
 
     public async Task<JobRunInfo> StartKeyedAsync(KeyedJobAdmissionRequest admission, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(admission);
         admission.Identity.Validate();
         admission.Snapshot.Validate(admission.Identity.TenantId);
+        if (admission.Snapshot.Definition.Job.Target is not null || admission.Snapshot.Definition.Job.ExecutionPolicy is not null || admission.TargetPlan is not null)
+            return await (aggregates ?? throw new InvalidOperationException("Aggregate keyed job admission is unavailable."))
+                .StartKeyedAsync(admission, cancellationToken);
         if (!string.IsNullOrEmpty(admission.Request.ClientIdentityOverride))
             throw new InvalidOperationException("A keyed job retains its published bound target.");
         if (executionAdmissions is null || keyedAuthority is null)
@@ -203,6 +269,9 @@ public sealed class AkkaJobAuthorityService(
     public Task<JobRunInfo> StartReviewedMcpAsync(McpOperatorJobExecutionSnapshot snapshot, RunJobRequest request, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
+        if (snapshot.TargetPlan is not null)
+            return (aggregates ?? throw new InvalidOperationException("Reviewed aggregate job admission is unavailable."))
+                .StartReviewedAsync(snapshot, request, cancellationToken);
         if (request.StartedBy != $"mcp-reviewed:{snapshot.Subject}" || snapshot.Definition.Job.TenantId is not > 0 ||
             snapshot.Definition.Job.AgentId is null || snapshot.Scripts.Count == 0)
             throw new InvalidOperationException("The reviewed MCP execution binding is invalid.");
@@ -224,6 +293,37 @@ public sealed class AkkaJobAuthorityService(
             material.SourceSystem.StartsWith("mcp-reviewed:", StringComparison.Ordinal) ||
             material.SourceSystem.StartsWith("flow-keyed:", StringComparison.Ordinal))
             throw new CanonicalRequestAdmissionRejectedException("The protected original request material is unavailable.");
+        // Observe an accepted immutable request before consulting today's job target mode.
+        // Switching a definition can neither turn its old native run into a parent nor retarget it.
+        var reservedExecution = await db.Requests.AsNoTracking().Where(row => row.Id == recordedRequestId)
+            .Select(row => row.ExecutionId).SingleOrDefaultAsync(cancellationToken);
+        if (ulong.TryParse(reservedExecution, out var originalId) && await jobRuns.GetAsync(originalId, cancellationToken) is { } originalRun)
+        {
+            try
+            {
+            var exact = originalRun.JobId == material.JobDefinitionId && originalRun.TenantId == material.TenantId &&
+                originalRun.StartedBy == material.SourceSystem && originalRun.ParentRunId is null;
+            if (originalRun.IsAggregate)
+            {
+                var plan = await jobRuns.GetResolvedTargetPlanAsync(originalId, cancellationToken);
+                exact &= originalRun.AgentId is null && plan?.Nodes.Count == 1 && plan.Nodes[0].AgentId == material.AgentId;
+            }
+            else exact &= originalRun.AgentId == material.AgentId;
+            if (!exact) throw new CanonicalRequestAdmissionRejectedException("The original request differs from its accepted execution identity.");
+            await using var link = db.Database.IsRelational() ? await db.Database.BeginTransactionAsync(cancellationToken) : null;
+            await ExecutionLifecycleOutbox.RecordCanonicalRequestBindingAsync(db, recordedRequestId, originalRun, _clock.GetUtcNow(), cancellationToken);
+            await db.SaveChangesAsync(cancellationToken);
+            if (link is not null) await link.CommitAsync(cancellationToken);
+            return originalRun;
+            }
+            catch (CanonicalRequestAdmissionRejectedException) { throw; }
+            catch (Exception error) when (error is InvalidOperationException or ArgumentException or JsonException)
+            { throw new CanonicalRequestAdmissionRejectedException("The original canonical request binding is unavailable or differs from its submitted identity.", error); }
+        }
+        var currentDefinition = await jobDefinitions.GetAsync(jobId, cancellationToken);
+        if (currentDefinition?.Target is not null || currentDefinition?.ExecutionPolicy is not null)
+            return await (aggregates ?? throw new CanonicalRequestAdmissionRejectedException("Aggregate Request admission is unavailable."))
+                .StartRequestAsync(material, cancellationToken);
         ulong runId;
         try { runId = await ExecutionLifecycleOutbox.ReserveCanonicalRequestRunAsync(db, recordedRequestId, ids.Next, cancellationToken); }
         catch (InvalidOperationException error) { throw new CanonicalRequestAdmissionRejectedException("The request admission intent is invalid.", error); }
@@ -281,8 +381,11 @@ public sealed class AkkaJobAuthorityService(
     private async Task<JobRunInfo> StartOwnedAsync(ulong jobId, RunJobRequest request, int? recordedRequestId, ClaimsPrincipal? principal, ulong runId, CancellationToken cancellationToken,
         McpOperatorJobExecutionSnapshot? mcpSnapshot = null, PinnedJobExecutionSnapshot? pinnedSnapshot = null,
         NetRatel.Application.Flows.FlowRunLease? firstDispatchLease = null,
-        RequestExecutionMaterial? sourceRequest = null, Action<JobRunInfo>? onSourceAccepted = null)
+        RequestExecutionMaterial? sourceRequest = null, Action<JobRunInfo>? onSourceAccepted = null,
+        bool preparedNativeIntent = false)
     {
+        if (JobTemplateHelper.ParseInputs(request.InputsJson).Keys.Any(key => key.StartsWith("node.", StringComparison.OrdinalIgnoreCase)))
+            throw new ArgumentException("The node context is server-owned and cannot be supplied as a job parameter.");
         var definition = pinnedSnapshot?.Definition ?? mcpSnapshot?.Definition ?? await jobDefinitions.GetDetailsAsync(jobId, cancellationToken).ConfigureAwait(false)
             ?? throw new KeyNotFoundException($"Job {jobId} was not found.");
         if (db is not null && definition.Job.TenantId is > 0)
@@ -327,7 +430,7 @@ public sealed class AkkaJobAuthorityService(
 
         var clientIdentity = definition.Job.ClientIdentity;
         var client = new ClientKey(definition.Job.TenantId.Value, agentId);
-        var prepared = recordedRequestId is not null ? await jobRuns.GetAsync(runId, cancellationToken) : null;
+        var prepared = recordedRequestId is not null || preparedNativeIntent ? await jobRuns.GetAsync(runId, cancellationToken) : null;
         if (prepared is not null)
         {
             var control = await db!.Set<JobRunControlRecord>().SingleAsync(x => x.RunId == checked((long)runId), cancellationToken);
@@ -358,6 +461,11 @@ public sealed class AkkaJobAuthorityService(
             .SingleAsync(x => x.Id == agentId && x.TenantId == client.TenantId, cancellationToken);
         var presentation = target is null ? null : AgentDirectoryPresentation.Create(target.TenantId, target.Id, target.Name,
             target.IsEnabled, target.DeviceInfoJson, string.Empty, target.Tags, target.FriendlyName);
+        if (prepared is null)
+            jobRuns.BindNodeExecutionContext(runId, new(agentId, presentation?.HostName ?? string.Empty,
+                presentation?.DisplayName ?? target?.Name, target?.Tags ?? [])
+            { Name = target?.Name, OperatingSystem = presentation?.OperatingSystem, Architecture = presentation?.Architecture,
+                Environment = executionEnvironment, IsEnabled = target?.IsEnabled ?? true });
         var run = await jobRuns.UpsertRunAsync(new UpsertJobRunCommand(
             runId,
             definition.Job.Id,
@@ -417,11 +525,15 @@ public sealed class AkkaJobAuthorityService(
     }
 
     public async Task RecordLifecycleAsync(ClientKey client, JobLifecycleUpdateEnvelope lifecycle, CancellationToken cancellationToken)
-        => _ = await OwnAsync(lifecycle.JobRunId, async ct =>
+    {
+        _ = await OwnAsync(lifecycle.JobRunId, async ct =>
         {
             await RecordLifecycleOwnedAsync(client, lifecycle, ct);
             return true;
         }, cancellationToken);
+        if (aggregateWakeup is not null && (await jobRuns.GetAsync(lifecycle.JobRunId, cancellationToken))?.ParentRunId is { } parent)
+            await aggregateWakeup.WakeAsync(parent, cancellationToken);
+    }
 
     private async Task RecordLifecycleOwnedAsync(ClientKey client, JobLifecycleUpdateEnvelope lifecycle, CancellationToken cancellationToken)
     {
@@ -466,6 +578,10 @@ public sealed class AkkaJobAuthorityService(
             lifecycle.Status == JobGatewayLifecycleStatus.Progress && stepRun.StartedAtUtc is null && lifecycle.StartedAtUtc is null)
             throw new InvalidOperationException("The job lifecycle does not follow the recorded native execution state.");
         await PrepareLifecycleReceiptAsync(lifecycle, cancellationToken);
+        // These authenticated native facts govern execution. Diagnostic redaction may mask
+        // keys that happen to equal a submitted secret and must never change terminal truth.
+        var outcomeUnknown = HasResultFlag(lifecycle.ResultJson, "outcomeUnknown");
+        var timedOut = HasResultFlag(lifecycle.ResultJson, "timedOut");
         // Preserve the authenticated receipt hash, then protect every downstream
         // projection and observation before output can be persisted or broadcast.
         lifecycle = lifecycle with { ResultJson = await jobRuns.ProtectTaskOutputAsync(lifecycle.RequestId, lifecycle.ResultJson, cancellationToken) };
@@ -484,8 +600,8 @@ public sealed class AkkaJobAuthorityService(
                 await CompleteStepAsync(run, stepRun, lifecycle, client, cancellationToken).ConfigureAwait(false);
                 break;
             case JobGatewayLifecycleStatus.Failed:
-                await FinishRunAsync(run, stepRun, lifecycle, HasResultFlag(lifecycle.ResultJson, "outcomeUnknown") ? JobRunState.Unknown : HasResultFlag(lifecycle.ResultJson, "timedOut") ? JobRunState.TimedOut : JobRunState.Failed,
-                    HasResultFlag(lifecycle.ResultJson, "outcomeUnknown") ? JobStepRunState.Unknown : HasResultFlag(lifecycle.ResultJson, "timedOut") ? JobStepRunState.TimedOut : JobStepRunState.Failed, cancellationToken).ConfigureAwait(false);
+                await FinishRunAsync(run, stepRun, lifecycle, outcomeUnknown ? JobRunState.Unknown : timedOut ? JobRunState.TimedOut : JobRunState.Failed,
+                    outcomeUnknown ? JobStepRunState.Unknown : timedOut ? JobStepRunState.TimedOut : JobStepRunState.Failed, cancellationToken).ConfigureAwait(false);
                 break;
             case JobGatewayLifecycleStatus.Cancelled:
                 await FinishRunAsync(run, stepRun, lifecycle, JobRunState.Cancelled, JobStepRunState.Cancelled, cancellationToken).ConfigureAwait(false);
@@ -498,7 +614,11 @@ public sealed class AkkaJobAuthorityService(
     }
 
     public async Task<bool> CancelAsync(ulong jobRunId, string reason, CancellationToken cancellationToken)
-        => await OwnAsync(jobRunId, ct => CancelOwnedAsync(jobRunId, reason, ct), cancellationToken);
+    {
+        if (aggregates is not null && (await jobRuns.GetAsync(jobRunId, cancellationToken))?.IsAggregate == true)
+            return await aggregates.CancelAsync(jobRunId, reason, cancellationToken);
+        return await OwnAsync(jobRunId, ct => CancelOwnedAsync(jobRunId, reason, ct), cancellationToken);
+    }
 
     private async Task<bool> CancelOwnedAsync(ulong jobRunId, string reason, CancellationToken cancellationToken)
     {
@@ -582,6 +702,19 @@ public sealed class AkkaJobAuthorityService(
             return completed;
         }
 
+        // Authority gates new physical work. An authenticated final successful receipt has
+        // no next dispatch to authorize and retains its native truth under parent cancellation.
+        if (run.ParentRunId is not null)
+        {
+            try { await (aggregates ?? throw new ExecutionAdmissionDeniedException("Aggregate node authority is unavailable."))
+                .RequireNodeAuthorityAsync(run, cancellationToken); }
+            catch (ExecutionAdmissionDeniedException)
+            {
+                await FailBeforeDispatchAsync(run, cancellationToken, "execution-admission-denied: current aggregate node authority is unavailable.");
+                return (await jobRuns.GetAsync(run.Id, cancellationToken))!;
+            }
+        }
+
         var mcpSnapshot = await jobRuns.GetMcpExecutionSnapshotAsync(run.Id, cancellationToken).ConfigureAwait(false);
         if (mcpSnapshot is null && run.StartedBy.StartsWith("mcp-reviewed:", StringComparison.Ordinal))
         {
@@ -622,6 +755,14 @@ public sealed class AkkaJobAuthorityService(
         var step = definition.Steps.SingleOrDefault(item => item.Id == next.JobStepId)
             ?? throw new InvalidOperationException($"Job step {next.JobStepId} was not found.");
         var resolvedInputs = JobTemplateHelper.ParseInputs(await jobRuns.GetExecutionInputsAsync(run.Id, cancellationToken));
+        var nodeContext = await jobRuns.GetNodeExecutionContextAsync(run.Id, cancellationToken);
+        if (nodeContext is null && run.ParentRunId is { } aggregateParent && run.AgentId is { } nativeAgent)
+        {
+            var plan = await jobRuns.GetResolvedTargetPlanAsync(aggregateParent, cancellationToken);
+            nodeContext = plan?.Nodes.SingleOrDefault(node => node.AgentId == nativeAgent)
+                ?? throw new InvalidOperationException("The frozen node context is unavailable.");
+        }
+        if (nodeContext is not null) resolvedInputs = JobNodeTemplateContext.Bind(resolvedInputs, nodeContext);
         var runtimePolicy = JobExecutionRuntimePolicy.FromOptions(await jobRuns.GetExecutionOptionsAsync(run.Id, cancellationToken));
         var outputPolicy = await jobRuns.GetRunOutputPolicyAsync(run.Id, cancellationToken);
         var invocation = pinnedSnapshot is null
@@ -702,6 +843,7 @@ public sealed class AkkaJobAuthorityService(
         await CommitBeforeTransportAsync(cancellationToken);
         try
         {
+            if (run.ParentRunId is not null) await aggregates!.RequireNodeAuthorityAsync(run, cancellationToken);
             if (run.StartedBy.StartsWith("service:", StringComparison.Ordinal))
                 await managedGuard!.AuthorizeDispatchAsync(run, definition.Job, cancellationToken);
             if (run.StartedBy.StartsWith("flow-keyed:", StringComparison.Ordinal))
@@ -723,8 +865,9 @@ public sealed class AkkaJobAuthorityService(
         catch (ExecutionAdmissionDeniedException)
         {
             await BeginAfterTransportAsync(cancellationToken);
-            await executionAdmissions!.RecordAuthorityDeniedAsync(ExecutionAdmissionKind.Job,
-                run.Id.ToString(System.Globalization.CultureInfo.InvariantCulture), cancellationToken);
+            if (run.ParentRunId is null)
+                await executionAdmissions!.RecordAuthorityDeniedAsync(ExecutionAdmissionKind.Job,
+                    run.Id.ToString(System.Globalization.CultureInfo.InvariantCulture), cancellationToken);
             await FailBeforeDispatchAsync(running, cancellationToken, "execution-admission-denied: The current flow execution authority is unavailable.");
             await CommitBeforeTransportAsync(cancellationToken);
             throw;
@@ -1107,9 +1250,13 @@ public sealed class AkkaJobAuthorityService(
         control.TerminalReadyAtUtc = _clock.GetUtcNow();
         control.TerminalResultHash = OrchestrationCallbackProjection.ResultHash(details);
         control.Revision++;
-        await ExecutionLifecycleOutbox.RecordJobAsync(db, details, control.TerminalResultHash,
-            control.TerminalReadyAtUtc.Value, ct, pinnedSnapshot: await jobRuns.GetPinnedExecutionSnapshotAsync(runId, ct));
-        if (requests is not null)
+        if (details.Run.ParentRunId is not null)
+            await (aggregates ?? throw new InvalidOperationException("Aggregate terminal acceptance is unavailable."))
+                .AcceptNodeTerminalAsync(details.Run, ct);
+        if (details.Run.ParentRunId is null)
+            await ExecutionLifecycleOutbox.RecordJobAsync(db, details, control.TerminalResultHash,
+                control.TerminalReadyAtUtc.Value, ct, pinnedSnapshot: await jobRuns.GetPinnedExecutionSnapshotAsync(runId, ct));
+        if (requests is not null && details.Run.ParentRunId is null)
             await ExecutionLifecycleOutbox.ProjectAcceptedRequestTerminalsAsync(db, details, control.TerminalResultHash, requests, ct);
         await db.SaveChangesAsync(ct);
     }
@@ -1133,7 +1280,13 @@ public sealed class AkkaJobAuthorityService(
             .MaxAsync(x => (long?)x.SourceEventId, ct) ?? 0) + 1;
 
     public async Task RecoverAsync(ulong jobRunId, CancellationToken cancellationToken)
-        => _ = await OwnAsync(jobRunId, async ct =>
+    {
+        if ((await jobRuns.GetAsync(jobRunId, cancellationToken))?.IsAggregate == true)
+        {
+            if (aggregateWakeup is not null) await aggregateWakeup.WakeAsync(jobRunId, cancellationToken);
+            return;
+        }
+        _ = await OwnAsync(jobRunId, async ct =>
         {
             if (db is null) return false;
             var details = await jobRuns.GetDetailsAsync(jobRunId, ct);
@@ -1173,6 +1326,7 @@ public sealed class AkkaJobAuthorityService(
             await MarkTerminalReadyAsync(run.Id, ct);
             return true;
         }, cancellationToken);
+    }
 }
 
 public sealed record JobLifecycleUpdateEnvelope(

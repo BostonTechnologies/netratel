@@ -170,7 +170,7 @@ public static class McpOperationTargetCatalog
             "param_add" or "param_update" or "param_delete" or "step_add" or "step_update" or "step_reorder" or "step_delete")
             => ("jobId", McpOperationObjectReferenceKind.Job, true),
 
-        ("netratel_job_runs", "get" or "steps" or "logs" or "cancel" or "delete")
+        ("netratel_job_runs", "get" or "steps" or "logs" or "nodes" or "node_steps" or "node_logs" or "cancel" or "delete")
             => ("jobRunId", McpOperationObjectReferenceKind.JobRun, true),
         ("netratel_job_runs", "start" or "list" or "query")
             => ("jobId", McpOperationObjectReferenceKind.Job, operation == "start"),

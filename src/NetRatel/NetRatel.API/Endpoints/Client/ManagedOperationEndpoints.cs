@@ -7,6 +7,9 @@ using NetRatel.Application.Agents;
 using NetRatel.Application.Flows;
 using NetRatel.Application.Events;
 using NetRatel.Application.Operations;
+using NetRatel.Application.Jobs;
+using NetRatel.API.Services.Jobs;
+using NetRatel.Shared.Contracts.Jobs;
 using NetRatel.Infrastructure.Identity.Authorization;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Infrastructure.Netclaw;
@@ -20,7 +23,7 @@ using NetRatel.Shared.Operations;
 namespace NetRatel.API.Endpoints.Client;
 
 /// <summary>Closed CLI/MCP adapters over the same permission-checked application handlers as the UI.</summary>
-public static class ManagedOperationEndpoints
+public static partial class ManagedOperationEndpoints
 {
     public static IEndpointRouteBuilder MapManagedOperationEndpoints(this IEndpointRouteBuilder app)
     {
@@ -92,7 +95,7 @@ public static class ManagedOperationEndpoints
             {
                 await admission.RecordAcceptedAsync(admitted, cancellationToken).ConfigureAwait(false);
                 http.User = admitted.User!;
-                var result = await DispatchAsync(descriptor, request, http, cancellationToken).ConfigureAwait(false);
+                var result = await DispatchAsync(descriptor, request, http, cancellationToken, admitted).ConfigureAwait(false);
                 return await admission.FilterAiResponseAsync(descriptor, request, admitted, result, cancellationToken).ConfigureAwait(false);
             }
             catch (McpOperatorAdmissionRejectedException exception) { return Denied(exception.FailureCode); }
@@ -101,11 +104,13 @@ public static class ManagedOperationEndpoints
     }
 
     internal static Task<IResult> DispatchAsync(ManagedOperationDescriptor descriptor, JsonElement request,
-        HttpContext http, CancellationToken ct)
+        HttpContext http, CancellationToken ct, ManagedOperationAdmissionResult? admitted = null)
     {
         var tenant = request.GetProperty("tenantId").GetInt32();
         var access = http.RequestServices.GetRequiredService<IEffectiveAccessService>();
         var db = http.RequestServices.GetRequiredService<OrchestratorDbContext>();
+        if (descriptor.Tool is "netratel_execution_groups" or "netratel_job_targets")
+            return JobTargetsAsync(descriptor, request, http, admitted, ct);
         if (descriptor.Tool == "netratel_software")
             return SoftwareInventoryEndpoints.ManagedAsync(descriptor, request, http, ct);
         if (descriptor.Tool == "netratel_clients")

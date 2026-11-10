@@ -133,6 +133,29 @@ public sealed class McpOperationObjectTargetResolverTests
         (await resolver.MatchesDelegationAsync(delegation, default)).Should().BeFalse();
     }
 
+    [Fact]
+    public async Task Retired_job_start_replay_requires_exact_caller_input_proof_and_original_owned_parent_receipt()
+    {
+        await using var db = CreateDb();
+        var delegation = await SeedDeletedReceiptAsync(db, "netratel_job_runs", "start");
+        delegation = delegation with { ObjectReference = "1001" };
+        var plan = await db.McpOperatorConfirmationPlans.SingleAsync();
+        var receipt = await db.McpOperatorIdempotencyRecords.SingleAsync();
+        var ownedRun = await db.McpOperatorJobRuns.SingleAsync();
+        plan.JobRequestHash = delegation.ReplayBinding!.PayloadHash;
+        plan.PayloadHash = McpOperatorReplayBinding.Hash("original-protected-target-plan-and-scripts");
+        receipt.PayloadHash = plan.PayloadHash;
+        plan.ExpiresAtUtc = DateTimeOffset.UtcNow.AddMinutes(-1);
+        receipt.ResultReference = "1002"; ownedRun.IdempotencyId = receipt.Id;
+        await db.SaveChangesAsync();
+        var resolver = new McpOperationObjectTargetResolver(db);
+        (await resolver.MatchesDelegationAsync(delegation, CancellationToken.None)).Should().BeTrue();
+        (await resolver.MatchesDelegationAsync(delegation with { ReplayBinding = delegation.ReplayBinding with
+            { PayloadHash = McpOperatorReplayBinding.Hash("substituted-inputs") } }, CancellationToken.None)).Should().BeFalse();
+        receipt.ResultReference = "1003"; await db.SaveChangesAsync();
+        (await resolver.MatchesDelegationAsync(delegation, CancellationToken.None)).Should().BeFalse();
+    }
+
     private static async Task<McpOperatorDelegation> SeedDeletedReceiptAsync(OrchestratorDbContext db, string tool, string operation)
     {
         var now = DateTimeOffset.UtcNow;

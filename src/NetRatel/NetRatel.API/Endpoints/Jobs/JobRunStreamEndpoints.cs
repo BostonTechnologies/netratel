@@ -12,6 +12,7 @@ using NetRatel.Application.Tenants;
 using NetRatel.Infrastructure.Identity;
 using NetRatel.Infrastructure.Identity.Authorization;
 using NetRatel.Infrastructure.Persistence;
+using NetRatel.Infrastructure.Services;
 using NetRatel.Shared.Contracts.Jobs;
 using NetRatel.Shared.Contracts.Tasks;
 using NetRatel.Shared.Security;
@@ -122,8 +123,13 @@ public static partial class JobRunEndpoints
             }
             output.Add(new(step.Ordinal, logs.OrderBy(x => x.Seq).ThenBy(x => x.Id).ToArray(), truncated));
         }
+        var mapped = Map(run, job?.Name ?? "Historical job", tenant?.Name, agent?.Name);
+        if (run.IsAggregate) mapped = mapped with
+        {
+            Nodes = await JobRunNodeProjection.ReadAsync(db, checked((long)id), ct, 25), NodesTotalCount = run.TargetCount
+        };
         if (transaction is not null) await transaction.CommitAsync(ct);
-        return new(Map(run, job?.Name ?? "Historical job", tenant?.Name, agent?.Name), steps,
+        return new(mapped, steps,
             output.OrderBy(x => x.Ordinal).ToArray());
     }
 

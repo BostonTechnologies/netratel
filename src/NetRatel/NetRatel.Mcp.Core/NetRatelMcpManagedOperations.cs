@@ -9,6 +9,16 @@ namespace NetRatel.Mcp.Core;
 
 public sealed partial class NetRatelMcpOperationalTools
 {
+    [McpServerTool(UseStructuredContent = true), Description("Manage explicit tenant execution groups. list uses bounded data {search,page,pageSize}; get uses groupId. create/update use typed name, description, enabled/archive state and stable AgentIds; update/delete require the current revision. Mutations require tenant.admin and confirm:true. Group membership never grants job execution authority.")]
+    public Task<NetRatelToolResponse> netratel_execution_groups(string operation, JsonElement? request = null,
+        bool confirm = false, CancellationToken cancellationToken = default) =>
+        ManagedOperationAsync("netratel_execution_groups", operation, request, confirm, cancellationToken);
+
+    [McpServerTool(UseStructuredContent = true), Description("Discover the canonical node selector properties, search authorized tenant inventory, validate and preview exact node filters. nodes uses bounded data {search,page,pageSize}; identities uses data.agentIds; preview/validate use typed filter, environment, page/pageSize and literal parameter operands. Full-result total counts precede pagination. Empty filters never select all. These reads dispatch no execution; use the reviewed job-run start operation to execute.")]
+    public Task<NetRatelToolResponse> netratel_job_targets(string operation, JsonElement? request = null,
+        CancellationToken cancellationToken = default) =>
+        ManagedOperationAsync("netratel_job_targets", operation, request, false, cancellationToken);
+
     [McpServerTool(UseStructuredContent = true), Description("Read tenant-scoped Windows/Linux software inventory, policy, status, scan_status, snapshot, installations, aggregate and changes. Reads use cached evidence and never scan. Resolve tenantId and agentId first. refresh requires client.manage, explicit confirm:true and data.force; poll status/scan_status for completion, including offline queued work. set_policy requires tenant.admin and confirm:true. Query data supports bounded pagination and name, version, publisher, OS, source, client and freshness/status filters.")]
     public Task<NetRatelToolResponse> netratel_software(string operation, JsonElement? request = null,
         bool confirm = false, CancellationToken cancellationToken = default) =>

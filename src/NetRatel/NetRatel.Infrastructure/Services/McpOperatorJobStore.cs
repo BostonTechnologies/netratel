@@ -7,6 +7,7 @@ using Microsoft.EntityFrameworkCore;
 using NetRatel.Application.Jobs;
 using NetRatel.Application.Operations;
 using NetRatel.Application.Scripts;
+using NetRatel.Shared.Contracts.Jobs;
 using NetRatel.Infrastructure.Persistence;
 
 namespace NetRatel.Infrastructure.Services;
@@ -17,19 +18,20 @@ namespace NetRatel.Infrastructure.Services;
 /// path: every V2 read first proves an ownership record and every V2 write
 /// advances its ETag-backed revision with accepted-operation evidence.
 /// </summary>
-public sealed class McpOperatorJobStore(OrchestratorDbContext db) : IMcpOperatorJobStore
+public sealed partial class McpOperatorJobStore(OrchestratorDbContext db) : IMcpOperatorJobStore
 {
+    private static readonly JsonSerializerOptions ResolvedPlanJson = new(JsonSerializerDefaults.Web);
     private const int MaximumDefinitionJsonBytes = 8 * 1024;
     private const int MaximumParameters = 32;
     private const int MaximumSteps = 64;
     private readonly OrchestratorDbContext _db = db;
 
-    public Task ValidateDraftAsync(McpOperatorDecision decision, McpOperatorJobDraft draft, CancellationToken cancellationToken)
+    public async Task ValidateDraftAsync(McpOperatorDecision decision, McpOperatorJobDraft draft, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         ValidateAdmission(decision, null);
         _ = PrepareDraft(decision.Request.TenantId, draft);
-        return Task.CompletedTask;
+        await JobTargetDefinitionGuard.RequireAsync(_db, decision.Request.TenantId, draft.Target, cancellationToken).ConfigureAwait(false);
     }
 
     public Task ValidateParameterAsync(McpOperatorJobParameter parameter, CancellationToken cancellationToken)
@@ -114,9 +116,9 @@ public sealed class McpOperatorJobStore(OrchestratorDbContext db) : IMcpOperator
         // Capture the actual canonical rows as well as the operator revision:
         // legacy job editors do not advance the operator ownership version.
         var definition = await _db.Jobs.AsNoTracking().Include(job => job.Parameters).Include(job => job.Steps).AsSingleQuery()
-            .SingleOrDefaultAsync(job => job.Id == jobId && job.TenantId == access.TenantId && job.AgentId == agentId, cancellationToken)
+            .SingleOrDefaultAsync(job => job.Id == jobId && job.TenantId == access.TenantId, cancellationToken)
             .ConfigureAwait(false);
-        if (definition is null || definition.Parameters.Count > MaximumParameters || definition.Steps.Count > MaximumSteps)
+        if (definition is null || definition.TargetJson is null && definition.AgentId != agentId || definition.Parameters.Count > MaximumParameters || definition.Steps.Count > MaximumSteps)
             return null;
         var steps = definition.Steps.Where(step => step.Enabled).OrderBy(step => step.Ordinal).ThenBy(step => step.Id).ToArray();
         if (steps.Length == 0 || steps.Any(step => step.Type != (int)JobStepKind.LibraryScript || step.ScriptId is null ||
@@ -150,7 +152,11 @@ public sealed class McpOperatorJobStore(OrchestratorDbContext db) : IMcpOperator
 
         var details = new JobDefinitionDetails(
             new JobDefinitionInfo((ulong)definition.Id, definition.Name, definition.FolderPath, definition.Description, definition.TenantId,
-                definition.ClientIdentity, definition.CreatedAtUtc, definition.UpdatedAtUtc, definition.OptionsJson, definition.AgentId),
+                definition.ClientIdentity, definition.CreatedAtUtc, definition.UpdatedAtUtc, definition.OptionsJson, definition.AgentId)
+            {
+                Target = ReadTarget(definition.TargetJson),
+                ExecutionPolicy = ReadPolicy(definition.ExecutionPolicyJson)
+            },
             parameters.Select(parameter => new JobParameterInfo((ulong)parameter.Id, (ulong)parameter.JobId, parameter.Name,
                 parameter.Type, parameter.Required, parameter.DefaultValue, parameter.Description, parameter.OptionsJson)).ToArray(),
             definition.Steps.OrderBy(step => step.Ordinal).ThenBy(step => step.Id).Select(step => new JobStepInfo((ulong)step.Id,
@@ -208,16 +214,17 @@ public sealed class McpOperatorJobStore(OrchestratorDbContext db) : IMcpOperator
             ? await _db.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken).ConfigureAwait(false)
             : null;
 
+        await JobTargetDefinitionGuard.RequireAsync(_db, access.TenantId, request.Draft.Target, cancellationToken).ConfigureAwait(false);
         var job = new JobDefinition
         {
             Name = prepared.Name,
             FolderPath = prepared.FolderPath,
             Description = prepared.Description,
             TenantId = access.TenantId,
-            AgentId = access.AgentId,
-            // The persisted V2 AgentId is authoritative. This display value
-            // retains an explicit legacy-compatible identity rather than None.
-            ClientIdentity = $"agent:{access.AgentId!.Value:D}",
+            AgentId = request.Draft.Target is null ? access.AgentId : null,
+            ClientIdentity = request.Draft.Target is null ? $"agent:{access.AgentId!.Value:D}" : string.Empty,
+            TargetJson = request.Draft.Target is null ? null : JsonSerializer.Serialize(request.Draft.Target),
+            ExecutionPolicyJson = request.Draft.ExecutionPolicy is null ? null : JsonSerializer.Serialize(request.Draft.ExecutionPolicy),
             OptionsJson = prepared.OptionsJson,
             CreatedAtUtc = now,
             UpdatedAtUtc = now
@@ -262,11 +269,20 @@ public sealed class McpOperatorJobStore(OrchestratorDbContext db) : IMcpOperator
         var row = await FindMutableOwnedAsync(request.JobId, request.Decision.Request, cancellationToken).ConfigureAwait(false);
         if (row is null) return null;
         EnsureVersion(row.owner, request.ExpectedVersion);
+        await JobTargetDefinitionGuard.RequireAsync(_db, request.Decision.Request.TenantId, request.Draft.Target, cancellationToken).ConfigureAwait(false);
 
         row.job.Name = prepared.Name;
         row.job.FolderPath = prepared.FolderPath;
         row.job.Description = prepared.Description;
         row.job.OptionsJson = prepared.OptionsJson;
+        if (request.Draft.Target is { } target)
+        {
+            row.job.TargetJson = JsonSerializer.Serialize(target);
+            row.job.AgentId = null;
+            row.job.ClientIdentity = string.Empty;
+        }
+        if (request.Draft.ExecutionPolicy is { } policy)
+            row.job.ExecutionPolicyJson = JsonSerializer.Serialize(policy);
         row.job.UpdatedAtUtc = request.OccurredAtUtc;
         Advance(row.owner, request.Decision, request.OccurredAtUtc);
         _db.McpOperatorJobAudits.Add(JobAudit(row.owner, "updated", request.AcceptedAudit.AuditId, request.OccurredAtUtc));
@@ -521,6 +537,8 @@ public sealed class McpOperatorJobStore(OrchestratorDbContext db) : IMcpOperator
         if (row.owner.TargetSetDigest != decision.Request.TargetSetDigest) throw new InvalidOperationException("The frozen job target set changed before dispatch.");
         var projection = await _db.JobRuns.SingleOrDefaultAsync(candidate => candidate.Id == (long)runId && candidate.JobId == jobId, cancellationToken).ConfigureAwait(false)
             ?? throw new InvalidOperationException("The job authority did not create the requested run projection.");
+        if (projection.IsAggregate && await _db.Set<McpReviewedJobAdmissionRecord>().AnyAsync(material => material.IdempotencyId == idempotencyId, cancellationToken).ConfigureAwait(false))
+            return await RecordAdmittedRunAsync(idempotencyId, runId, cancellationToken).ConfigureAwait(false);
         var existing = await _db.McpOperatorJobRuns.SingleOrDefaultAsync(candidate => candidate.IdempotencyId == idempotencyId || candidate.JobRunId == checked((long)runId), cancellationToken).ConfigureAwait(false);
         if (existing is not null)
         {
@@ -571,6 +589,7 @@ public sealed class McpOperatorJobStore(OrchestratorDbContext db) : IMcpOperator
         if (runId == 0 || runId > long.MaxValue) return null;
         var row = await FindMutableRunAsync(runId, decision.Request, cancellationToken).ConfigureAwait(false);
         if (row is null || row.run.TargetSetDigest != decision.Request.TargetSetDigest || !IsTerminal((JobRunState)row.projection.Status)) return null;
+        JobRunHistoryRetention.RequireDeletable(row.projection.IsAggregate, row.projection.ParentRunId is not null);
         if (row.run.DeletedAtUtc is not null) return ToRunLease(row.run, row.projection);
         row.run.DeletedAtUtc = occurredAtUtc;
         row.run.UpdatedAtUtc = occurredAtUtc;
@@ -657,6 +676,8 @@ public sealed class McpOperatorJobStore(OrchestratorDbContext db) : IMcpOperator
     private static PreparedJobDraft PrepareDraft(int tenantId, McpOperatorJobDraft draft)
     {
         ArgumentNullException.ThrowIfNull(draft);
+        draft.Target?.Validate();
+        draft.ExecutionPolicy?.Validate();
         return new PreparedJobDraft(
             NormalizeText(draft.Name, 120, "name"),
             NormalizeFolder(tenantId, draft.FolderPath),
@@ -726,13 +747,23 @@ public sealed class McpOperatorJobStore(OrchestratorDbContext db) : IMcpOperator
     private static McpOperatorJobLease ToLease(McpOperatorJobRecord owner, JobDefinition job) => new(
         owner.JobId, owner.TenantId, owner.AgentId, owner.Subject, owner.ClientId, owner.McpResource, owner.McpInstance,
         owner.PolicyId, owner.PolicyVersion, owner.TargetSetDigest, job.Name, job.FolderPath, job.Description, job.OptionsJson,
-        owner.DeletedAtUtc is not null, owner.CreatedAtUtc, owner.UpdatedAtUtc, owner.Version);
+        owner.DeletedAtUtc is not null, owner.CreatedAtUtc, owner.UpdatedAtUtc, owner.Version)
+    { Target = ReadTarget(job.TargetJson), ExecutionPolicy = ReadPolicy(job.ExecutionPolicyJson) };
 
-    private static McpOperatorJobRunLease ToRunLease(McpOperatorJobRunRecord run, JobRunRecord projection) => new(
-        checked((ulong)run.JobRunId), run.JobId, run.TenantId, run.AgentId, run.AcceptedAuditId, run.IdempotencyId, run.CorrelationId,
-        run.TargetSetDigest, ((JobRunState)projection.Status).ToString(), projection.CurrentStepOrdinal, run.CreatedAtUtc,
-        projection.StartedAtUtc, projection.CompletedAtUtc,
-        projection.Error is not null && JobRunInputProtection.Metadata(projection).Legacy ? JobRunInputProtection.Mask : projection.Error, run.CancellationRequested, run.DeletedAtUtc is not null, run.Version);
+    private static JobTargetDefinition? ReadTarget(string? json) => json is null ? null : JsonSerializer.Deserialize<JobTargetDefinition>(json);
+    private static JobExecutionPolicy? ReadPolicy(string? json) => json is null ? null : JsonSerializer.Deserialize<JobExecutionPolicy>(json);
+
+    private static McpOperatorJobRunLease ToRunLease(McpOperatorJobRunRecord run, JobRunRecord projection)
+    {
+        var plan = projection.IsAggregate && projection.TargetPlanJson is { } json ? JsonSerializer.Deserialize<JobResolvedTargetPlan>(json, ResolvedPlanJson) : null;
+        return new(checked((ulong)run.JobRunId), run.JobId, run.TenantId, run.AgentId, run.AcceptedAuditId, run.IdempotencyId, run.CorrelationId,
+            run.TargetSetDigest, ((JobRunState)projection.Status).ToString(), projection.CurrentStepOrdinal, run.CreatedAtUtc,
+            projection.StartedAtUtc, projection.CompletedAtUtc,
+            projection.Error is not null && JobRunInputProtection.Metadata(projection).Legacy ? JobRunInputProtection.Mask : projection.Error,
+            run.CancellationRequested, run.DeletedAtUtc is not null, run.Version)
+        { IsAggregate = projection.IsAggregate, TargetPlanDigest = projection.TargetPlanDigest,
+            TargetCount = plan?.Nodes.Count ?? 1, ExecutionPolicy = plan?.ExecutionPolicy };
+    }
 
     private static McpOperatorJobAuditRecord JobAudit(McpOperatorJobRecord owner, string action, Guid acceptedAuditId, DateTimeOffset occurredAtUtc) => new()
     {
@@ -771,7 +802,8 @@ public sealed class McpOperatorJobStore(OrchestratorDbContext db) : IMcpOperator
     }
 
     private async Task<bool> HasActiveRunsAsync(long jobId, CancellationToken cancellationToken)
-        => await _db.JobRuns.AnyAsync(run => run.JobId == jobId && run.Status != (int)JobRunState.Succeeded && run.Status != (int)JobRunState.Failed &&
+        => await JobDefinitionMutationFence.HasPendingReviewedAdmissionAsync(_db, jobId, cancellationToken).ConfigureAwait(false) ||
+            await _db.JobRuns.AnyAsync(run => run.JobId == jobId && run.Status != (int)JobRunState.Succeeded && run.Status != (int)JobRunState.Failed &&
             run.Status != (int)JobRunState.Cancelled && run.Status != (int)JobRunState.TimedOut && run.Status != (int)JobRunState.Unknown, cancellationToken).ConfigureAwait(false);
 
     private async Task SaveWithConcurrencyAsync(CancellationToken cancellationToken)

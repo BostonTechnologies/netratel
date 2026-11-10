@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using AwesomeAssertions;
 using NetRatel.API.Services.Flows;
 using NetRatel.API.Services.Jobs;
@@ -48,6 +49,38 @@ public sealed class FlowExecutionActionEnvironmentTests
         jobs.Captured.Request.Environment.Should().Be(expectedRequest);
         (jobs.Captured.Request.Environment ?? JobExecutionContextPolicy.FromJob(jobs.Captured.Snapshot.Definition.Job))
             .Should().Be(effective);
+    }
+
+    [Fact]
+    public async Task Runtime_client_binding_reaches_canonical_admission_with_a_distinct_whole_action_deadline()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var agent = Guid.NewGuid();
+        var target = new JobTargetDefinition { Source = JobTargetSource.RuntimeInput,
+            RuntimeInput = new(JobRuntimeTargetKind.ClientId, "ClientId") };
+        var definition = new JobDefinitionInfo(41, "Investigate low disk space", "/", null, 7, "", now, now, null)
+        { Target = target, ExecutionPolicy = new() };
+        var snapshot = new PinnedJobExecutionSnapshot(new(definition, [], []), []);
+        var reference = new FlowExecutionDefinitionDto("41", definition.Name, snapshot.ComputeDigest(), snapshot.ComputeDigest());
+        var binding = new FlowJobTargetBindingDto(JobRuntimeTargetKind.ClientId,
+            new(FlowInputSource.Event, FlowDataType.Text, "alert.agentId"));
+        var node = new FlowNodeDto(Guid.NewGuid(), FlowNodeKind.RunJob, "Investigate event client", new(0, 0))
+        { ExecutionAction = new(FlowExecutionSourceKind.Job, reference)
+            { JobTarget = target, JobExecutionPolicy = new(), TargetBinding = binding } };
+        var pin = new FlowPinnedExecutionDefinition(node.Id, node.Kind, reference, null, Job: snapshot) { TargetBinding = binding };
+        var jobs = new CaptureJobs();
+        var dispatcher = new FlowExecutionActionDispatcher(null!, new Pins(pin), jobs, null!, null!, null!, null!);
+        var input = JsonSerializer.Serialize(new Dictionary<string, string> { [FlowJobTargetBindings.CheckpointKey] = agent.ToString("D") });
+        var request = Request(node) with { InputsJson = input, DeadlineAtUtc = now.AddMinutes(3) };
+        await Assert.ThrowsAsync<CanonicalAdmissionReached>(() => dispatcher.DispatchAsync(request));
+        var admission = jobs.Captured!;
+        Assert.Equal(agent.ToString("D"), Assert.Single(admission.Request.RuntimeTarget!.Values));
+        Assert.Equal(JobRuntimeTargetKind.ClientId, admission.Request.RuntimeTarget.Kind);
+        Assert.Equal(request.DeadlineAtUtc, admission.ActionDeadlineAtUtc);
+        Assert.Null(admission.Request.ExpectedRuntimeSeconds);
+        Assert.Null(admission.Request.HardTimeoutSeconds);
+        Assert.Equal("{}", admission.Request.InputsJson);
+        Assert.Null(admission.Snapshot.Definition.Job.AgentId);
     }
 
     [Theory]

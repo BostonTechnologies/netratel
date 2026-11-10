@@ -6,6 +6,7 @@ using Microsoft.Extensions.DependencyInjection;
 using ModelContextProtocol;
 using ModelContextProtocol.Server;
 using NetRatel.Shared.Operations;
+using NetRatel.Shared.Contracts.Jobs;
 
 namespace NetRatel.Mcp.Core;
 
@@ -557,6 +558,7 @@ public static partial class NetRatelMcpToolDefinitions
         ("netratel_jobs", "create" or "update" or "delete" or "param_add" or "param_update" or "param_delete" or "step_add" or "step_update" or "step_reorder" or "step_delete") => ProductionJobMutationRequest(operation),
         ("netratel_job_runs", "list") => operatorSurfaceEnabled ? ProductionJobRunListRequest() : Request(JobRunListFields()),
         ("netratel_job_runs", "query") => operatorSurfaceEnabled ? ProductionJobRunListRequest() : Request(JobRunQueryFields()),
+        ("netratel_job_runs", "nodes" or "node_steps" or "node_logs") => ProductionJobNodeReferenceRequest(operation),
         ("netratel_job_runs", "get" or "steps") => operatorSurfaceEnabled ? ProductionJobRunReferenceRequest() : RequiredRequest([PositiveIdentifier("jobRunId", "Positive Development job-run identifier.")]),
         ("netratel_job_runs", "logs") => operatorSurfaceEnabled ? ProductionJobRunReferenceRequest() : RequiredRequest([PositiveIdentifier("jobRunId", "Positive Development job-run identifier."), NonNegativeIntegerIdentifier("ordinal", "Non-negative Development job-step ordinal.")]),
         ("netratel_job_runs", "start") => ProductionJobRunStartRequest(),
@@ -1220,6 +1222,8 @@ public static partial class NetRatelMcpToolDefinitions
             ["maxScriptBytes"] = PositiveInteger(),
             ["maxJobTargetCount"] = PositiveInteger(),
             ["maxTaskTargetCount"] = PositiveInteger(),
+            ["maxConcurrentJobTargets"] = new JsonObject { ["type"] = "integer", ["minimum"] = 1,
+                ["description"] = "Optional policy-wide quota for admitted targets across unfinished reviewed job plans. Full sets reserve capacity atomically; omitted preserves existing policies." },
             ["maxFanOut"] = PositiveInteger(),
             ["allowedTargetClassifications"] = new JsonObject { ["type"] = "array", ["maxItems"] = 64, ["uniqueItems"] = true, ["items"] = IntegerEnum(0, 5, "Target classification enum value.") },
             ["maxOnboardingCodeLifetimeSeconds"] = PositiveInteger(),
@@ -1565,9 +1569,36 @@ public static partial class NetRatelMcpToolDefinitions
         .. ProductionJobTargetFields(),
         PositiveLongIdentifier("jobId", "Positive caller-owned job identifier."),
         ("inputs", new JsonObject { ["type"] = "object", ["additionalProperties"] = new JsonObject { ["type"] = "string", ["maxLength"] = 1024 }, ["description"] = "Optional typed job inputs. Secret parameters accept opaque reference names only." }, false),
+        ("runtimeTarget", JobTargetContractSchema(typeof(JobRuntimeTargetInput)), false),
         OpaquePlanToken("planToken", "Opaque credential returned by the start preview."),
         OpaquePlanToken("idempotencyKey", "Opaque credential returned by the start preview.")
     ]);
+
+    private static RequestDefinition ProductionJobNodeReferenceRequest(string operation)
+    {
+        List<(string Name, JsonObject Schema, bool Required)> fields =
+        [
+            .. ProductionJobTargetFields(),
+            PositiveIdentifier("jobRunId", "Exact logical parent run identifier.")
+        ];
+        if (operation == "nodes")
+        {
+            fields.Add(Integer("page", "One-based node page.", 1, 100000));
+            fields.Add(Integer("pageSize", "Maximum nodes per page.", 1, 100));
+        }
+        else
+        {
+            fields.Add(Uuid("nodeAgentId", "Exact node AgentId from this parent's node list.", true));
+            if (operation == "node_logs")
+            {
+                fields.Add(PositiveIdentifier("stepRunId", "Exact native step-run identifier from this node's ordered steps."));
+                fields.Add(String("cursor", "Exact composite cursor from the previous forward output page.", 64));
+                fields.Add(Integer("limit", "Maximum forward log rows.", 1, 1000));
+                fields.Add(Integer("maximumBytes", "Maximum UTF-8 output bytes, further bounded by the selected node policy.", 1, 65536));
+            }
+        }
+        return RequiredRequest(fields);
+    }
 
     private static RequestDefinition ProductionJobRunActionRequest() => RequiredRequest([
         .. ProductionJobTargetFields(),
@@ -1728,7 +1759,9 @@ public static partial class NetRatelMcpToolDefinitions
             ["name"] = new JsonObject { ["type"] = "string", ["minLength"] = 1, ["maxLength"] = 120 },
             ["folderPath"] = new JsonObject { ["type"] = "string", ["minLength"] = 1, ["maxLength"] = 512 },
             ["description"] = new JsonObject { ["type"] = "string", ["maxLength"] = 512 },
-            ["optionsJson"] = new JsonObject { ["type"] = "string", ["maxLength"] = 8192 }
+            ["optionsJson"] = new JsonObject { ["type"] = "string", ["maxLength"] = 8192 },
+            ["target"] = JobTargetContractSchema(typeof(JobTargetDefinition)),
+            ["executionPolicy"] = JobTargetContractSchema(typeof(JobExecutionPolicy))
         },
         ["required"] = new JsonArray("name", "folderPath")
     };

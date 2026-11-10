@@ -24,6 +24,7 @@ public sealed class McpOperatorConfirmationPlanRecord
     public string Operation { get; set; } = string.Empty;
     public McpOperatorConfirmationClass ConfirmationClass { get; set; }
     public string PayloadHash { get; set; } = string.Empty;
+    public string? JobRequestHash { get; set; }
     public string IdempotencyKey { get; set; } = string.Empty;
     public DateTimeOffset CreatedAtUtc { get; set; }
     public DateTimeOffset ExpiresAtUtc { get; set; }

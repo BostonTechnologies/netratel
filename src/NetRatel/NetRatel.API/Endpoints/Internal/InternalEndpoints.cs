@@ -150,6 +150,11 @@ public static partial class InternalEndpoints
                 var runs = http.RequestServices.GetRequiredService<IJobRunService>();
                 try
                 {
+                    var agent = await db.Agents.AsNoTracking().SingleAsync(row => row.TenantId == target.TenantId && row.Id == target.AgentId, ct);
+                    var node = NetRatel.Infrastructure.Services.JobNodeDirectory.Map(agent, false);
+                    runs.BindNodeExecutionContext(runId, new(node.AgentId, node.Hostname, node.DisplayName, node.Tags)
+                    { Name = node.Name, OperatingSystem = node.OperatingSystem, Architecture = node.Architecture,
+                        Environment = JobExecutionContextPolicy.FromJob(job), IsEnabled = node.IsEnabled });
                     await runs.UpsertRunAsync(new(runId, job.Id, target.TenantId, job.ClientIdentity, binding.SourceSystem,
                         JobRunState.Pending, 0, now, null, null, null, EnrichPayload(request, created.Id, job),
                         JobExecutionRuntimePolicy.MergeOptionsJson(job.OptionsJson, JobExecutionRuntimePolicy.FromJobAndIngest(job, request)), target.AgentId), ct);
