@@ -3,10 +3,11 @@
 @using NetRatel.Shared.Contracts.Jobs
 @implements IDisposable
 @inject IJobApiClient JobApi
+@inject IHttpClientFactory HttpClients
 @inject ISnackbar Snackbar
 @inject NavigationManager NavManager
 
-<MudDialog Class="@(_params?.Count > 1 || Job.Target is not null ? "jobs-run-dialog jobs-run-dialog-wide" : "jobs-run-dialog")">
+<MudDialog Class="@(_params?.Count > 1 || _availableNodes.Count > 25 ? "jobs-run-dialog jobs-run-dialog-wide" : "jobs-run-dialog")">
     <DialogContent>
         <form class="run-job-dialog" id="@_formId" autocomplete="off" aria-label="Job inputs" @onsubmit:preventDefault="true">
             <div class="run-job-context">
@@ -18,18 +19,34 @@
             @if (Job.Target is not null)
             {
                 <section class="run-job-targets" aria-label="Invocation targets">
-                    <MudText Typo="Typo.subtitle2">Targets and execution</MudText>
-                    <MudText Typo="Typo.body2">@TargetSummary · Thread Count @(Job.ExecutionPolicy?.ThreadCount ?? 1) · @((Job.ExecutionPolicy?.NodeFailurePolicy ?? JobNodeFailurePolicy.StopRemaining) == JobNodeFailurePolicy.StopRemaining ? "Stop starting remaining nodes on failure" : "Continue on remaining nodes, then fail the run")</MudText>
+                    @if (Job.Target.Source == JobTargetSource.ExecutionGroup)
+                    {
+                        <MudText Typo="Typo.caption">HA Group@(_launchPreview?.GroupName is { Length: > 0 } name ? $": {name}" : "") · One healthy worker per run, balanced across the selected pool.</MudText>
+                    }
                     @if (Job.Target.Source == JobTargetSource.RuntimeInput && Job.Target.RuntimeInput is { } runtime)
                     {
-                        <MudTextField T="string" Value="_runtimeValues" ValueChanged="RuntimeValuesChanged" Label="@($"{runtime.Name} ({runtime.Kind})")" InputId="@(_formId + "-runtime-target")" UserAttributes="@JobParameterInput.OperationalAttributes(_formId + "-runtime-target")" Required="true" Lines="3" Variant="Variant.Outlined" Immediate="true" Disabled="_isSubmitting" HelperText="One exact value per line. Commas and filter punctuation stay literal. Client IDs, hostnames and tags have distinct meanings." />
-                        @if (RuntimeInputError is { } targetError) { <MudText Typo="Typo.caption" Color="Color.Error" role="alert">@targetError</MudText> }
                         @if (runtime.Kind is JobRuntimeTargetKind.ClientId or JobRuntimeTargetKind.ClientIds && Job.TenantId is { } tenantId)
                         {
-                            <JobNodePicker TenantId="tenantId" Environment="Job.Environment" Value="RuntimeIds" ValueChanged="RuntimeNodesChanged" Disabled="_isSubmitting" />
+                            <JobNodePicker TenantId="tenantId" Environment="Job.Environment" Value="RuntimeIds" ValueChanged="RuntimeNodesChangedAsync" MaximumSelection="@(runtime.Kind == JobRuntimeTargetKind.ClientId ? 1 : null)" Disabled="_isSubmitting" />
+                            <details class="run-job-direct-values"><summary>Enter client IDs</summary>
+                                <MudTextField T="string" Value="_runtimeValues" ValueChanged="RuntimeValuesChangedAsync" Label="@($"{runtime.Name} ({runtime.Kind})")" InputId="@(_formId + "-runtime-target")" UserAttributes="@JobParameterInput.OperationalAttributes(_formId + "-runtime-target")" Lines="2" Variant="Variant.Outlined" Immediate="true" Disabled="_isSubmitting" HelperText="One exact client ID per line." />
+                            </details>
                         }
+                        else
+                        {
+                            <MudTextField T="string" Value="_runtimeValues" ValueChanged="RuntimeValuesChangedAsync" Label="@($"{runtime.Name} ({runtime.Kind})")" InputId="@(_formId + "-runtime-target")" UserAttributes="@JobParameterInput.OperationalAttributes(_formId + "-runtime-target")" Required="true" Lines="2" Variant="Variant.Outlined" Immediate="true" Disabled="_isSubmitting" HelperText="One exact value per line. Commas and filter punctuation stay literal." />
+                        }
+                        @if (RuntimeInputError is { } targetError) { <MudText Typo="Typo.caption" Color="Color.Error" role="alert">@targetError</MudText> }
                     }
-                    <JobTargetPreview TenantId="@(Job.TenantId ?? 0)" Target="Job.Target" ExecutionPolicy="Job.ExecutionPolicy" Environment="Job.Environment" JobId="Job.Id" RunRequest="BuildRequest(false)" Disabled="@(!CanPreview)" ButtonLabel="Preview invocation targets" LaunchPreviewChanged="LaunchPreviewChanged" />
+                    @if (_availableNodes.Count > 0 && Job.Target.Source != JobTargetSource.RuntimeInput)
+                    {
+                        <JobNodePicker TenantId="@(Job.TenantId ?? 0)" Candidates="_availableNodes" Value="_selectedTargetIds" ValueChanged="InvocationNodesChangedAsync" Disabled="_isSubmitting" />
+                    }
+                    @if (_targetsLoading) { <MudProgressLinear Indeterminate="true" aria-label="Resolving available nodes" /> }
+                    @if (_targetsError is not null)
+                    {
+                        <MudAlert Severity="Severity.Warning" Dense="true">@_targetsError <MudButton Size="Size.Small" OnClick="@(() => RefreshTargetsAsync(true, false))">Reload nodes</MudButton></MudAlert>
+                    }
                 </section>
             }
             @if (_params is null)
@@ -78,7 +95,7 @@
                 </div>
             }
             <div class="run-job-metadata">
-                <MudTextField @bind-Value="_startedBy" Label="Started by" InputId="@(_formId + "-started-by")" UserAttributes="@JobParameterInput.OperationalAttributes(_formId + "-started-by")" Required="true" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_isSubmitting" HelperText="Run metadata" />
+                <MudTextField @bind-Value="_startedBy" Label="Started by" InputId="@(_formId + "-started-by")" UserAttributes="@JobParameterInput.OperationalAttributes(_formId + "-started-by")" Required="true" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_isSubmitting" />
             </div>
             @if (_launchError is not null) { <MudText Color="Color.Error" Typo="Typo.body2" role="alert">@_launchError</MudText> }
         </form>
@@ -100,15 +117,22 @@
     private readonly HashSet<string> _touched = new(StringComparer.OrdinalIgnoreCase);
     private string _startedBy = "ui";
     private string? _launchError;
-    private bool _isSubmitting, _parameterLoadFailed, _loadingParameters, _submitted;
+    private bool _isSubmitting, _parameterLoadFailed, _loadingParameters, _submitted, _targetsLoading;
     private string _runtimeValues = "";
     private JobLaunchPreviewDto? _launchPreview;
+    private IReadOnlyList<JobNodeInventoryDto> _availableNodes = [];
+    private IReadOnlyList<Guid> _selectedTargetIds = [];
+    private IReadOnlyList<Guid>? _invocationSubset;
+    private string? _targetsError;
+    private long _targetsGeneration;
+    private CancellationTokenSource? _targetResolution;
+    private JobTargetsApiClient? _targetsApi;
     private readonly CancellationTokenSource _dispose = new();
     private string TargetSummary => Job.Target?.Source switch
     {
-        JobTargetSource.ExecutionGroup => "Execution group · every member",
-        JobTargetSource.ExplicitNodes => $"{Job.Target.AgentIds?.Distinct().Count() ?? 0} selected nodes",
-        JobTargetSource.NodeFilter => $"Node filter: {Job.Target.Filter}",
+        JobTargetSource.ExecutionGroup => "HA Group",
+        JobTargetSource.ExplicitNodes => "Selected nodes",
+        JobTargetSource.NodeFilter => "Matching nodes",
         JobTargetSource.RuntimeInput => "Targets supplied for this invocation",
         _ => Job.ClientDisplayName ?? "Target label unavailable"
     };
@@ -120,9 +144,9 @@
         : Job.Target.RuntimeInput?.Kind is JobRuntimeTargetKind.ClientId or JobRuntimeTargetKind.ClientIds && RuntimeIds.Count != RuntimeValues.Length ? "Enter complete stable client IDs or select clients below."
         : null;
     private bool ValidInputs => _params is not null && _params.All(p => JobParameterInput.Validate(p.Type, GetValue(p.Name), p.Required, p.OptionsJson) is null);
-    private bool CanPreview => !_isSubmitting && ValidInputs && RuntimeInputError is null;
+    private bool CanResolve => ValidInputs && RuntimeInputError is null;
     private bool CanRun => !_isSubmitting && !_submitted && _params is not null && !string.IsNullOrWhiteSpace(_startedBy)
-        && ValidInputs && RuntimeInputError is null && (Job.Target is null || _launchPreview is not null);
+        && ValidInputs && RuntimeInputError is null && (Job.Target is null || !_targetsLoading && _launchPreview is not null);
 
     protected override Task OnInitializedAsync()
     {
@@ -144,15 +168,75 @@
         }
         catch { _parameterLoadFailed = true; _params = null; }
         finally { _loadingParameters = false; }
+        if (_params is not null) await RefreshTargetsAsync(true, false);
     }
     private string? GetValue(string key) => _values.GetValueOrDefault(key);
     private string? FieldError(JobParamDto p) => _touched.Contains(p.Name) || !string.IsNullOrWhiteSpace(GetValue(p.Name))
         ? JobParameterInput.Validate(p.Type, GetValue(p.Name), p.Required, p.OptionsJson) : null;
-    private void SetValue(string key, string? value) { _values[key] = value; _touched.Add(key); InvalidatePreview(); }
-    private void RuntimeValuesChanged(string? value) { _runtimeValues = value ?? ""; InvalidatePreview(); }
-    private void RuntimeNodesChanged(IReadOnlyList<Guid> ids) { _runtimeValues = string.Join("\n", ids); InvalidatePreview(); }
-    private void InvalidatePreview() => _launchPreview = null;
-    private void LaunchPreviewChanged(JobLaunchPreviewDto? preview) => _launchPreview = preview;
+    private Task SetValue(string key, string? value) { _values[key] = value; _touched.Add(key); return RefreshTargetsAsync(_invocationSubset is null, true); }
+    private Task RuntimeValuesChangedAsync(string? value) { _runtimeValues = value ?? ""; return RefreshTargetsAsync(true, true); }
+    private Task RuntimeNodesChangedAsync(IReadOnlyList<Guid> ids) { _runtimeValues = string.Join("\n", ids); return RefreshTargetsAsync(true, false); }
+    private Task InvocationNodesChangedAsync(IReadOnlyList<Guid> ids)
+    {
+        _selectedTargetIds = ids;
+        // Once the operator edits the set, keep those exact choices even when
+        // parameters or the saved job change. Reselecting all visible nodes must
+        // not grant any newly appearing node implicit permission for this run.
+        _invocationSubset = ids;
+        return RefreshTargetsAsync(false, false);
+    }
+    private async Task RefreshTargetsAsync(bool resetSelection, bool debounce)
+    {
+        if (Job.Target is null) return;
+        var generation = ++_targetsGeneration;
+        _targetResolution?.Cancel(); _targetResolution?.Dispose();
+        _targetResolution = CancellationTokenSource.CreateLinkedTokenSource(_dispose.Token);
+        var ct = _targetResolution.Token;
+        _launchPreview = null; _targetsError = null; _targetsLoading = false;
+        if (resetSelection) { _invocationSubset = null; _availableNodes = []; _selectedTargetIds = []; }
+        if (!CanResolve) return;
+        if (_invocationSubset is { Count: 0 }) { _targetsError = "Choose at least one node for this run."; return; }
+        _targetsLoading = true;
+        var request = BuildRequest(false);
+        try
+        {
+            if (debounce) await Task.Delay(250, ct);
+            _targetsApi ??= new(HttpClients);
+            var first = await _targetsApi.PreviewRunAsync(Job.Id, request, 1, 100, ct);
+            if (first.Page != 1 || first.Nodes.Count > 100 || first.Digest is not { Length: 64 } ||
+                first.Digest.Any(character => !Uri.IsHexDigit(character)) || first.DefinitionDigest is not { Length: 64 } ||
+                first.DefinitionDigest.Any(character => !Uri.IsHexDigit(character)) || first.Target.Source != Job.Target.Source)
+                throw new InvalidDataException("The current target selection could not be verified. Reload the job and try again.");
+            if (Job.Target.Source == JobTargetSource.ExecutionGroup && (first.WorkerPoolCount is not > 0 || first.TargetCount != 1))
+                throw new InvalidDataException("The service must support one-worker HA admission before this job can run.");
+            var nodes = new List<JobTargetNode>(first.Nodes);
+            var page = first;
+            while (page.NextPage is { } next)
+            {
+                if (next != page.Page + 1 || next > 100) throw new InvalidDataException("The node page sequence is incomplete.");
+                page = await _targetsApi.PreviewRunAsync(Job.Id, request, next, 100, ct);
+                if (page.Digest != first.Digest || page.DefinitionDigest != first.DefinitionDigest)
+                    throw new InvalidDataException("The available nodes changed while loading.");
+                nodes.AddRange(page.Nodes);
+            }
+            if (generation != _targetsGeneration) return;
+            var expected = first.WorkerPoolCount ?? first.TargetCount;
+            if (expected is < 1 or > 10_000 || nodes.Count != expected || nodes.Select(node => node.AgentId).Distinct().Count() != expected)
+                throw new InvalidDataException("The complete node selection could not be loaded.");
+            if (resetSelection)
+            {
+                _availableNodes = nodes.Select(node => new JobNodeInventoryDto(node.AgentId, node.Hostname,
+                    node.DisplayName ?? node.Name ?? "Hostname unavailable", node.Name, node.Tags, node.OperatingSystem,
+                    node.Architecture, node.Environment, node.IsOnline, node.IsEnabled, null)).ToArray();
+                _selectedTargetIds = nodes.Select(node => node.AgentId).ToArray();
+            }
+            _launchPreview = first;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
+        catch (Exception error) when (error is HttpRequestException or InvalidDataException)
+        { if (generation == _targetsGeneration) _targetsError = error.Message; }
+        finally { if (generation == _targetsGeneration) _targetsLoading = false; }
+    }
     private RunJobRequest BuildRequest(bool reviewed)
     {
         var payload = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
@@ -161,11 +245,12 @@
         return new RunJobRequest(_startedBy, JsonSerializer.Serialize(payload), ClientIdentityOverride: null, Environment: Job.Environment)
         {
             RuntimeTarget = Job.Target?.Source == JobTargetSource.RuntimeInput && Job.Target.RuntimeInput is { } runtime ? new(runtime.Kind, RuntimeValues, runtime.AllOf) : null,
-            ExpectedTargetPlanDigest = reviewed ? _launchPreview?.Digest : null
+            ExpectedTargetPlanDigest = reviewed ? _launchPreview?.Digest : null,
+            SelectedTargetAgentIds = _invocationSubset
         };
     }
     private bool GetBoolValue(string key) => bool.TryParse(GetValue(key), out var value) && value;
-    private void SetBoolValue(string key, bool value) => SetValue(key, value ? "true" : "false");
+    private Task SetBoolValue(string key, bool value) => SetValue(key, value ? "true" : "false");
     private async Task RunAsync()
     {
         if (!CanRun || _params is null) return;
@@ -175,14 +260,15 @@
         {
             var run = await JobApi.RunJobAsync(Job.Id, BuildRequest(true));
             _submitted = true;
-            Snackbar.Add($"Run #{run.Id} submitted.", Severity.Success);
+            Snackbar.Add("Run started.", Severity.Success);
             if (OnRunCompleted.HasDelegate) await OnRunCompleted.InvokeAsync(run);
             NavManager.NavigateTo($"/jobs/{Job.Id}/runs/{run.Id}");
             MudDialog.Close(DialogResult.Ok(run));
         }
-        catch { _launchError = "The run could not be started. Your inputs are retained. Preview the current targets and try again."; InvalidatePreview(); }
+        catch { _launchError = "The run could not be started. Your inputs are retained. Check the available nodes and try again."; _launchPreview = null; }
         finally { _isSubmitting = false; }
+        if (!_submitted) await RefreshTargetsAsync(false, false);
     }
     private void Cancel() { if (!_isSubmitting) MudDialog.Cancel(); }
-    public void Dispose() { _dispose.Cancel(); _dispose.Dispose(); }
+    public void Dispose() { _targetResolution?.Cancel(); _targetResolution?.Dispose(); _dispose.Cancel(); _dispose.Dispose(); }
 }

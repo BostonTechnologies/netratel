@@ -11,6 +11,7 @@
 @using NetRatel.Shared.Contracts.Scripts
 
 @inject IJobApiClient JobApi
+@inject ILogger<JobEditDialog> Logger
 @inject ITenantApiService TenantApi
 @inject IScriptLibraryService ScriptLibrary
 @inject ISnackbar Snackbar
@@ -120,6 +121,12 @@
                 </MudTabPanel>
 <MudTabPanel Text="Execution">
                                     <MudStack Spacing="2">
+                                    @if (_target.Source == JobTargetSource.ExecutionGroup)
+                                    {
+                                        <MudText Typo="Typo.body2">One healthy worker runs the complete workflow. New runs balance across the HA Group; offline workers are skipped.</MudText>
+                                    }
+                                    else
+                                    {
                                     <MudNumericField T="int" @bind-Value="_threadCount" Label="Thread Count" Min="1" Max="100" Required="true" Variant="Variant.Outlined" HelperText="Maximum nodes running this job concurrently. Each slot runs one node’s complete ordered workflow." />
                                     <MudText Typo="Typo.body2" role="status">@ConcurrencySummary</MudText>
                                     <MudText Typo="Typo.subtitle2">If a node fails</MudText>
@@ -130,6 +137,7 @@
                                     <MudText Typo="Typo.caption">Already running nodes settle in either policy. Unknown physical execution closes new starts even when continuing. Step retry and failure behavior stays within each node.</MudText>
                                     <MudText Typo="Typo.caption">Runtime limits below apply to each native node workflow after dispatch; waiting targets do not consume another node’s deadline. A Flow action can still have a whole-action deadline.</MudText>
 
+                                    }
                                         <MudGrid Spacing="1">
                                             <MudItem xs="12" sm="6">
                                                 <MudNumericField T="int"
@@ -760,7 +768,7 @@
                     // Always show the clone's actual persisted children, including a partial copy.
                     // A failed reload keeps child actions blocked and offers an explicit retry.
                     try { await RefreshDetailsAsync(job.Id); }
-                    catch { /* RefreshDetailsAsync records the unavailable state shown above. */ }
+                    catch (Exception error) { Logger.LogWarning(error, "Could not reload children for saved clone {JobId}", job.Id); }
                 }
                 else
                 {
@@ -1107,7 +1115,7 @@
                 if (script is not null) _scriptSummaries[id] = script;
             }
             catch (OperationCanceledException) when (_disposeCts.IsCancellationRequested) { return; }
-            catch { /* The persisted script ID remains a useful fallback when its source is unavailable. */ }
+            catch (Exception error) { Logger.LogDebug(error, "Script summary unavailable for job step script {ScriptId}", id); }
         }
     }
 

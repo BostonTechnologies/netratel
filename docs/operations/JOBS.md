@@ -54,6 +54,21 @@ fanout and canonical hashes. This correction does not rewrite admitted history.
 
 ## Select targets
 
+Run resolves targets automatically from the current inputs; no manual preview
+step is needed. **Nodes (count)** and the pencil icon open the shared compact
+chip selector. Search, select or deselect nodes in its bounded scroll area;
+large selections, including 300 nodes, remain reachable. The definition editor
+and tenant membership editor use the same picker. Selected nodes stay selected
+across search results and directory pages, including offline members.
+
+A one-off Run selection changes only that invocation. Editing job parameters
+retains those exact chosen identities; reselecting every displayed node also
+binds that set explicitly rather than silently adding new matches. Current
+server resolution, permissions and the complete plan digest are still checked
+before execution. If a changed selector no longer admits the chosen nodes,
+reload the available nodes and choose again.
+
+
 The full-width job editor contains Definition, Targets, Execution, Steps,
 Parameters and Schedule sections. Changing target mode replaces its previous
 target, including the old singular AgentId. A legacy job with only AgentId
@@ -226,6 +241,12 @@ ordinals on two clients do not identify the same output: node/native-run and
 step-run identity are required. Older singleton deep links remain useful. An
 unreported hostname is labelled unavailable; a friendly/registered label is
 shown separately and does not become `node.hostname`.
+
+Recent Runs uses dense rows. The execution workspace shows hostname, outcome,
+duration and compact node/step headers with expansion controls on the left.
+Zero outcome counters and duplicate success prose are omitted. Raw identifiers
+and hashes remain available in optional technical details, while normal
+inspection focuses on the selected node's output.
 
 Expand only the node and step being inspected. Node details/logs are loaded in
 bounded pages. **Follow selected node** follows that node without jumping

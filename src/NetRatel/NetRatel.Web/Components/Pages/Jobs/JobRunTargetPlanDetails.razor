@@ -7,21 +7,27 @@
     @if (_error is not null) { <MudAlert Severity="Severity.Warning" Dense="true">@_error <MudButton OnClick="@(() => LoadAsync(1))">Retry target plan</MudButton></MudAlert> }
     @if (_plan is { } plan)
     {
-        <MudText Typo="Typo.body2">@plan.TargetCount admitted targets · @plan.Target.Source · Thread Count @plan.ExecutionPolicy.ThreadCount · @plan.ExecutionPolicy.NodeFailurePolicy</MudText>
-        @if (plan.Target.ExecutionGroupId is { } groupId) { <MudText Typo="Typo.body2">Execution group @groupId · Admitted revision @plan.GroupRevision</MudText> }
-        @if (plan.Target.Filter is { } filter) { <MudText Typo="Typo.body2">Admitted filter: @filter</MudText> }
-        <MudText Typo="Typo.caption">Definition digest: @plan.DefinitionDigest</MudText>
-        <MudText Typo="Typo.caption">Target-plan digest: @plan.Digest</MudText>
-        @foreach (var binding in plan.Bindings)
-        { <MudText Typo="Typo.caption">Binding @binding.Name · Source @binding.Source</MudText> }
-        <MudText Typo="Typo.caption">The original admitted membership and metadata are shown here. Current group edits do not alter this execution.</MudText>
-        @foreach (var node in plan.Nodes)
-        { <MudText Typo="Typo.body2" @key="node.AgentId">@(string.IsNullOrWhiteSpace(node.Hostname) ? "Hostname unavailable" : node.Hostname) · @node.DisplayName · @node.AgentId</MudText> }
+        <MudText Typo="Typo.body2">@plan.TargetCount @(plan.TargetCount == 1 ? "node" : "nodes")@(!string.IsNullOrWhiteSpace(plan.GroupName) ? $" · HA Group: {plan.GroupName}" : "")</MudText>
+        <MudChipSet T="Guid" ReadOnly="true" Size="Size.Small" Variant="Variant.Outlined">
+            @foreach (var node in plan.Nodes)
+            { <MudChip T="Guid" Value="node.AgentId" Icon="@Icons.Material.Outlined.Dns" @key="node.AgentId">@(string.IsNullOrWhiteSpace(node.Hostname) ? node.DisplayName ?? node.Name ?? "Hostname unavailable" : node.Hostname)</MudChip> }
+        </MudChipSet>
+        <details><summary>Technical provenance</summary>
+            <MudText Typo="Typo.caption">Source: @plan.Target.Source · Group revision @plan.GroupRevision · Configured Thread Count @plan.ExecutionPolicy.ThreadCount · Failure policy @plan.ExecutionPolicy.NodeFailurePolicy</MudText>
+            @if (plan.Target.ExecutionGroupId is { } groupId) { <MudText Typo="Typo.caption">Group ID: @groupId</MudText> }
+            @if (plan.Target.Filter is { } filter) { <MudText Typo="Typo.caption">Filter: @filter</MudText> }
+            <MudText Typo="Typo.caption">Definition: @plan.DefinitionDigest · Target plan: @plan.Digest</MudText>
+            @foreach (var binding in plan.Bindings) { <MudText Typo="Typo.caption">Binding @binding.Name · @binding.Source</MudText> }
+            @foreach (var node in plan.Nodes) { <MudText Typo="Typo.caption">@node.AgentId · @node.Hostname</MudText> }
+        </details>
+        @if (plan.Page > 1 || plan.NextPage is not null)
+        {
         <div class="job-run-target-plan-pages">
             <MudButton Disabled="@(plan.Page <= 1 || _loading)" OnClick="@(() => LoadAsync(Math.Max(1, plan.Page - 1)))">Previous admitted targets</MudButton>
             <MudText Typo="Typo.caption">Page @plan.Page · @plan.TargetCount total</MudText>
             <MudButton Disabled="@(plan.NextPage is null || _loading)" OnClick="@(() => LoadAsync(plan.NextPage ?? plan.Page))">Next admitted targets</MudButton>
         </div>
+        }
     }
 </section>
 

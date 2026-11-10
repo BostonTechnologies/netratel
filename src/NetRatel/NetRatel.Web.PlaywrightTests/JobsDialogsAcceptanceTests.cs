@@ -196,7 +196,8 @@ public sealed class JobsDialogsAcceptanceTests(ClientsManagementBrowserFixture b
         await Assertions.Expect(panels.Nth(2)).ToHaveClassAsync(new System.Text.RegularExpressions.Regex("mud-panel-expanded"));
         await Assertions.Expect(panels.Nth(2).GetByText("Delayed output for step 3", new() { Exact = true })).ToBeVisibleAsync();
         await stream.PublishAsync(3, terminal: true);
-        await Assertions.Expect(page.GetByText("Execution completed successfully.", new() { Exact = true })).ToBeVisibleAsync();
+        await Assertions.Expect(page.Locator(".job-run-title .mud-chip")).ToHaveTextAsync("Succeeded");
+        await Assertions.Expect(page.Locator(".job-run-summary")).ToHaveCountAsync(0);
         await Assertions.Expect(panels.Nth(2).GetByText("Delayed output for step 3", new() { Exact = true })).ToBeVisibleAsync();
         await CaptureAsync(page, "jobs-follow-completed");
     }

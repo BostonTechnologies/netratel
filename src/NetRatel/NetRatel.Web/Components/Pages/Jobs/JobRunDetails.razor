@@ -37,7 +37,7 @@
             <div class="job-run-title">
                 <MudText Typo="Typo.h6">@GetJobName()</MudText>
                 <MudChip T="string" Color="@RunStatusColor(_run.Status)" Variant="Variant.Outlined" Size="Size.Small">@_run.Status</MudChip>
-                <MudText Typo="Typo.caption" Color="Color.Secondary" role="status">@LiveStateLabel</MudText>
+                @if (!IsRunTerminal(_run)) { <MudText Typo="Typo.caption" Color="Color.Secondary" role="status">@LiveStateLabel</MudText> }
             </div>
             <div class="job-run-actions">
                 <MudButton Size="Size.Small" Variant="Variant.Text" StartIcon="@Icons.Material.Filled.ArrowBack" OnClick="@(() => NavManager.NavigateTo("/jobs"))">Jobs</MudButton>
@@ -49,7 +49,7 @@
                 <MudIconButton Icon="@Icons.Material.Filled.Refresh" Size="Size.Small" aria-label="Refresh run" OnClick="ManualRefresh" Disabled="_isLoading" />
             </div>
             <MudText Typo="Typo.body2" Color="Color.Secondary" Class="job-run-context">
-                Run #@RunId · @(_run.TenantDisplayName ?? _run.TenantId?.ToString() ?? "Tenant unknown") · @GetTargetSummary() · @GetEnvironmentSummary() · @GetRunWindowLabel()
+                @(_run.TenantDisplayName ?? "Tenant unknown") · @GetTargetSummary() · @GetEnvironmentSummary() · @GetRunWindowLabel()
             </MudText>
         </header>
 
@@ -57,7 +57,8 @@
         {
             <MudText Typo="Typo.caption" Color="Color.Warning" role="status">@_loadError</MudText>
         }
-        <MudText Typo="Typo.body2" Class="job-run-summary" role="status">@GetRunOutcomeSummary()</MudText>
+        @if (_run.Status is JobRunStatusDto.Failed or JobRunStatusDto.TimedOut or JobRunStatusDto.Unknown)
+        { <MudText Typo="Typo.body2" Class="job-run-summary" role="status">@GetRunOutcomeSummary()</MudText> }
 
         @if (_run.IsAggregate)
         {
@@ -83,7 +84,7 @@
             }
             else
             {
-                <MudExpansionPanels MultiExpansion="true" Elevation="0">
+                <MudExpansionPanels MultiExpansion="true" Elevation="0" Dense="true" Gutters="false">
                     @foreach (var state in _steps.OrderBy(s => s.Step.Ordinal))
                     {
                         var step = state.Step;
@@ -98,7 +99,7 @@
                                 </div>
                             </TitleContent>
                             <ChildContent>
-                                <MudTabs ActivePanelIndex="state.ActiveTab" ActivePanelIndexChanged="@((int index) => OnStepTabChanged(state, index))" KeepPanelsAlive="true" Elevation="0" Class="job-run-output-tabs">
+                                <MudTabs ActivePanelIndex="state.ActiveTab" ActivePanelIndexChanged="@((int index) => OnStepTabChanged(state, index))" KeepPanelsAlive="true" Elevation="0" MinimumTabWidth="80px" TabPanelsClass="pa-0" Class="job-run-output-tabs">
                                     <MudTabPanel Text="Output">
                                         @if (state.Loading && state.Log is null)
                                         {
@@ -161,14 +162,6 @@
             <summary>Run details and inputs</summary>
             <MudStack Spacing="2" Class="pa-3">
                 <MudText Typo="Typo.caption">Started by @(_run.StartedBy ?? "Unknown") · Created @FormatTimestamp(_run.CreatedAtMicros) · Started @FormatTimestamp(_run.StartedAtMicros) · @(_run.Status == JobRunStatusDto.Unknown ? "Reconciled" : "Completed") @FormatTimestamp(_run.CompletedAtMicros)</MudText>
-                @if (_run.IsAggregate)
-                {
-                    <MudText Typo="Typo.caption">Target source: @_run.TargetSource · Target plan: @_run.TargetPlanDigest · Definition: @_run.DefinitionDigest</MudText>
-                }
-                else
-                {
-                    <MudText Typo="Typo.caption" Color="Color.Secondary">Agent ID: @(_run.AgentId?.ToString() ?? "Not recorded") · Client identity: @(string.IsNullOrWhiteSpace(_run.ClientIdentity) ? "Not recorded" : _run.ClientIdentity)</MudText>
-                }
                 @if (!string.IsNullOrWhiteSpace(_run.Error))
                 {
                     <pre class="job-run-diagnostic-text">@BoundText(_run.Error)</pre>
@@ -184,12 +177,15 @@
                 {
                     <MudText Typo="Typo.caption" Color="Color.Secondary">No run inputs were captured.</MudText>
                 }
+                <details class="job-run-technical"><summary>Technical identifiers</summary>
+                    <MudText Typo="Typo.caption">Run @RunId · Agent @_run.AgentId · Target plan @_run.TargetPlanDigest · Definition @_run.DefinitionDigest</MudText>
+                </details>
             </MudStack>
         </details>
         @if (_run.IsAggregate)
         {
             <section class="job-run-details">
-                <MudButton OnClick="@(() => _planDetailsOpen = !_planDetailsOpen)" aria-expanded="@_planDetailsOpen" aria-controls="admitted-target-plan">@(_planDetailsOpen ? "Hide admitted target plan" : "Show admitted target plan and provenance")</MudButton>
+                <MudButton OnClick="@(() => _planDetailsOpen = !_planDetailsOpen)" aria-expanded="@_planDetailsOpen" aria-controls="admitted-target-plan">@(_planDetailsOpen ? "Hide execution targets" : "Execution targets")</MudButton>
                 @if (_planDetailsOpen) { <div id="admitted-target-plan"><JobRunTargetPlanDetails RunId="_run.Id" /></div> }
             </section>
         }
@@ -264,7 +260,7 @@
             Snackbar.Add("Run cancellation requested.", Severity.Info);
             await LoadInitialAsync(_routeCts?.Token ?? _disposeCts.Token, true);
         }
-        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { return; }
         catch (Exception ex)
         {
             if (generation == _routeGeneration && !_disposed) Snackbar.Add($"Failed to cancel run: {ex.Message}", Severity.Error);
@@ -315,8 +311,9 @@
             foreach (var state in _steps.Where(state => state.Expanded))
                 await LoadStepLogAsync(state);
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+            return;
         }
         catch (Exception)
         {
@@ -375,7 +372,7 @@
                 if (_run is not null && IsRunTerminal(_run)) break;
             }
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { return; }
         catch (Exception)
         {
             if (!_disposed && !cancellationToken.IsCancellationRequested && generation == _routeGeneration) await InvokeAsync(() => { _liveState = "Live updates unavailable. Refresh to retry."; StateHasChanged(); });
@@ -473,7 +470,7 @@
 
     private string GetTargetSummary()
     {
-        if (_run?.IsAggregate == true) return $"{_run.TargetCount} nodes · {_run.TargetSource}";
+        if (_run?.IsAggregate == true) return _run.TargetSource == JobTargetSource.ExecutionGroup && _run.TargetCount == 1 ? "HA Group · 1 worker" : $"{_run.TargetCount} nodes";
         var name = new[] { _run?.TargetDisplayName, _run?.TargetName, _run?.ClientDisplayName }.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
         var host = _run?.TargetHostName;
         if (!string.IsNullOrWhiteSpace(name)) return !string.IsNullOrWhiteSpace(host) ? host != name ? $"{name} ({host})" : host : $"Hostname unavailable · {name}";
@@ -617,7 +614,7 @@
                 ApplyLog(state, log, false);
             }
         }
-        catch (OperationCanceledException) { }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { return; }
         catch (Exception)
         {
             if (generation == _routeGeneration && !cancellationToken.IsCancellationRequested && state.OutputRevision == outputRevision
@@ -724,7 +721,7 @@
                 int? exit = root.TryGetProperty("exitCode", out var capturedExit) && capturedExit.TryGetInt32(out var value) ? value : null;
                 return new ParsedExecutionLog(lines.Where(line => !string.IsNullOrWhiteSpace(line)).ToList(), exit, BoundText(candidate));
             }
-            catch (Exception exception) when (exception is JsonException or InvalidOperationException) { }
+            catch (Exception exception) when (exception is JsonException or InvalidOperationException) { continue; }
         }
         var output = log.Logs.Count > 0
             ? log.Logs.OrderBy(line => line.Seq).Select(line => AnsiConsole.NormalizeForDisplay(line.Message)).ToList()

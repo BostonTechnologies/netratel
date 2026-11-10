@@ -12,7 +12,7 @@
     @if (_loading) { <MudProgressLinear Indeterminate="true" aria-label="Loading node steps" /> }
     @if (Node.NativeRunId is null)
     {
-        <MudText Typo="Typo.body2">@(Node.State == JobRunNodeState.NeverStarted ? "Queued. This node has not started." : Node.Reason ?? "No native execution was admitted for this node.")</MudText>
+        <MudText Typo="Typo.body2">@(Node.State == JobRunNodeState.NeverStarted ? "Queued. This node has not started." : Node.Reason ?? "This node did not start.")</MudText>
     }
     else if (_steps.Count == 0 && !_loading)
     {
@@ -20,8 +20,8 @@
     }
     else
     {
-        <MudText Typo="Typo.caption" role="status">Native execution #@Node.NativeRunId · @_liveState</MudText>
-        <MudExpansionPanels MultiExpansion="true" Elevation="0">
+        @if (!IsTerminal(Node.State)) { <MudText Typo="Typo.caption" role="status">@_liveState</MudText> }
+        <MudExpansionPanels MultiExpansion="true" Elevation="0" Dense="true" Gutters="false">
             @foreach (var state in _steps.OrderBy(state => state.Step.Ordinal))
             {
                 var step = state.Step;
@@ -29,14 +29,14 @@
                     <TitleContent>
                         <div class="node-run-step-heading">
                             <strong>@step.Ordinal. @(step.ScriptName ?? step.CommandLabel ?? "Job step")</strong>
-                            <MudChip T="string" Size="Size.Small" Color="@StatusColor(step.Status)" Variant="Variant.Outlined">@step.Status</MudChip>
+                            <span style="@($"color:var(--mud-palette-{StatusColor(step.Status).ToString().ToLowerInvariant()})")">@step.Status</span>
                             <span>@step.ScriptType</span>
                         </div>
                     </TitleContent>
                     <ChildContent>
                         @if (ViewState.ExpandedSteps.Contains(step.Id))
                         {
-                            <MudTabs ActivePanelIndex="ViewState.ActiveTabs.GetValueOrDefault(step.Id)" ActivePanelIndexChanged="@(tab => TabChangedAsync(step.Id, tab))" KeepPanelsAlive="true" Elevation="0">
+                            <MudTabs ActivePanelIndex="ViewState.ActiveTabs.GetValueOrDefault(step.Id)" ActivePanelIndexChanged="@(tab => TabChangedAsync(step.Id, tab))" KeepPanelsAlive="true" Elevation="0" MinimumTabWidth="80px" TabPanelsClass="pa-0">
                                 <MudTabPanel Text="Output">
                                     @if (state.InspectingPages) { <MudText Typo="Typo.caption" role="status">Browsing captured output. Live step status continues; this inspected window stays in place.</MudText> }
                                     @if (state.Loading) { <MudText Typo="Typo.caption" role="status">Loading node output…</MudText> }
@@ -46,17 +46,17 @@
                                     { <MudText Typo="Typo.body2" Class="pa-3" role="status">@EmptyOutput(step)</MudText> }
                                     @if (state.Truncated) { <MudText Typo="Typo.caption">Some output was omitted from this bounded view. Open the linked task for full output.</MudText> }
                                     @if (state.TruncatedLogIds.Count > 0) { <MudText Typo="Typo.caption">Captured log lines truncated by the byte limit: @string.Join(", ", state.TruncatedLogIds.Order().Take(10))@(state.TruncatedLogIds.Count > 10 ? " …" : ""). Open full output to inspect the complete capture.</MudText> }
-                                    @if (state.HasMore && state.NextCursor is not null) { <MudButton OnClick="@(() => LoadMoreAsync(state))" Disabled="state.Loading">Load more output</MudButton> }
-                                    @if (step.TaskRequestId is not null) { <MudButton OnClick="@(() => BrowseFromStartAsync(state))" Disabled="state.Loading">@(state.InspectingPages ? "Refresh captured output" : "Browse output from start")</MudButton> }
-                                    @if (FullOutputLink(state) is { } fullOutput) { <MudButton Href="@fullOutput">Full output</MudButton> }
-                                    @if (state.LoadFailed) { <MudText Color="Color.Warning" role="alert">Output could not be loaded.</MudText><MudButton OnClick="@(() => RetryOutputAsync(state))">Retry node output</MudButton> }
+                                    @if (state.HasMore && state.NextCursor is not null) { <MudButton Size="Size.Small" OnClick="@(() => LoadMoreAsync(state))" Disabled="state.Loading">Load more output</MudButton> }
+                                    @if (step.TaskRequestId is not null) { <MudButton Size="Size.Small" OnClick="@(() => BrowseFromStartAsync(state))" Disabled="state.Loading">@(state.InspectingPages ? "Refresh captured output" : "Browse output from start")</MudButton> }
+                                    @if (FullOutputLink(state) is { } fullOutput) { <MudButton Size="Size.Small" Href="@fullOutput">Full output</MudButton> }
+                                    @if (state.LoadFailed) { <MudText Color="Color.Warning" role="alert">Output could not be loaded.</MudText><MudButton Size="Size.Small" OnClick="@(() => RetryOutputAsync(state))">Retry node output</MudButton> }
                                 </MudTabPanel>
                                 <MudTabPanel Text="Diagnostics">
-                                    <MudText Typo="Typo.caption">Step run #@step.Id · Native run #@step.JobRunId</MudText>
+                                    <details><summary>Technical identifiers</summary><MudText Typo="Typo.caption">Client @Node.AgentId · Step @step.Id · Native run @step.JobRunId</MudText></details>
                                     <MudText Typo="Typo.body2">@(step.ExitCode is { } exit ? $"Exit code: {exit}" : "Exit code was not captured.")</MudText>
                                     @if (!string.IsNullOrWhiteSpace(step.Error)) { <pre class="node-run-output">@Bound(step.Error)</pre> }
                                     @if (step.TaskRequestId is { Length: > 0 } requestId)
-                                    { <MudButton Href="@($"/tasks/request/{Uri.EscapeDataString(requestId)}")">Full task output</MudButton> }
+                                    { <MudButton Size="Size.Small" Href="@($"/tasks/request/{Uri.EscapeDataString(requestId)}")">Full task output</MudButton> }
                                 </MudTabPanel>
                             </MudTabs>
                         }

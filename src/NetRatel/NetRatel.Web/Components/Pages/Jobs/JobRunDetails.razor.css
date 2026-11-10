@@ -34,3 +34,22 @@
 }
 
 .job-run-follow-bar { display:flex; flex-wrap:wrap; align-items:center; gap:8px 16px; margin-bottom:8px; }
+
+.job-run-page { gap:6px !important; }
+.job-run-title ::deep .mud-chip { height:22px; margin:0; }
+.job-run-title ::deep h6 { font-size:1rem; }
+.job-run-header { padding:4px 0; gap:4px 12px; }
+.job-run-header ::deep .job-run-context { font-size:.8125rem; color:var(--mud-palette-text-secondary); }
+.job-run-execution ::deep .mud-expand-panel { margin:0 !important; }
+.job-run-execution ::deep .mud-expand-panel-header { min-height:32px; padding:2px 8px; }
+.job-run-execution ::deep .mud-expand-panel-header .mud-expand-panel-icon { order:-1; margin:0 6px 0 0; font-size:18px; }
+.job-run-execution ::deep .mud-expand-panel-header .mud-expand-panel-text { margin:0; min-width:0; }
+.job-run-execution ::deep .mud-expand-panel-content { padding:0 6px 6px 24px; }
+.job-run-execution ::deep .mud-tab { min-height:28px; padding:2px 8px; min-width:90px; font-size:.75rem; }
+.job-run-output { min-height:0; margin:4px 0; padding:6px 8px; }
+.job-run-details summary { padding:6px 10px; }
+.job-run-technical { overflow-wrap:anywhere; }
+@media(pointer:coarse) { .job-run-execution ::deep .mud-expand-panel-header, .job-run-execution ::deep .mud-tab, .job-run-details summary { min-height:44px; } }
+
+.job-run-execution ::deep .mud-tabs-tabbar-inner { min-height:28px; }
+@media(pointer:coarse) { .job-run-execution ::deep .mud-tabs-tabbar-inner { min-height:44px; } }

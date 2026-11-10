@@ -1,9 +1,19 @@
-.job-run-nodes { min-width:0; display:flex; flex-direction:column; gap:10px; }
-.job-run-node-controls { display:flex; flex-wrap:wrap; align-items:center; gap:8px; min-width:0; overflow-wrap:anywhere; }
-.job-run-node-heading { display:flex; flex-wrap:wrap; align-items:center; gap:8px; font-size:.875rem; min-width:0; }
+.job-run-nodes { min-width:0; display:flex; flex-direction:column; gap:4px; }
+.job-run-node-controls { display:flex; flex-wrap:wrap; align-items:center; gap:6px 12px; min-width:0; font-size:.8125rem; }
+.job-run-node-summary { color:var(--mud-palette-text-secondary); }
+.job-run-node-summary strong { color:var(--mud-palette-text-primary); }
+.job-run-node-summary ::deep .mud-switch { margin-left:auto; margin-right:0; }
+.job-run-node-summary ::deep .mud-typography { font-size:.8125rem; }
+.job-run-node-heading { display:flex; flex-wrap:wrap; align-items:center; gap:6px 12px; font-size:.8125rem; min-width:0; }
 .job-run-node-name { flex:1 1 180px; overflow-wrap:anywhere; }
 .job-run-node-heading span { color:var(--mud-palette-text-secondary); }
-::deep .job-run-node-reason { overflow-wrap:anywhere; }
-::deep .job-run-node-panel { border-bottom:1px solid var(--mud-palette-divider); }
-::deep .job-run-node-panel > .mud-expand-panel-header { min-height:52px; }
-@media(max-width:599px) { ::deep .job-run-node-panel > .mud-expand-panel-content { padding:8px; } .job-run-node-controls ::deep .mud-button-root { min-height:44px; } }
+.job-run-node-state { flex:0 0 auto; }
+::deep .job-run-node-reason { overflow-wrap:anywhere; padding-left:0; }
+::deep .job-run-node-panel { border-bottom:1px solid var(--mud-palette-divider); margin:0 !important; }
+::deep .job-run-node-panel > .mud-expand-panel-header { min-height:34px; padding:2px 8px; }
+::deep .job-run-node-panel > .mud-expand-panel-header .mud-expand-panel-icon { order:-1; margin:0 6px 0 0; font-size:18px; }
+::deep .job-run-node-panel > .mud-expand-panel-header .mud-expand-panel-text { margin:0; min-width:0; }
+::deep .job-run-node-panel > .mud-expand-panel-content { padding:0 8px 6px 28px; }
+.job-run-node-heading ::deep .mud-icon-button { padding:3px; }
+@media(pointer:coarse) { ::deep .job-run-node-panel > .mud-expand-panel-header { min-height:44px; } .job-run-node-controls ::deep .mud-icon-button { min-height:44px; min-width:44px; } }
+@media(max-width:599px) { ::deep .job-run-node-panel > .mud-expand-panel-content { padding:0 6px 6px 12px; } .job-run-node-name { flex-basis:100px; } .job-run-node-heading { gap:4px 8px; } }

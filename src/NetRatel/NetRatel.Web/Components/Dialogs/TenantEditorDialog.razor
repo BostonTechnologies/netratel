@@ -29,7 +29,7 @@
                     <option value="0">General &amp; defaults</option>
                     <option value="1">Software inventory</option>
                     <option value="2">Auto update</option>
-                    <option value="3">Execution groups</option>
+                    <option value="3">HA Groups</option>
                 </select>
             </label>
             <MudForm @ref="_form">
@@ -146,7 +146,7 @@
                         </MudPaper>
                     </MudItem>
                     </MudGrid></MudTabPanel>
-                    <MudTabPanel Text="Execution groups">
+                    <MudTabPanel Text="HA Groups">
                         @if (IsEditMode && Tenant is not null)
                         {
                             @if (_section == 3 || _groupsOpened)
@@ -156,7 +156,7 @@
                         }
                         else
                         {
-                            <MudText Class="pa-4">Create the tenant before adding execution groups.</MudText>
+                            <MudText Class="pa-4">Create the tenant before adding HA Groups.</MudText>
                         }
                     </MudTabPanel>
                 </MudTabs>
@@ -195,7 +195,7 @@
         MudDialog.Options with { BackdropClick = false, CloseOnEscapeKey = false, CloseButton = false });
     private void GroupDirtyChanged(bool dirty) { _groupsOpened = true; _groupDirty = dirty; }
     private async Task<bool> ConfirmGroupDraftAsync() => !_groupDirty || await Dialogs.ShowMessageBoxAsync(
-        "Unsaved group changes", "The execution group draft has not been saved. Discard that draft and close? Saved groups are unaffected.", yesText: "Discard group draft", cancelText: "Keep editing") == true;
+        "Unsaved group changes", "The HA Group draft has not been saved. Discard that draft and close? Saved groups are unaffected.", yesText: "Discard group draft", cancelText: "Keep editing") == true;
 
     protected override void OnParametersSet()
     {

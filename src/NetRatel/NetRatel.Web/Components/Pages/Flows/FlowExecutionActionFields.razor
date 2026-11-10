@@ -47,7 +47,9 @@ else
                     {
                         <p class="flow-execution-help">Fresh actions resolve the job's current group or filter membership. An admitted action retains its original target plan.</p>
                     }
-                    @if (action.JobExecutionPolicy is { } policy)
+                    @if (jobTarget.Source == JobTargetSource.ExecutionGroup)
+                    { <p>One healthy worker runs the complete workflow; new invocations balance across the HA Group.</p> }
+                    else if (action.JobExecutionPolicy is { } policy)
                     { <p>Thread Count @policy.ThreadCount · @(policy.NodeFailurePolicy == JobNodeFailurePolicy.StopRemaining ? "Stop starting remaining nodes after a node fails" : "Continue remaining nodes, then fail the run")</p> }
                     <NetRatel.Web.Components.Pages.Jobs.JobTargetPreview TenantId="TenantId" Target="jobTarget"
                         ExecutionPolicy="action.JobExecutionPolicy" RuntimeTarget="PreviewRuntimeTarget(action)"
@@ -154,7 +156,7 @@ else
     }
     private static string TargetPolicyName(JobTargetDefinition target) => target.Source switch
     {
-        JobTargetSource.ExecutionGroup => "Execution group · all members at admission",
+        JobTargetSource.ExecutionGroup => "HA Group · one healthy worker per invocation",
         JobTargetSource.ExplicitNodes => $"Selected nodes · {target.AgentIds?.Count ?? 0}",
         JobTargetSource.NodeFilter => "Node filter · " + target.Filter,
         JobTargetSource.RuntimeInput => "Provided at run time",
