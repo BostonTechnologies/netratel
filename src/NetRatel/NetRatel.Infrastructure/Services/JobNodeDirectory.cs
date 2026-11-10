@@ -25,7 +25,7 @@ public sealed class JobNodeDirectory(OrchestratorDbContext db, IClientPresenceRe
             .Where(x => x.Client.TenantId == tenantId && x.IsAuthoritative && x.Status == ClientPresenceStatus.Online &&
                 x.AuthenticationExpiresAtUtc > DateTimeOffset.UtcNow).Select(x => x.Client.AgentId).ToHashSet();
         return agents.Select(agent => Map(agent, online.Contains(agent.Id)))
-            .OrderBy(x => x.Hostname, StringComparer.OrdinalIgnoreCase).ThenBy(x => x.AgentId).ToArray();
+            .OrderBy(x => string.IsNullOrWhiteSpace(x.Hostname) ? x.Name ?? x.DisplayName : x.Hostname, StringComparer.OrdinalIgnoreCase).ThenBy(x => x.AgentId).ToArray();
     }
 
     public static JobNodeInventoryDto Map(Agent agent, bool online)
@@ -34,8 +34,8 @@ public sealed class JobNodeDirectory(OrchestratorDbContext db, IClientPresenceRe
         var reason = agent.DeletedAtUtc is not null ? "agent_deleted" : agent.RevokedAtUtc is not null ? "agent_revoked" :
             agent.SupersededAtUtc is not null || agent.SupersededByAgentId is not null ? "agent_superseded" :
             !agent.IsEnabled || agent.Status != AgentStatus.Active ? "agent_disabled" : null;
-        var hostname = identity.HostName ?? agent.Name ?? agent.Id.ToString("D");
-        var displayName = string.IsNullOrWhiteSpace(agent.FriendlyName) ? agent.Name ?? hostname : agent.FriendlyName.Trim();
+        var hostname = identity.HostName ?? string.Empty;
+        var displayName = string.IsNullOrWhiteSpace(agent.FriendlyName) ? agent.Name ?? identity.HostName ?? $"Agent-{agent.Id.ToString("N")[..8]}" : agent.FriendlyName.Trim();
         // Execution environment is a server invocation lane; the enrolled directory does not own it.
         return new(agent.Id, hostname, displayName, agent.Name, agent.Tags, identity.OperatingSystem, identity.Architecture,
             null, online, reason is null, reason);

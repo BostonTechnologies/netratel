@@ -94,7 +94,7 @@ public sealed class JobTargetResolver(OrchestratorDbContext db, IJobNodeDirector
         if (selected.Count == 0) throw Error("target_no_matches", "The target resolves no authorized clients.");
         if (selected.Count > JobNodeFilterEvaluator.MaximumTargets) throw Error("target_result_capacity_exceeded", "The complete target set exceeds 10000 nodes; narrow the source.");
         var nodes = selected.DistinctBy(x => x.AgentId).OrderBy(x => x.Hostname, StringComparer.OrdinalIgnoreCase).ThenBy(x => x.AgentId)
-            .Select(node => new JobTargetNode(node.AgentId, node.Hostname, node.DisplayName, node.Tags)
+            .Select(node => new JobTargetNode(node.AgentId, string.IsNullOrWhiteSpace(node.Hostname) ? node.Name ?? node.DisplayName : node.Hostname, node.DisplayName, node.Tags)
             {
                 Name = node.Name, OperatingSystem = node.OperatingSystem, Architecture = node.Architecture,
                 Environment = environment, IsOnline = node.IsOnline, IsEnabled = node.IsEnabled

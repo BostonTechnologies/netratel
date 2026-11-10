@@ -2742,6 +2742,124 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.ToTable("ExecutionAdmissions", (string)null);
                 });
 
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.ExecutionGroupAuditRecord", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Actor")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("GroupId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("MembershipJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb");
+
+                    b.Property<string>("Operation")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<long>("Revision")
+                        .HasColumnType("bigint");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "GroupId", "CreatedAtUtc");
+
+                    b.ToTable("ExecutionGroupAudits", (string)null);
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.ExecutionGroupMemberRecord", b =>
+                {
+                    b.Property<Guid>("GroupId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("AgentId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("integer");
+
+                    b.HasKey("GroupId", "AgentId");
+
+                    b.HasIndex("TenantId", "AgentId");
+
+                    b.HasIndex("TenantId", "GroupId");
+
+                    b.ToTable("ExecutionGroupMembers", (string)null);
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.ExecutionGroupRecord", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<bool>("Archived")
+                        .HasColumnType("boolean");
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("CreatedBy")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<string>("Description")
+                        .HasMaxLength(2048)
+                        .HasColumnType("character varying(2048)");
+
+                    b.Property<bool>("Enabled")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<string>("NormalizedName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<long>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTimeOffset>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("UpdatedBy")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "NormalizedName")
+                        .IsUnique();
+
+                    b.HasIndex("TenantId", "Archived", "Name");
+
+                    b.ToTable("ExecutionGroups", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_ExecutionGroups_Revision", "\"Revision\" > 0");
+                        });
+                });
+
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.FlowActionRecord", b =>
                 {
                     b.Property<Guid>("RunId")
@@ -3400,6 +3518,8 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                         .IsUnique();
 
                     b.HasIndex("ParentRunId", "State");
+
+                    b.HasIndex("TenantId", "AgentId");
 
                     b.ToTable("JobRunNodes", null, t =>
                         {
@@ -7797,6 +7917,43 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                         .IsRequired();
                 });
 
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.ExecutionGroupAuditRecord", b =>
+                {
+                    b.HasOne("NetRatel.Infrastructure.Persistence.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.ExecutionGroupMemberRecord", b =>
+                {
+                    b.HasOne("NetRatel.Infrastructure.Persistence.Agent", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "AgentId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("NetRatel.Infrastructure.Persistence.ExecutionGroupRecord", "Group")
+                        .WithMany("Members")
+                        .HasForeignKey("TenantId", "GroupId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Group");
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.ExecutionGroupRecord", b =>
+                {
+                    b.HasOne("NetRatel.Infrastructure.Persistence.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.FlowActionRecord", b =>
                 {
                     b.HasOne("NetRatel.Infrastructure.Persistence.FlowRunRecord", null)
@@ -7886,6 +8043,13 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                         .WithMany()
                         .HasForeignKey("ParentRunId")
                         .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("NetRatel.Infrastructure.Persistence.Agent", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId", "AgentId")
+                        .HasPrincipalKey("TenantId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
                 });
 
@@ -8440,6 +8604,11 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.ClientUpdateReleaseRecord", b =>
                 {
                     b.Navigation("Attempts");
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.ExecutionGroupRecord", b =>
+                {
+                    b.Navigation("Members");
                 });
 
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.JobDefinition", b =>
