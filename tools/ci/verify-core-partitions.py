@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Require disjoint successful Core receipts covering same-binary xUnit discovery."""
+"""Require disjoint successful Core receipts covering prebuilt xUnit discovery."""
 import argparse
 from collections import Counter, defaultdict
 import importlib.util
@@ -11,15 +11,16 @@ spec = importlib.util.spec_from_file_location("mtp_receipt", Path(__file__).with
 mtp = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mtp)
 INFRASTRUCTURE = "NetRatel.Tests.Infrastructure"
+API = "NetRatel.Tests.API"
 EXCLUDED = {"compose", "hosted", "manual-integration"}
 
 
-def is_infrastructure(class_name):
+def in_namespace(class_name, prefix):
     namespace = class_name.rpartition(".")[0]
-    return namespace == INFRASTRUCTURE or namespace.startswith(INFRASTRUCTURE + ".")
+    return namespace == prefix or namespace.startswith(prefix + ".")
 
 
-def validate(discovered, reports):
+def validate(discovered, reports, api_discovered=None):
     if not discovered or len({case["ID"] for case in discovered}) != len(discovered):
         raise ValueError("Discovery must contain nonzero unique logical cases")
     expected = Counter()
@@ -29,6 +30,11 @@ def validate(discovered, reports):
                 for name, values in case.get("Traits", {}).items()):
             raise ValueError("Discovery selected an excluded opt-in case")
         expected[(case["Class"], case["Method"], case["DisplayName"])] += 1
+    if api_discovered is not None:
+        api_expected = Counter((case["Class"], case["Method"], case["DisplayName"])
+                               for case in api_discovered)
+        if api_expected != expected:
+            raise ValueError("Core discovery differs between the solution and API runner builds")
     actual = Counter()
     method_groups = defaultdict(set)
     execution_ids = set()
@@ -53,7 +59,9 @@ def validate(discovered, reports):
                 raise ValueError("Duplicate execution record across Core receipts")
             execution_ids.add(identifier)
             class_name, method_name = definitions[result.attrib["testId"]]
-            if group != "all" and is_infrastructure(class_name) != (group == "infrastructure"):
+            partition = "infrastructure" if in_namespace(class_name, INFRASTRUCTURE) else (
+                "api" if "api" in reports and in_namespace(class_name, API) else "remaining")
+            if group != "all" and group != partition:
                 raise ValueError("Core result is in the wrong namespace partition")
             method_groups[(class_name, method_name)].add(group)
             actual[(class_name, method_name, result.attrib["testName"])] += 1
@@ -81,7 +89,7 @@ def validate(discovered, reports):
         raise ValueError("Core receipts contain undiscovered or duplicate cases")
     return {"discoveredLogicalCases": sum(expected.values()), "executedRows": sum(counts.values()),
             "partitionExecutedRows": counts, "deferredTheoryExpansions": deferred,
-            "coverage": "same-binary discovery equals the disjoint completed Core receipt union"}
+            "coverage": "prebuilt discovery equals the disjoint completed Core receipt union"}
 
 
 if __name__ == "__main__":
@@ -89,9 +97,16 @@ if __name__ == "__main__":
     parser.add_argument("--discovery", type=Path, required=True)
     parser.add_argument("--infrastructure", type=Path, required=True)
     parser.add_argument("--remaining", type=Path, required=True)
+    parser.add_argument("--api", type=Path)
+    parser.add_argument("--api-discovery", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    record = validate(json.loads(args.discovery.read_text()),
-                      {"infrastructure": args.infrastructure, "remaining": args.remaining})
+    if bool(args.api) != bool(args.api_discovery):
+        parser.error("--api and --api-discovery must be supplied together")
+    reports = {"infrastructure": args.infrastructure, "remaining": args.remaining}
+    if args.api:
+        reports["api"] = args.api
+    record = validate(json.loads(args.discovery.read_text()), reports,
+                      json.loads(args.api_discovery.read_text()) if args.api_discovery else None)
     args.output.write_text(json.dumps(record, indent=2) + "\n")
     print(json.dumps(record, indent=2))
