@@ -30,7 +30,7 @@ record_stage() {
 }
 
 # Each independent process still runs one MTP module at a time. Components
-# run alone before overlapping the two disjoint Core groups and API suite.
+# run alone before overlapping backend groups on the selected runner.
 run_assembly() {
   local assembly="$1" group="$2" project report stage_start status
   shift 2
@@ -54,18 +54,18 @@ run_assembly() {
   fi
 }
 
-# PR/main run API on its own runner to avoid contention with Core's migrations.
+# PR/main run the Core API namespace and API suite on their existing API runner.
 # Tag validation retains the complete default selection in this same helper.
 result=0
-if [[ "$selection" != api ]]; then
-  # Native xUnit discovery uses the same prebuilt binary and the same category
-  # exclusions as MTP execution. It runs no cases and supplies a growing coverage
-  # manifest, including theories, rather than a fixed expected pass count.
-  dotnet src/NetRatel/NetRatel.Tests/bin/Release/net10.0/NetRatel.Tests.dll \
-    -noColor -list full/json -preEnumerateTheories \
-    -trait- category=compose -trait- category=hosted -trait- category=manual-integration \
-    > "$results_directory/core-discovery.json"
+# Native xUnit discovery uses each runner's prebuilt binary and the same category
+# exclusions as MTP execution. The PR gate compares both manifests and verifies
+# their complete receipt union, including theories, without fixed pass counts.
+dotnet src/NetRatel/NetRatel.Tests/bin/Release/net10.0/NetRatel.Tests.dll \
+  -noColor -list full/json -preEnumerateTheories \
+  -trait- category=compose -trait- category=hosted -trait- category=manual-integration \
+  > "$results_directory/core-discovery.json"
 
+if [[ "$selection" != api ]]; then
   # UI polling has short deadlines. Keep this group free of backend CPU/DB load.
   component_assembly="NetRatel.Web.ComponentTests"
   run_assembly "$component_assembly" "$component_assembly" > "$results_directory/fast-$component_assembly.log" 2>&1 &
@@ -89,15 +89,24 @@ launch() {
 # Each process owns a separate randomized PostgreSQL server and isolated test
 # databases. Splitting the shared collection removes its cross-namespace serial
 # queue while preserving every existing case and category exclusion. Divide
-# the original Core collection-thread allowance across the two processes;
+# the original Core collection-thread allowance across the solution processes;
 # retaining the full allowance in each doubled concurrent migration load.
 if [[ "$selection" != api ]]; then
   launch NetRatel.Tests NetRatel.Tests.Infrastructure \
     --max-threads 0.5x \
     --filter-namespace NetRatel.Tests.Infrastructure 'NetRatel.Tests.Infrastructure.*'
+  remaining_filters=(--filter-not-namespace NetRatel.Tests.Infrastructure 'NetRatel.Tests.Infrastructure.*')
+  if [[ "$selection" == core-components ]]; then
+    remaining_filters+=(NetRatel.Tests.API 'NetRatel.Tests.API.*')
+  fi
   launch NetRatel.Tests NetRatel.Tests.Remaining \
     --max-threads 0.5x \
-    --filter-not-namespace NetRatel.Tests.Infrastructure 'NetRatel.Tests.Infrastructure.*'
+    "${remaining_filters[@]}"
+fi
+if [[ "$selection" == api ]]; then
+  launch NetRatel.Tests NetRatel.Tests.API \
+    --max-threads 0.5x \
+    --filter-namespace NetRatel.Tests.API 'NetRatel.Tests.API.*'
 fi
 if [[ "$selection" != core-components ]]; then
   launch NetRatel.API.IntegrationTests NetRatel.API.IntegrationTests
@@ -117,7 +126,7 @@ for index in "${!groups[@]}"; do
     fi
   fi
 done
-if (( result == 0 )) && [[ "$selection" != api ]]; then
+if (( result == 0 )) && [[ "$selection" == all ]]; then
   python3 tools/ci/verify-core-partitions.py --discovery "$results_directory/core-discovery.json" \
     --infrastructure "$results_directory/fast-NetRatel.Tests.Infrastructure.trx" \
     --remaining "$results_directory/fast-NetRatel.Tests.Remaining.trx" \

@@ -582,6 +582,7 @@ class CorePartitionCoverageTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         self.infra = ("NetRatel.Tests.Infrastructure.Outer+Nested", "Run", "infrastructure case")
+        self.api = ("NetRatel.Tests.API.SampleTests", "Run", "API namespace case")
         self.other = ("BindingsSmokeTests", "Run", "global namespace case")
 
     def discovery(self, *cases):
@@ -629,6 +630,27 @@ class CorePartitionCoverageTests(unittest.TestCase):
                            "remaining": self.report("remaining", remaining)}
                 with self.assertRaises(ValueError):
                     self.helper.validate(self.discovery(self.infra, self.other), reports)
+
+    def test_three_partitions_require_complete_union_and_matching_runner_discovery(self):
+        cases = self.discovery(self.infra, self.api, self.other)
+        reports = {"infrastructure": self.report("infrastructure", [self.infra]),
+                   "api": self.report("api", [self.api]),
+                   "remaining": self.report("remaining", [self.other])}
+        result = self.helper.validate(cases, reports, cases)
+        self.assertEqual({"infrastructure": 1, "api": 1, "remaining": 1}, result["partitionExecutedRows"])
+        for change in ("missing", "overlap", "wrong", "different-build"):
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                altered = dict(reports)
+                discovery = cases
+                if change == "missing":
+                    del altered["api"]
+                elif change == "overlap":
+                    altered["remaining"] = self.report("remaining-overlap", [self.other, self.api])
+                elif change == "wrong":
+                    altered["api"] = self.report("api-wrong", [self.other])
+                else:
+                    discovery = self.discovery(self.infra, self.other)
+                self.helper.validate(cases, altered, discovery)
 
     def test_failure_counters_and_incomplete_receipts_cannot_pass_union_validation(self):
         bad = self.report("infrastructure", [self.infra], failed=True)
@@ -851,6 +873,8 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
         self.assertNotIn("setsid", source)
         self.assertIn("--filter-namespace NetRatel.Tests.Infrastructure 'NetRatel.Tests.Infrastructure.*'", source)
         self.assertIn("--filter-not-namespace NetRatel.Tests.Infrastructure 'NetRatel.Tests.Infrastructure.*'", source)
+        self.assertIn("--filter-namespace NetRatel.Tests.API 'NetRatel.Tests.API.*'", source)
+        self.assertIn("remaining_filters+=(NetRatel.Tests.API 'NetRatel.Tests.API.*')", source)
         self.assertIn("-list full/json -preEnumerateTheories", source)
         self.assertIn("-trait- category=compose -trait- category=hosted -trait- category=manual-integration", source)
         self.assertIn("python3 tools/ci/verify-core-partitions.py", source)
@@ -874,9 +898,18 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
         self.assertIn("run-fast-regressions.sh TestResults/fast api", jobs["api"])
         self.assertIn("dotnet restore src/NetRatel/NetRatel.API.IntegrationTests/NetRatel.API.IntegrationTests.csproj", jobs["api"])
         self.assertIn("dotnet build src/NetRatel/NetRatel.API.IntegrationTests/NetRatel.API.IntegrationTests.csproj --configuration Release --no-restore", jobs["api"])
+        self.assertIn("dotnet restore src/NetRatel/NetRatel.Tests/NetRatel.Tests.csproj", jobs["api"])
+        self.assertIn("dotnet build src/NetRatel/NetRatel.Tests/NetRatel.Tests.csproj --configuration Release --no-restore", jobs["api"])
         self.assertIn("needs: [disclosure, contracts, dotnet, api]", jobs["pr-validation"])
         self.assertIn("API_RESULT: ${{ needs.api.result }}", jobs["pr-validation"])
         self.assertIn('[[ "$API_RESULT" == success ]]', jobs["pr-validation"])
+        self.assertEqual(2, jobs["pr-validation"].count("uses: actions/download-artifact@"))
+        for argument in ("--discovery TestResults/dotnet/core-discovery.json",
+                         "--api-discovery TestResults/api/core-discovery.json",
+                         "--infrastructure TestResults/dotnet/fast-NetRatel.Tests.Infrastructure.trx",
+                         "--remaining TestResults/dotnet/fast-NetRatel.Tests.Remaining.trx",
+                         "--api TestResults/api/fast-NetRatel.Tests.API.trx"):
+            self.assertIn(argument, jobs["pr-validation"])
         self.assertIn("types: [opened, synchronize, reopened]", public)
         self.assertNotIn("converted_to_draft", public)
         self.assertNotIn("ready_for_review", public)
@@ -1000,10 +1033,10 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
         helper = ROOT / "tools/ci/run-fast-regressions.sh"
         verifier = module("verify-mtp-trx")
         groups = ("NetRatel.Web.ComponentTests", "NetRatel.Tests.Infrastructure",
-                  "NetRatel.Tests.Remaining", "NetRatel.API.IntegrationTests")
+                  "NetRatel.Tests.Remaining", "NetRatel.Tests.API", "NetRatel.API.IntegrationTests")
         expected_projects = [
             f"src/NetRatel/{assembly}/{assembly}.csproj"
-            for assembly in ("NetRatel.Web.ComponentTests", "NetRatel.Tests", "NetRatel.Tests",
+            for assembly in ("NetRatel.Web.ComponentTests", "NetRatel.Tests", "NetRatel.Tests", "NetRatel.Tests",
                              "NetRatel.API.IntegrationTests")
         ]
         fake_source = r'''#!/usr/bin/env python3
@@ -1012,10 +1045,11 @@ args = sys.argv[1:]
 with open(os.environ['NETRATEL_FAST_TEST_COMMAND_LOG'], 'a') as log:
     log.write(json.dumps(args) + '\n')
 infra = ('NetRatel.Tests.Infrastructure.SampleTests', 'Run', 'infrastructure case')
-remaining = ('NetRatel.Tests.API.SampleTests', 'Run', 'remaining case')
+remaining = ('NetRatel.Tests.Jobs.SampleTests', 'Run', 'remaining case')
+api = ('NetRatel.Tests.API.SampleTests', 'Run', 'API case')
 if args[0] != 'test':
     print(json.dumps([dict(ID=str(index), Class=row[0], Method=row[1], DisplayName=row[2])
-                      for index, row in enumerate((infra, remaining))]))
+                      for index, row in enumerate((infra, remaining, api))]))
     sys.exit(0)
 filename = args[args.index('--report-trx-filename') + 1]
 group = filename.removeprefix('fast-').removesuffix('.trx')
@@ -1023,11 +1057,13 @@ failure = os.environ['NETRATEL_FAST_TEST_FAILURE']
 failure_group = os.environ['NETRATEL_FAST_TEST_FAILURE_GROUP']
 if failure in ('command', 'summary') and group == failure_group:
     sys.exit(7)
-cases = [infra] if group.endswith('.Infrastructure') else [remaining]
+cases = [infra] if group.endswith('.Infrastructure') else [api] if group.endswith('.API') else [remaining]
+if group.endswith('.Remaining') and 'NetRatel.Tests.API' not in args:
+    cases += [api]
 if failure == 'zero' and group == failure_group:
     cases = []
 if failure == 'coverage' and group == failure_group:
-    cases = [('NetRatel.Tests.API.SampleTests', 'Other', 'undiscovered case')]
+    cases = [('NetRatel.Tests.Jobs.SampleTests', 'Other', 'undiscovered case')]
 run = ET.Element('TestRun')
 definitions = ET.SubElement(run, 'TestDefinitions')
 results = ET.SubElement(run, 'Results')
@@ -1046,10 +1082,10 @@ ET.ElementTree(run).write(report)
 '''.replace("COUNTER_NAMES", repr(verifier.COUNTER_NAMES))
         scenarios = [(selection, failure) for selection in ("all", "core-components", "api")
                      for failure in ("none", "command", "zero", "summary", "coverage")
-                     if not (selection == "api" and failure == "coverage")]
+                     if not (selection != "all" and failure == "coverage")]
         for selection, failure in scenarios:
             with self.subTest(selection=selection, failure=failure), tempfile.TemporaryDirectory() as temporary:
-                selected_groups = groups if selection == "all" else groups[:3] if selection == "core-components" else groups[3:]
+                selected_groups = groups[:3] + groups[4:] if selection == "all" else groups[:3] if selection == "core-components" else groups[3:]
                 selected_projects = [dict(zip(groups, expected_projects))[group] for group in selected_groups]
                 failure_group = "NetRatel.API.IntegrationTests" if selection == "api" else "NetRatel.Tests.Remaining"
                 directory = Path(temporary)
@@ -1078,7 +1114,7 @@ ET.ElementTree(run).write(report)
                 commands = [json.loads(line) for line in command_log.read_text().splitlines()]
                 discovery = [args for args in commands if args[0] != "test"]
                 execution = [args for args in commands if args[0] == "test"]
-                self.assertEqual(0 if selection == "api" else 1, len(discovery), completed.stdout + completed.stderr)
+                self.assertEqual(1, len(discovery), completed.stdout + completed.stderr)
                 if discovery:
                     self.assertIn("-noColor", discovery[0], "Native CI color resets would corrupt discovery JSON.")
                 self.assertEqual(len(selected_groups), len(execution), completed.stdout + completed.stderr)
@@ -1095,13 +1131,14 @@ ET.ElementTree(run).write(report)
                     self.assertEqual(["category=compose", "category=hosted", "category=manual-integration"], args[filter_start:filter_start + 3])
                 if failure == "none":
                     self.assertEqual(0, completed.returncode, completed.stdout + completed.stderr)
-                    if selection == "api":
+                    if selection != "all":
                         self.assertFalse((results / "core-partition-coverage.json").exists())
                     else:
                         coverage = json.loads((results / "core-partition-coverage.json").read_text())
-                        self.assertEqual(2, coverage["executedRows"])
+                        self.assertEqual(3, coverage["executedRows"])
                     for group in selected_groups:
-                        self.assertEqual(1, verifier.validate_success_report(results / f"fast-{group}.trx")["executed"])
+                        self.assertEqual(2 if selection == "all" and group == "NetRatel.Tests.Remaining" else 1,
+                                         verifier.validate_success_report(results / f"fast-{group}.trx")["executed"])
                 elif failure in ("command", "summary"):
                     self.assertEqual(7, completed.returncode)
                     self.assertFalse((results / f"fast-{failure_group}.trx").exists())
