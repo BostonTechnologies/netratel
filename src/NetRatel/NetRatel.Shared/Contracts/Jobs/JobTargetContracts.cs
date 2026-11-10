@@ -63,6 +63,10 @@ public sealed record JobTargetDefinition
 
 public sealed record JobTargetNode(Guid AgentId, string Hostname, string? DisplayName, IReadOnlyList<string> Tags)
 {
+    /// <summary>Presentation ordering must not turn an operator label into an asserted hostname.</summary>
+    public static string SortKey(string? hostname, string? name, string? displayName)
+        => !string.IsNullOrWhiteSpace(hostname) ? hostname : !string.IsNullOrWhiteSpace(name) ? name : displayName ?? string.Empty;
+
     public string? Name { get; init; }
     public string? OperatingSystem { get; init; }
     public string? Architecture { get; init; }
@@ -120,7 +124,7 @@ public sealed record JobResolvedTargetPlan
             if (duplicate.Skip(1).Any(node => !SameSnapshot(duplicate.First(), node)))
                 throw new ArgumentException("Duplicate target identities have conflicting presentation snapshots.");
         Nodes = Array.AsReadOnly(frozenNodes.GroupBy(node => node.AgentId).Select(group => group.First())
-            .OrderBy(node => node.Hostname, StringComparer.OrdinalIgnoreCase).ThenBy(node => node.AgentId)
+            .OrderBy(node => JobTargetNode.SortKey(node.Hostname, node.Name, node.DisplayName), StringComparer.OrdinalIgnoreCase).ThenBy(node => node.AgentId)
             .ToArray());
         ExecutionPolicy = executionPolicy;
         Validate();
@@ -138,7 +142,7 @@ public sealed record JobResolvedTargetPlan
         ExecutionPolicy.Validate();
         if (Version != 1 || TenantId <= 0 || JobId == 0 || DefinitionDigest.Length != 64 ||
             DefinitionDigest.Any(character => !Uri.IsHexDigit(character)) || Nodes.Count is < 1 or > 10_000 ||
-            Nodes.Any(node => node.AgentId == Guid.Empty || string.IsNullOrWhiteSpace(node.Hostname)) || GroupRevision is < 1 ||
+            Nodes.Any(node => node.AgentId == Guid.Empty || node.Hostname is null) || GroupRevision is < 1 ||
             (Target.Source == JobTargetSource.ExecutionGroup) != GroupRevision.HasValue ||
             Target.Source == JobTargetSource.ExplicitNodes && !Target.AgentIds!.ToHashSet().SetEquals(Nodes.Select(node => node.AgentId)) ||
             Bindings.Any(binding => string.IsNullOrWhiteSpace(binding.Name) || string.IsNullOrWhiteSpace(binding.Source)))

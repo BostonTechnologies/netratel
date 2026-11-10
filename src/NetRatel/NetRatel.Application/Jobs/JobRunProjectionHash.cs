@@ -17,6 +17,13 @@ public static class JobRunProjectionHash
             {
                 // Storage-protection evidence is not part of the accepted execution result.
                 if (property.Name is nameof(JobRunInfo.InputProtectionStatus) or nameof(JobRunInfo.SubmittedDefinitionRevision)) continue;
+                // Schema-one native hashes predate aggregate projections. Presentation defaults
+                // (including TargetCount=1) must not rewrite an already accepted terminal receipt.
+                if (value is JobRunInfo { IsAggregate: false, ParentRunId: null, TargetPlanDigest: null } &&
+                    property.Name is nameof(JobRunInfo.IsAggregate) or nameof(JobRunInfo.ParentRunId) or
+                        nameof(JobRunInfo.TargetPlanDigest) or nameof(JobRunInfo.DefinitionDigest) or
+                        nameof(JobRunInfo.TargetSource) or nameof(JobRunInfo.ExecutionPolicy) or
+                        nameof(JobRunInfo.TargetCount) or nameof(JobRunInfo.EffectiveConcurrency) or nameof(JobRunInfo.NodeCounts)) continue;
                 var field = property.GetValue(value);
                 if (field is null && newEvidence.Contains(property.Name)) continue;
                 fields.Add(property.Name, field);

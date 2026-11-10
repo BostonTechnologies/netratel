@@ -64,6 +64,26 @@ public sealed class JobTargetContractsTests
     }
 
     [Fact]
+    public void Unreported_hostname_remains_unknown_and_orders_by_separate_directory_labels()
+    {
+        var unreported = new JobTargetNode(Guid.NewGuid(), string.Empty, "Friendly label", []) { Name = "lab-node-00" };
+        var reported = new JobTargetNode(Guid.NewGuid(), "lab-node-01", null, []);
+        var target = new JobTargetDefinition { Source = JobTargetSource.ExplicitNodes, AgentIds = [reported.AgentId, unreported.AgentId] };
+        var plan = new JobResolvedTargetPlan(1, 7, 41, new('a', 64), target, null, [], [reported, unreported], new());
+        plan.Nodes[0].AgentId.Should().Be(unreported.AgentId);
+        plan.Nodes[0].Hostname.Should().BeEmpty();
+        plan.Nodes[0].Name.Should().Be("lab-node-00");
+        plan.Nodes[0].DisplayName.Should().Be("Friendly label");
+        var roundTrip = JsonSerializer.Deserialize(JsonSerializer.Serialize(plan, JobTargetJsonContext.Default.JobResolvedTargetPlan),
+            JobTargetJsonContext.Default.JobResolvedTargetPlan)!;
+        roundTrip.ComputeDigest().Should().Be(plan.ComputeDigest());
+        roundTrip.Nodes[0].Hostname.Should().BeEmpty();
+        var nullHostname = () => new JobResolvedTargetPlan(1, 7, 41, new('a', 64), target, null, [],
+            [reported, unreported with { Hostname = null! }], new());
+        nullHostname.Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
     public void Exclusive_sources_and_incomplete_protected_material_fail_without_fallback()
     {
         var conflict = new JobTargetDefinition { Source = JobTargetSource.NodeFilter, Filter = "tags: TestSystem", AgentIds = [Guid.NewGuid()] };
