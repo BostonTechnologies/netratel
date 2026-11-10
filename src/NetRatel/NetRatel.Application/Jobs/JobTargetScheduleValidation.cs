@@ -35,7 +35,7 @@ public static class JobTargetScheduleValidation
         try
         {
             using var document = JsonDocument.Parse(optionsJson);
-            if (!document.RootElement.TryGetProperty("schedule", out var schedule) || schedule.ValueKind != JsonValueKind.Object) return false;
+            if (document.RootElement.ValueKind != JsonValueKind.Object || !document.RootElement.TryGetProperty("schedule", out var schedule) || schedule.ValueKind != JsonValueKind.Object) return false;
             return !schedule.TryGetProperty("enabled", out var enabled) || enabled.ValueKind == JsonValueKind.True ||
                 enabled.ValueKind == JsonValueKind.String && bool.TryParse(enabled.GetString(), out var value) && value;
         }

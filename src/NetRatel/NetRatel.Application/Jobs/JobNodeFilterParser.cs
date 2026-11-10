@@ -40,6 +40,7 @@ public static class JobNodeFilterParser
 
     public static JobNodeFilterExpression Bind(JobNodeFilterExpression expression, IReadOnlyDictionary<string, string[]>? parameters)
     {
+        if (parameters?.Count > MaximumOperands) throw Error("target_filter_too_complex", "Target bindings accept at most 128 named parameters.");
         var values = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
         if (parameters is not null)
             foreach (var parameter in parameters)
