@@ -31,7 +31,7 @@ public sealed class JobNodeDirectory(OrchestratorDbContext db, IClientPresenceRe
             .Where(x => x.Client.TenantId == tenantId && x.IsAuthoritative && x.Status == ClientPresenceStatus.Online &&
                 x.AuthenticationExpiresAtUtc > DateTimeOffset.UtcNow).Select(x => x.Client.AgentId).ToHashSet();
         return agents.Select(agent => Map(agent, online.Contains(agent.Id)))
-            .OrderBy(x => string.IsNullOrWhiteSpace(x.Hostname) ? x.Name ?? x.DisplayName : x.Hostname, StringComparer.OrdinalIgnoreCase).ThenBy(x => x.AgentId).ToArray();
+            .OrderBy(x => JobTargetNode.SortKey(x.Hostname, x.Name, x.DisplayName), StringComparer.OrdinalIgnoreCase).ThenBy(x => x.AgentId).ToArray();
     }
 
     public static JobNodeInventoryDto Map(Agent agent, bool online)
