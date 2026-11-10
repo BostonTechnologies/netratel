@@ -16,9 +16,18 @@ public static class JobNodeFilterEvaluator
     {
         if (inventory.Count > MaximumCandidates) throw Error("target_inventory_capacity_exceeded", "The authorized inventory exceeds the selector's 10000-node evaluation bound.");
         var timer = Stopwatch.StartNew();
-        var regexes = expression.Clauses.SelectMany(x => x.Alternatives).SelectMany(x => x.Operands)
-            .Where(x => x.Kind == JobNodeFilterOperandKind.Regex).Select(x => x.Value).Distinct(StringComparer.Ordinal)
-            .ToDictionary(x => x, JobNodeFilterParser.CompileRegex, StringComparer.Ordinal);
+        void RequireBudget()
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (timer.Elapsed > EvaluationBudget) throw Error("target_filter_budget_exhausted", "The complete filter evaluation exceeded its 500ms budget.");
+        }
+        RequireBudget();
+        var regexes = new Dictionary<string, Regex>(StringComparer.Ordinal);
+        foreach (var pattern in expression.Clauses.SelectMany(x => x.Alternatives).SelectMany(x => x.Operands)
+            .Where(x => x.Kind == JobNodeFilterOperandKind.Regex).Select(x => x.Value).Distinct(StringComparer.Ordinal))
+        {
+            RequireBudget(); regexes.Add(pattern, JobNodeFilterParser.CompileRegex(pattern)); RequireBudget();
+        }
         if (expression.Clauses.SelectMany(x => x.Alternatives).SelectMany(x => x.Operands)
             .Any(x => x.Kind == JobNodeFilterOperandKind.Parameter))
             throw Error("target_parameter_required", "Bind all declared target parameters before evaluation.");
@@ -27,10 +36,13 @@ public static class JobNodeFilterEvaluator
         {
             foreach (var literal in LiteralValues(operand))
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                if (timer.Elapsed > EvaluationBudget) throw Error("target_filter_budget_exhausted", "The complete filter evaluation exceeded its 500ms budget.");
-                if (inventory.Count(node => Equal(node.Hostname, literal) || Equal(node.Name, literal)) > 1)
-                    throw Error("target_name_ambiguous", "An exact node name identifies more than one authorized client; select stable IDs instead.");
+                var matches = 0;
+                foreach (var node in inventory)
+                {
+                    RequireBudget();
+                    if ((Equal(node.Hostname, literal) || Equal(node.Name, literal)) && ++matches > 1)
+                        throw Error("target_name_ambiguous", "An exact node name identifies more than one authorized client; select stable IDs instead.");
+                }
             }
         }
         var includes = expression.Clauses.Where(x => !x.Excluded).GroupBy(x => x.Field, StringComparer.Ordinal).ToArray();
@@ -40,8 +52,7 @@ public static class JobNodeFilterEvaluator
         {
             foreach (var node in inventory)
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                if (timer.Elapsed > EvaluationBudget) throw Error("target_filter_budget_exhausted", "The complete filter evaluation exceeded its 500ms budget.");
+                RequireBudget();
                 if (includes.All(group => group.Any(clause => MatchClause(node, clause))) && !exclusions.Any(clause => MatchClause(node, clause)))
                 {
                     selected.Add(node);
@@ -50,8 +61,7 @@ public static class JobNodeFilterEvaluator
             }
         }
         catch (RegexMatchTimeoutException) { throw Error("target_filter_budget_exhausted", "Regex evaluation exceeded its bounded evaluation budget."); }
-        cancellationToken.ThrowIfCancellationRequested();
-        if (timer.Elapsed > EvaluationBudget) throw Error("target_filter_budget_exhausted", "The complete filter evaluation exceeded its 500ms budget.");
+        RequireBudget();
         if (selected.Count == 0) throw Error("target_no_matches", "The selector matches no authorized nodes.");
         return selected.DistinctBy(x => x.AgentId).OrderBy(x => JobTargetNode.SortKey(x.Hostname, x.Name, x.DisplayName), StringComparer.OrdinalIgnoreCase).ThenBy(x => x.AgentId).ToArray();
 
@@ -60,10 +70,16 @@ public static class JobNodeFilterEvaluator
 
         bool MatchOperand(JobNodeInventoryDto node, string field, JobNodeFilterOperand operand)
         {
-            var properties = Values(node, field);
-            return operand.Kind == JobNodeFilterOperandKind.Regex
-                ? properties.Any(value => regexes[operand.Value].IsMatch(value))
-                : properties.Any(value => LiteralValues(operand).Any(literal => Equal(value, literal)));
+            foreach (var value in Values(node, field))
+            {
+                RequireBudget();
+                var matched = operand.Kind == JobNodeFilterOperandKind.Regex
+                    ? regexes[operand.Value].IsMatch(value)
+                    : LiteralValues(operand).Any(literal => Equal(value, literal));
+                RequireBudget();
+                if (matched) return true;
+            }
+            return false;
         }
     }
 
