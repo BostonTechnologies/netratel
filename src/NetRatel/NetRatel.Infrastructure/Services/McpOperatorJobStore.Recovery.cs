@@ -1,7 +1,9 @@
 using Microsoft.EntityFrameworkCore;
+using System.Text.Json;
 using NetRatel.Application.Jobs;
 using NetRatel.Application.Operations;
 using NetRatel.Infrastructure.Persistence;
+using NetRatel.Shared.Contracts.Jobs;
 
 namespace NetRatel.Infrastructure.Services;
 
@@ -24,10 +26,14 @@ public sealed partial class McpOperatorJobStore
             await _db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock({McpAggregateAdmissionKey.LockKey(key)})", ct).ConfigureAwait(false);
         var projection = await _db.JobRuns.AsNoTracking().SingleOrDefaultAsync(row => row.Id == checked((long)runId) &&
             row.JobId == material.JobId && row.TenantId == receipt.TenantId && row.IsAggregate, ct).ConfigureAwait(false);
-        if (projection is null || !await _db.JobAggregateControls.AsNoTracking().AnyAsync(row => row.ParentRunId == checked((long)runId) &&
+        var actual = projection?.TargetPlanJson is { } json ? JsonSerializer.Deserialize<JobResolvedTargetPlan>(json, ResolvedPlanJson) : null;
+        if (projection is null || actual is null || actual.ComputeDigest() != projection.TargetPlanDigest ||
+            actual.TenantId != projection.TenantId || actual.JobId != checked((ulong)projection.JobId) ||
+            actual.DefinitionDigest != projection.DefinitionDigest || actual.NeedsHaWorkerSelection ||
+            !await _db.JobAggregateControls.AsNoTracking().AnyAsync(row => row.ParentRunId == checked((long)runId) &&
                 row.AdmissionKey == key, ct).ConfigureAwait(false) ||
             !await _db.Set<McpJobTargetReservationRecord>().AsNoTracking().AnyAsync(row => row.IdempotencyId == idempotencyId &&
-                row.TargetPlanDigest == projection.TargetPlanDigest, ct).ConfigureAwait(false))
+                row.TargetPlanDigest == actual.AdmissionPlanDigest, ct).ConfigureAwait(false))
             throw new InvalidOperationException("The original reviewed admission has no matching committed parent.");
         var existing = await _db.McpOperatorJobRuns.SingleOrDefaultAsync(row => row.IdempotencyId == idempotencyId ||
             row.JobRunId == checked((long)runId), ct).ConfigureAwait(false);

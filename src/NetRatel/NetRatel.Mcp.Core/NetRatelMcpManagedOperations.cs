@@ -9,7 +9,7 @@ namespace NetRatel.Mcp.Core;
 
 public sealed partial class NetRatelMcpOperationalTools
 {
-    [McpServerTool(UseStructuredContent = true), Description("Manage explicit tenant execution groups. list uses bounded data {search,page,pageSize}; get uses groupId. create/update use typed name, description, enabled/archive state and stable AgentIds; update/delete require the current revision. Mutations require tenant.admin and confirm:true. Group membership never grants job execution authority.")]
+    [McpServerTool(UseStructuredContent = true), Description("Manage tenant HA Groups: each fresh job run uses one healthy worker, balanced across the pool. list uses bounded data {search,page,pageSize}; get uses groupId. create/update use typed name, description, enabled/archive state and stable AgentIds; update/delete require the current revision. Mutations require tenant.admin and confirm:true. Group membership never grants job execution authority. The execution-groups wire name remains compatible.")]
     public Task<NetRatelToolResponse> netratel_execution_groups(string operation, JsonElement? request = null,
         bool confirm = false, CancellationToken cancellationToken = default) =>
         ManagedOperationAsync("netratel_execution_groups", operation, request, confirm, cancellationToken);

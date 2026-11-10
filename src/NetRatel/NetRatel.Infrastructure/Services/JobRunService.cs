@@ -309,7 +309,7 @@ public sealed class JobRunService(OrchestratorDbContext db, IDataProtectionProvi
         if (command.TargetPlan is { } plan)
         {
             plan.Validate();
-            if (!row.IsAggregate || plan.JobId != command.JobId || plan.TenantId != command.TenantId ||
+            if (!row.IsAggregate || plan.NeedsHaWorkerSelection || plan.JobId != command.JobId || plan.TenantId != command.TenantId ||
                 row.TargetPlanDigest is { } existingDigest && existingDigest != plan.ComputeDigest())
                 throw new InvalidOperationException("The server-owned target plan differs from its immutable parent identity.");
             row.TargetPlanJson = JsonSerializer.Serialize(plan, new JsonSerializerOptions(JsonSerializerDefaults.Web));

@@ -70,7 +70,7 @@ internal sealed class JobRunInputProtection(IDataProtectionProvider protection)
         if (mcpSnapshot is not null && (mcpSnapshot.Definition.Job.Id != checked((ulong)run.JobId) ||
             mcpSnapshot.Definition.Job.TenantId != run.TenantId ||
             (run.IsAggregate ? !AggregateSourceMatches(run, mcpSnapshot.Definition.Job, mcpSnapshot.ComputeDefinitionDigest()) ||
-                mcpSnapshot.TargetPlan?.ComputeDigest() != run.TargetPlanDigest : mcpSnapshot.Definition.Job.AgentId != run.AgentId)))
+                !AggregateAdmissionMatches(run, mcpSnapshot.TargetPlan) : mcpSnapshot.Definition.Job.AgentId != run.AgentId)))
             throw new InvalidOperationException("The reviewed protected source differs from its immutable run and target plan.");
         if (nodeContext is not null && (run.IsAggregate || run.AgentId != nodeContext.AgentId))
             throw new InvalidOperationException("The protected node context differs from its exact native Agent target.");
@@ -96,8 +96,16 @@ internal sealed class JobRunInputProtection(IDataProtectionProvider protection)
             target = NetRatel.Shared.Contracts.Jobs.JobTargetDefinition.FromLegacy(original);
         }
         var expected = new NetRatel.Shared.Contracts.Jobs.JobResolvedTargetPlan(plan.Version, plan.TenantId, plan.JobId,
-            digest, target, plan.GroupRevision, plan.Bindings, plan.Nodes, definition.ExecutionPolicy ?? new());
+            digest, target, plan.GroupRevision, plan.Bindings, plan.Nodes, definition.ExecutionPolicy ?? new(),
+            plan.InvocationAgentIds, plan.HaGroupSelection, plan.GroupName);
         return expected.ComputeDigest() == plan.ComputeDigest();
+    }
+
+    private static bool AggregateAdmissionMatches(JobRunRecord run, NetRatel.Shared.Contracts.Jobs.JobResolvedTargetPlan? approved)
+    {
+        var actual = JsonSerializer.Deserialize<NetRatel.Shared.Contracts.Jobs.JobResolvedTargetPlan>(run.TargetPlanJson ?? "null",
+            new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        return approved is not null && actual is not null && actual.ComputeDigest() == run.TargetPlanDigest && actual.MatchesAdmissionPlan(approved);
     }
 
     public Execution ForExecution(JobRunRecord run)

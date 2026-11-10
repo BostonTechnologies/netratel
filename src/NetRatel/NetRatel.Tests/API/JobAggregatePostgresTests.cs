@@ -339,11 +339,17 @@ public sealed partial class JobAggregatePostgresTests(PostgreSqlPersistenceFixtu
             (await db.ExecutionGroups.SingleAsync(ct)).Revision++;
             await db.SaveChangesAsync(ct);
         }
-        (await h.ReadAsync(original.Id, ct)).TargetCount.Should().Be(4);
+        (await h.ReadAsync(original.Id, ct)).TargetCount.Should().Be(1);
+        await using (var frozen = h.Services.CreateAsyncScope())
+            (await frozen.ServiceProvider.GetRequiredService<IJobRunService>().GetResolvedTargetPlanAsync(original.Id, ct))!
+                .HaGroupSelection!.Candidates.Should().HaveCount(4);
         var stale = await Assert.ThrowsAsync<JobTargetValidationException>(() => h.StartAsync(ct,
             new("synthetic-manager", null, null) { ExpectedTargetPlanDigest = preview.ComputeDigest() }));
         stale.Code.Should().Be("target_review_stale");
-        (await h.StartAsync(ct)).TargetCount.Should().Be(5);
+        var fresh = await h.StartAsync(ct); fresh.TargetCount.Should().Be(1);
+        await using (var current = h.Services.CreateAsyncScope())
+            (await current.ServiceProvider.GetRequiredService<IJobRunService>().GetResolvedTargetPlanAsync(fresh.Id, ct))!
+                .HaGroupSelection!.Candidates.Should().HaveCount(5);
         await h.FillAsync(original.Id, ct);
         var before = h.Gateway.Dispatches.Count;
         h.Access.Allowed = false;
@@ -413,7 +419,7 @@ public sealed partial class JobAggregatePostgresTests(PostgreSqlPersistenceFixtu
         private static readonly ClaimsPrincipal Principal = new(new ClaimsIdentity([new("netratel_principal_id", "synthetic-manager")], "fixture"));
 
         public static async Task<AggregateHarness> CreateAsync(string connection, int threads, CancellationToken ct,
-            JobNodeFailurePolicy failurePolicy = JobNodeFailurePolicy.StopRemaining, bool reviewedMcp = false)
+            JobNodeFailurePolicy failurePolicy = JobNodeFailurePolicy.StopRemaining, bool reviewedMcp = false, bool keyedFlow = false)
         {
             var h = new AggregateHarness(); var services = new ServiceCollection();
             services.AddLogging(); services.AddDbContext<OrchestratorDbContext>(builder => builder.UseNpgsql(connection).AddInterceptors(h.ClaimCrash));
@@ -428,6 +434,7 @@ public sealed partial class JobAggregatePostgresTests(PostgreSqlPersistenceFixtu
             services.AddScoped<IScriptService, NoScripts>(); services.AddScoped<IJobExecutionSnapshotCapture, PinnedJobExecutionSnapshotCapture>();
             services.AddScoped<IJobNodeDirectory, JobNodeDirectory>(); services.AddScoped<IJobTargetResolver, JobTargetResolver>();
             services.AddScoped<JobAggregateOrchestrator>(); services.AddScoped<IJobAggregatePump>(provider => provider.GetRequiredService<JobAggregateOrchestrator>());
+            services.AddScoped<HaGroupWorkerSelector>();
             services.AddScoped<IAkkaJobAuthorityService>(provider => new AkkaJobAuthorityService(
                 provider.GetRequiredService<IJobDefinitionService>(), provider.GetRequiredService<IJobRunService>(),
                 new JobTaskBridge(provider.GetRequiredService<IScriptService>(), NullLogger<JobTaskBridge>.Instance), h.Gateway,
@@ -435,6 +442,11 @@ public sealed partial class JobAggregatePostgresTests(PostgreSqlPersistenceFixtu
                 db: provider.GetRequiredService<OrchestratorDbContext>(), clock: h.Clock,
                 snapshotCapture: provider.GetRequiredService<IJobExecutionSnapshotCapture>(), aggregates: provider.GetRequiredService<JobAggregateOrchestrator>()));
             if (reviewedMcp) ConfigureReviewedMcp(services, connection);
+            if (keyedFlow)
+            {
+                services.AddScoped<IExecutionAdmissionStore, ExecutionAdmissionStore>();
+                services.AddSingleton<IKeyedExecutionAuthority>(new FixtureFlowAuthority(h));
+            }
             h.Services = services.BuildServiceProvider(); h.Gateway = new(h);
             h._actors = ActorSystem.Create("aggregate-pg-" + Guid.NewGuid().ToString("N"));
             h._native = new(h._actors.ActorOf(JobCoordinatorActor.Props(h.Services.GetRequiredService<IJobObservationStore>())));
@@ -550,11 +562,16 @@ public sealed partial class JobAggregatePostgresTests(PostgreSqlPersistenceFixtu
     {
         private int _armed;
         private int _confirmationArmed;
+        private int _parentAdmissionArmed;
         public void Arm() => _armed = 1;
         public void ArmReviewedConfirmation() => _confirmationArmed = 1;
+        public void ArmParentAdmission() => _parentAdmissionArmed = 1;
         public override Task TransactionCommittedAsync(DbTransaction transaction, TransactionEndEventData eventData,
             CancellationToken cancellationToken = default)
         {
+            if (_parentAdmissionArmed == 1 && eventData.Context?.ChangeTracker.Entries<JobAggregateControlRecord>().Any() == true &&
+                Interlocked.Exchange(ref _parentAdmissionArmed, 0) == 1)
+                throw new IOException("Synthetic process crash after parent admission committed, before reviewed receipt completion.");
             if (_confirmationArmed == 1 && eventData.Context?.ChangeTracker.Entries<McpReviewedJobAdmissionRecord>().Any() == true &&
                 Interlocked.Exchange(ref _confirmationArmed, 0) == 1)
                 throw new IOException("Synthetic process crash after confirmation and protected original material committed, before parent creation.");

@@ -133,6 +133,10 @@ until their matching runners build and smoke-test them.
 
 ## Execution groups and multi-node jobs
 
+The operator capability is now **HA Groups**. Compatibility command/tool and
+route names remain unchanged. One HA invocation selects one healthy worker;
+explicit nodes and selectors retain multi-node execution.
+
 [Jobs, target selection and node runs](../operations/JOBS.md) defines the common
 semantics for Web, REST, CLI and both MCP transports. The new managed command
 families use the same canonical services:
@@ -164,9 +168,12 @@ The ordinary REST definition/history routes remain `/api/v1/jobs` and
 `/api/v1/jobruns`.
 
 Previews dispatch no physical work. A confirmation binds the complete target
-plan and current policies, definition/inputs and execution settings. One denied
-member, target-count/fan-out overflow, exhausted configured concurrency quota
-or stale review rejects the whole admission. A client-side loop of singleton
+plan and current policies, definition/inputs and execution settings. Explicit
+node sets require authority for every node. HA pools include only eligible
+authorized workers and choose one healthy survivor at admission. Target-count/
+fan-out overflow, exhausted configured concurrency quota or stale review rejects
+the admission. HA previews distinguish physical `targetCount: 1` from
+`workerPoolCount`; grants cover the entire approved eligible pool. A client-side loop of singleton
 confirmations is not the multi-node API. Repeated confirmed admission returns
 the original parent and target set; later deliberate fresh invocations resolve
 current membership. Multi-node output requires node and step-run identity;

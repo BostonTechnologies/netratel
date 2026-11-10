@@ -32,6 +32,50 @@ public sealed partial class JobAggregatePostgresTests
     private const string ReviewedContent = "printf '%s' \"$1\"";
 
     [Fact]
+    public async Task HA_Mcp_confirmation_keeps_whole_pool_grants_but_admits_and_dispatches_only_one_worker()
+    {
+        using var budget = new CancellationTokenSource(TimeSpan.FromSeconds(60)); var ct = budget.Token;
+        await using var h = await AggregateHarness.CreateAsync(await postgres.CreateDatabaseAsync(ct), 100, ct, reviewedMcp: true);
+        var credential = await SeedReviewedMcpAsync(h, ct);
+        await UseHaGroupAsync(h, 2, ct);
+        await using (var scope = h.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            foreach (var policy in await db.McpOperatorPolicies.ToArrayAsync(ct))
+                policy.ConstraintsJson = JsonSerializer.Serialize(new McpOperatorConstraints(MaxJobTargetCount: 1, MaxFanOut: 1)
+                    { MaxConcurrentJobTargets = 1 }, McpOperatorJsonContext.Default.McpOperatorConstraints);
+            await db.SaveChangesAsync(ct);
+        }
+        var request = new McpOperatorJobRunRequest(new Dictionary<string, string> { ["Label"] = "@node.id@" });
+        var preview = ResultValue<McpOperatorJobRunPreview>(await CallReviewedMcpAsync(h, credential, request, false, ct));
+        preview.TargetCount.Should().Be(1); preview.ResolvedTargets.Should().HaveCount(2);
+        h.ClaimCrash.ArmParentAdmission();
+        request = request with { PlanToken = preview.PlanToken, IdempotencyKey = preview.IdempotencyKey };
+        await Assert.ThrowsAsync<IOException>(() => CallReviewedMcpAsync(h, credential, request, true, ct));
+        var accepted = ResultValue<McpOperatorJobRunResult>(await CallReviewedMcpAsync(h, credential, request, true, ct));
+        var parentId = ulong.Parse(accepted.JobRunId);
+        var parent = await h.ReadAsync(parentId, ct);
+        parent.TargetCount.Should().Be(1); parent.EffectiveConcurrency.Should().Be(1);
+        await using (var proof = h.Services.CreateAsyncScope())
+        {
+            var runs = proof.ServiceProvider.GetRequiredService<IJobRunService>();
+            var actual = (await runs.GetResolvedTargetPlanAsync(parentId, ct))!;
+            var protectedReview = (await runs.GetMcpExecutionSnapshotAsync(parentId, ct))!;
+            actual.MatchesAdmissionPlan(protectedReview.TargetPlan!).Should().BeTrue();
+            protectedReview.ReviewedAuthority!.Targets.Should().HaveCount(2);
+            var reservations = await proof.ServiceProvider.GetRequiredService<OrchestratorDbContext>().Set<McpJobTargetReservationRecord>().ToArrayAsync(ct);
+            reservations.Should().HaveCount(2).And.OnlyContain(row => row.TargetCount == 1 && row.TargetPlanDigest == preview.TargetPlanDigest);
+        }
+        var replay = ResultValue<McpOperatorJobRunResult>(await CallReviewedMcpAsync(h, credential, request, true, ct));
+        replay.JobRunId.Should().Be(accepted.JobRunId);
+        await h.FillAsync(parentId, ct); h.Gateway.Active.Should().ContainSingle();
+        await h.SucceedNodeAsync(h.Gateway.Active.Keys.Single(), ct); await h.FillAsync(parentId, ct);
+        (await h.ReadAsync(parentId, ct)).Status.Should().Be(JobRunState.Succeeded);
+        h.Gateway.Dispatches.Should().HaveCount(2);
+        h.Gateway.Dispatches.Select(item => item.Client.AgentId).Distinct().Should().ContainSingle();
+    }
+
+    [Fact]
     public async Task Actual_Mcp_confirmation_recovers_protected_original_plan_and_dispatches_native_nodes_under_current_credentials()
     {
         using var budget = new CancellationTokenSource(TimeSpan.FromSeconds(60)); var ct = budget.Token;

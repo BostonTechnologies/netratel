@@ -199,8 +199,10 @@ public static partial class McpOperatorJobEndpoints
         var runs = http.RequestServices.GetRequiredService<IJobRunService>();
         var run = await runs.GetAsync(checked((ulong)parent.Value), ct).ConfigureAwait(false);
         var snapshot = await runs.GetMcpExecutionSnapshotAsync(checked((ulong)parent.Value), ct).ConfigureAwait(false);
+        var actual = await runs.GetResolvedTargetPlanAsync(checked((ulong)parent.Value), ct).ConfigureAwait(false);
         if (run is null || run.JobId != (ulong)jobId || run.TenantId != context.TenantId || snapshot?.ReviewIdempotencyId != id ||
-            snapshot.Subject != context.Request.Principal.Subject || snapshot.TargetPlan?.ComputeDigest() != run.TargetPlanDigest)
+            snapshot.Subject != context.Request.Principal.Subject || snapshot.TargetPlan is not { } approved ||
+            actual is null || actual.ComputeDigest() != run.TargetPlanDigest || !actual.MatchesAdmissionPlan(approved))
             return Failure("idempotency_replay_unavailable", context);
         try { await RequireParentTargetsAsync(run.Id, context, admission, db, ct).ConfigureAwait(false); }
         catch (McpOperatorAdmissionRejectedException rejection) { return Failure(rejection.FailureCode, context); }

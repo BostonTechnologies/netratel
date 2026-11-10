@@ -20,7 +20,7 @@ public sealed class JobTargetResolver(OrchestratorDbContext db, IJobNodeDirector
         await using var transaction = target.Source == JobTargetSource.ExecutionGroup
             ? await JobDefinitionMutationFence.BeginAsync(db, cancellationToken).ConfigureAwait(false) : null;
         IReadOnlyList<JobNodeInventoryDto> selected;
-        long? revision = null; string? normalized = null;
+        long? revision = null; string? normalized = null; string? groupName = null;
         var bindings = new List<JobTargetBindingProvenance>();
         switch (target.Source)
         {
@@ -32,13 +32,18 @@ public sealed class JobTargetResolver(OrchestratorDbContext db, IJobNodeDirector
                     ? db.ExecutionGroups.FromSqlInterpolated($"SELECT * FROM \"ExecutionGroups\" WHERE \"TenantId\" = {tenantId} AND \"Id\" = {target.ExecutionGroupId!.Value} FOR SHARE")
                     : db.ExecutionGroups.Where(x => x.TenantId == tenantId && x.Id == target.ExecutionGroupId);
                 var group = await groupQuery.AsNoTracking()
-                    .Select(x => new { x.Id, x.Enabled, x.Archived, x.Revision }).SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
-                if (group is null || !group.Enabled || group.Archived) throw Error("target_group_unavailable", "The selected execution group is missing, disabled or archived.");
+                    .Select(x => new { x.Id, x.Name, x.Enabled, x.Archived, x.Revision }).SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+                if (group is null || !group.Enabled || group.Archived) throw Error("target_group_unavailable", "The selected HA Group is missing, disabled or archived.");
                 var memberIds = await db.ExecutionGroupMembers.AsNoTracking().Where(x => x.TenantId == tenantId && x.GroupId == group.Id)
                     .OrderBy(x => x.AgentId).Select(x => x.AgentId).Take(JobNodeFilterEvaluator.MaximumTargets + 1).ToArrayAsync(cancellationToken).ConfigureAwait(false);
-                if (memberIds.Length == 0) throw Error("target_group_empty", "The selected execution group has no members.");
-                selected = await RequireExplicitAsync(memberIds, cancellationToken).ConfigureAwait(false);
+                if (memberIds.Length > JobNodeFilterEvaluator.MaximumTargets) throw Error("target_result_capacity_exceeded", "The HA Group exceeds 10000 workers.");
+                if (memberIds.Length == 0) throw Error("target_group_empty", "The selected HA Group has no members.");
+                // Membership never grants execution authority. Ineligible workers do not take
+                // a healthy authorized survivor out of service.
+                selected = await directory.ReadAsync(tenantId, memberIds.ToHashSet(), false, cancellationToken).ConfigureAwait(false);
+                if (authorizedAgentIds is not null) selected = selected.Where(node => authorizedAgentIds.Contains(node.AgentId)).ToArray();
                 revision = group.Revision;
+                groupName = group.Name;
                 break;
             case JobTargetSource.NodeFilter:
                 var expression = JobNodeFilterParser.Parse(target.Filter);
@@ -100,7 +105,7 @@ public sealed class JobTargetResolver(OrchestratorDbContext db, IJobNodeDirector
                 Environment = environment, IsOnline = node.IsOnline, IsEnabled = node.IsEnabled
             }).ToArray();
         if (transaction is not null) await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-        return new(nodes, revision, normalized, bindings);
+        return new(nodes, revision, normalized, bindings) { GroupName = groupName };
 
         async Task<IReadOnlyList<JobNodeInventoryDto>> RequireExplicitAsync(IReadOnlyList<Guid> requested, CancellationToken ct)
         {

@@ -78,6 +78,9 @@ public sealed record JobTargetNode(Guid AgentId, string Hostname, string? Displa
 /// <summary>Only binding origin belongs in the public plan; values remain in protected execution inputs.</summary>
 public sealed record JobTargetBindingProvenance(string Name, string Source);
 
+/// <summary>Binds one physical HA worker to the complete, previously approved worker pool.</summary>
+public sealed record JobHaGroupSelection(string ApprovedPlanDigest, IReadOnlyList<JobTargetNode> Candidates);
+
 /// <summary>The admitted identity set. Construction copies, deduplicates and deterministically orders targets.</summary>
 public sealed record JobResolvedTargetPlan
 {
@@ -90,11 +93,23 @@ public sealed record JobResolvedTargetPlan
     public IReadOnlyList<JobTargetBindingProvenance> Bindings { get; }
     public IReadOnlyList<JobTargetNode> Nodes { get; }
     public JobExecutionPolicy ExecutionPolicy { get; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public IReadOnlyList<Guid>? InvocationAgentIds { get; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public JobHaGroupSelection? HaGroupSelection { get; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? GroupName { get; }
+    [JsonIgnore] public bool NeedsHaWorkerSelection => Version == 2 && Target.Source == JobTargetSource.ExecutionGroup && HaGroupSelection is null;
+    [JsonIgnore] public int ExecutionTargetCount => NeedsHaWorkerSelection ? 1 : Nodes.Count;
+    [JsonIgnore] public string AdmissionPlanDigest => HaGroupSelection?.ApprovedPlanDigest ?? ComputeDigest();
+
+    public JobResolvedTargetPlan(int version, int tenantId, ulong jobId, string definitionDigest,
+        JobTargetDefinition target, long? groupRevision, IReadOnlyList<JobTargetBindingProvenance> bindings,
+        IReadOnlyList<JobTargetNode> nodes, JobExecutionPolicy executionPolicy)
+        : this(version, tenantId, jobId, definitionDigest, target, groupRevision, bindings, nodes, executionPolicy, null, null, null) { }
 
     [JsonConstructor]
     public JobResolvedTargetPlan(int version, int tenantId, ulong jobId, string definitionDigest,
         JobTargetDefinition target, long? groupRevision, IReadOnlyList<JobTargetBindingProvenance> bindings,
-        IReadOnlyList<JobTargetNode> nodes, JobExecutionPolicy executionPolicy)
+        IReadOnlyList<JobTargetNode> nodes, JobExecutionPolicy executionPolicy,
+        IReadOnlyList<Guid>? invocationAgentIds, JobHaGroupSelection? haGroupSelection, string? groupName)
     {
         ArgumentNullException.ThrowIfNull(target);
         ArgumentNullException.ThrowIfNull(executionPolicy);
@@ -118,16 +133,26 @@ public sealed record JobResolvedTargetPlan
         GroupRevision = groupRevision;
         Bindings = Array.AsReadOnly(bindings.OrderBy(binding => binding.Name, StringComparer.Ordinal)
             .ThenBy(binding => binding.Source, StringComparer.Ordinal).ToArray());
+        Nodes = FreezeNodes(nodes);
+        ExecutionPolicy = executionPolicy;
+        InvocationAgentIds = invocationAgentIds is null ? null : Array.AsReadOnly(invocationAgentIds.Distinct().Order().ToArray());
+        HaGroupSelection = haGroupSelection is null ? null : new(haGroupSelection.ApprovedPlanDigest, FreezeNodes(haGroupSelection.Candidates));
+        GroupName = groupName;
+        Validate();
+    }
+
+    private static IReadOnlyList<JobTargetNode> FreezeNodes(IReadOnlyList<JobTargetNode> nodes)
+    {
+        if (nodes is null || nodes.Any(node => node is null || node.Tags is null || node.Tags.Any(tag => tag is null)))
+            throw new ArgumentException("The resolved job target plan contains missing nodes.");
         var frozenNodes = nodes.Select(node => node with
             { Tags = Array.AsReadOnly(node.Tags.Order(StringComparer.OrdinalIgnoreCase).ThenBy(tag => tag, StringComparer.Ordinal).ToArray()) }).ToArray();
         foreach (var duplicate in frozenNodes.GroupBy(node => node.AgentId))
             if (duplicate.Skip(1).Any(node => !SameSnapshot(duplicate.First(), node)))
                 throw new ArgumentException("Duplicate target identities have conflicting presentation snapshots.");
-        Nodes = Array.AsReadOnly(frozenNodes.GroupBy(node => node.AgentId).Select(group => group.First())
+        return Array.AsReadOnly(frozenNodes.GroupBy(node => node.AgentId).Select(group => group.First())
             .OrderBy(node => JobTargetNode.SortKey(node.Hostname, node.Name, node.DisplayName), StringComparer.OrdinalIgnoreCase).ThenBy(node => node.AgentId)
             .ToArray());
-        ExecutionPolicy = executionPolicy;
-        Validate();
     }
 
     private static bool SameSnapshot(JobTargetNode left, JobTargetNode right)
@@ -140,16 +165,45 @@ public sealed record JobResolvedTargetPlan
     {
         Target.Validate();
         ExecutionPolicy.Validate();
-        if (Version != 1 || TenantId <= 0 || JobId == 0 || DefinitionDigest.Length != 64 ||
+        if (Version is not (1 or 2) || TenantId <= 0 || JobId == 0 || DefinitionDigest.Length != 64 ||
             DefinitionDigest.Any(character => !Uri.IsHexDigit(character)) || Nodes.Count is < 1 or > 10_000 ||
             Nodes.Any(node => node.AgentId == Guid.Empty || node.Hostname is null) || GroupRevision is < 1 ||
             (Target.Source == JobTargetSource.ExecutionGroup) != GroupRevision.HasValue ||
-            Target.Source == JobTargetSource.ExplicitNodes && !Target.AgentIds!.ToHashSet().SetEquals(Nodes.Select(node => node.AgentId)) ||
+            Version == 1 && (InvocationAgentIds is not null || HaGroupSelection is not null || GroupName is not null) ||
+            Target.Source == JobTargetSource.ExplicitNodes && !Target.AgentIds!.ToHashSet().IsSupersetOf(Nodes.Select(node => node.AgentId)) ||
+            Target.Source == JobTargetSource.ExplicitNodes && InvocationAgentIds is null && !Target.AgentIds!.ToHashSet().SetEquals(Nodes.Select(node => node.AgentId)) ||
+            GroupName?.Length > 200 || GroupName is not null && Target.Source != JobTargetSource.ExecutionGroup ||
             Bindings.Any(binding => string.IsNullOrWhiteSpace(binding.Name) || string.IsNullOrWhiteSpace(binding.Source)))
             throw new ArgumentException("The resolved job target plan is incomplete or invalid.");
+        if (InvocationAgentIds is { } selected && (selected.Count is < 1 or > 10_000 || selected.Contains(Guid.Empty) ||
+            !selected.ToHashSet().SetEquals((HaGroupSelection?.Candidates ?? Nodes).Select(node => node.AgentId))))
+            throw new ArgumentException("The invocation selection differs from its complete target set.");
+        if (HaGroupSelection is { } selection)
+        {
+            if (Version != 2 || Target.Source != JobTargetSource.ExecutionGroup || Nodes.Count != 1 ||
+                !selection.Candidates.Any(candidate => candidate.AgentId == Nodes[0].AgentId && SameSnapshot(candidate, Nodes[0])) ||
+                ReconstructHaPool().ComputeDigest() != selection.ApprovedPlanDigest)
+                throw new ArgumentException("The HA worker does not match its approved availability pool.");
+        }
     }
 
-    /// <summary>Canonical schema 1 hash; independent of caller JSON options, presentation order, and dictionary ordering.</summary>
+    private JobResolvedTargetPlan ReconstructHaPool() => new(Version, TenantId, JobId, DefinitionDigest, Target,
+        GroupRevision, Bindings, HaGroupSelection!.Candidates, ExecutionPolicy, InvocationAgentIds, null, GroupName);
+
+    public JobResolvedTargetPlan SelectHaWorker(Guid agentId)
+    {
+        if (!NeedsHaWorkerSelection) throw new InvalidOperationException("Only an unselected HA pool can select a worker.");
+        var worker = Nodes.SingleOrDefault(node => node.AgentId == agentId)
+            ?? throw new ArgumentException("The HA worker is outside the approved pool.");
+        return new(Version, TenantId, JobId, DefinitionDigest, Target, GroupRevision, Bindings, [worker], ExecutionPolicy,
+            InvocationAgentIds, new(ComputeDigest(), Nodes), GroupName);
+    }
+
+    public bool MatchesAdmissionPlan(JobResolvedTargetPlan approved)
+        => ComputeDigest() == approved.ComputeDigest() || HaGroupSelection is not null &&
+            approved.HaGroupSelection is null && HaGroupSelection.ApprovedPlanDigest == approved.ComputeDigest();
+
+    /// <summary>Schema 1 bytes are retained. Schema 2 binds invocation choices and a selected HA worker.</summary>
     public string ComputeDigest()
     {
         using var buffer = new MemoryStream();
@@ -169,26 +223,50 @@ public sealed record JobResolvedTargetPlan
                 writer.WriteStartObject(); writer.WriteString("name", binding.Name); writer.WriteString("source", binding.Source); writer.WriteEndObject();
             }
             writer.WriteEndArray();
-            writer.WritePropertyName("nodes"); writer.WriteStartArray();
-            foreach (var node in Nodes)
-            {
-                writer.WriteStartObject();
-                writer.WriteString("agentId", node.AgentId.ToString("D"));
-                writer.WriteString("hostname", node.Hostname); writer.WriteString("displayName", node.DisplayName);
-                writer.WriteString("name", node.Name); writer.WriteString("operatingSystem", node.OperatingSystem);
-                writer.WriteString("architecture", node.Architecture);
-                if (node.Environment is { } environment) writer.WriteNumber("environment", (int)environment);
-                writer.WriteBoolean("isOnline", node.IsOnline); writer.WriteBoolean("isEnabled", node.IsEnabled);
-                writer.WritePropertyName("tags"); writer.WriteStartArray();
-                foreach (var tag in node.Tags) writer.WriteStringValue(tag);
-                writer.WriteEndArray(); writer.WriteEndObject();
-            }
-            writer.WriteEndArray();
+            writer.WritePropertyName("nodes"); WriteNodes(writer, Nodes);
             writer.WriteNumber("threadCount", ExecutionPolicy.ThreadCount);
             writer.WriteNumber("nodeFailurePolicy", (int)ExecutionPolicy.NodeFailurePolicy);
+            if (Version == 2)
+            {
+                if (GroupName is not null) writer.WriteString("groupName", GroupName);
+                if (InvocationAgentIds is { } selected)
+                {
+                    writer.WritePropertyName("invocationAgentIds"); writer.WriteStartArray();
+                    foreach (var id in selected) writer.WriteStringValue(id.ToString("D"));
+                    writer.WriteEndArray();
+                }
+                if (HaGroupSelection is { } selection)
+                {
+                    writer.WritePropertyName("haGroupSelection"); writer.WriteStartObject();
+                    writer.WriteString("approvedPlanDigest", selection.ApprovedPlanDigest);
+                    writer.WritePropertyName("candidates"); WriteNodes(writer, selection.Candidates);
+                    writer.WriteEndObject();
+                }
+            }
             writer.WriteEndObject();
         }
         return Convert.ToHexString(SHA256.HashData(buffer.ToArray()));
+    }
+
+    private void WriteNodes(Utf8JsonWriter writer, IReadOnlyList<JobTargetNode> nodes)
+    {
+        writer.WriteStartArray();
+        foreach (var node in nodes)
+        {
+            writer.WriteStartObject(); writer.WriteString("agentId", node.AgentId.ToString("D"));
+            writer.WriteString("hostname", node.Hostname); writer.WriteString("displayName", node.DisplayName);
+            writer.WriteString("name", node.Name); writer.WriteString("operatingSystem", node.OperatingSystem);
+            writer.WriteString("architecture", node.Architecture);
+            if (node.Environment is { } environment) writer.WriteNumber("environment", (int)environment);
+            // HA availability is checked against committed leases at admission. A transient hint
+            // changing between preview and start must not prevent choosing a healthy survivor.
+            if (Version == 1 || Target.Source != JobTargetSource.ExecutionGroup) writer.WriteBoolean("isOnline", node.IsOnline);
+            writer.WriteBoolean("isEnabled", node.IsEnabled);
+            writer.WritePropertyName("tags"); writer.WriteStartArray();
+            foreach (var tag in node.Tags) writer.WriteStringValue(tag);
+            writer.WriteEndArray(); writer.WriteEndObject();
+        }
+        writer.WriteEndArray();
     }
 
     private static void WriteTarget(Utf8JsonWriter writer, JobTargetDefinition target)

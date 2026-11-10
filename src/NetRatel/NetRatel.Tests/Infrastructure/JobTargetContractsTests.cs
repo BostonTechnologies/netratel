@@ -12,6 +12,60 @@ namespace NetRatel.Tests.Infrastructure;
 public sealed class JobTargetContractsTests
 {
     [Fact]
+    public void Schema_one_keeps_its_published_canonical_bytes_and_wire_shape()
+    {
+        var id = Guid.Parse("00000000-0000-0000-0000-000000000001");
+        var plan = new JobResolvedTargetPlan(1, 7, 41, new('a', 64), JobTargetDefinition.FromLegacy(id), null, [],
+            [new(id, "worker-a", null, [])], new());
+        plan.ComputeDigest().Should().Be("32D594CF507581BAEC77377951D3DF9DDF0479F066418EDC71682B7F3EE10E79");
+        var json = JsonSerializer.Serialize(plan, JobTargetJsonContext.Default.JobResolvedTargetPlan);
+        json.Should().NotContain("InvocationAgentIds").And.NotContain("HaGroupSelection").And.NotContain("GroupName");
+        JsonSerializer.Deserialize(json, JobTargetJsonContext.Default.JobResolvedTargetPlan)!.ComputeDigest().Should().Be(plan.ComputeDigest());
+    }
+
+    [Fact]
+    public void HA_selection_binds_one_worker_to_an_immutable_approved_pool_and_ignores_only_availability_hints()
+    {
+        var first = new JobTargetNode(Guid.NewGuid(), "worker-a", null, []) { IsOnline = true };
+        var second = new JobTargetNode(Guid.NewGuid(), "worker-b", null, []);
+        var candidates = new List<JobTargetNode> { first, second };
+        var target = new JobTargetDefinition { Source = JobTargetSource.ExecutionGroup, ExecutionGroupId = Guid.NewGuid() };
+        var pool = new JobResolvedTargetPlan(2, 7, 41, new('a', 64), target, 1, [], candidates, new(100), null, null, "Production workers");
+        var actual = pool.SelectHaWorker(second.AgentId);
+        pool.ExecutionTargetCount.Should().Be(1); actual.Nodes.Should().ContainSingle().Which.AgentId.Should().Be(second.AgentId);
+        actual.NeedsHaWorkerSelection.Should().BeFalse(); actual.MatchesAdmissionPlan(pool).Should().BeTrue();
+        actual.ComputeDigest().Should().NotBe(pool.ComputeDigest()); actual.AdmissionPlanDigest.Should().Be(pool.ComputeDigest());
+        candidates.Clear(); actual.HaGroupSelection!.Candidates.Should().HaveCount(2);
+        var changedHints = new JobResolvedTargetPlan(2, 7, 41, new('a', 64), target, 1, [],
+            [first with { IsOnline = false }, second with { IsOnline = true }], new(100), null, null, "Production workers");
+        changedHints.ComputeDigest().Should().Be(pool.ComputeDigest());
+        var json = JsonSerializer.Serialize(actual, JobTargetJsonContext.Default.JobResolvedTargetPlan);
+        var roundTrip = JsonSerializer.Deserialize(json, JobTargetJsonContext.Default.JobResolvedTargetPlan)!;
+        roundTrip.ComputeDigest().Should().Be(actual.ComputeDigest()); roundTrip.MatchesAdmissionPlan(pool).Should().BeTrue();
+        var tamper = () => new JobResolvedTargetPlan(2, 7, 41, new('a', 64), target, 1, [], [first], new(100), null,
+            new(pool.ComputeDigest(), [second]), "Production workers");
+        tamper.Should().Throw<ArgumentException>();
+        var outside = () => pool.SelectHaWorker(Guid.NewGuid()); outside.Should().Throw<ArgumentException>();
+        var historical = new JobResolvedTargetPlan(1, 7, 41, new('a', 64), target, 1, [], pool.Nodes, new(100));
+        historical.ExecutionTargetCount.Should().Be(2); historical.NeedsHaWorkerSelection.Should().BeFalse();
+    }
+
+    [Fact]
+    public void Invocation_subset_is_versioned_and_cannot_widen_an_explicit_definition()
+    {
+        var first = new JobTargetNode(Guid.NewGuid(), "worker-a", null, []);
+        var second = Guid.NewGuid();
+        var target = new JobTargetDefinition { Source = JobTargetSource.ExplicitNodes, AgentIds = [first.AgentId, second] };
+        var subset = new JobResolvedTargetPlan(2, 7, 41, new('a', 64), target, null, [], [first], new(), [first.AgentId], null, null);
+        subset.Nodes.Should().ContainSingle(); subset.Target.AgentIds.Should().HaveCount(2);
+        var legacy = () => new JobResolvedTargetPlan(1, 7, 41, new('a', 64), target, null, [], [first], new());
+        legacy.Should().Throw<ArgumentException>();
+        var foreign = new JobTargetNode(Guid.NewGuid(), "unapproved", null, []);
+        var widened = () => new JobResolvedTargetPlan(2, 7, 41, new('a', 64), target, null, [], [foreign], new(), [foreign.AgentId], null, null);
+        widened.Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
     public async Task Target_replacement_clears_legacy_authority_while_omission_preserves_it()
     {
         await using var db = new OrchestratorDbContext(new DbContextOptionsBuilder<OrchestratorDbContext>()

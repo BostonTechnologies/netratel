@@ -27,10 +27,11 @@ public static partial class JobRunEndpoints
             try
             {
                 var plan = await aggregates.PlanAsync(jobId, request, ct);
-                return Results.Ok(new JobLaunchPreviewDto(plan.ComputeDigest(), plan.DefinitionDigest, plan.Nodes.Count,
+                return Results.Ok(new JobLaunchPreviewDto(plan.ComputeDigest(), plan.DefinitionDigest, plan.ExecutionTargetCount,
                     plan.Target, plan.ExecutionPolicy, aggregates.EffectiveConcurrency(plan), plan.GroupRevision, plan.Bindings,
                     plan.Nodes.Skip((page - 1) * pageSize).Take(pageSize).ToArray(), page, pageSize,
-                    (long)page * pageSize < plan.Nodes.Count ? page + 1 : null));
+                    (long)page * pageSize < plan.Nodes.Count ? page + 1 : null)
+                { WorkerPoolCount = plan.NeedsHaWorkerSelection ? plan.Nodes.Count : null, GroupName = plan.GroupName });
             }
             catch (JobTargetValidationException error)
             { return Results.Json(new { code = error.Code, detail = error.Message }, statusCode: error.StatusCode); }
@@ -68,10 +69,11 @@ public static partial class JobRunEndpoints
             if (page is < 1 or > 10000 || pageSize is < 1 or > 100) return Results.BadRequest(new { code = "target_page_invalid" });
             var plan = await runs.GetResolvedTargetPlanAsync(id, ct);
             if (plan is null) return Results.NotFound(new { code = "target_plan_not_recorded", detail = "This historical single-node run predates immutable target plans." });
-            return Results.Ok(new JobLaunchPreviewDto(plan.ComputeDigest(), plan.DefinitionDigest, plan.Nodes.Count,
+            return Results.Ok(new JobLaunchPreviewDto(plan.ComputeDigest(), plan.DefinitionDigest, plan.ExecutionTargetCount,
                 plan.Target, plan.ExecutionPolicy, parent.EffectiveConcurrency, plan.GroupRevision, plan.Bindings,
                 plan.Nodes.Skip((page - 1) * pageSize).Take(pageSize).ToArray(), page, pageSize,
-                (long)page * pageSize < plan.Nodes.Count ? page + 1 : null));
+                (long)page * pageSize < plan.Nodes.Count ? page + 1 : null)
+            { WorkerPoolCount = plan.HaGroupSelection?.Candidates.Count, GroupName = plan.GroupName });
         });
         group.MapGet("/{id:long}/nodes/{agentId:guid}/steps", async (ulong id, Guid agentId,
             HttpContext http, IEffectiveAccessService access, IJobRunService runs, [FromServices] OrchestratorDbContext db, CancellationToken ct) =>

@@ -134,7 +134,7 @@ public sealed class JobNodeSelectorTests
     }
 
     [Fact]
-    public async Task Explicit_and_group_targets_fail_whole_set_when_denied_invalid_or_foreign_while_dynamic_discovery_is_scoped()
+    public async Task Explicit_targets_require_the_whole_set_while_HA_pools_and_dynamic_discovery_use_only_authorized_workers()
     {
         await using var db = Db(); var resolver = new JobTargetResolver(db, new Directory(Inventory));
         var authorized = Ids.Take(4).ToHashSet();
@@ -145,8 +145,10 @@ public sealed class JobNodeSelectorTests
         var groupId = Guid.NewGuid();
         db.ExecutionGroups.Add(new() { Id = groupId, TenantId = 7, Name = "five", NormalizedName = "FIVE", Members = Ids.Select(id => new ExecutionGroupMemberRecord { TenantId = 7, AgentId = id }).ToList() });
         await db.SaveChangesAsync();
-        (await Assert.ThrowsAsync<JobTargetValidationException>(() => resolver.ResolveAsync(7,
-            new() { Source = JobTargetSource.ExecutionGroup, ExecutionGroupId = groupId }, null, null, null, authorized, CancellationToken.None))).Code.Should().Be("target_authority_required");
+        var pool = await resolver.ResolveAsync(7,
+            new() { Source = JobTargetSource.ExecutionGroup, ExecutionGroupId = groupId }, null, null, null, authorized, CancellationToken.None);
+        pool.Nodes.Select(node => node.AgentId).Should().BeEquivalentTo(authorized);
+        pool.GroupName.Should().Be("five");
         (await Assert.ThrowsAsync<JobTargetValidationException>(() => resolver.ResolveAsync(8,
             new() { Source = JobTargetSource.ExecutionGroup, ExecutionGroupId = groupId }, null, null, null, null, CancellationToken.None))).Code.Should().Be("target_group_unavailable");
         var invalidResolver = new JobTargetResolver(db, new Directory([Inventory[0] with { IsEnabled = false, UnavailableReason = "agent_revoked" }]));
@@ -198,9 +200,9 @@ public sealed class JobNodeSelectorTests
         saved.Members.Select(x => x.AgentId).Should().BeEquivalentTo(Ids.Take(2));
         (await db.ExecutionGroupMembers.CountAsync()).Should().Be(2);
         var resolver = new JobTargetResolver(db, directory);
-        (await Assert.ThrowsAsync<JobTargetValidationException>(() => resolver.ResolveAsync(7,
-            new() { Source = JobTargetSource.ExecutionGroup, ExecutionGroupId = groupId }, null, null, null, null, CancellationToken.None)))
-            .Code.Should().Be("target_node_unavailable");
+        var pool = await resolver.ResolveAsync(7,
+            new() { Source = JobTargetSource.ExecutionGroup, ExecutionGroupId = groupId }, null, null, null, null, CancellationToken.None);
+        pool.Nodes.Select(node => node.AgentId).Should().Equal(Ids[0]);
     }
 
     private static OrchestratorDbContext Db() => new(new DbContextOptionsBuilder<OrchestratorDbContext>().UseInMemoryDatabase(Guid.NewGuid().ToString()).Options);

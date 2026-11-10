@@ -39,7 +39,7 @@ before choosing a request shape.
 Monitoring rule authoring, explicit nullable fields, CPU/disk examples and typed
 validation recovery are documented in the canonical [Monitoring guide](../operations/MONITORING.md#author-rules-through-http-or-stdio-mcp). The same schemas and guidance are published by HTTP and stdio catalogs.
 
-## Execution groups and job targets
+## HA Groups and job targets
 
 HTTP and stdio publish the same closed schemas for
 `netratel_execution_groups`, `netratel_job_targets`, `netratel_jobs` and
@@ -48,8 +48,11 @@ and [Jobs guide](../operations/JOBS.md) for target modes, typed runtime inputs,
 filter grammar, immutable plans and node-specific output.
 
 Group management does not grant execution authority. Dynamic discovery and its
-counts respect current target visibility; explicit/group admission rejects the
-whole set if any member is denied or invalid. Preview is read-only. Confirm
+counts respect current target visibility. Explicit-node admission requires
+the whole set; HA pools contain eligible authorized workers and select one
+healthy worker per fresh invocation. Successive HA runs balance across the
+pool, and offline members are skipped. Compatibility tool/route names retain
+`execution_groups` / `execution-groups`. Preview is read-only. Confirm
 the unchanged operation with its returned review credentials. Review binds the
 complete target-plan digest, definition/inputs, settings and effective per-agent
 policy versions. A changed group cannot widen an old preview. Target/fan-out

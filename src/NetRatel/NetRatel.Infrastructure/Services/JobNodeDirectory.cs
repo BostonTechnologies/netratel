@@ -8,7 +8,8 @@ using NetRatel.Shared.Contracts.Jobs;
 namespace NetRatel.Infrastructure.Services;
 
 /// <summary>One projection over the canonical directory, never a second client or tag store.</summary>
-public sealed class JobNodeDirectory(OrchestratorDbContext db, IClientPresenceReadModel? presence = null) : IJobNodeDirectory
+public sealed class JobNodeDirectory(OrchestratorDbContext db, IClientPresenceReadModel? presence = null,
+    TimeProvider? clock = null) : IJobNodeDirectory
 {
     public async Task<IReadOnlyList<JobNodeInventoryDto>> ReadAsync(int tenantId, IReadOnlySet<Guid>? authorizedAgentIds,
         bool includeInvalid, CancellationToken cancellationToken)
@@ -27,9 +28,17 @@ public sealed class JobNodeDirectory(OrchestratorDbContext db, IClientPresenceRe
             }).ToArrayAsync(cancellationToken).ConfigureAwait(false);
         if (agents.Length > JobNodeFilterEvaluator.MaximumCandidates)
             throw new JobTargetValidationException("target_inventory_capacity_exceeded", "The authorized inventory exceeds 10000 nodes; narrow the tenant scope.");
-        var online = presence is null ? new HashSet<Guid>() : (await presence.GetSnapshotAsync(cancellationToken).ConfigureAwait(false)).Items
+        var now = (clock ?? TimeProvider.System).GetUtcNow();
+        // The shared committed lease is complete across replicas. The process-local
+        // read model deliberately is not authoritative in durable presence mode.
+        var online = db.Database.IsRelational() ? (await db.ClientConnectionOwners.AsNoTracking()
+            .Where(owner => owner.TenantId == tenantId && owner.Active && owner.ConnectionEpoch > 0 &&
+                owner.ConnectionId != null && owner.AcceptanceGuardAtUtc != null && owner.PresenceExpiresAtUtc > now &&
+                owner.AuthenticationExpiresAtUtc > now).Select(owner => owner.AgentId)
+            .ToArrayAsync(cancellationToken).ConfigureAwait(false)).ToHashSet() :
+            presence is null ? new HashSet<Guid>() : (await presence.GetSnapshotAsync(cancellationToken).ConfigureAwait(false)).Items
             .Where(x => x.Client.TenantId == tenantId && x.IsAuthoritative && x.Status == ClientPresenceStatus.Online &&
-                x.AuthenticationExpiresAtUtc > DateTimeOffset.UtcNow).Select(x => x.Client.AgentId).ToHashSet();
+                x.AuthenticationExpiresAtUtc > now).Select(x => x.Client.AgentId).ToHashSet();
         return agents.Select(agent => Map(agent, online.Contains(agent.Id)))
             .OrderBy(x => JobTargetNode.SortKey(x.Hostname, x.Name, x.DisplayName), StringComparer.OrdinalIgnoreCase).ThenBy(x => x.AgentId).ToArray();
     }

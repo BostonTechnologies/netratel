@@ -33,7 +33,8 @@ public sealed class JobAggregateOrchestrator(
     IJobAggregateWakeup wakeup, IServiceScopeFactory scopes, IEffectiveAccessService access,
     TimeProvider clock, IOptions<JobAggregateOptions> options, IHttpContextAccessor? http = null,
     IExecutionAdmissionStore? admissions = null, IKeyedExecutionAuthority? keyedAuthority = null,
-    IMcpAggregateExecutionAuthority? mcpAuthority = null, IRequestService? requests = null) : IJobAggregatePump
+    IMcpAggregateExecutionAuthority? mcpAuthority = null, IRequestService? requests = null,
+    HaGroupWorkerSelector? haWorkers = null) : IJobAggregatePump
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
@@ -58,8 +59,19 @@ public sealed class JobAggregateOrchestrator(
         var result = await resolver.ResolveAsync(job.TenantId!.Value, target,
             request.Environment ?? JobExecutionContextPolicy.FromJob(job), parameters, request.RuntimeTarget,
             authorizedAgentIds: null, cancellationToken: ct);
-        var plan = new JobResolvedTargetPlan(1, job.TenantId.Value, job.Id, snapshot.ComputeDigest(), target,
-            result.GroupRevision, result.Bindings, result.Nodes, job.ExecutionPolicy ?? new());
+        var nodes = result.Nodes;
+        if (request.SelectedTargetAgentIds is { } selected)
+        {
+            var ids = selected.ToHashSet();
+            if (selected.Count is < 1 or > 10_000 || ids.Count != selected.Count || ids.Contains(Guid.Empty) ||
+                !ids.IsSubsetOf(nodes.Select(node => node.AgentId).ToHashSet()))
+                throw new JobTargetValidationException("invocation_targets_invalid", "Choose at least one node from this job's available targets. Added or unavailable targets cannot be used for this run.");
+            nodes = nodes.Where(node => ids.Contains(node.AgentId)).ToArray();
+        }
+        var version = target.Source == JobTargetSource.ExecutionGroup || request.SelectedTargetAgentIds is not null ? 2 : 1;
+        var plan = new JobResolvedTargetPlan(version, job.TenantId.Value, job.Id, snapshot.ComputeDigest(), target,
+            result.GroupRevision, result.Bindings, nodes, job.ExecutionPolicy ?? new(), request.SelectedTargetAgentIds,
+            null, version == 2 ? result.GroupName : null);
         RequireExpectedPlan(request, plan);
         return plan;
     }
@@ -97,7 +109,7 @@ public sealed class JobAggregateOrchestrator(
         var key = McpAggregateAdmissionKey.For(plan.TenantId, snapshot.Subject, idempotency);
         if (await ExistingByKeyAsync(key, ct) is { } existing)
         {
-            if (existing.TargetPlanDigest != plan.ComputeDigest() || existing.DefinitionDigest != snapshot.ComputeDefinitionDigest())
+            if (!await MatchesCommittedPlanAsync(existing, plan, ct) || existing.DefinitionDigest != snapshot.ComputeDefinitionDigest())
                 throw new ExecutionAdmissionDeniedException("The reviewed admission differs from its committed plan.");
             return existing;
         }
@@ -195,7 +207,7 @@ public sealed class JobAggregateOrchestrator(
         var parent = ulong.Parse(binding.ExecutionId, System.Globalization.CultureInfo.InvariantCulture);
         if (await runs.GetAsync(parent, ct) is { } existing)
         {
-            if (!existing.IsAggregate || existing.TargetPlanDigest != plan.ComputeDigest() ||
+            if (!existing.IsAggregate || !await MatchesCommittedPlanAsync(existing, plan, ct) ||
                 existing.DefinitionDigest != submitted.Snapshot.ComputeDigest() || existing.StartedBy != submitted.Request.StartedBy)
                 throw new ExecutionAdmissionDeniedException("The aggregate receipt differs from its admitted action.");
             return existing;
@@ -221,7 +233,7 @@ public sealed class JobAggregateOrchestrator(
         }
         if (admissionKey is not null && await ExistingByKeyAsync(admissionKey, ct) is { } existing)
         {
-            if (existing.TargetPlanDigest != plan.ComputeDigest() || existing.DefinitionDigest != plan.DefinitionDigest)
+            if (!await MatchesCommittedPlanAsync(existing, plan, ct) || existing.DefinitionDigest != plan.DefinitionDigest)
                 throw new ExecutionAdmissionDeniedException("The occurrence already owns a different immutable admission.");
             return existing;
         }
@@ -236,6 +248,13 @@ public sealed class JobAggregateOrchestrator(
                     receipt.Operation == "netratel_job_runs/start" && receipt.OperationFamily == McpOperatorOperationFamily.JobExecution &&
                     receipt.AgentId == reviewedRoute.AgentId && receipt.PayloadHash == payloadHash, ct))
                 throw new ExecutionAdmissionDeniedException("The reviewed target admission is no longer pending for this original protected submission.");
+        }
+        if (plan.NeedsHaWorkerSelection)
+        {
+            if (haWorkers is null) throw new ExecutionAdmissionDeniedException("HA worker admission is unavailable.");
+            plan = await haWorkers.SelectAsync(plan, ct);
+            await RequireActiveTargetAsync(plan.TenantId, plan.JobId, plan.Nodes[0].AgentId, ct);
+            if (mcpSnapshot is not null) await mcpAuthority!.RequireAllowedAsync(mcpSnapshot, plan.Nodes[0].AgentId, ct);
         }
         if (mcpSnapshot is null) runs.BindPinnedExecutionSnapshot(parentId, snapshot);
         else runs.BindMcpExecutionSnapshot(parentId, mcpSnapshot);
@@ -421,7 +440,7 @@ public sealed class JobAggregateOrchestrator(
         {
             var binding = admissions is null ? null : await admissions.FindByExecutionAsync(ExecutionAdmissionKind.Job, parent.Id.ToString(), ct);
             var submitted = binding is null ? null : JsonSerializer.Deserialize<KeyedJobAdmissionRequest>(binding.PayloadJson);
-            if (submitted is null || keyedAuthority is null || submitted.TargetPlan?.ComputeDigest() != parent.TargetPlanDigest ||
+            if (submitted?.TargetPlan is not { } approved || keyedAuthority is null || !plan.MatchesAdmissionPlan(approved) ||
                 submitted.Snapshot.ComputeDigest() != parent.DefinitionDigest)
                 throw new ExecutionAdmissionDeniedException("The canonical source action binding is unavailable.");
             await keyedAuthority.RequireTargetsAllowedAsync(submitted.Identity, submitted.Snapshot.Definition.Job, [agentId], ct);
@@ -430,7 +449,7 @@ public sealed class JobAggregateOrchestrator(
         else if (control.SourceKind == "mcp")
         {
             var snapshot = await runs.GetMcpExecutionSnapshotAsync(parentId, ct);
-            if (snapshot is null || mcpAuthority is null || snapshot.TargetPlan?.ComputeDigest() != parent.TargetPlanDigest)
+            if (snapshot?.TargetPlan is not { } approved || mcpAuthority is null || !plan.MatchesAdmissionPlan(approved))
                 throw new ExecutionAdmissionDeniedException("The reviewed aggregate authority is unavailable.");
             await mcpAuthority.RequireAllowedAsync(snapshot, agentId, ct);
         }
@@ -517,7 +536,13 @@ public sealed class JobAggregateOrchestrator(
     }
 
     public int EffectiveConcurrency(JobResolvedTargetPlan plan) =>
-        Math.Min(plan.Nodes.Count, Math.Min(plan.ExecutionPolicy.ThreadCount, Math.Clamp(options.Value.MaximumActiveNodes, 1, 100)));
+        Math.Min(plan.ExecutionTargetCount, Math.Min(plan.ExecutionPolicy.ThreadCount, Math.Clamp(options.Value.MaximumActiveNodes, 1, 100)));
+
+    private async Task<bool> MatchesCommittedPlanAsync(JobRunInfo run, JobResolvedTargetPlan approved, CancellationToken ct)
+    {
+        var actual = await runs.GetResolvedTargetPlanAsync(run.Id, ct);
+        return actual is not null && actual.ComputeDigest() == run.TargetPlanDigest && actual.MatchesAdmissionPlan(approved);
+    }
 
     private async Task<JobAggregateControlRecord?> LockControlAsync(long parent, CancellationToken ct) =>
         await (db.Database.IsNpgsql() ? db.Set<JobAggregateControlRecord>().FromSqlInterpolated($"SELECT * FROM \"JobAggregateControls\" WHERE \"ParentRunId\"={parent} FOR UPDATE") :
@@ -539,7 +564,7 @@ public sealed class JobAggregateOrchestrator(
             ?? throw new InvalidOperationException("The admitted target plan is unavailable.");
         if (!parent.IsAggregate || parent.ParentRunId is not null || parent.AgentId is not null ||
             plan.JobId != checked((ulong)parent.JobId) || plan.TenantId != parent.TenantId ||
-            plan.DefinitionDigest != parent.DefinitionDigest || plan.ComputeDigest() != parent.TargetPlanDigest)
+            plan.DefinitionDigest != parent.DefinitionDigest || plan.ComputeDigest() != parent.TargetPlanDigest || plan.NeedsHaWorkerSelection)
             throw new InvalidOperationException("The admitted target plan differs from its immutable parent binding.");
         return plan;
     }
@@ -551,7 +576,8 @@ public sealed class JobAggregateOrchestrator(
         if (job.Id != plan.JobId || job.TenantId != plan.TenantId || digest != plan.DefinitionDigest || target is null ||
             (job.ExecutionPolicy ?? new()) != plan.ExecutionPolicy ||
             new JobResolvedTargetPlan(plan.Version, plan.TenantId, plan.JobId, plan.DefinitionDigest, target,
-                plan.GroupRevision, plan.Bindings, plan.Nodes, plan.ExecutionPolicy).ComputeDigest() != plan.ComputeDigest())
+                plan.GroupRevision, plan.Bindings, plan.Nodes, plan.ExecutionPolicy, plan.InvocationAgentIds,
+                plan.HaGroupSelection, plan.GroupName).ComputeDigest() != plan.ComputeDigest())
             throw new ExecutionAdmissionDeniedException("The resolved target plan differs from the protected definition and execution policy.");
     }
 

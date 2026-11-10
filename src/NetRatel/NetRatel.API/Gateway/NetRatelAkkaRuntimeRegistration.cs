@@ -118,6 +118,7 @@ public static class NetRatelAkkaRuntimeRegistration
             .Validate(value => value.MaximumActiveNodes is >= 1 and <= 100, "Aggregate node capacity must be between 1 and 100.")
             .ValidateOnStart();
         services.TryAddScoped<JobAggregateOrchestrator>();
+        services.TryAddScoped<HaGroupWorkerSelector>();
         services.TryAddScoped<IJobAggregatePump>(provider => provider.GetRequiredService<JobAggregateOrchestrator>());
         services.AddHostedService<JobAggregateRecoveryWorker>();
         services.TryAddScoped<IKeyedScriptExecutionService, KeyedScriptExecutionService>();

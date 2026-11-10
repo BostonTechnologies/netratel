@@ -119,10 +119,12 @@ public sealed class FlowExecutionActionDispatcher(OrchestratorDbContext db, IFlo
         if (details.Run.IsAggregate)
         {
             var plan = submitted.TargetPlan;
+            var actual = await runs.GetResolvedTargetPlanAsync(id, ct);
             if (plan is null || plan.TenantId != expected.TenantId || plan.JobId != details.Run.JobId || details.Run.AgentId is not null ||
                 !string.Equals(plan.DefinitionDigest, submitted.Snapshot.ComputeDigest(), StringComparison.OrdinalIgnoreCase) ||
                 !string.Equals(details.Run.DefinitionDigest, plan.DefinitionDigest, StringComparison.OrdinalIgnoreCase) ||
-                details.Run.TargetPlanDigest != plan.ComputeDigest() || receipt.TargetPlanDigest != details.Run.TargetPlanDigest ||
+                actual is null || actual.ComputeDigest() != details.Run.TargetPlanDigest || !actual.MatchesAdmissionPlan(plan) ||
+                receipt.TargetPlanDigest != details.Run.TargetPlanDigest ||
                 !string.Equals(receipt.DefinitionDigest, details.Run.DefinitionDigest, StringComparison.OrdinalIgnoreCase))
                 return Result(FlowExecutionActionDisposition.Unknown, "job-target-plan-receipt-mismatch");
             await authority.RequireTargetsAllowedAsync(expected, submitted.Snapshot.Definition.Job,

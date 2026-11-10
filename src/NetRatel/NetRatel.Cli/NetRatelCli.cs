@@ -76,7 +76,7 @@ internal static partial class NetRatelCli
         root.AddCommand(BuildScriptsCommand(runtime, globals));
         root.AddCommand(BuildJobsCommand(runtime, globals));
         root.AddCommand(BuildManagedOperationsCommand(runtime, globals, "netratel_execution_groups", "execution-groups",
-            "Manage tenant execution groups and their explicit membership with revision checks."));
+            "Manage tenant HA Groups and their worker membership with revision checks. Each job run uses one healthy worker."));
         root.AddCommand(BuildManagedOperationsCommand(runtime, globals, "netratel_job_targets", "job-targets",
             "Search clients and validate or preview the shared exact node selector without executing work."));
         root.AddCommand(BuildReviewedJobsCommand(runtime, globals));
