@@ -63,7 +63,9 @@ public static class JobNodeFilterEvaluator
         catch (RegexMatchTimeoutException) { throw Error("target_filter_budget_exhausted", "Regex evaluation exceeded its bounded evaluation budget."); }
         RequireBudget();
         if (selected.Count == 0) throw Error("target_no_matches", "The selector matches no authorized nodes.");
-        return selected.DistinctBy(x => x.AgentId).OrderBy(x => JobTargetNode.SortKey(x.Hostname, x.Name, x.DisplayName), StringComparer.OrdinalIgnoreCase).ThenBy(x => x.AgentId).ToArray();
+        var ordered = selected.DistinctBy(x => x.AgentId).OrderBy(x => JobTargetNode.SortKey(x.Hostname, x.Name, x.DisplayName), StringComparer.OrdinalIgnoreCase).ThenBy(x => x.AgentId).ToArray();
+        RequireBudget();
+        return ordered;
 
         bool MatchClause(JobNodeInventoryDto node, JobNodeFilterClause clause) => clause.Field == "all" ||
             clause.Alternatives.Any(term => term.Operands.All(operand => MatchOperand(node, clause.Field, operand)));
