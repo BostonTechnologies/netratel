@@ -53,7 +53,7 @@ public static class JobNodeFilterEvaluator
         cancellationToken.ThrowIfCancellationRequested();
         if (timer.Elapsed > EvaluationBudget) throw Error("target_filter_budget_exhausted", "The complete filter evaluation exceeded its 500ms budget.");
         if (selected.Count == 0) throw Error("target_no_matches", "The selector matches no authorized nodes.");
-        return selected.DistinctBy(x => x.AgentId).OrderBy(x => x.Hostname, StringComparer.OrdinalIgnoreCase).ThenBy(x => x.AgentId).ToArray();
+        return selected.DistinctBy(x => x.AgentId).OrderBy(x => string.IsNullOrWhiteSpace(x.Hostname) ? x.Name ?? x.DisplayName : x.Hostname, StringComparer.OrdinalIgnoreCase).ThenBy(x => x.AgentId).ToArray();
 
         bool MatchClause(JobNodeInventoryDto node, JobNodeFilterClause clause) => clause.Field == "all" ||
             clause.Alternatives.Any(term => term.Operands.All(operand => MatchOperand(node, clause.Field, operand)));

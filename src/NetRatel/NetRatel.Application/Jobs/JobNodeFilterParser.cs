@@ -40,8 +40,11 @@ public static class JobNodeFilterParser
 
     public static JobNodeFilterExpression Bind(JobNodeFilterExpression expression, IReadOnlyDictionary<string, string[]>? parameters)
     {
-        var values = parameters is null ? new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
-            : new Dictionary<string, string[]>(parameters, StringComparer.OrdinalIgnoreCase);
+        var values = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+        if (parameters is not null)
+            foreach (var parameter in parameters)
+                if (!values.TryAdd(parameter.Key, parameter.Value))
+                    throw Error("target_parameter_ambiguous", "Target parameter names must be unique under case-insensitive comparison.");
         var boundCount = 0;
         return new(expression.Clauses.Select(clause => clause with
         {
@@ -54,12 +57,14 @@ public static class JobNodeFilterParser
                         if (++boundCount > MaximumOperands) throw Error("target_filter_too_complex", "Bound target operands exceed 128 values.");
                         return operand;
                     }
-                    if (!values.TryGetValue(operand.Value, out var supplied) || supplied is null || supplied.Length == 0 ||
-                        supplied.Any(value => string.IsNullOrWhiteSpace(value) || value.Length > MaximumLiteralLength))
+                    if (!values.TryGetValue(operand.Value, out var supplied) || supplied is null || supplied.Length == 0)
                         throw Error("target_parameter_required", $"The declared target parameter '{operand.Value}' needs bounded literal values.");
+                    if (supplied.Length > MaximumOperands || boundCount + supplied.Length > MaximumOperands)
+                        throw Error("target_filter_too_complex", "Raw bound target operands exceed 128 values before deduplication.");
+                    if (supplied.Any(value => string.IsNullOrWhiteSpace(value) || value.Length > MaximumLiteralLength))
+                        throw Error("target_parameter_required", $"The declared target parameter '{operand.Value}' needs bounded literal values.");
+                    boundCount += supplied.Length;
                     var literals = supplied.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-                    boundCount += literals.Length;
-                    if (boundCount > MaximumOperands) throw Error("target_filter_too_complex", "Bound target operands exceed 128 values.");
                     return new JobNodeFilterOperand(JobNodeFilterOperandKind.Literal, literals[0]) { BoundValues = literals };
                 }).ToArray()
             }).ToArray()

@@ -88,6 +88,10 @@ public sealed class JobNodeSelectorTests
         var template = JobNodeFilterParser.Parse("tags: @option.tags@ os: Linux");
         var inputs = new Dictionary<string, string[]> { ["tags"] = Enumerable.Range(1, 128).Select(x => x.ToString()).ToArray() };
         Assert.Throws<JobTargetValidationException>(() => JobNodeFilterParser.Bind(template, inputs)).Code.Should().Be("target_filter_too_complex");
+        Assert.Throws<JobTargetValidationException>(() => JobNodeFilterParser.Bind(JobNodeFilterParser.Parse("tags: @option.tags@"),
+            new Dictionary<string, string[]> { ["tags"] = Enumerable.Repeat("TestSystem", 129).ToArray() })).Code.Should().Be("target_filter_too_complex");
+        Assert.Throws<JobTargetValidationException>(() => JobNodeFilterParser.Bind(template,
+            new Dictionary<string, string[]> { ["tags"] = ["TestSystem"], ["TAGS"] = ["Linux"] })).Code.Should().Be("target_parameter_ambiguous");
         using var cancellation = new CancellationTokenSource(); cancellation.Cancel();
         Assert.Throws<OperationCanceledException>(() => JobNodeFilterEvaluator.Resolve(JobNodeFilterParser.Parse("tags: TestSystem"), Inventory, cancellation.Token));
     }
@@ -146,6 +150,8 @@ public sealed class JobNodeSelectorTests
         Assert.Throws<JobTargetValidationException>(() => JobNodeFilterEvaluator.Resolve(JobNodeFilterParser.Parse("hostname: registered-only"), inventory))
             .Code.Should().Be("target_no_matches");
         var resolver = new JobTargetResolver(db, directory);
+        var actual = await resolver.ResolveAsync(7, new() { Source = JobTargetSource.ExplicitNodes, AgentIds = [Ids[0]] }, null, null, null, null, CancellationToken.None);
+        actual.Nodes[0].Hostname.Should().BeEmpty(); actual.Nodes[0].Name.Should().Be("registered-only");
         (await Assert.ThrowsAsync<JobTargetValidationException>(() => resolver.ResolveAsync(7,
             new() { Source = JobTargetSource.ExplicitNodes, AgentIds = [Ids[0], Ids[1]] }, null, null, null, null, CancellationToken.None)))
             .Code.Should().Be("target_node_unavailable");
