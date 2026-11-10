@@ -77,7 +77,7 @@ public static class JobNodeFilterParser
         .Select(x => x.Value).Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.OrdinalIgnoreCase).ToArray();
 
     public static string Format(JobNodeFilterExpression expression) => string.Join(" ", expression.Clauses.Select(clause =>
-        (clause.Excluded ? "!" : "") + clause.Field + ": " + string.Join(",", clause.Alternatives.Select(term =>
+        (clause.Field == "node" ? string.Empty : (clause.Excluded ? "!" : "") + clause.Field + ": ") + string.Join(",", clause.Alternatives.Select(term =>
             string.Join("+", term.Operands.Select(FormatOperand))))));
 
     private static string FormatOperand(JobNodeFilterOperand operand)

@@ -1,6 +1,7 @@
 using System.Text;
 using NetRatel.API.Middleware;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
 namespace NetRatel.Tests.API;
@@ -12,7 +13,8 @@ public sealed class JobTargetBodyBoundsTests
     [InlineData(false)]
     public async Task Target_bounds_reject_oversized_declared_and_chunked_body_before_json_binding(bool declaredLength)
     {
-        var http = new DefaultHttpContext();
+        using var services = new ServiceCollection().AddLogging().BuildServiceProvider();
+        var http = new DefaultHttpContext { RequestServices = services };
         http.SetEndpoint(new Endpoint(_ => Task.CompletedTask,
             new EndpointMetadataCollection(new MonitoringHttpBounds { MaximumBytes = 64, ErrorCode = "target_payload_capacity_exceeded" }), "target"));
         http.Request.Body = new MemoryStream(Encoding.UTF8.GetBytes(new string('x', 65)));
