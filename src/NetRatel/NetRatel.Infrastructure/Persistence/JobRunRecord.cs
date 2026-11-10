@@ -4,6 +4,11 @@ public sealed class JobRunRecord
 {
     public long Id { get; set; }
     public long JobId { get; set; }
+    public long? ParentRunId { get; set; }
+    public bool IsAggregate { get; set; }
+    public string? TargetPlanJson { get; set; }
+    public string? TargetPlanDigest { get; set; }
+    public string? DefinitionDigest { get; set; }
     public int? TenantId { get; set; }
     public Guid? AgentId { get; set; }
     // Nullable for historical runs; populated only from accepted invocation context.

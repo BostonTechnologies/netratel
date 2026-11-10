@@ -47,12 +47,12 @@ public static class JobEndpoints
         group.MapPost("/", async ([FromBody] CreateJobRequest request, HttpContext http, [FromServices] IEffectiveAccessService access, IJobDefinitionService jobs, [FromServices] OrchestratorDbContext db, IEventRecorder events, ICorrelationContext correlation, CancellationToken ct) =>
         {
             if (!await CanManageAsync(http, access, request.TenantId, ct)) return Results.Forbid();
-            var targetError = await ValidateTargetAsync(db, request.TenantId, request.AgentId, ct); if (targetError is not null) return targetError;
+            var targetError = await ValidateTargetAsync(db, request.TenantId, request.AgentId, request.Target, request.ExecutionPolicy, ct); if (targetError is not null) return targetError;
             if (string.IsNullOrWhiteSpace(request.Name)) return Results.BadRequest("Name is required.");
             if (request.Environment is { } environment && !Enum.IsDefined(environment)) return Results.ValidationProblem(new Dictionary<string, string[]> { ["environment"] = ["Environment is invalid."] });
             var options = JobSchedulePolicy.MergeOptionsJson(JobExecutionRuntimePolicy.MergeOptionsJson(null, JobExecutionRuntimePolicy.FromValues(request.ExpectedRuntimeSeconds, request.GraceSeconds, request.HardTimeoutSeconds)), request.Schedule);
             options = JobExecutionContextPolicy.MergeOptionsJson(options, request.Environment);
-            var created = await jobs.CreateAsync(new CreateJobDefinitionCommand(request.Name.Trim(), NormalizeFolder(request.FolderPath), request.Description, request.TenantId, string.Empty, options, request.AgentId), ct);
+            var created = await jobs.CreateAsync(new CreateJobDefinitionCommand(request.Name.Trim(), NormalizeFolder(request.FolderPath), request.Description, request.TenantId, string.Empty, options, request.AgentId) { Target = request.Target, ExecutionPolicy = request.ExecutionPolicy }, ct);
             await RecordAsync(events, correlation, NetRatelEventTypes.Job.Created, created, "created", ct);
             return Results.Created($"/api/v1/jobs/{created.Id}", MapJob(created, new Dictionary<int, string>(), await db.Agents.AsNoTracking().ToDictionaryAsync(x => x.Id, ct)));
         });
@@ -60,13 +60,15 @@ public static class JobEndpoints
         {
             var current = await jobs.GetAsync(id, ct); if (current is null) return Results.NotFound();
             if (!await CanManageAsync(http, access, current.TenantId, ct)) return Results.Forbid();
-            var targetTenant = request.TenantId ?? current.TenantId; var targetAgent = request.AgentId ?? current.AgentId;
+            var targetTenant = request.TenantId ?? current.TenantId;
+            var targetAgent = request.Target is null ? request.AgentId ?? current.AgentId : request.AgentId;
+            var target = request.Target ?? (request.AgentId.HasValue ? null : current.Target);
             if (!await CanManageAsync(http, access, targetTenant, ct)) return Results.Forbid();
-            var targetError = await ValidateTargetAsync(db, targetTenant, targetAgent, ct); if (targetError is not null) return targetError;
+            var targetError = await ValidateTargetAsync(db, targetTenant, targetAgent, target, request.ExecutionPolicy ?? current.ExecutionPolicy, ct); if (targetError is not null) return targetError;
             var options = JobSchedulePolicy.MergeOptionsJson(JobExecutionRuntimePolicy.MergeOptionsJson(current.OptionsJson, JobExecutionRuntimePolicy.FromValues(request.ExpectedRuntimeSeconds, request.GraceSeconds, request.HardTimeoutSeconds)), request.Schedule);
             if (request.Environment is { } environment && !Enum.IsDefined(environment)) return Results.ValidationProblem(new Dictionary<string, string[]> { ["environment"] = ["Environment is invalid."] });
             options = JobExecutionContextPolicy.MergeOptionsJson(options, request.Environment);
-            var updated = await jobs.UpdateAsync(new UpdateJobDefinitionCommand(id, request.Name, request.FolderPath is null ? null : NormalizeFolder(request.FolderPath), request.Description, targetTenant, string.Empty, options, targetAgent), ct);
+            var updated = await jobs.UpdateAsync(new UpdateJobDefinitionCommand(id, request.Name, request.FolderPath is null ? null : NormalizeFolder(request.FolderPath), request.Description, targetTenant, string.Empty, options, request.Target is null ? targetAgent : request.AgentId) { Target = request.Target, ExecutionPolicy = request.ExecutionPolicy }, ct);
             await RecordAsync(events, correlation, NetRatelEventTypes.Job.StateChanged, updated!, "updated", ct);
             return Results.Ok(MapJob(updated!, new Dictionary<int, string>(), await db.Agents.AsNoTracking().ToDictionaryAsync(x => x.Id, ct)));
         });
@@ -139,8 +141,31 @@ public static class JobEndpoints
         return app;
     }
 
-    private static async Task<IResult?> ValidateTargetAsync(OrchestratorDbContext db, int? tenantId, Guid? agentId, CancellationToken ct)
+    private static async Task<IResult?> ValidateTargetAsync(OrchestratorDbContext db, int? tenantId, Guid? agentId, JobTargetDefinition? target, JobExecutionPolicy? executionPolicy, CancellationToken ct)
     {
+        try
+        {
+            executionPolicy?.Validate();
+            target?.Validate();
+            if (target is not null && agentId.HasValue) throw new ArgumentException("Target cannot be combined with legacy AgentId.");
+        }
+        catch (ArgumentException error)
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]> { ["target"] = [error.Message] });
+        }
+        if (target is not null)
+        {
+            if (tenantId is null or <= 0)
+                return Results.ValidationProblem(new Dictionary<string, string[]> { ["tenantId"] = ["A tenant is required."] });
+            if (target.Source == JobTargetSource.ExplicitNodes)
+            {
+                var ids = target.AgentIds!.Distinct().ToArray();
+                var validCount = await db.Agents.AsNoTracking().CountAsync(agent => agent.TenantId == tenantId && ids.Contains(agent.Id) &&
+                    agent.IsEnabled && agent.Status != AgentStatus.Disabled && agent.DeletedAtUtc == null && agent.RevokedAtUtc == null && agent.SupersededByAgentId == null, ct);
+                if (validCount != ids.Length) return Results.ValidationProblem(new Dictionary<string, string[]> { ["target"] = ["One or more selected nodes are unavailable in the tenant."] });
+            }
+            return null;
+        }
         if (tenantId is null || agentId is null || agentId == Guid.Empty) return Results.ValidationProblem(new Dictionary<string, string[]> { ["target"] = ["TenantId and AgentId are required."] });
         var agent = await db.Agents.AsNoTracking().SingleOrDefaultAsync(x => x.TenantId == tenantId && x.Id == agentId, ct);
         return agent is null ? Results.BadRequest(new { code = "agent_not_found" }) : !agent.IsEnabled || agent.Status == AgentStatus.Disabled ? Results.Conflict(new { code = "agent_not_enabled" }) : null;
@@ -166,7 +191,7 @@ public static class JobEndpoints
         var target = agent is null ? null : AgentDirectoryPresentation.Create(agent.TenantId, agent.Id,
             agent.Name, agent.IsEnabled, agent.DeviceInfoJson, tenant, agent.Tags, agent.FriendlyName);
         var policy = JobExecutionRuntimePolicy.FromJob(job);
-        return new(job.Id, job.Name, job.FolderPath, job.Description, job.TenantId, job.ClientIdentity, job.CreatedAtUtc.ToUnixTimeMilliseconds() * 1000, job.UpdatedAtUtc.ToUnixTimeMilliseconds() * 1000, tenant, target?.HostName ?? target?.DisplayName ?? agent?.Name, JobExecutionContextPolicy.FromJob(job), policy.ExpectedRuntimeSeconds, policy.GraceSeconds, policy.HardTimeoutSeconds, JobSchedulePolicy.FromJob(job)?.ToDto(), job.AgentId, summary);
+        return new(job.Id, job.Name, job.FolderPath, job.Description, job.TenantId, job.ClientIdentity, job.CreatedAtUtc.ToUnixTimeMilliseconds() * 1000, job.UpdatedAtUtc.ToUnixTimeMilliseconds() * 1000, tenant, target?.HostName ?? target?.DisplayName ?? agent?.Name, JobExecutionContextPolicy.FromJob(job), policy.ExpectedRuntimeSeconds, policy.GraceSeconds, policy.HardTimeoutSeconds, JobSchedulePolicy.FromJob(job)?.ToDto(), job.AgentId, summary) { Target = job.Target, ExecutionPolicy = job.ExecutionPolicy };
     }
     private static async Task<Dictionary<ulong, string>> BuildSummariesAsync(OrchestratorDbContext db, ulong[] jobIds, CancellationToken ct)
     {

@@ -11,6 +11,8 @@ public sealed class JobDefinition
     // Retained only to display historical definitions that predate Agent targeting.
     public string ClientIdentity { get; set; } = string.Empty;
     public string? OptionsJson { get; set; }
+    public string? TargetJson { get; set; }
+    public string? ExecutionPolicyJson { get; set; }
     public DateTimeOffset CreatedAtUtc { get; set; }
     public DateTimeOffset UpdatedAtUtc { get; set; }
     public DateTimeOffset? DeletedAtUtc { get; set; }

@@ -52,7 +52,21 @@ public record JobRunDto(
     string? TargetName = null,
     string? InputProtectionStatus = null,
     string? SubmittedDefinitionRevision = null
-);
+)
+{
+    public bool IsAggregate { get; init; }
+    public ulong? ParentRunId { get; init; }
+    public string? TargetPlanDigest { get; init; }
+    public string? DefinitionDigest { get; init; }
+    public JobTargetSource? TargetSource { get; init; }
+    public JobExecutionPolicy? ExecutionPolicy { get; init; }
+    public int TargetCount { get; init; }
+    public int EffectiveConcurrency { get; init; }
+    public JobRunNodeCountsDto? NodeCounts { get; init; }
+    public IReadOnlyList<JobRunNodeDto>? Nodes { get; init; }
+    public int NodesTotalCount { get; init; }
+}
+
 
 public record JobStepRunDto(
     ulong Id,
@@ -87,4 +101,10 @@ public record RunJobRequest(
     int? GraceSeconds = null,
     int? HardTimeoutSeconds = null,
     ClientEnvironment? Environment = null
-);
+)
+{
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public JobRuntimeTargetInput? RuntimeTarget { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public string? ExpectedTargetPlanDigest { get; init; }
+}

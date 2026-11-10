@@ -28,7 +28,14 @@ public record JobDto(
     JobScheduleDto? Schedule = null,
     Guid? AgentId = null,
     string? StepSummary = null
-);
+)
+{
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public JobTargetDefinition? Target { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public JobExecutionPolicy? ExecutionPolicy { get; init; }
+}
+
 
 public record JobParamDto(
     ulong Id,
@@ -76,7 +83,14 @@ public record CreateJobRequest(
     JobScheduleDto? Schedule = null,
     Guid? AgentId = null,
     ClientEnvironment? Environment = null
-);
+)
+{
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public JobTargetDefinition? Target { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public JobExecutionPolicy? ExecutionPolicy { get; init; }
+}
+
 
 public record UpdateJobRequest(
     string? Name,
@@ -90,7 +104,14 @@ public record UpdateJobRequest(
     JobScheduleDto? Schedule = null,
     Guid? AgentId = null,
     ClientEnvironment? Environment = null
-);
+)
+{
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public JobTargetDefinition? Target { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public JobExecutionPolicy? ExecutionPolicy { get; init; }
+}
+
 
 public record AddJobParamRequest(
     string Name,

@@ -1,3 +1,5 @@
+using NetRatel.Shared.Contracts.Jobs;
+
 namespace NetRatel.Application.Jobs;
 
 public enum JobStepKind
@@ -17,7 +19,13 @@ public sealed record JobDefinitionInfo(
     DateTimeOffset CreatedAtUtc,
     DateTimeOffset UpdatedAtUtc,
     string? OptionsJson,
-    Guid? AgentId = null);
+    Guid? AgentId = null)
+{
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public JobTargetDefinition? Target { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public JobExecutionPolicy? ExecutionPolicy { get; init; }
+}
 
 public sealed record JobParameterInfo(
     ulong Id,
@@ -52,7 +60,13 @@ public sealed record CreateJobDefinitionCommand(
     int? TenantId,
     string ClientIdentity,
     string? OptionsJson = null,
-    Guid? AgentId = null);
+    Guid? AgentId = null)
+{
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public JobTargetDefinition? Target { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public JobExecutionPolicy? ExecutionPolicy { get; init; }
+}
 
 public sealed record UpdateJobDefinitionCommand(
     ulong JobId,
@@ -62,7 +76,13 @@ public sealed record UpdateJobDefinitionCommand(
     int? TenantId,
     string? ClientIdentity,
     string? OptionsJson = null,
-    Guid? AgentId = null);
+    Guid? AgentId = null)
+{
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public JobTargetDefinition? Target { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public JobExecutionPolicy? ExecutionPolicy { get; init; }
+}
 
 public sealed record AddJobParameterCommand(
     ulong JobId,

@@ -60,6 +60,8 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
     public DbSet<JobParameterDefinition> JobParameters => Set<JobParameterDefinition>();
     public DbSet<JobStepDefinition> JobSteps => Set<JobStepDefinition>();
     public DbSet<JobRunRecord> JobRuns => Set<JobRunRecord>();
+    public DbSet<JobRunNodeRecord> JobRunNodes => Set<JobRunNodeRecord>();
+    public DbSet<JobAggregateControlRecord> JobAggregateControls => Set<JobAggregateControlRecord>();
     public DbSet<JobStepRunRecord> JobStepRuns => Set<JobStepRunRecord>();
     public DbSet<JobTaskActivityRecord> JobTaskActivities => Set<JobTaskActivityRecord>();
     public DbSet<JobTaskLogRecord> JobTaskLogs => Set<JobTaskLogRecord>();
@@ -213,6 +215,7 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
         modelBuilder.ConfigurePairingModel();
         modelBuilder.ConfigureManagedOrchestrationModel();
         modelBuilder.ConfigureJobRunControlModel();
+        modelBuilder.ConfigureJobAggregateModel();
         modelBuilder.ConfigureJobGatewayLifecycleReceiptModel();
         modelBuilder.ConfigureClientConnectionOwnershipModel();
         modelBuilder.Entity<ClientConnectionEpochRecord>(entity =>

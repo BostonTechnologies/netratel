@@ -7,3 +7,4 @@ Architecture decisions document a specific choice and its context. Current deplo
 - [ADR 0003: provider selection and migration ownership](0003-provider-selection-and-migration-ownership.md)
 - [ADR 0004: local HTTP MCP delegation](0004-local-http-mcp-delegation.md)
 - [ADR 0005: effective branding and configuration precedence](0005-effective-branding-precedence.md)
+- [ADR 0006: immutable job target plans and durable node orchestration](0006-job-target-plans-and-node-orchestration.md)

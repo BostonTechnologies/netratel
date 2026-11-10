@@ -1,4 +1,5 @@
 using NetRatel.Shared;
+using NetRatel.Shared.Contracts.Jobs;
 using NetRatel.Shared.Contracts.Tasks;
 
 namespace NetRatel.Application.Jobs;
@@ -46,7 +47,19 @@ public sealed record JobRunInfo(
     string? TargetHostName = null,
     string? TargetName = null,
     string? InputProtectionStatus = null,
-    string? SubmittedDefinitionRevision = null);
+    string? SubmittedDefinitionRevision = null)
+{
+    public bool IsAggregate { get; init; }
+    public ulong? ParentRunId { get; init; }
+    public string? TargetPlanDigest { get; init; }
+    public string? DefinitionDigest { get; init; }
+    public JobTargetSource? TargetSource { get; init; }
+    public JobExecutionPolicy? ExecutionPolicy { get; init; }
+    public int TargetCount { get; init; }
+    public int EffectiveConcurrency { get; init; }
+    public JobRunNodeCountsDto? NodeCounts { get; init; }
+}
+
 
 public sealed record JobStepRunInfo(
     ulong Id,
