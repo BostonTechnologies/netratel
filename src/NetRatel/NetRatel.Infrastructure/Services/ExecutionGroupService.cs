@@ -80,7 +80,8 @@ public sealed class ExecutionGroupService(OrchestratorDbContext db, IEffectiveAc
             var record = await LockAsync(tenantId, groupId, cancellationToken).ConfigureAwait(false);
             if (record is null) return null;
             RequireRevision(record, request.ExpectedRevision!.Value);
-            await ValidateMembersAsync(tenantId, request.AgentIds, cancellationToken).ConfigureAwait(false);
+            var retained = record.Members.Select(x => x.AgentId).ToHashSet();
+            await ValidateMembersAsync(tenantId, request.AgentIds.Where(id => !retained.Contains(id)).ToArray(), cancellationToken).ConfigureAwait(false);
             var description = TrimDescription(request.Description);
             if (record.Name == request.Name.Trim() && record.Description == description && record.Enabled == request.Enabled &&
                 record.Archived == request.Archived && record.Members.Select(x => x.AgentId).ToHashSet().SetEquals(request.AgentIds))

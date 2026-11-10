@@ -101,10 +101,13 @@ public sealed class ExecutionGroupPostgresTests(PostgreSqlPersistenceFixture pos
         admitted.Nodes.Should().HaveCount(4); admitted.GroupRevision.Should().Be(1);
         var first = await db.Agents.SingleAsync(x => x.Id == ids[0], ct); first.IsEnabled = false; await db.SaveChangesAsync(ct);
         (await service.GetAsync(7, group.Group.Id, Manager, ct))!.Members.Should().Contain(x => x.AgentId == ids[0] && !x.IsEnabled);
+        var renamed = await service.UpdateAsync(7, group.Group.Id, new("Renamed with unavailable member", null, true, false, ids, 2), Manager, ct);
+        renamed!.Group.Revision.Should().Be(3);
+        renamed.Members.Should().HaveCount(5).And.Contain(x => x.AgentId == ids[0] && !x.IsEnabled);
         (await Assert.ThrowsAsync<JobTargetValidationException>(() => resolver.ResolveAsync(7, target, null, null, null, null, ct))).Code.Should().Be("target_node_unavailable");
         first.IsEnabled = true; await db.SaveChangesAsync(ct);
         db.Jobs.Add(new() { Id = 41, Name = "Referenced job", TenantId = 7, TargetJson = JsonSerializer.Serialize(target), CreatedAtUtc = DateTimeOffset.UtcNow, UpdatedAtUtc = DateTimeOffset.UtcNow }); await db.SaveChangesAsync(ct);
-        var blockedJob = await Assert.ThrowsAsync<ExecutionGroupReferencedException>(() => service.DeleteAsync(7, group.Group.Id, 2, Manager, ct));
+        var blockedJob = await Assert.ThrowsAsync<ExecutionGroupReferencedException>(() => service.DeleteAsync(7, group.Group.Id, 3, Manager, ct));
         blockedJob.References.Should().Contain(x => x.Kind == "job" && x.Id == "41");
         (await db.Jobs.SingleAsync(ct)).DeletedAtUtc = DateTimeOffset.UtcNow;
         var flowId = Guid.NewGuid();
@@ -112,8 +115,8 @@ public sealed class ExecutionGroupPostgresTests(PostgreSqlPersistenceFixture pos
         db.FlowVersions.Add(new() { Id = Guid.NewGuid(), TenantId = 7, FlowId = flowId, VersionNumber = 1, PublishedBy = "fixture", PublishedAtUtc = DateTimeOffset.UtcNow,
             GraphJson = JsonSerializer.Serialize(new { nodes = new[] { new { executionAction = new { jobTarget = new { source = 1, executionGroupId = group.Group.Id } } } } }) });
         await db.SaveChangesAsync(ct);
-        (await Assert.ThrowsAsync<ExecutionGroupReferencedException>(() => service.DeleteAsync(7, group.Group.Id, 2, Manager, ct))).References.Should().Contain(x => x.Kind == "flow-version");
-        var archived = await service.UpdateAsync(7, group.Group.Id, new("TestSystem archived", null, false, true, ids, 2), Manager, ct);
+        (await Assert.ThrowsAsync<ExecutionGroupReferencedException>(() => service.DeleteAsync(7, group.Group.Id, 3, Manager, ct))).References.Should().Contain(x => x.Kind == "flow-version");
+        var archived = await service.UpdateAsync(7, group.Group.Id, new("TestSystem archived", null, false, true, ids, 3), Manager, ct);
         archived!.Group.Archived.Should().BeTrue();
         (await Assert.ThrowsAsync<JobTargetValidationException>(() => resolver.ResolveAsync(7, target, null, null, null, null, ct))).Code.Should().Be("target_group_unavailable");
     }

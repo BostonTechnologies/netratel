@@ -42,6 +42,7 @@ public sealed record JobTargetPreviewRequest(JobTargetDefinition Target, ClientE
 public sealed record JobTargetPreviewDto(IReadOnlyList<JobNodeInventoryDto> Items, int Page, int PageSize,
     int TotalCount, int? NextPage, JobTargetDefinition Target, long? GroupRevision, string? NormalizedFilter, string Digest);
 
+[JsonSourceGenerationOptions(PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true)]
 [JsonSerializable(typeof(ExecutionGroupDto))]
 [JsonSerializable(typeof(ExecutionGroupDetailsDto))]
 [JsonSerializable(typeof(ExecutionGroupPageDto))]
