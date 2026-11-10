@@ -38,3 +38,26 @@ before choosing a request shape.
 
 Monitoring rule authoring, explicit nullable fields, CPU/disk examples and typed
 validation recovery are documented in the canonical [Monitoring guide](../operations/MONITORING.md#author-rules-through-http-or-stdio-mcp). The same schemas and guidance are published by HTTP and stdio catalogs.
+
+## Execution groups and job targets
+
+HTTP and stdio publish the same closed schemas for
+`netratel_execution_groups`, `netratel_job_targets`, `netratel_jobs` and
+`netratel_job_runs`. Use the [CLI/MCP operation table](../integrations/CLI_AND_MCP.md#execution-groups-and-multi-node-jobs)
+and [Jobs guide](../operations/JOBS.md) for target modes, typed runtime inputs,
+filter grammar, immutable plans and node-specific output.
+
+Group management does not grant execution authority. Dynamic discovery and its
+counts respect current target visibility; explicit/group admission rejects the
+whole set if any member is denied or invalid. Preview is read-only. Confirm
+the unchanged operation with its returned review credentials. Review binds the
+complete target-plan digest, definition/inputs, settings and effective per-agent
+policy versions. A changed group cannot widen an old preview. Target/fan-out
+limits and configured remaining concurrency quota apply atomically to the
+whole request; transports do not simulate a multi-node run by looping over
+singleton launches.
+
+An aggregate result identifies one parent, counts and distinct node/native-run
+references. Fetch logs with node and step-run identity, retaining authorization
+and redaction. An old singular operation that cannot represent the requested
+set returns an explicit validation/unsupported result.

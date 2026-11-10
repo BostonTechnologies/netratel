@@ -36,6 +36,30 @@ next operation. Existing long-running work is not retroactively elevated;
 subsequent dispatch and target/operation-policy checks use current access.
 MCP target/environment policy, confirmations, and command admission remain
 additional constraints for delegated operations and cannot be bypassed by a role.
+
+Execution groups reuse tenant authority: `tenant.admin` manages groups;
+`tenant.admin` or `job.manage` reads groups and permitted target-directory
+previews. Group membership is not an execution grant. Job admission checks the
+complete resolved set, and current per-node authority still applies when queued
+work dispatches. A denied static member rejects the whole new admission;
+dynamic discovery stays within the caller's visible inventory. Offline clients
+retain their identities and receive explicit dispatch outcomes.
+
+Delegated multi-node review binds all approved IDs, definition/plan digests,
+inputs, execution settings and policy versions. Each agent must have a current
+grant; a broad policy on another member cannot supply it. `MaxJobTargetCount`
+and `MaxFanOut` bound a request's complete set. The optional
+`MaxConcurrentJobTargets` separately bounds remaining active job-target
+reservations, consumed atomically for the whole plan. Existing policies without
+that optional constraint retain their existing fan-out semantics. A changed
+group cannot widen an old confirmation. See [Jobs](JOBS.md) for immutable plans,
+failure/cancellation behavior and owner acceptance.
+
+Unresolved/Unknown parents retain their concurrency reservation; a lost response
+does not establish that physical capacity is free. Group administration tooling
+uses `tenant.admin`; job operators use the read-only `job-targets groups/group`
+discovery path under `job.manage`, without gaining management authority.
+
 Interactive instance administrators manage the policies themselves through current
 application authority, not a self-granted MCP parent policy. Their policy changes
 still require exact preview/confirmation, current authority, version checks and
