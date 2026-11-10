@@ -115,7 +115,7 @@ public sealed record JobResolvedTargetPlan
         Bindings = Array.AsReadOnly(bindings.OrderBy(binding => binding.Name, StringComparer.Ordinal)
             .ThenBy(binding => binding.Source, StringComparer.Ordinal).ToArray());
         var frozenNodes = nodes.Select(node => node with
-            { Tags = Array.AsReadOnly(node.Tags.Order(StringComparer.OrdinalIgnoreCase).ToArray()) }).ToArray();
+            { Tags = Array.AsReadOnly(node.Tags.Order(StringComparer.OrdinalIgnoreCase).ThenBy(tag => tag, StringComparer.Ordinal).ToArray()) }).ToArray();
         foreach (var duplicate in frozenNodes.GroupBy(node => node.AgentId))
             if (duplicate.Skip(1).Any(node => !SameSnapshot(duplicate.First(), node)))
                 throw new ArgumentException("Duplicate target identities have conflicting presentation snapshots.");
@@ -130,7 +130,7 @@ public sealed record JobResolvedTargetPlan
         => left.Hostname == right.Hostname && left.DisplayName == right.DisplayName && left.Name == right.Name &&
            left.OperatingSystem == right.OperatingSystem && left.Architecture == right.Architecture &&
            left.Environment == right.Environment && left.IsOnline == right.IsOnline && left.IsEnabled == right.IsEnabled &&
-           left.Tags.SequenceEqual(right.Tags, StringComparer.OrdinalIgnoreCase);
+           left.Tags.SequenceEqual(right.Tags, StringComparer.Ordinal);
 
     public void Validate()
     {
