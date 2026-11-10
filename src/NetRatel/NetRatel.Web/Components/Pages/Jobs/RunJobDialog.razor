@@ -223,6 +223,8 @@
             var expected = first.WorkerPoolCount ?? first.TargetCount;
             if (expected is < 1 or > 10_000 || nodes.Count != expected || nodes.Select(node => node.AgentId).Distinct().Count() != expected)
                 throw new InvalidDataException("The complete node selection could not be loaded.");
+            if (_invocationSubset is { } selected && !selected.ToHashSet().SetEquals(nodes.Select(node => node.AgentId)))
+                throw new InvalidDataException("The service did not confirm your node selection. Update the service and reload the job.");
             if (resetSelection)
             {
                 _availableNodes = nodes.Select(node => new JobNodeInventoryDto(node.AgentId, node.Hostname,

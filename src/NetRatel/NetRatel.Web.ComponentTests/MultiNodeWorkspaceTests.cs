@@ -218,6 +218,25 @@ public sealed class MultiNodeWorkspaceTests : AsyncBunitContext
     }
 
     [Fact]
+    public async Task Run_stays_disabled_when_the_service_ignores_the_invocation_node_subset()
+    {
+        _transport.ExplicitLaunch = true;
+        _transport.IgnoreInvocationSubset = true;
+        var dialogs = Render<MudDialogProvider>();
+        var target = new JobTargetDefinition { Source = JobTargetSource.ExplicitNodes, AgentIds = [Transport.AgentA, Transport.AgentB] };
+        var job = new JobDto(42, "Confirmed target run", "/Fixture/", null, 7, "", 0, 0) { Target = target, ExecutionPolicy = new(2) };
+        await Services.GetRequiredService<IDialogService>().ShowAsync<RunJobDialog>("Run", new DialogParameters<RunJobDialog> { { dialog => dialog.Job, job } });
+        dialogs.WaitForAssertion(() => Button(dialogs, "Start Run").HasAttribute("disabled").Should().BeFalse());
+        await dialogs.InvokeAsync(() => dialogs.Find("[aria-label='View and edit nodes']").Click());
+        await dialogs.InvokeAsync(() => dialogs.Find("[aria-label='Select node-b']").Click());
+        _transport.PreviewedRun!.SelectedTargetAgentIds.Should().Equal(Transport.AgentA);
+        _transport.Plan!.Nodes.Should().HaveCount(2, "the previous service contract ignores the new subset field");
+        Button(dialogs, "Start Run").HasAttribute("disabled").Should().BeTrue();
+        dialogs.Markup.Should().Contain("The service did not confirm your node selection");
+        _transport.RunRequests.Should().Be(0);
+    }
+
+    [Fact]
     public async Task Three_hundred_chips_preserve_unseen_selections_when_searching_and_deselecting()
     {
         var nodes = Enumerable.Range(1, 300).Select(index => new JobNodeInventoryDto(Guid.NewGuid(), $"worker-{index:000}",
@@ -389,6 +408,7 @@ public sealed class MultiNodeWorkspaceTests : AsyncBunitContext
         public bool MissingHostname { get; set; }
         public bool DenyIdentityReads { get; set; }
         public bool ExplicitLaunch { get; set; }
+        public bool IgnoreInvocationSubset { get; set; }
         public RunJobRequest? PreviewedRun { get; private set; }
         public RunJobRequest? StartedRun { get; private set; }
         public JobResolvedTargetPlan? Plan { get; private set; }
@@ -424,14 +444,15 @@ public sealed class MultiNodeWorkspaceTests : AsyncBunitContext
             if (path == "/api/v1/jobruns/preview/42")
             {
                 PreviewedRun = await request.Content!.ReadFromJsonAsync<RunJobRequest>(cancellationToken);
+                var invocationIds = IgnoreInvocationSubset ? null : PreviewedRun!.SelectedTargetAgentIds;
                 var target = ExplicitLaunch ? new JobTargetDefinition { Source = JobTargetSource.ExplicitNodes, AgentIds = [AgentA, AgentB] }
                     : new() { Source = JobTargetSource.RuntimeInput, RuntimeInput = new(JobRuntimeTargetKind.ClientId, "ClientId") };
                 var nodes = (ExplicitLaunch ? new[] { AgentA, AgentB } : [AgentA])
-                    .Where(id => PreviewedRun!.SelectedTargetAgentIds is null || PreviewedRun.SelectedTargetAgentIds.Contains(id))
+                    .Where(id => invocationIds is null || invocationIds.Contains(id))
                     .Select(id => new JobTargetNode(id, id == AgentA ? "node-a" : "node-b", "Fixture node", ["TestSystem"])).ToArray();
-                Plan = new(PreviewedRun!.SelectedTargetAgentIds is null ? 1 : 2, 7, 42, new string('A', 64), target, null,
+                Plan = new(invocationIds is null ? 1 : 2, 7, 42, new string('A', 64), target, null,
                     ExplicitLaunch ? [] : [new("ClientId", "Caller")], nodes, new(100, JobNodeFailurePolicy.ContinueRemaining),
-                    PreviewedRun.SelectedTargetAgentIds, null, null);
+                    invocationIds, null, null);
                 return Ok(new JobLaunchPreviewDto(Plan.ComputeDigest(), Plan.DefinitionDigest, Plan.Nodes.Count, Plan.Target, Plan.ExecutionPolicy, 1, Plan.GroupRevision, Plan.Bindings, Plan.Nodes, 1, 25, null));
             }
             if (path == "/api/v1/jobruns/start/42")
