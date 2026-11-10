@@ -894,6 +894,7 @@ builder.Services.AddSingleton<IClientUpdateCatalog>(services => services.GetRequ
 builder.Services.AddHostedService<ClientUpdateCatalogRefreshService>();
 builder.Services.AddHealthChecks().AddCheck<ClientUpdateCatalogHealthCheck>(
     "client-update-catalog", tags: ["ready", "client-updates", "akka-authority"]);
+builder.Services.AddScoped<JobTargetApiService>();
 builder.Services.AddScoped<JobTaskBridge>();
 builder.Services.AddSingleton<JobAuthorityIdGenerator>();
 builder.Services.AddScoped<INetRatelExternalServiceCallbackClient, NetRatelExternalServiceCallbackClient>();

@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace NetRatel.Shared.Contracts.Jobs;
 
 /// <summary>A tenant-owned explicit target set. Managing a group does not grant execution permission.</summary>
@@ -33,3 +35,25 @@ public sealed record JobNodeFilterOperand(JobNodeFilterOperandKind Kind, string 
 public sealed record JobNodeFilterTerm(IReadOnlyList<JobNodeFilterOperand> Operands);
 public sealed record JobNodeFilterClause(string Field, bool Excluded, IReadOnlyList<JobNodeFilterTerm> Alternatives);
 public sealed record JobNodeFilterExpression(IReadOnlyList<JobNodeFilterClause> Clauses);
+
+public sealed record JobTargetPreviewRequest(JobTargetDefinition Target, ClientEnvironment? Environment = null,
+    JobRuntimeTargetInput? RuntimeTarget = null, IReadOnlyDictionary<string, string[]>? Parameters = null,
+    int Page = 1, int PageSize = 50);
+public sealed record JobTargetPreviewDto(IReadOnlyList<JobNodeInventoryDto> Items, int Page, int PageSize,
+    int TotalCount, int? NextPage, JobTargetDefinition Target, long? GroupRevision, string? NormalizedFilter, string Digest);
+
+[JsonSerializable(typeof(ExecutionGroupDto))]
+[JsonSerializable(typeof(ExecutionGroupDetailsDto))]
+[JsonSerializable(typeof(ExecutionGroupPageDto))]
+[JsonSerializable(typeof(ExecutionGroupWriteDto))]
+[JsonSerializable(typeof(ExecutionGroupMembershipWriteDto))]
+[JsonSerializable(typeof(JobNodePageDto))]
+[JsonSerializable(typeof(JobNodePreviewRequest))]
+[JsonSerializable(typeof(JobNodePreviewDto))]
+[JsonSerializable(typeof(JobTargetPreviewRequest))]
+[JsonSerializable(typeof(JobTargetPreviewDto))]
+[JsonSerializable(typeof(IReadOnlyList<JobNodeInventoryDto>))]
+[JsonSerializable(typeof(IReadOnlyList<JobNodeFilterPropertyDto>))]
+[JsonSerializable(typeof(JobNodeFilterValidationDto))]
+[JsonSerializable(typeof(JobNodeFilterExpression))]
+public partial class ExecutionGroupJsonContext : JsonSerializerContext;

@@ -90,6 +90,7 @@ public static class ApiEndpointRegistrationExtensions
         app.MapClientUpdatesEndpoints();
         app.MapAgentTaskEndpoints();
         app.MapRequestEndpoints();
+        app.MapExecutionGroupEndpoints();
         app.MapJobEndpoints();
         app.MapJobRunEndpoints();
         app.MapGlobalSearchEndpoints();
