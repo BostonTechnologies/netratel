@@ -131,6 +131,57 @@ See [bridge acquisition and migration](http-mcp-bridge.md) for exact runtime,
 archive and profile commands. Other CLI/MCP runtime archives are not advertised
 until their matching runners build and smoke-test them.
 
+## Execution groups and multi-node jobs
+
+[Jobs, target selection and node runs](../operations/JOBS.md) defines the common
+semantics for Web, REST, CLI and both MCP transports. The new managed command
+families use the same canonical services:
+
+The reviewed operator job lifecycle uses the Production operator surface.
+Development's legacy job read surface retains its existing contract.
+
+| CLI family | MCP tool | Operations |
+| --- | --- | --- |
+| `execution-groups` | `netratel_execution_groups` | list/get/create/update/delete, explicit membership and lifecycle state through the typed body |
+| `job-targets` | `netratel_job_targets` | properties/nodes/identities/preview/resolve-preview/validate; groups/group for job-operator group discovery |
+| `operator-jobs` | `netratel_jobs` | caller-owned definitions with target and execution-policy fields |
+| `operator-job-runs` | `netratel_job_runs` | reviewed typed runtime launch, parent/node status, node-steps/node-logs and cancellation |
+
+Use `--tenant-id` on each family, `--group-id` for an exact group, and
+`--body-file` for the operation's closed typed JSON payload. The operator job
+families retain their persisted `--agent-id` ownership context; it is not a
+fallback execution target. Discovery returns stable IDs and hostnames. Old
+single-agent `jobs`/`job-runs` commands retain their compatibility contract.
+Use each command's `--help` and the server's property catalogue for exact
+supported fields; arbitrary selector property paths are rejected.
+
+Group/target management routes are under
+`/api/v2/tenants/{tenantId}/execution-groups` and
+`/api/v2/tenants/{tenantId}/job-targets`. New job definitions contain one
+versioned `target` and optional `executionPolicy` (ThreadCount and
+NodeFailurePolicy). Runtime launches supply a distinct typed `runtimeTarget`.
+The ordinary REST definition/history routes remain `/api/v1/jobs` and
+`/api/v1/jobruns`.
+
+Previews dispatch no physical work. A confirmation binds the complete target
+plan and current policies, definition/inputs and execution settings. One denied
+member, target-count/fan-out overflow, exhausted configured concurrency quota
+or stale review rejects the whole admission. A client-side loop of singleton
+confirmations is not the multi-node API. Repeated confirmed admission returns
+the original parent and target set; later deliberate fresh invocations resolve
+current membership. Multi-node output requires node and step-run identity;
+an ordinal alone cannot choose a client. Current permissions and redaction
+apply to structured results, logs and errors.
+
+`node_logs` takes `jobRunId`, `nodeAgentId`, `stepRunId`, optional opaque
+`cursor`, `limit` (1–1,000) and `maximumBytes` (1–65,536). Use the returned
+`nextCursor` unchanged. Managed output IDs and sequences are decimal strings
+to preserve their exact values in JavaScript clients; equal step ordinals or
+equal stdout/stderr sequence values do not identify the same record.
+`MaxFanOut` and `MaxJobTargetCount` bound a whole request. The optional
+`MaxConcurrentJobTargets` bounds retained active reservations; an Unknown
+execution retains its reservation until reconciled.
+
 ## Client operations, monitoring, and flows
 
 The `services`, `monitoring`, `flows`, `ai`, and `clients-v2 metadata` /

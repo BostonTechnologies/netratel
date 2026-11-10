@@ -57,7 +57,7 @@ Fit completes its native zoom and final positioning before a preview captures th
 
 A graph has one trigger and an acyclic sequence of exclusive decisions. **Execution event** subscribes to job executions, library-script executions or requests. It is a different category from **Run job** and **Run library script**, which create work. Script events describe actual executions, not edits to a library definition.
 
-Use the Job executions, Library script executions or Requests preset, then choose source families and genuine terminal outcomes. Scope the trigger to all matching executions in the authorized tenant or selected jobs/scripts. Searchable names retain their source family, so a job and a script with the same numeric ID are distinct. Agent and request-kind filters narrow supported sources. Request source-system values match exactly and case-sensitively; no selection matches every supported value. A native request may match its proven backing job definition while retaining the Request family. Library scripts produce Script execution events; select that family to filter their definitions. Unsupported stored filters remain visible until explicitly removed or their matching source is selected. A job action shows and retains its own bound tenant/agent; it does not substitute the triggering event's client.
+Use the Job executions, Library script executions or Requests preset, then choose source families and genuine terminal outcomes. Scope the trigger to all matching executions in the authorized tenant or selected jobs/scripts. Searchable names retain their source family, so a job and a script with the same numeric ID are distinct. Agent and request-kind filters narrow supported sources. Request source-system values match exactly and case-sensitively; no selection matches every supported value. A native request may match its proven backing job definition while retaining the Request family. Library scripts produce Script execution events; select that family to filter their definitions. Unsupported stored filters remain visible until explicitly removed or their matching source is selected. Legacy fixed-target job actions retain their bound tenant/agent. New job actions retain their pinned target policy; only an explicit typed runtime binding may use a trusted source-event client.
 
 Combined subscriptions may aggregate correlated job/request/script facts for the same accepted execution attempt and outcome. Each flow version and trigger is admitted independently. A known job-backed request or script step in an explicitly combined aggregate waits for its parent's complete terminal result, even when the Job source family is not selected; a request-only admission failure can trigger immediately without a job. Separate attempts or different outcomes remain distinct. Current enabled interval and event age are checked before choosing the deterministic bounded group.
 
@@ -79,6 +79,53 @@ Named outcome ports choose one next node. Conditions choose true or false; mappi
 
 Typed inputs come from allowlisted event facts, earlier typed outputs or literals. Native parameters declared `secret_reference` (case-insensitive, with no whitespace trimming or aliases) accept a target-local reference name using `[A-Za-z_][A-Za-z0-9_]{0,127}`. Publication and dispatch check the actual pinned native parameter type; only the reference name reaches protected canonical admission, while secret values remain on the target. Checkpoints, trace snapshots and preview never expose that reference's value. Definitions retain their parameter names/types and required inputs. Missing data is unavailable; captured null, an empty string, zero and false remain distinct. A value from an earlier node must be available on every incoming path. Typed mapping aliases use `{input.name}`; the title/description token picker separates original event facts from AI findings. Additional investigation bindings add named event facts or guaranteed earlier outputs without replacing original evidence or authorizing a repair. Secret references are not rendered into incident templates or exposed as preview values. Arbitrary expressions, generated shell code, CLR types, SQL, graph-defined webhook URLs, cycles and hidden health checks are not execution inputs.
 
+## Job targets and aggregate outcomes
+
+Run job supports the same four [job target modes](JOBS.md) as manual execution.
+For **Investigate low disk space**, save a RuntimeInput job with required
+ClientId and map the alert's trusted `alert.agentId` to its target binding. A
+real singular execution event can supply `event.target.agentId`. These are
+allowlisted typed facts. ClientId(s), Hostname(s) and Tag(s) have separate
+meanings; values are data, including punctuation. A fixed job cannot be
+silently redirected by an event or script parameter. An aggregate-only event
+does not supply an invented singular client.
+
+In the schema-two action contract, `jobTarget` and `jobExecutionPolicy` are
+server-pinned material. `targetBinding` contains the runtime target kind and an
+ordinary typed input mapping. For ClientId from an alert, use
+`{"kind":1,"value":{"source":1,"dataType":1,"path":"alert.agentId"},"allOf":false}`.
+List bindings use data type Json (4) and an array. Prepared target bindings are
+stored separately from script parameters in the durable checkpoint. Aggregate
+event output includes `aggregate.targetCount`, `aggregate.targetPlanDigest`
+and counts. Group/filter/runtime aggregate events leave `target.agentId` null.
+Historical fixed-target schedule events retain the proven original singleton
+AgentId and include `aggregate.legacyTargetAgentId`, preserving existing
+AgentIds-filtered subscriptions. This bridge requires the protected original
+fixed target, exact singleton frozen plan and persisted matching node; it does
+not put a singular AgentId onto the parent run.
+
+New published versions pin the definition/scripts, target policy, group ID,
+runtime binding schema and execution policy. Group/filter membership is live
+at each fresh action admission. Admission freezes its complete target set,
+group revision, definition digest and target-plan digest. Duplicate delivery,
+continuation and Rerun original execution use that original set and source,
+with current authority checked before dispatch. The action's existing
+whole-action timeout still applies while the aggregate runs.
+
+The action observes one parent receipt bound to tenant, parent ID and both
+digests. Its bounded output exposes aggregate counts and explicitly identified
+node references; node logs keep native permissions and redaction. A parent
+waits for its admitted children to settle and succeeds only when every
+required node succeeds. Unknown physical outcomes remain Unknown rather than
+being retried blindly. One canonical completion event belongs to the parent;
+internal native children do not multiply existing job/script recovery flows.
+Causation and recovery budgets are unchanged. Preview evaluates mappings and
+synthetic results without admitting a job.
+
+Old published fixed-target Flow versions retain their original protected
+snapshot and target semantics. Public Requests also remain singular: a job
+must resolve to exactly their protected TargetAgentId.
+
 ## Versions and existing alert flows
 
 **Upgrade draft to named outcomes** changes an old draft locally until Save creates its next revision. Before Save, Undo can restore the prior draft schema; saved schema-two drafts cannot be downgraded. Existing schema-one drafts, published graph bytes/configuration hashes, connector revisions, receiver receipts and running continuations retain their original behavior. An old schema-one writer cannot downgrade and erase a newer draft. Published viewers and historical replay use immutable versions.
@@ -89,7 +136,7 @@ Schema-one alert graphs retain their bounded single path: alert, optional condit
 
 Alert mappings retain `{ruleName}`, `{clientName}`, `{resource}`, `{metric}`, `{severity}`, `{value}`, `{serviceState}`, `{occurredAt}`, `{offlineSummary}`, `{offlineCount}` and `{offlineClients}`. Offline alerts add their bounded outage summary even for older templates. Execution mappings use native values such as `{sourceKind}`, `{definitionName}`, `{definitionRevision}`, `{executionId}`, `{attemptId}`, `{targetName}`, `{outcome}`, `{rawStatus}`, `{reason}`, `{exitCode}` and `{executionLink}`. They never manufacture monitoring rule, metric or alert data.
 
-Publication pins execution definitions, library revisions/content hashes, input schemas, job-bound or fixed targets, connector configuration revisions and optional investigation guidance. A script configured to use the source event target resolves and pins its actual target at canonical admission. Native definition names are retained exactly up to the 512-character flow metadata bound; an overlong name is explicitly unavailable for publication rather than silently truncated into a different pin. Later definition or credential edits cannot change an admitted run's semantic payload. After changing a destination, choose its updated reference and republish the flows that should use it.
+Publication pins execution definitions, library revisions/content hashes, input schemas, job target policy/group ID and binding schema, execution settings, connector configuration revisions and optional investigation guidance. Legacy fixed-target versions retain their original target and digest. A script configured to use the source event target resolves and pins its actual target at canonical admission. Native definition names are retained exactly up to the 512-character flow metadata bound; an overlong name is explicitly unavailable for publication rather than silently truncated into a different pin. Later definition or credential edits cannot change an admitted run's semantic payload. After changing a destination, choose its updated reference and republish the flows that should use it.
 
 ## Preview and historical playback
 
@@ -109,7 +156,7 @@ The API checks `flow.read`, `flow.edit`, `flow.publish` and `flow.execute` for t
 
 Monitoring uses its pinned configuring principal and optional integration credential, retaining occurrence, suppression, bypass and fresh-evidence admission. Job/script/request sources use their own immutable transition and subscription evidence. RequestEventBus is a UI channel, not automation ingress. Native source state, transition fact and selected subscription intent commit durably together, including direct relational callback projections; a job event waits for its complete terminal result. Subscription creation, publication, enable changes and source selection share one tenant transaction order. The occurrence boundary uses trusted live database time after those locks; native Started/Completed timestamps remain separate. A delayed projection may therefore commit after enable even when its native completion was earlier. A later enable cannot resurrect an earlier committed transition or retarget an already selected version.
 
-Before an unstarted effect, current principal/account status, tenant permission, credential scope/revocation/expiry, target validity, flow enablement and pinned revision are checked again. Native jobs keep their bound target. Already accepted work is observed through its canonical service; queue admission is pending, not success.
+Before an unstarted effect, current principal/account status, tenant permission, credential scope/revocation/expiry, target validity, flow enablement and pinned revision are checked again. Native node executions keep their admitted target identities; a fresh aggregate job action resolves its pinned target policy once, then retains that complete plan through continuation. Already accepted work is observed through its canonical service; queue admission is pending, not success.
 
 Runs persist node inputs/output references, decisions, selected outcomes, accepted execution IDs, attempt keys and continuations. Long jobs/scripts/investigations yield the worker and resume on the exact committed result. Routine polling does not spend another execution attempt. A graph's completed status means its selected path finished; recovery is verified only by the linked rerun's committed native success. Lease token, worker identity, increasing fence, expiry and checkpoint revision protect writes; a stale worker cannot overwrite a reclaimed run.
 

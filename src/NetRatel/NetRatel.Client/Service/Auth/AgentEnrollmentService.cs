@@ -32,7 +32,9 @@ public sealed class AgentEnrollmentService : IAgentEnrollmentService
 
         var key = await _deviceKeyStore.GetOrCreateAsync(ct).ConfigureAwait(false);
         var deviceInfo = new EnrollmentDeviceInfo(
-            Environment.OSVersion.Platform.ToString(),
+            OperatingSystem.IsLinux() ? "Linux" :
+                OperatingSystem.IsWindows() ? "Windows" :
+                OperatingSystem.IsMacOS() ? "macOS" : Environment.OSVersion.Platform.ToString(),
             Environment.OSVersion.VersionString,
             Environment.MachineName,
             AgentDeviceIdentity.GetReportedAddress(),

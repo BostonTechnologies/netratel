@@ -4,6 +4,7 @@ These guides describe application permissions, monitoring, services and operatio
 
 - [Monitoring and execution flows](FLOWS.md)
 - [Monitoring](MONITORING.md)
+- [Jobs, execution groups and node runs](JOBS.md)
 - [Client Services](SERVICES.md)
 - [Troubleshooting](TROUBLESHOOTING.md)
 - [Scoped RBAC](rbac.md)

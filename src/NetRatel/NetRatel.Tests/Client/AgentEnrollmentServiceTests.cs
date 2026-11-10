@@ -61,6 +61,11 @@ public sealed class AgentEnrollmentServiceTests
         var root = body.RootElement;
         root.GetProperty("enrollmentCode").GetString().Should().Be("eNr-<one>&é");
         var scopes = root.GetProperty("requestedScopes").EnumerateArray().Select(item => item.GetString()!).ToArray();
+        using var device = JsonDocument.Parse(root.GetProperty("deviceInfoJson").GetString()!);
+        var reportedOperatingSystem = device.RootElement.GetProperty("os").GetString();
+        if (OperatingSystem.IsLinux()) reportedOperatingSystem.Should().Be("Linux");
+        else if (OperatingSystem.IsWindows()) reportedOperatingSystem.Should().Be("Windows");
+        else if (OperatingSystem.IsMacOS()) reportedOperatingSystem.Should().Be("macOS");
         var bodyHash = PopSignatureService.ComputeEnrollmentBodyHash(
             root.GetProperty("enrollmentCode").GetString()!,
             root.GetProperty("publicKey").GetString()!,
