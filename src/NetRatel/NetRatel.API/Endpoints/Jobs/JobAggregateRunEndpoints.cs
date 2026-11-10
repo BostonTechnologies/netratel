@@ -17,7 +17,7 @@ public static partial class JobRunEndpoints
     {
         group.MapPost("/preview/{jobId:long}", async (ulong jobId, RunJobRequest request,
             HttpContext http, IEffectiveAccessService access, IJobDefinitionService jobs,
-            JobAggregateOrchestrator aggregates, [FromQuery] int page = 1, [FromQuery] int pageSize = 25, CancellationToken ct = default) =>
+            [FromServices] JobAggregateOrchestrator aggregates, [FromQuery] int page = 1, [FromQuery] int pageSize = 25, CancellationToken ct = default) =>
         {
             var job = await jobs.GetAsync(jobId, ct);
             if (job is null) return Results.NotFound();
@@ -38,7 +38,7 @@ public static partial class JobRunEndpoints
             { return Results.BadRequest(new { code = "job_target_invalid", detail = error.Message }); }
         });
         group.MapGet("/{id:long}/nodes", async (ulong id, HttpContext http, IEffectiveAccessService access,
-            IJobRunService runs, OrchestratorDbContext db, [FromQuery] int page = 1, [FromQuery] int pageSize = 25,
+            IJobRunService runs, [FromServices] OrchestratorDbContext db, [FromQuery] int page = 1, [FromQuery] int pageSize = 25,
             CancellationToken ct = default) =>
         {
             var parent = await runs.GetAsync(id, ct);
@@ -74,7 +74,7 @@ public static partial class JobRunEndpoints
                 (long)page * pageSize < plan.Nodes.Count ? page + 1 : null));
         });
         group.MapGet("/{id:long}/nodes/{agentId:guid}/steps", async (ulong id, Guid agentId,
-            HttpContext http, IEffectiveAccessService access, IJobRunService runs, OrchestratorDbContext db, CancellationToken ct) =>
+            HttpContext http, IEffectiveAccessService access, IJobRunService runs, [FromServices] OrchestratorDbContext db, CancellationToken ct) =>
         {
             var parent = await runs.GetAsync(id, ct);
             if (parent is null || parent.ParentRunId is not null) return Results.NotFound();
@@ -91,7 +91,7 @@ public static partial class JobRunEndpoints
                 .Select(step => MapStepRun(step, detail.Activities.SingleOrDefault(activity => activity.RequestId == step.TaskRequestId && activity.TenantId == parent.TenantId))));
         });
         group.MapGet("/{id:long}/nodes/{agentId:guid}/steps/{stepRunId:long}/logs", async (ulong id, Guid agentId,
-            ulong stepRunId, HttpContext http, IEffectiveAccessService access, IJobRunService runs, OrchestratorDbContext db,
+            ulong stepRunId, HttpContext http, IEffectiveAccessService access, IJobRunService runs, [FromServices] OrchestratorDbContext db,
             [FromQuery] string? cursor = null, [FromQuery] int limit = 500, [FromQuery] int maximumBytes = 65536, CancellationToken ct = default) =>
         {
             var parent = await runs.GetAsync(id, ct);

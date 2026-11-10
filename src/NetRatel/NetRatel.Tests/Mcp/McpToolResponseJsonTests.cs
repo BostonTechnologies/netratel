@@ -38,7 +38,7 @@ public sealed class McpToolResponseJsonTests
             await using var server = McpServer.Create(new StreamServerTransport(new MemoryStream(), new MemoryStream(), "json-fixture"),
                 new McpServerOptions { ServerInfo = new() { Name = "Synthetic.Mcp", Version = "1.0" } }, serviceProvider: services);
             var http = NetRatelMcpToolDefinitions.CreateForHttp("dev");
-            Assert.Equal(27, http.Count);
+            Assert.Equal(29, http.Count);
             await AssertEnvelope(http, "netratel_auth", """{"operation":"status"}""",
                 "c4b46cefc7963c9de227010ec90d7a002bb265af385a6836c8f16316dc0e86c8");
             client.Fail = true;
@@ -49,7 +49,7 @@ public sealed class McpToolResponseJsonTests
                 "caaa1f706d59cf776c6116ecd1ad7f2ffaff4c39e631db1503a21c4b8fc51874");
 
             var stdio = Stdio("prod");
-            Assert.Equal(33, stdio.Count);
+            Assert.Equal(35, stdio.Count);
             await AssertEnvelope(stdio, "netratel_config", """{"operation":"get","request":{"key":"oidcScope"}}""",
                 "10671321a80862f5aa8ba76ed903aa75debb737fbd3545418e4467ed8af9affe");
             await AssertEnvelope(stdio, "netratel_config", """{"operation":"get","request":{"key":"secret"}}""",

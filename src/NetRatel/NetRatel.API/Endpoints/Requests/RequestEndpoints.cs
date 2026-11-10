@@ -75,7 +75,7 @@ public static class RequestEndpoints
             IRequestEventBus requestEvents,
             IJobDefinitionService jobs,
             IAkkaJobAuthorityService jobAuthority,
-            JobAggregateOrchestrator aggregates,
+            [FromServices] JobAggregateOrchestrator aggregates,
             [FromServices] OrchestratorDbContext db,
             CancellationToken ct) =>
         {
