@@ -106,10 +106,13 @@ not put a singular AgentId onto the parent run.
 
 New published versions pin the definition/scripts, target policy, group ID,
 runtime binding schema and execution policy. Group/filter membership is live
-at each fresh action admission. Admission freezes its complete target set,
+at each fresh action admission. An **HA Group** action chooses one healthy
+authorized worker through the shared durable round-robin cursor; explicit
+nodes, filters and runtime lists retain multi-node execution. Admission freezes its complete target set,
 group revision, definition digest and target-plan digest. Duplicate delivery,
 continuation and Rerun original execution use that original set and source,
-with current authority checked before dispatch. The action's existing
+including the chosen HA worker and its approved-pool proof, with current
+authority checked before dispatch. The action's existing
 whole-action timeout still applies while the aggregate runs.
 
 The action observes one parent receipt bound to tenant, parent ID and both

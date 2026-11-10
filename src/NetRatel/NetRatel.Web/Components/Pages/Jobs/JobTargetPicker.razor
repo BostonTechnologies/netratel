@@ -5,7 +5,7 @@
 
 <section class="job-target-picker" aria-label="Job targets" data-testid="job-target-picker">
     <MudSelect T="JobTargetSource" Value="_target.Source" ValueChanged="SourceChangedAsync" Label="Target source" Variant="Variant.Outlined" Disabled="Disabled">
-        <MudSelectItem Value="JobTargetSource.ExecutionGroup">Execution group</MudSelectItem>
+        <MudSelectItem Value="JobTargetSource.ExecutionGroup">HA Group</MudSelectItem>
         <MudSelectItem Value="JobTargetSource.ExplicitNodes">Selected nodes</MudSelectItem>
         <MudSelectItem Value="JobTargetSource.NodeFilter">Node filter</MudSelectItem>
         <MudSelectItem Value="JobTargetSource.RuntimeInput">Provided at run time</MudSelectItem>
@@ -21,13 +21,13 @@
     else if (_target.Source == JobTargetSource.ExecutionGroup)
     {
         <div class="job-target-toolbar">
-            <MudTextField T="string" Value="_groupSearch" ValueChanged="GroupSearchChangedAsync" DebounceInterval="300" Label="Search tenant execution groups" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="Disabled" />
+            <MudTextField T="string" Value="_groupSearch" ValueChanged="GroupSearchChangedAsync" DebounceInterval="300" Label="Search tenant HA Groups" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="Disabled" />
             <MudButton OnClick="SearchGroupsAsync" Disabled="@(_groupsLoading || Disabled)">Search groups</MudButton>
         </div>
-        @if (_groupsLoading) { <MudProgressLinear Indeterminate="true" aria-label="Loading execution groups" /> }
+        @if (_groupsLoading) { <MudProgressLinear Indeterminate="true" aria-label="Loading HA Groups" /> }
         @if (_groups is not null)
         {
-            <MudText Typo="Typo.caption">@_groups.TotalCount matching groups. Each selected group's complete membership runs the job.</MudText>
+            <MudText Typo="Typo.caption">@_groups.TotalCount matching groups. One healthy worker runs each invocation. Successive runs balance across the group.</MudText>
             @foreach (var group in _groups.Items)
             {
                 <MudPaper Outlined="true" Class="pa-2 job-target-group" @key="group.Id">
@@ -41,7 +41,7 @@
                 <MudButton OnClick="NextGroupsAsync" Disabled="@(_groups.NextPage is null || _groupsLoading)">Next groups</MudButton>
             </div>
         }
-        @if (_target.ExecutionGroupId is { } groupId) { <MudText Typo="Typo.caption">Selected group ID: @groupId. Fresh runs resolve current membership.</MudText> }
+
     }
     else if (_target.Source == JobTargetSource.NodeFilter)
     {

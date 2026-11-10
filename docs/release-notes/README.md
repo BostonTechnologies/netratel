@@ -1,5 +1,6 @@
 # Release history
 
+- [0.1.5-beta.3](0.1.5-beta.3.md) — one-worker HA Groups with durable balancing, automatic compact chip targets, regex shorthand and dense run workspaces.
 - [0.1.5-beta.2](0.1.5-beta.2.md) — execution groups, durable multi-node jobs, typed Flow targets, reviewed tooling and responsive node-run workspaces.
 - [0.1.5-beta.1](0.1.5-beta.1.md) — Explorer listing synchronization, preview recovery, stable Tiles, PDF controls and one folder-menu button.
 - [0.1.4 — stable](0.1.4.md) — visual Flows authoring, Full Explorer and the Monitoring management/investigation workspace.

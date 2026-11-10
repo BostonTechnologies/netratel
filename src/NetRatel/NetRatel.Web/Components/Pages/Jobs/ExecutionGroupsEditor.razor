@@ -3,15 +3,15 @@
 @inject IHttpClientFactory HttpClients
 @inject IDialogService Dialogs
 
-<section class="execution-groups-editor" aria-label="Tenant execution groups" data-testid="execution-groups-editor">
+<section class="execution-groups-editor" aria-label="Tenant HA Groups" data-testid="execution-groups-editor">
     <MudAlert Severity="Severity.Info" Dense="true">Groups save independently with <strong>Save group</strong>. Saving or cancelling tenant changes does not undo a saved group.</MudAlert>
     @if (_error is not null) { <MudAlert Severity="Severity.Error" Dense="true" role="alert">@_error</MudAlert> }
     @if (_message is not null) { <MudText Typo="Typo.body2" role="status">@_message</MudText> }
-    @if (_loading) { <MudProgressLinear Indeterminate="true" aria-label="Loading execution groups" /> }
+    @if (_loading) { <MudProgressLinear Indeterminate="true" aria-label="Loading HA Groups" /> }
     @if (!_editing)
     {
         <div class="execution-groups-toolbar">
-            <MudTextField T="string" Value="_search" ValueChanged="SearchTextChangedAsync" DebounceInterval="300" Label="Search execution groups" Variant="Variant.Outlined" Margin="Margin.Dense" Immediate="true" OnKeyDown="SearchKeyAsync" />
+            <MudTextField T="string" Value="_search" ValueChanged="SearchTextChangedAsync" DebounceInterval="300" Label="Search HA Groups" Variant="Variant.Outlined" Margin="Margin.Dense" Immediate="true" OnKeyDown="SearchKeyAsync" />
             <MudButton OnClick="SearchAsync" Disabled="_loading" Variant="Variant.Outlined">Search groups</MudButton>
             <MudButton OnClick="NewGroupAsync" Disabled="_loading" Variant="Variant.Filled" Color="Color.Primary">New group</MudButton>
         </div>
@@ -24,10 +24,10 @@
                     <MudText Typo="Typo.body2">@group.Description</MudText>
                     <MudText Typo="Typo.caption">@(group.MemberCount == 0 ? "No members" : $"{group.MemberCount} members · {group.OnlineCount} online · {group.OfflineCount} offline") · Revision @group.Revision</MudText>
                 </div>
-                <MudButton OnClick="@(() => EditGroupAsync(group.Id))" Disabled="_loading" aria-label="@($"Edit execution group {group.Name}")">Edit group</MudButton>
+                <MudButton OnClick="@(() => EditGroupAsync(group.Id))" Disabled="_loading" aria-label="@($"Edit HA Group {group.Name}")">Edit group</MudButton>
             </MudPaper>
         }
-        @if (!_loading && (_groups?.Items.Count ?? 0) == 0) { <MudText Class="pa-4">No execution groups. Create a group and choose its clients.</MudText> }
+        @if (!_loading && (_groups?.Items.Count ?? 0) == 0) { <MudText Class="pa-4">No HA Groups. Create a group and choose its clients.</MudText> }
         <div class="execution-groups-toolbar">
             <MudButton Disabled="@(_page <= 1 || _loading)" OnClick="PreviousAsync">Previous groups</MudButton>
             <MudText Typo="Typo.caption">Page @_page</MudText>
@@ -39,7 +39,7 @@
     {
         <div class="execution-groups-toolbar">
             <MudButton OnClick="BackAsync" Disabled="_saving" StartIcon="@Icons.Material.Filled.ArrowBack">All groups</MudButton>
-            <MudText Typo="Typo.subtitle1">@(_editingId is null ? "New execution group" : _name)</MudText>
+            <MudText Typo="Typo.subtitle1">@(_editingId is null ? "New HA Group" : _name)</MudText>
             @if (_revision is not null) { <MudText Typo="Typo.caption">Revision @_revision</MudText> }
         </div>
         <fieldset disabled="@_saving" class="execution-group-fields">
@@ -47,7 +47,7 @@
             <MudTextField T="string" Value="_description" ValueChanged="DescriptionChangedAsync" Label="Group description" Lines="2" MaxLength="2048" Variant="Variant.Outlined" Immediate="true" />
             <MudSwitch T="bool" Value="_enabled" ValueChanged="EnabledChangedAsync" Label="Group enabled" Color="Color.Primary" />
             <MudSwitch T="bool" Value="_archived" ValueChanged="ArchivedChangedAsync" Label="Group archived" />
-            <MudText Typo="Typo.body2">Every selected member runs the full job workflow. Membership does not grant execution permission.</MudText>
+            <MudText Typo="Typo.body2">Each run uses one healthy worker. Successive runs balance across the group. Membership does not grant execution permission.</MudText>
             @if (_members.Count == 0) { <MudText Typo="Typo.caption">No members. You can save this setup state; a job cannot run an empty group.</MudText> }
             <JobNodePicker TenantId="TenantId" Value="_members" ValueChanged="MembersChangedAsync" Disabled="_saving" />
         </fieldset>
@@ -142,7 +142,7 @@
     }
     private async Task DeleteAsync()
     {
-        if (_editingId is not { } id || _revision is not { } revision || await Dialogs.ShowMessageBoxAsync("Delete execution group", "Delete this group? Referenced groups must be retired or archived first.", yesText: "Delete group", cancelText: "Keep group") != true) return;
+        if (_editingId is not { } id || _revision is not { } revision || await Dialogs.ShowMessageBoxAsync("Delete HA Group", "Delete this group? Referenced groups must be retired or archived first.", yesText: "Delete group", cancelText: "Keep group") != true) return;
         _saving = true; _error = null;
         try
         {

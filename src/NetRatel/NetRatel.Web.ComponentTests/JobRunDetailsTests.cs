@@ -150,7 +150,8 @@ public sealed class JobRunDetailsTests : AsyncBunitContext
         cut.WaitForAssertion(() => cut.FindComponents<MudExpansionPanel>().Select(panel => panel.Instance.Expanded).Should().Equal(false, false, true));
         cut.WaitForAssertion(() => cut.FindComponents<MudExpansionPanel>()[2].Find(".job-run-output").TextContent.Should().Be("third output"));
         await _stream.SendAsync(_transport.Run with { Status = JobRunStatusDto.Succeeded }, [first, second, third with { Status = JobStepRunStatusDto.Succeeded, CompletedAtMicros = 400 }], [Line(1, "third output")], 3);
-        cut.WaitForAssertion(() => cut.Find(".job-run-summary").TextContent.Should().Contain("Execution completed successfully."));
+        cut.WaitForAssertion(() => cut.Find(".job-run-title .mud-chip").TextContent.Should().Be("Succeeded"));
+        cut.FindAll(".job-run-summary").Should().BeEmpty("the outcome chip already reports success");
         cut.FindComponents<MudExpansionPanel>().Select(panel => panel.Instance.Expanded).Should().Equal(false, false, true);
         _transport.LogReads.Should().Be(1); // Stream logs satisfy newly opened panels.
     }
@@ -181,7 +182,8 @@ public sealed class JobRunDetailsTests : AsyncBunitContext
         cut.WaitForElement(".job-run-output");
         await cut.InvokeAsync(() => cut.FindComponent<MudExpansionPanel>().Instance.ExpandedChanged.InvokeAsync(false));
         cut.Render(parameters => parameters.Add(page => page.RunId, 10).Add(page => page.JobId, 42));
-        cut.WaitForAssertion(() => cut.Find(".job-run-context").TextContent.Should().Contain("Run #10"));
+        cut.WaitForAssertion(() => cut.Find(".job-run-title").TextContent.Should().Contain("Next route"));
+        cut.Find(".job-run-context").TextContent.Should().NotContain("Run #");
         await _stream.SendAsync(_transport.Run, _transport.Steps, [Line(1, "stale output")]);
         var nextRun = _transport.Run with { Id = 10, JobName = "Next route" };
         var nextSteps = _transport.Steps.Select(step => step with { Id = step.Id + 10, JobRunId = 10 }).ToList();

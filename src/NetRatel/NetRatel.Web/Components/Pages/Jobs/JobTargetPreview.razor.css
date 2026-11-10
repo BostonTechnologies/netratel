@@ -2,3 +2,6 @@
 .job-target-preview-pages { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
 ::deep .job-target-preview-row, ::deep .job-target-preview-digest { overflow-wrap:anywhere; }
 @media(max-width:599px) { .job-target-preview-pages ::deep .mud-button-root { min-height:44px; } }
+
+.job-target-preview-chips { max-height:min(240px,40dvh); overflow:auto; padding:4px; border:1px solid var(--mud-palette-divider); border-radius:6px; }
+.job-target-preview-chips ::deep .mud-chip { margin:2px; }

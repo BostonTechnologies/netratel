@@ -24,3 +24,9 @@
     .jobs-console ::deep .jobs-table th:last-child { width: 236px; }
     .jobs-console ::deep .jobs-runs-table th:last-child { width: 76px; }
 }
+
+.jobs-console ::deep .jobs-runs-table .mud-table-body td { padding:3px 10px; font-size:.8125rem; }
+.jobs-console ::deep .jobs-runs-table .mud-chip { height:22px; margin:0; font-size:.75rem; }
+.jobs-console ::deep .jobs-runs-table .mud-icon-button { padding:3px; }
+.jobs-run-tenant { color:var(--mud-palette-text-secondary); font-size:.75rem; }
+@media(pointer:coarse) { .jobs-console ::deep .jobs-runs-table .mud-icon-button { min-height:44px; min-width:44px; } }

@@ -37,11 +37,11 @@ public sealed class MultiNodeWorkspacesAcceptanceTests(ClientsManagementBrowserF
         await page.GetByRole(AriaRole.Menuitem, new() { Name = "Edit Tenant", Exact = true }).ClickAsync();
         var tenant = page.Locator(".tenant-editor-dialog");
         await tenant.GetByLabel("Tenant name", new() { Exact = true }).WaitForAsync();
-        await SectionAsync(tenant, "Tenant section", "Execution groups");
-        await tenant.GetByRole(AriaRole.Button, new() { Name = "Edit execution group Five-node group", Exact = true }).ClickAsync();
-        await tenant.GetByRole(AriaRole.Button, new() { Name = "Selected members (5)", Exact = true }).ClickAsync();
-        await Assertions.Expect(tenant.Locator(".node-picker-row")).ToHaveCountAsync(5);
-        await Assertions.Expect(tenant.GetByText("Offline", new() { Exact = false }).First).ToBeVisibleAsync();
+        await SectionAsync(tenant, "Tenant section", "HA Groups");
+        await tenant.GetByRole(AriaRole.Button, new() { Name = "Edit HA Group Five-node group", Exact = true }).ClickAsync();
+        await tenant.GetByRole(AriaRole.Button, new() { Name = "View and edit nodes", Exact = true }).ClickAsync();
+        await Assertions.Expect(tenant.Locator(".node-picker-chip")).ToHaveCountAsync(5);
+        Assert.Contains("Offline", await tenant.GetByRole(AriaRole.Button, new() { Name = "Select lab-node-05", Exact = true }).GetAttributeAsync("title"));
         await tenant.GetByLabel("Group name", new() { Exact = true }).FillAsync("Reviewed five-node group");
         await page.Keyboard.PressAsync("Escape");
         await Assertions.Expect(tenant).ToBeVisibleAsync();
@@ -71,6 +71,11 @@ public sealed class MultiNodeWorkspacesAcceptanceTests(ClientsManagementBrowserF
         var editorBounds = (await editor.BoundingBoxAsync())!;
         Assert.InRange(editorBounds.Width, width - 32 * scale - 4, width + 2);
         Assert.InRange(editorBounds.Height, height - 32 * scale - 4, height + 2);
+        if (width <= 959 || width < height)
+        {
+            Assert.InRange(editorBounds.Width, width - 2, width + 2);
+            Assert.InRange(editorBounds.Height, height - 2, height + 2);
+        }
         foreach (var section in new[] { "Definition", "Targets", "Execution", "Steps", "Parameters", "Schedule" })
         {
             await SectionAsync(editor, "Job section", section);
@@ -80,12 +85,12 @@ public sealed class MultiNodeWorkspacesAcceptanceTests(ClientsManagementBrowserF
         }
         await SectionAsync(editor, "Job section", "Targets");
         await editor.GetByRole(AriaRole.Button, new() { Name = "Preview targets", Exact = true }).ClickAsync();
-        await Assertions.Expect(editor.GetByText("5 targets", new() { Exact = false }).First).ToBeVisibleAsync();
+        await Assertions.Expect(editor.GetByText("Nodes (5)", new() { Exact = false }).First).ToBeVisibleAsync();
         await editor.GetByRole(AriaRole.Combobox, new() { Name = "Target source", Exact = true }).ClickAsync();
         await page.Locator(".mud-popover-open").GetByText("Node filter", new() { Exact = true }).ClickAsync();
         await editor.GetByLabel("Node filter expression", new() { Exact = true }).FillAsync("tags: TestSystem");
         await editor.GetByRole(AriaRole.Button, new() { Name = "Preview targets", Exact = true }).ClickAsync();
-        await Assertions.Expect(editor.Locator(".job-target-preview-row")).ToHaveCountAsync(5);
+        await Assertions.Expect(editor.Locator(".job-target-preview-chips .mud-chip")).ToHaveCountAsync(5);
         await SectionAsync(editor, "Job section", "Execution");
         await editor.GetByLabel("Thread Count", new() { Exact = true }).FillAsync("100");
         await editor.GetByText("Continue on remaining nodes, then fail the run", new() { Exact = true }).ClickAsync();
@@ -96,10 +101,22 @@ public sealed class MultiNodeWorkspacesAcceptanceTests(ClientsManagementBrowserF
         await CaptureAsync(page, $"jobs-execution-{width}-{theme}-scale{scale}");
         await editor.GetByRole(AriaRole.Button, new() { Name = "Save", Exact = true }).ClickAsync();
         await Assertions.Expect(editor).ToHaveCountAsync(0);
+        await page.GetByRole(AriaRole.Tab, new() { Name = "Recent Runs", Exact = true }).ClickAsync();
+        var recent = page.Locator(".jobs-runs-table .mud-table-body .mud-table-row");
+        await Assertions.Expect(recent).ToHaveCountAsync(1);
+        await Assertions.Expect(recent).ToBeVisibleAsync();
+        if (width >= 1280 && scale == 1d) Assert.InRange((await recent.BoundingBoxAsync())!.Height, 20, 44);
+        await CaptureAsync(page, $"recent-runs-{width}-{theme}-scale{scale}");
 
         await OpenAsync(page, fixture, "/jobs/42/runs/9", width);
         await Assertions.Expect(page.Locator(".job-run-node-panel")).ToHaveCountAsync(5);
         var panels = page.Locator(".job-run-node-panel");
+        var firstHeader = panels.First.Locator(":scope > .mud-expand-panel-header");
+        var headerBounds = (await firstHeader.BoundingBoxAsync())!;
+        Assert.InRange(headerBounds.Height, 20 * scale, (width <= 768 ? 50 : 42) * scale);
+        var expandBounds = (await firstHeader.Locator(".mud-expand-panel-icon").BoundingBoxAsync())!;
+        var nameBounds = (await firstHeader.Locator("strong").BoundingBoxAsync())!;
+        Assert.True(expandBounds.X < nameBounds.X, "The compact expansion control belongs on the left.");
         await panels.Nth(0).Locator(":scope > .mud-expand-panel-header").ClickAsync();
         await Assertions.Expect(panels.Nth(0).GetByText("lab-node-01: isolated output", new() { Exact = false })).ToBeVisibleAsync();
         await panels.Nth(1).Locator(":scope > .mud-expand-panel-header").ClickAsync();
@@ -107,8 +124,59 @@ public sealed class MultiNodeWorkspacesAcceptanceTests(ClientsManagementBrowserF
         Assert.DoesNotContain("lab-node-02: isolated output", await panels.Nth(0).InnerTextAsync());
         Assert.DoesNotContain("lab-node-01: isolated output", await panels.Nth(1).InnerTextAsync());
         await Assertions.Expect(page.GetByText("Follow selected node", new() { Exact = true })).ToBeVisibleAsync();
+        var visibleText = await page.GetByTestId("app-main-content").InnerTextAsync();
+        Assert.DoesNotContain("ExplicitNodes", visibleText);
+        Assert.DoesNotContain("Native execution #", visibleText);
         await CaptureAsync(page, $"runs-hostnames-{width}-{theme}-scale{scale}");
         Assert.False(await page.Locator("#blazor-error-ui").IsVisibleAsync());
+    }
+
+    [Theory]
+    [InlineData(1366, 900, 300, false)]
+    [InlineData(390, 844, 300, false)]
+    [InlineData(1366, 900, 30, true)]
+    public async Task Run_resolves_without_a_preview_step_and_chip_selection_scrolls_without_losing_targets(
+        int width, int height, int nodeCount, bool haGroup)
+    {
+        RunJobRequest? accepted = null;
+        await using var fixture = await ClientsManagementFixtureHost.StartAsync(services =>
+        {
+            NewTaskWorkspaceFixture.AddServices(services);
+            new ScriptLibraryWorkspaceFixture().Register(services);
+            JobsWorkspaceFixture.Configure(services, 0, multiNode: true, nodeCount: nodeCount, haGroup: haGroup,
+                runAccepted: request => accepted = request);
+        });
+        await using var context = await browser.Browser.NewContextAsync(new()
+        { ViewportSize = new() { Width = width, Height = height }, HasTouch = width <= 768 });
+        var page = await context.NewPageAsync(); page.SetDefaultTimeout(20_000);
+        await OpenAsync(page, fixture, "/jobs", width);
+        await page.GetByRole(AriaRole.Button, new() { Name = "Run Nightly backup", Exact = true }).ClickAsync();
+        var dialog = page.Locator(".jobs-run-dialog");
+        var expected = haGroup ? 2 : 300;
+        await Assertions.Expect(dialog.GetByText($"Nodes ({expected})", new() { Exact = true })).ToBeVisibleAsync();
+        await Assertions.Expect(dialog.GetByRole(AriaRole.Button, new() { Name = "Start Run", Exact = true })).ToBeEnabledAsync();
+        await Assertions.Expect(dialog.GetByRole(AriaRole.Button, new() { Name = "Preview invocation targets", Exact = true })).ToHaveCountAsync(0);
+        Assert.Null(accepted);
+        await dialog.GetByRole(AriaRole.Button, new() { Name = "View and edit nodes", Exact = true }).ClickAsync();
+        await Assertions.Expect(dialog.Locator(".node-picker-chip")).ToHaveCountAsync(expected);
+        var last = dialog.GetByRole(AriaRole.Button, new() { Name = haGroup ? "Select lab-node-02" : "Select spare-node-300", Exact = true });
+        await last.ScrollIntoViewIfNeededAsync();
+        var region = dialog.GetByRole(AriaRole.Region, new() { Name = "Selectable nodes", Exact = true });
+        if (!haGroup)
+        {
+            Assert.True(await region.EvaluateAsync<bool>("element => element.scrollHeight > element.clientHeight && element.scrollTop > 0"));
+            Assert.InRange((await region.BoundingBoxAsync())!.Height, 30, 332);
+        }
+        await last.ClickAsync();
+        await Assertions.Expect(dialog.GetByText($"Nodes ({expected - 1})", new() { Exact = true })).ToBeVisibleAsync();
+        var start = dialog.GetByRole(AriaRole.Button, new() { Name = "Start Run", Exact = true });
+        await Assertions.Expect(start).ToBeEnabledAsync();
+        await CaptureAsync(page, $"run-chip-selection-{width}-pool{expected}");
+        await start.ClickAsync();
+        await page.WaitForURLAsync("**/jobs/42/runs/9");
+        Assert.NotNull(accepted); Assert.Equal(expected - 1, accepted.SelectedTargetAgentIds!.Count);
+        Assert.Equal(64, accepted.ExpectedTargetPlanDigest!.Length);
+        Assert.DoesNotContain(Guid.Parse($"4886c6c0-e486-4f59-a006-{(haGroup ? 2 : 300):000000000000}"), accepted.SelectedTargetAgentIds);
     }
 
     private static async Task SectionAsync(ILocator dialog, string switcherLabel, string name)

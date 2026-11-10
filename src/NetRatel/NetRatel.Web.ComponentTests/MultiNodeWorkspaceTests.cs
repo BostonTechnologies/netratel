@@ -37,14 +37,15 @@ public sealed class MultiNodeWorkspaceTests : AsyncBunitContext
         IReadOnlyList<Guid> selected = [];
         var cut = Render<JobNodePicker>(parameters => parameters.Add(picker => picker.TenantId, 7)
             .Add(picker => picker.ValueChanged, ids => selected = ids));
+        cut.Find("[aria-label='View and edit nodes']").Click();
         cut.WaitForAssertion(() => cut.Markup.Should().Contain("node-a"));
-        await cut.InvokeAsync(() => cut.FindComponents<MudCheckBox<bool>>().Single().Instance.ValueChanged.InvokeAsync(true));
+        await cut.InvokeAsync(() => cut.Find("[aria-label='Select node-a']").Click());
         selected.Should().Equal(Transport.AgentA);
-        Button(cut, "Next clients").Click();
+        cut.Find("[aria-label='Next nodes']").Click();
         cut.WaitForAssertion(() => cut.Markup.Should().Contain("node-b").And.NotContain("node-a"));
-        await cut.InvokeAsync(() => cut.FindComponents<MudCheckBox<bool>>().Single().Instance.ValueChanged.InvokeAsync(true));
+        await cut.InvokeAsync(() => cut.Find("[aria-label='Select node-b']").Click());
         selected.Should().BeEquivalentTo([Transport.AgentA, Transport.AgentB]);
-        Button(cut, "Selected members (2)").Click();
+        Button(cut, "Selected nodes (2)").Click();
         cut.WaitForAssertion(() => cut.Markup.Should().Contain("node-a").And.Contain("node-b").And.Contain("Offline"));
         selected.Should().HaveCount(2);
         _transport.SearchPages.Should().Equal(1, 2);
@@ -55,9 +56,10 @@ public sealed class MultiNodeWorkspaceTests : AsyncBunitContext
     {
         _transport.MissingHostname = true;
         var cut = Render<JobNodePicker>(parameters => parameters.Add(picker => picker.TenantId, 7));
+        cut.Find("[aria-label='View and edit nodes']").Click();
         cut.WaitForAssertion(() => cut.Markup.Should().Contain("Hostname unavailable").And.Contain("Registered name: registered-a"));
-        cut.Find(".node-picker-identity strong").TextContent.Should().Be("Hostname unavailable");
-        cut.Markup.Should().Contain(Transport.AgentA.ToString());
+        cut.Find(".node-picker-chip").TextContent.Should().Contain("Fixture node");
+        cut.Find(".node-picker-list").TextContent.Should().NotContain(Transport.AgentA.ToString());
     }
 
     [Fact]
@@ -67,11 +69,10 @@ public sealed class MultiNodeWorkspaceTests : AsyncBunitContext
         IReadOnlyList<Guid>? changed = null;
         var cut = Render<JobNodePicker>(parameters => parameters.Add(picker => picker.TenantId, 7)
             .Add(picker => picker.Value, new[] { Transport.AgentB }).Add(picker => picker.ValueChanged, ids => changed = ids));
-        cut.WaitForAssertion(() => cut.Markup.Should().Contain("node-a"));
-        await cut.InvokeAsync(() => Button(cut, "Selected members (1)").Click());
-        cut.WaitForAssertion(() => cut.Markup.Should().Contain(Transport.AgentB.ToString()).And.Contain("Metadata unavailable"));
+        await cut.InvokeAsync(() => cut.Find("[aria-label='View and edit nodes']").Click());
+        cut.WaitForAssertion(() => cut.Markup.Should().Contain("Unavailable node").And.Contain("Metadata unavailable"));
         changed.Should().BeNull("failed metadata hydration must not silently remove a stored selection");
-        await cut.InvokeAsync(() => Button(cut, "Remove unavailable member").Click());
+        await cut.InvokeAsync(() => cut.Find("[aria-label='Select Unavailable node']").Click());
         cut.WaitForAssertion(() => changed.Should().NotBeNull().And.BeEmpty());
     }
 
@@ -147,7 +148,7 @@ public sealed class MultiNodeWorkspaceTests : AsyncBunitContext
         dialogs.WaitForElement("input");
         var tenant = dialogs.FindComponent<TenantEditorDialog>();
         tenant.FindComponents<MudTextField<string>>().Single(field => field.Instance.Label == "Tenant name").Find("input").Input("Unsaved tenant name");
-        tenant.FindAll(".mud-tab").Single(tab => tab.TextContent.Trim() == "Execution groups").Click();
+        tenant.FindAll(".mud-tab").Single(tab => tab.TextContent.Trim() == "HA Groups").Click();
         tenant.WaitForElement("[data-testid='execution-groups-editor']");
         Button(tenant, "New group").Click();
         tenant.FindComponents<MudTextField<string>>().Single(field => field.Instance.Label == "Group name").Find("input").Input("Persisted group");
@@ -162,7 +163,7 @@ public sealed class MultiNodeWorkspaceTests : AsyncBunitContext
     }
 
     [Fact]
-    public async Task Runtime_launch_requires_read_only_preview_and_binds_the_exact_plan_digest()
+    public async Task Runtime_launch_resolves_automatically_and_binds_the_exact_plan_digest()
     {
         var dialogs = Render<MudDialogProvider>();
         var target = new JobTargetDefinition { Source = JobTargetSource.RuntimeInput, RuntimeInput = new(JobRuntimeTargetKind.ClientId, "ClientId") };
@@ -171,7 +172,7 @@ public sealed class MultiNodeWorkspaceTests : AsyncBunitContext
         await Services.GetRequiredService<IDialogService>().ShowAsync<RunJobDialog>("Run", new DialogParameters<RunJobDialog> { { dialog => dialog.Job, job } });
         dialogs.WaitForAssertion(() => Button(dialogs, "Start Run").HasAttribute("disabled").Should().BeTrue());
         dialogs.FindComponent<RunJobDialog>().FindComponents<MudTextField<string>>().Single(field => field.Instance.Label == "ClientId (ClientId)").Find("textarea").Input(Transport.AgentA.ToString());
-        Button(dialogs, "Preview invocation targets").Click();
+        dialogs.Markup.Should().NotContain("Preview invocation targets");
         dialogs.WaitForAssertion(() => _transport.PreviewedRun.Should().NotBeNull());
         _transport.RunRequests.Should().Be(0, "preview must never execute a job");
         _transport.PreviewedRun!.RuntimeTarget!.Values.Should().Equal(Transport.AgentA.ToString());
@@ -181,6 +182,60 @@ public sealed class MultiNodeWorkspaceTests : AsyncBunitContext
         _transport.StartedRun!.ExpectedTargetPlanDigest.Should().Be(_transport.Plan!.ComputeDigest());
         _transport.StartedRun.RuntimeTarget!.Kind.Should().Be(JobRuntimeTargetKind.ClientId);
         _transport.RunRequests.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Ordinary_run_automatically_resolves_targets_and_chip_deselection_changes_only_that_invocation()
+    {
+        _transport.ExplicitLaunch = true;
+        var dialogs = Render<MudDialogProvider>();
+        var target = new JobTargetDefinition { Source = JobTargetSource.ExplicitNodes, AgentIds = [Transport.AgentA, Transport.AgentB] };
+        var job = new JobDto(42, "Compact target run", "/Fixture/", null, 7, "", 0, 0) { Target = target, ExecutionPolicy = new(2) };
+        await Services.GetRequiredService<IDialogService>().ShowAsync<RunJobDialog>("Run", new DialogParameters<RunJobDialog> { { dialog => dialog.Job, job } });
+        dialogs.WaitForAssertion(() => Button(dialogs, "Start Run").HasAttribute("disabled").Should().BeFalse());
+        dialogs.Markup.Should().Contain("Nodes (2)").And.NotContain("Preview invocation targets");
+        _transport.RunRequests.Should().Be(0);
+        await dialogs.InvokeAsync(() => dialogs.Find("[aria-label='View and edit nodes']").Click());
+        await dialogs.InvokeAsync(() => dialogs.Find("[aria-label='Select node-b']").Click());
+        dialogs.WaitForAssertion(() => dialogs.Markup.Should().Contain("Nodes (1)"));
+        dialogs.WaitForAssertion(() => Button(dialogs, "Start Run").HasAttribute("disabled").Should().BeFalse());
+        await dialogs.InvokeAsync(() => dialogs.FindComponent<RunJobDialog>().FindComponents<MudTextField<string>>()
+            .Single(field => field.Instance.Label == "Message").Find("input").Change("edited after selecting nodes"));
+        dialogs.WaitForAssertion(() => Button(dialogs, "Start Run").HasAttribute("disabled").Should().BeFalse());
+        dialogs.Markup.Should().Contain("Nodes (1)");
+        await dialogs.InvokeAsync(() => Button(dialogs, "Available nodes").Click());
+        await dialogs.InvokeAsync(() => dialogs.Find("[aria-label='Select node-b']").Click());
+        dialogs.WaitForAssertion(() => _transport.PreviewedRun!.SelectedTargetAgentIds.Should()
+            .BeEquivalentTo([Transport.AgentA, Transport.AgentB], "reselecting all known nodes must still bind those exact identities"));
+        await dialogs.InvokeAsync(() => dialogs.Find("[aria-label='Select node-b']").Click());
+        dialogs.WaitForAssertion(() => Button(dialogs, "Start Run").HasAttribute("disabled").Should().BeFalse());
+        Button(dialogs, "Start Run").Click();
+        dialogs.WaitForAssertion(() => _transport.StartedRun.Should().NotBeNull());
+        _transport.StartedRun!.SelectedTargetAgentIds.Should().Equal(Transport.AgentA);
+        _transport.StartedRun.InputsJson.Should().Contain("edited after selecting nodes");
+        _transport.StartedRun.ExpectedTargetPlanDigest.Should().Be(_transport.Plan!.ComputeDigest());
+        target.AgentIds.Should().HaveCount(2); _transport.Plan.Target.AgentIds.Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task Three_hundred_chips_preserve_unseen_selections_when_searching_and_deselecting()
+    {
+        var nodes = Enumerable.Range(1, 300).Select(index => new JobNodeInventoryDto(Guid.NewGuid(), $"worker-{index:000}",
+            $"Worker {index}", null, [], "Linux", "x64", null, true, true, null)).ToArray();
+        IReadOnlyList<Guid>? changed = null;
+        var cut = Render<JobNodePicker>(parameters => parameters.Add(picker => picker.TenantId, 7)
+            .Add(picker => picker.Candidates, nodes).Add(picker => picker.Value, nodes.Select(node => node.AgentId).ToArray())
+            .Add(picker => picker.ValueChanged, ids => changed = ids));
+        cut.Markup.Should().Contain("Nodes (300)"); cut.FindComponents<MudChip<Guid>>().Should().BeEmpty();
+        cut.Find("[aria-label='View and edit nodes']").Click();
+        cut.WaitForAssertion(() => cut.FindComponents<MudChip<Guid>>().Should().HaveCount(300));
+        await cut.InvokeAsync(() => cut.Find("[aria-label='Select worker-300']").Click());
+        changed.Should().HaveCount(299).And.NotContain(nodes[299].AgentId);
+        await cut.InvokeAsync(() => cut.FindComponent<MudTextField<string>>().Instance.ValueChanged.InvokeAsync("worker-001"));
+        cut.WaitForAssertion(() => cut.FindComponents<MudChip<Guid>>().Should().ContainSingle());
+        await cut.InvokeAsync(() => cut.Find("[aria-label='Select worker-001']").Click());
+        changed.Should().HaveCount(298).And.NotContain(nodes[0].AgentId).And.NotContain(nodes[299].AgentId);
+        changed.Should().Contain(nodes[149].AgentId, "searching must not clear selections outside the displayed chips");
     }
 
     [Fact]
@@ -333,6 +388,7 @@ public sealed class MultiNodeWorkspaceTests : AsyncBunitContext
         public bool ConflictGroupSave { get; set; }
         public bool MissingHostname { get; set; }
         public bool DenyIdentityReads { get; set; }
+        public bool ExplicitLaunch { get; set; }
         public RunJobRequest? PreviewedRun { get; private set; }
         public RunJobRequest? StartedRun { get; private set; }
         public JobResolvedTargetPlan? Plan { get; private set; }
@@ -362,12 +418,20 @@ public sealed class MultiNodeWorkspaceTests : AsyncBunitContext
                 if (ConflictGroupSave) return new(HttpStatusCode.Conflict);
                 return Ok(new ExecutionGroupDetailsDto(new(GroupId, 7, SavedGroup!.Name, SavedGroup.Description, 1, true, false, SavedGroup.AgentIds.Count, 1, 1, DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch), SavedGroup.AgentIds.Select(Inventory).ToArray()));
             }
-            if (path == "/api/v1/jobs/42/params") return Ok(Array.Empty<JobParamDto>());
+            if (path == "/api/v1/jobs/42/params") return Ok(ExplicitLaunch
+                ? new[] { new JobParamDto(1, 42, "Message", "string", false, "initial message", null, null) }
+                : Array.Empty<JobParamDto>());
             if (path == "/api/v1/jobruns/preview/42")
             {
                 PreviewedRun = await request.Content!.ReadFromJsonAsync<RunJobRequest>(cancellationToken);
-                Plan = new(1, 7, 42, new string('A', 64), new() { Source = JobTargetSource.RuntimeInput, RuntimeInput = new(JobRuntimeTargetKind.ClientId, "ClientId") }, null,
-                    [new("ClientId", "Caller")], [new(AgentA, "node-a", "Fixture node", ["TestSystem"])], new(100, JobNodeFailurePolicy.ContinueRemaining));
+                var target = ExplicitLaunch ? new JobTargetDefinition { Source = JobTargetSource.ExplicitNodes, AgentIds = [AgentA, AgentB] }
+                    : new() { Source = JobTargetSource.RuntimeInput, RuntimeInput = new(JobRuntimeTargetKind.ClientId, "ClientId") };
+                var nodes = (ExplicitLaunch ? new[] { AgentA, AgentB } : [AgentA])
+                    .Where(id => PreviewedRun!.SelectedTargetAgentIds is null || PreviewedRun.SelectedTargetAgentIds.Contains(id))
+                    .Select(id => new JobTargetNode(id, id == AgentA ? "node-a" : "node-b", "Fixture node", ["TestSystem"])).ToArray();
+                Plan = new(PreviewedRun!.SelectedTargetAgentIds is null ? 1 : 2, 7, 42, new string('A', 64), target, null,
+                    ExplicitLaunch ? [] : [new("ClientId", "Caller")], nodes, new(100, JobNodeFailurePolicy.ContinueRemaining),
+                    PreviewedRun.SelectedTargetAgentIds, null, null);
                 return Ok(new JobLaunchPreviewDto(Plan.ComputeDigest(), Plan.DefinitionDigest, Plan.Nodes.Count, Plan.Target, Plan.ExecutionPolicy, 1, Plan.GroupRevision, Plan.Bindings, Plan.Nodes, 1, 25, null));
             }
             if (path == "/api/v1/jobruns/start/42")

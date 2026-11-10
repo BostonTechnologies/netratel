@@ -1,10 +1,12 @@
-.node-picker { min-width:0; display:flex; flex-direction:column; gap:8px; }
+.node-picker { min-width:0; }
+.node-picker-summary { display:flex; gap:8px; align-items:center; min-height:36px; font-size:.875rem; }
+.node-picker-hint { color:var(--mud-palette-text-secondary); font-size:.75rem; }
+.node-picker-editor { min-width:0; display:flex; flex-direction:column; gap:6px; padding:8px 10px; border:1px solid var(--mud-palette-divider); border-radius:8px; background:var(--mud-palette-background); }
 .node-picker-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
-.node-picker-toolbar ::deep .mud-input-control { flex:1 1 280px; min-width:0; }
-.node-picker-actions, .node-picker-pagination { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
-.node-picker-list { min-width:0; max-height:440px; overflow:auto; border:1px solid var(--mud-palette-divider); border-radius:6px; }
-.node-picker-row { display:flex; align-items:center; gap:4px; padding:8px; min-height:60px; border-bottom:1px solid var(--mud-palette-divider); }
-.node-picker-identity { flex:1; min-width:0; overflow-wrap:anywhere; }
-.node-picker-tags { overflow-wrap:anywhere; color:var(--mud-palette-text-secondary); }
-.node-picker-row ::deep .mud-checkbox { flex:0 0 auto; }
-@media (max-width:599px) { .node-picker-toolbar ::deep .mud-button-root { flex:1 1 auto; } .node-picker-row { align-items:flex-start; flex-wrap:wrap; } .node-picker-row ::deep .mud-button-root { min-height:44px; } }
+.node-picker-toolbar ::deep .mud-input-control { flex:1 1 240px; min-width:0; margin:0; }
+.node-picker-actions, .node-picker-pagination { display:flex; flex-wrap:wrap; gap:6px; align-items:center; font-size:.75rem; color:var(--mud-palette-text-secondary); }
+.node-picker-list { min-width:0; max-height:min(320px,45dvh); overflow:auto; overscroll-behavior:contain; padding:4px; border:1px solid var(--mud-palette-divider); border-radius:6px; }
+.node-picker-list ::deep .mud-chipset { gap:2px; }
+.node-picker-list ::deep .node-picker-chip { margin:2px; min-height:26px; max-width:100%; }
+.node-picker-list ::deep .mud-chip-content { overflow-wrap:anywhere; white-space:normal; }
+@media (pointer:coarse) { .node-picker-summary ::deep .mud-icon-button, .node-picker-pagination ::deep .mud-icon-button { min-height:44px; min-width:44px; } .node-picker-list ::deep .node-picker-chip { min-height:36px; } }

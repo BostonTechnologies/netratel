@@ -14,24 +14,21 @@
     @if (_items is not null)
     {
         var policy = _launchPreview?.ExecutionPolicy ?? ExecutionPolicy ?? new();
-        <MudText Typo="Typo.subtitle2" role="status">@_total targets · configured @policy.ThreadCount · up to @Math.Min(_total, policy.ThreadCount) active, subject to available capacity.</MudText>
-        @if (_launchPreview is { } launch)
-        { <MudText Typo="Typo.body2">Current effective concurrency: @launch.EffectiveConcurrency.@(launch.EffectiveConcurrency == 0 ? " Waiting for available execution capacity." : "")</MudText> }
-        <MudText Typo="Typo.caption">@(_groupRevision is { } revision ? $"Group revision {revision}. " : "")Every match is included across every page. Preview dispatches no execution.</MudText>
-        @foreach (var node in _items)
-        {
-            <MudPaper Outlined="true" Class="pa-2 job-target-preview-row" @key="node.AgentId">
-                <MudText Typo="Typo.body2"><strong>@(string.IsNullOrWhiteSpace(node.Hostname) ? "Hostname unavailable" : node.Hostname)</strong> · @node.DisplayName</MudText>
-                <MudText Typo="Typo.caption">@node.OperatingSystem · @(node.IsOnline ? "Online" : "Offline") · @string.Join(" · ", node.Tags)</MudText>
-                <MudText Typo="Typo.caption">Client @node.AgentId</MudText>
-            </MudPaper>
-        }
+        <MudText Typo="Typo.subtitle2" role="status">Nodes (@_total) · @(Target?.Source == JobTargetSource.ExecutionGroup ? "One healthy worker per run" : $"Up to {Math.Min(_total, policy.ThreadCount)} in parallel")</MudText>
+        <div class="job-target-preview-chips" role="region" tabindex="0" aria-label="Resolved nodes">
+            <MudChipSet T="Guid" ReadOnly="true" Size="Size.Small" Variant="Variant.Outlined">
+                @foreach (var node in _items)
+                {
+                    <MudChip T="Guid" Value="node.AgentId" Icon="@Icons.Material.Outlined.Dns" IconColor="@(node.IsOnline ? Color.Success : Color.Default)" title="@($"{(node.IsOnline ? "Online" : "Offline")} · {node.OperatingSystem} · {string.Join(", ", node.Tags)}")" @key="node.AgentId">@(string.IsNullOrWhiteSpace(node.Hostname) ? node.DisplayName : node.Hostname)</MudChip>
+                }
+            </MudChipSet>
+        </div>
         <div class="job-target-preview-pages">
             <MudButton OnClick="@(() => PreviewAsync(Math.Max(1, _page - 1)))" Disabled="@(_page <= 1 || _loading)">Previous targets</MudButton>
             <MudText Typo="Typo.caption">Page @_page · @_total total</MudText>
             <MudButton OnClick="@(() => PreviewAsync(_nextPage ?? _page))" Disabled="@(_nextPage is null || _loading)">Next targets</MudButton>
         </div>
-        <MudText Typo="Typo.caption" Class="job-target-preview-digest">Preview digest: @_digest</MudText>
+        <details><summary>Technical provenance</summary><MudText Typo="Typo.caption" Class="job-target-preview-digest">Preview digest: @_digest · Group revision @_groupRevision</MudText></details>
     }
 </section>
 
@@ -84,11 +81,11 @@
                 var input = page > 1 && _launchPreview is { } previous ? request with { ExpectedTargetPlanDigest = previous.Digest } : request;
                 var preview = await Api.PreviewRunAsync(jobId, input, page, PageSize, _dispose.Token);
                 if (generation != _generation) return;
-                if (preview.Nodes.Count > PageSize || preview.Page != page || preview.TargetCount < preview.Nodes.Count ||
+                if (preview.Nodes.Count > PageSize || preview.Page != page || (preview.WorkerPoolCount ?? preview.TargetCount) < preview.Nodes.Count ||
                     preview.Digest is not { Length: 64 } || preview.Digest.Any(character => !Uri.IsHexDigit(character)))
                     throw new InvalidDataException("The launch preview exceeded its page bound or returned incomplete plan identity. Retry the preview.");
                 _launchPreview = preview;
-                _total = preview.TargetCount; _page = preview.Page; _nextPage = preview.NextPage; _groupRevision = preview.GroupRevision; _digest = preview.Digest;
+                _total = preview.WorkerPoolCount ?? preview.TargetCount; _page = preview.Page; _nextPage = preview.NextPage; _groupRevision = preview.GroupRevision; _digest = preview.Digest;
                 _items = preview.Nodes.Select(node => new JobNodeInventoryDto(node.AgentId,
                     node.Hostname, node.DisplayName ?? "", node.Name, node.Tags, node.OperatingSystem, node.Architecture, node.Environment,
                     node.IsOnline, node.IsEnabled, null)).ToArray();
@@ -101,7 +98,7 @@
                 if (preview.Items.Count > PageSize || preview.Page != page) throw new InvalidDataException("The target preview exceeded its requested page bound. Retry the preview.");
                 _total = preview.TotalCount; _page = preview.Page; _nextPage = preview.NextPage; _groupRevision = preview.GroupRevision; _digest = preview.Digest; _items = preview.Items;
             }
-            await CountChanged.InvokeAsync(_total);
+            await CountChanged.InvokeAsync(Target.Source == JobTargetSource.ExecutionGroup ? 1 : _total);
         }
         catch (OperationCanceledException) when (_dispose.IsCancellationRequested) { _items = null; }
         catch (Exception ex)

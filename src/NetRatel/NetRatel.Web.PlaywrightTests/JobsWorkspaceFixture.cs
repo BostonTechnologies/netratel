@@ -18,10 +18,10 @@ internal static class JobsWorkspaceFixture
 {
     public static void Configure(IServiceCollection services, int parameterCount = 1, bool mixed = false, JobsRunFixtureStream? stream = null,
         IReadOnlyList<JobParamDto>? parameters = null, Action<RunJobRequest>? runAccepted = null, bool multiNode = false,
-        Action<ExecutionGroupWriteDto>? groupSaved = null)
+        Action<ExecutionGroupWriteDto>? groupSaved = null, int nodeCount = 30, bool haGroup = false)
     {
         services.AddSingleton<IHttpClientFactory>(provider => new JobsTransport(parameterCount, mixed, parameters, runAccepted,
-            multiNode, provider.GetRequiredService<ClientDirectoryFixtureData>(), groupSaved));
+            multiNode, provider.GetRequiredService<ClientDirectoryFixtureData>(), groupSaved, nodeCount, haGroup));
         services.AddSingleton<IJobApiClient>(provider => new JobApiClient(provider.GetRequiredService<IHttpClientFactory>()));
         services.AddSingleton<ITenantApiService, JobsTenants>();
         services.AddSingleton<IJobRunStreamService>(stream ?? new JobsRunFixtureStream());
@@ -39,7 +39,7 @@ internal static class JobsWorkspaceFixture
     }
 
     private sealed class JobsTransport(int parameterCount, bool mixed, IReadOnlyList<JobParamDto>? parameters, Action<RunJobRequest>? runAccepted,
-        bool multiNode, ClientDirectoryFixtureData directory, Action<ExecutionGroupWriteDto>? groupSaved) : HttpMessageHandler, IHttpClientFactory
+        bool multiNode, ClientDirectoryFixtureData directory, Action<ExecutionGroupWriteDto>? groupSaved, int nodeCount, bool haGroup) : HttpMessageHandler, IHttpClientFactory
     {
         private JobDto _job = new(42, "Nightly backup", "/Visual fixture/Backups/", "Back up the development database", 3, "gateway-agent-01", 0, 0,
             "Visual fixture", "gateway-agent-01", ClientEnvironment.Dev,
@@ -51,7 +51,7 @@ internal static class JobsWorkspaceFixture
         private JobRunDto _run = JobsRunFixtureStream.Run;
         private IReadOnlyList<JobStepRunDto> _runSteps = JobsRunFixtureStream.Steps(1);
         private static readonly Guid GroupId = Guid.Parse("c186e933-9b40-4d99-9d12-dbb944b59001");
-        private readonly IReadOnlyList<JobNodeInventoryDto> _nodes = Enumerable.Range(1, 30).Select(index =>
+        private readonly IReadOnlyList<JobNodeInventoryDto> _nodes = Enumerable.Range(1, nodeCount).Select(index =>
             new JobNodeInventoryDto(Guid.Parse($"4886c6c0-e486-4f59-a006-{index:000000000000}"), index <= 5 ? $"lab-node-{index:00}" : $"spare-node-{index:00}", $"Synthetic node {index}", null,
                 index <= 5 ? new[] { "TestSystem", "Linux" } : new[] { "Auxiliary" }, "Linux", "x64", ClientEnvironment.Dev, index != 5, true, null)).ToArray();
         private IReadOnlyList<Guid> _members = Enumerable.Range(1, 5).Select(index => Guid.Parse($"4886c6c0-e486-4f59-a006-{index:000000000000}")).ToArray();
@@ -72,10 +72,13 @@ internal static class JobsWorkspaceFixture
             if (parameters is not null) _parameters = parameters.ToList();
             if (multiNode)
             {
+                if (haGroup) { _members = _nodes.Take(2).Select(node => node.AgentId).ToArray(); _groupName = "HA workers"; }
+                var targets = nodeCount > 30 ? _nodes.Select(node => node.AgentId).ToArray() : _members;
                 _job = _job with { AgentId = null, ClientIdentity = "", ClientDisplayName = null,
-                    Target = new() { Source = JobTargetSource.ExecutionGroup, ExecutionGroupId = GroupId }, ExecutionPolicy = new(2) };
+                    Target = haGroup ? new() { Source = JobTargetSource.ExecutionGroup, ExecutionGroupId = GroupId }
+                        : new() { Source = JobTargetSource.ExplicitNodes, AgentIds = targets }, ExecutionPolicy = new(2) };
                 _run = _run with { AgentId = null, ClientIdentity = "", ClientDisplayName = null, Status = JobRunStatusDto.Succeeded,
-                    CompletedAtMicros = 9000000, IsAggregate = true, TargetSource = JobTargetSource.ExecutionGroup, TargetCount = 5,
+                    CompletedAtMicros = 9000000, IsAggregate = true, TargetSource = _job.Target.Source, TargetCount = haGroup ? 1 : 5,
                     EffectiveConcurrency = 2, ExecutionPolicy = new(2), NodesTotalCount = 5,
                     Nodes = _nodes.Take(5).Select((node, index) => new JobRunNodeDto(9, node.AgentId, index + 1, (ulong)(101 + index),
                         JobRunNodeState.Succeeded, node.Hostname, node.DisplayName, null, 1000000, 9000000)).ToArray(), NodeCounts = new(0, 0, 5, 0, 0, 0, 0, 0) };
@@ -91,12 +94,14 @@ internal static class JobsWorkspaceFixture
             if (path == "/api/v1/jobruns/preview/42")
             {
                 var input = (await request.Content!.ReadFromJsonAsync<RunJobRequest>(cancellationToken))!;
-                var plan = Plan(_job.Target!, input.RuntimeTarget);
+                var plan = Plan(_job.Target!, input.RuntimeTarget, input.SelectedTargetAgentIds);
                 var query = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(request.RequestUri.Query);
                 var page = query.TryGetValue("page", out var pageText) && int.TryParse(pageText, out var parsedPage) ? parsedPage : 1;
+                var size = query.TryGetValue("pageSize", out var sizeText) && int.TryParse(sizeText, out var parsedSize) ? parsedSize : 25;
                 if (input.ExpectedTargetPlanDigest is { } expected && expected != plan.ComputeDigest()) return new(HttpStatusCode.Conflict);
-                return Ok(new JobLaunchPreviewDto(plan.ComputeDigest(), plan.DefinitionDigest, plan.Nodes.Count, plan.Target, plan.ExecutionPolicy,
-                    Math.Min(plan.Nodes.Count, plan.ExecutionPolicy.ThreadCount), plan.GroupRevision, plan.Bindings, plan.Nodes.Skip((page - 1) * 25).Take(25).ToArray(), page, 25, page * 25 < plan.Nodes.Count ? page + 1 : null));
+                return Ok(new JobLaunchPreviewDto(plan.ComputeDigest(), plan.DefinitionDigest, plan.ExecutionTargetCount, plan.Target, plan.ExecutionPolicy,
+                    Math.Min(plan.ExecutionTargetCount, plan.ExecutionPolicy.ThreadCount), plan.GroupRevision, plan.Bindings, plan.Nodes.Skip((page - 1) * size).Take(size).ToArray(), page, size, page * size < plan.Nodes.Count ? page + 1 : null)
+                    { WorkerPoolCount = plan.NeedsHaWorkerSelection ? plan.Nodes.Count : null, GroupName = plan.GroupName });
             }
             if (path.Contains("/nodes/", StringComparison.Ordinal) && path.StartsWith("/api/v1/jobruns/9/", StringComparison.Ordinal))
             {
@@ -114,7 +119,7 @@ internal static class JobsWorkspaceFixture
                 if (path.StartsWith("/api/v1/jobruns/9/steps/") && path.EndsWith("/logs"))
                     return Ok(new ExecutionLogDto("fixture-task", null, null, null, []));
                 if (path == "/api/v1/jobs") return Ok(new[] { _job });
-                if (path == "/api/v1/jobruns/query") return Ok(new PagedJobRunsDto([], 0));
+                if (path == "/api/v1/jobruns/query") return Ok(multiNode ? new PagedJobRunsDto([_run], 1) : new PagedJobRunsDto([], 0));
                 if (path.EndsWith("/params")) return Ok(_parameters);
                 if (path.EndsWith("/steps")) return Ok(_steps);
                 if (path.EndsWith("/details")) return Ok(new JobWithDetailsDto(_job, _steps, _parameters));
@@ -123,6 +128,17 @@ internal static class JobsWorkspaceFixture
             if (request.Method == HttpMethod.Post && path == "/api/v1/jobruns/start/42")
             {
                 var body = (await request.Content!.ReadFromJsonAsync<RunJobRequest>(cancellationToken))!;
+                if (_job.Target is { } target)
+                {
+                    var plan = Plan(target, body.RuntimeTarget, body.SelectedTargetAgentIds);
+                    if (body.ExpectedTargetPlanDigest != plan.ComputeDigest()) return new(HttpStatusCode.Conflict);
+                    if (plan.NeedsHaWorkerSelection) plan = plan.SelectHaWorker(plan.Nodes.First(node => node.IsOnline).AgentId);
+                    _run = _run with { TargetCount = plan.Nodes.Count, EffectiveConcurrency = Math.Min(plan.Nodes.Count, plan.ExecutionPolicy.ThreadCount),
+                        TargetSource = plan.Target.Source, TargetPlanDigest = plan.ComputeDigest(), DefinitionDigest = plan.DefinitionDigest,
+                        Nodes = plan.Nodes.Take(25).Select((node, index) => new JobRunNodeDto(9, node.AgentId, index + 1, (ulong)(101 + index),
+                            JobRunNodeState.Succeeded, node.Hostname, node.DisplayName, null, 1000000, 9000000)).ToArray(),
+                        NodesTotalCount = plan.Nodes.Count, NodeCounts = new(0, 0, plan.Nodes.Count, 0, 0, 0, 0, 0) };
+                }
                 runAccepted?.Invoke(body);
                 _run = _run with { StartedBy = body.StartedBy, InputsJson = body.InputsJson, Environment = body.Environment };
                 return Ok(_run);
@@ -164,7 +180,7 @@ internal static class JobsWorkspaceFixture
         private ExecutionGroupDetailsDto Group() => new(new(GroupId, 3, _groupName, "Synthetic five-node group", _groupRevision, true, false, _members.Count,
             _nodes.Count(node => _members.Contains(node.AgentId) && node.IsOnline), _nodes.Count(node => _members.Contains(node.AgentId) && !node.IsOnline), DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch),
             _nodes.Where(node => _members.Contains(node.AgentId)).ToArray());
-        private JobResolvedTargetPlan Plan(JobTargetDefinition target, JobRuntimeTargetInput? runtime)
+        private JobResolvedTargetPlan Plan(JobTargetDefinition target, JobRuntimeTargetInput? runtime, IReadOnlyList<Guid>? subset = null)
         {
             var nodes = target.Source switch
             {
@@ -174,8 +190,10 @@ internal static class JobsWorkspaceFixture
                 JobTargetSource.RuntimeInput => RuntimeNodes(target.RuntimeInput!, runtime),
                 _ => throw new InvalidOperationException("Unsupported fixture target")
             };
-            return new(1, 3, 42, new string('A', 64), target, target.Source == JobTargetSource.ExecutionGroup ? _groupRevision : null, [],
-                nodes.Select(node => new JobTargetNode(node.AgentId, node.Hostname, node.DisplayName, node.Tags) { OperatingSystem = node.OperatingSystem, Environment = node.Environment, IsOnline = node.IsOnline }).ToArray(), _job.ExecutionPolicy ?? new());
+            if (subset is not null) nodes = nodes.Where(node => subset.Contains(node.AgentId)).ToArray();
+            var version = target.Source == JobTargetSource.ExecutionGroup || subset is not null ? 2 : 1;
+            return new(version, 3, 42, new string('A', 64), target, target.Source == JobTargetSource.ExecutionGroup ? _groupRevision : null, [],
+                nodes.Select(node => new JobTargetNode(node.AgentId, node.Hostname, node.DisplayName, node.Tags) { OperatingSystem = node.OperatingSystem, Environment = node.Environment, IsOnline = node.IsOnline }).ToArray(), _job.ExecutionPolicy ?? new(), subset, null, target.Source == JobTargetSource.ExecutionGroup ? _groupName : null);
         }
         private IReadOnlyList<JobNodeInventoryDto> RuntimeNodes(JobRuntimeTargetDefinition definition, JobRuntimeTargetInput? input)
         {

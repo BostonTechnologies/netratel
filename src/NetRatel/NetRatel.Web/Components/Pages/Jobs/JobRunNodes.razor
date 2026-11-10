@@ -3,38 +3,31 @@
 @inject IJobApiClient JobApi
 
 <section class="job-run-nodes" aria-label="Node workflows" data-testid="job-run-nodes">
-    <MudText Typo="Typo.subtitle2">@Run.TargetCount targets · Thread Count @(Run.ExecutionPolicy?.ThreadCount ?? 1) · Effective concurrency @Run.EffectiveConcurrency</MudText>
-    @if (Run.NodeCounts is { } counts)
-    {
-        <MudText Typo="Typo.body2" role="status">@counts.Queued queued · @counts.Running running · @counts.Succeeded succeeded · @counts.Failed failed · @counts.Skipped skipped · @counts.Cancelled cancelled · @counts.TimedOut timed out · @counts.Unknown uncertain</MudText>
-    }
-    <div class="job-run-node-controls">
+    <div class="job-run-node-controls job-run-node-summary">
+        <strong>@Run.TargetCount @(Run.TargetCount == 1 ? "node" : "nodes")</strong>
+        @if (Run.NodeCounts is { } counts) { <span role="status">@CountsLabel(counts)</span> }
+        @if (Run.EffectiveConcurrency > 1) { <span class="job-run-node-capacity" title="@($"Configured Thread Count: {Run.ExecutionPolicy?.ThreadCount ?? 1}")">@Run.EffectiveConcurrency parallel</span> }
         <MudSwitch T="bool" @bind-Value="_followSelected" Label="Follow selected node" Color="Color.Primary" Size="Size.Small" />
-        <MudText Typo="Typo.caption" role="status">@(_selected is { } id && _nodes.FirstOrDefault(node => node.AgentId == id) is { } selected ? $"Selected: {(string.IsNullOrWhiteSpace(selected.Hostname) ? "Hostname unavailable" : selected.Hostname)}" : "Open a node to select its workflow.")</MudText>
-        @if (!_followSelected) { <MudText Typo="Typo.caption">Follow paused. Manual expansion and output tabs stay in place.</MudText> }
     </div>
     @if (_error is not null) { <MudAlert Severity="Severity.Warning" Dense="true">@_error <MudButton Size="Size.Small" OnClick="LoadAsync">Retry nodes</MudButton></MudAlert> }
     @if (_loading) { <MudProgressLinear Indeterminate="true" aria-label="Loading node summaries" /> }
-    <MudExpansionPanels MultiExpansion="true" Elevation="0">
+    <MudExpansionPanels MultiExpansion="true" Elevation="0" Dense="true" Gutters="false">
         @foreach (var node in _nodes.OrderBy(node => node.Ordinal))
         {
             <MudExpansionPanel @key="node.AgentId" Expanded="_expanded.Contains(node.AgentId)" ExpandedChanged="@(expanded => NodeExpanded(node.AgentId, expanded))" Class="job-run-node-panel">
                 <TitleContent>
                     <div class="job-run-node-heading">
                         <div class="job-run-node-name"><strong>@(string.IsNullOrWhiteSpace(node.Hostname) ? "Hostname unavailable" : node.Hostname)</strong> @if (!string.IsNullOrWhiteSpace(node.DisplayName) && node.DisplayName != node.Hostname) { <span> · @node.DisplayName</span> }</div>
-                        <MudChip T="string" Size="Size.Small" Color="@NodeColor(node.State)" Variant="Variant.Outlined">@StateLabel(node.State)</MudChip>
+                        <span class="job-run-node-state" style="@($"color:var(--mud-palette-{NodeColor(node.State).ToString().ToLowerInvariant()})")">@StateLabel(node.State)</span>
                         <span>@Window(node)</span>
                         @if (node.CurrentStepOrdinal > 0) { <span>Step @node.CurrentStepOrdinal</span> }
+                        @if (_expanded.Contains(node.AgentId)) { <span @onclick:stopPropagation="true"><MudTooltip Text="Follow this node"><MudIconButton Size="Size.Small" Icon="@Icons.Material.Outlined.MyLocation" Color="@(_selected == node.AgentId && _followSelected ? Color.Primary : Color.Default)" OnClick="@(() => SelectNode(node.AgentId))" aria-label="Follow this node" /></MudTooltip></span> }
                     </div>
-                    @if (node.Reason is { Length: > 0 } reason) { <MudText Typo="Typo.caption" Class="job-run-node-reason">@ReasonLabel(reason)</MudText> }
+                    @if (node.Reason is { Length: > 0 } reason) { <MudText Typo="Typo.caption" Class="job-run-node-reason" data-reason="@reason">@ReasonLabel(reason)</MudText> }
                 </TitleContent>
                 <ChildContent>
                     @if (_expanded.Contains(node.AgentId))
                     {
-                        <div class="job-run-node-controls">
-                            <MudButton Size="Size.Small" OnClick="@(() => SelectNode(node.AgentId))" Variant="@(_selected == node.AgentId ? Variant.Filled : Variant.Outlined)">Follow this node</MudButton>
-                            <MudText Typo="Typo.caption">Client @node.AgentId · @(node.NativeRunId is { } native ? $"Native run #{native}" : "Native execution not started")</MudText>
-                        </div>
                         <JobRunNodeDetails @key="(Run.Id, node.AgentId, node.NativeRunId)" ParentRunId="Run.Id" Node="node" ViewState="ViewState(node.AgentId)" Following="@(_followSelected && _selected == node.AgentId)" FollowingChanged="@(following => FollowChanged(node.AgentId, following))" />
                     }
                 </ChildContent>
@@ -42,11 +35,14 @@
         }
     </MudExpansionPanels>
     @if (!_loading && _nodes.Count == 0) { <MudText Typo="Typo.body2">No node evidence is available.</MudText> }
-    <div class="job-run-node-controls">
-        <MudButton Disabled="@(_page <= 1 || _loading)" OnClick="PreviousAsync">Previous nodes</MudButton>
-        <MudText Typo="Typo.caption">Page @_page · @_total targets. Node details and output load only when expanded.</MudText>
-        <MudButton Disabled="@(_page * PageSize >= _total || _loading)" OnClick="NextAsync">Next nodes</MudButton>
-    </div>
+    @if (_total > PageSize)
+    {
+        <div class="job-run-node-controls">
+            <MudIconButton Icon="@Icons.Material.Filled.ChevronLeft" Size="Size.Small" Disabled="@(_page <= 1 || _loading)" OnClick="PreviousAsync" aria-label="Previous nodes" />
+            <MudText Typo="Typo.caption">Page @_page · @_total nodes</MudText>
+            <MudIconButton Icon="@Icons.Material.Filled.ChevronRight" Size="Size.Small" Disabled="@(_page * PageSize >= _total || _loading)" OnClick="NextAsync" aria-label="Next nodes" />
+        </div>
+    }
 </section>
 
 @code {
@@ -113,11 +109,16 @@
     private static string StateLabel(JobRunNodeState state) => state switch { JobRunNodeState.NeverStarted => "Queued", JobRunNodeState.Claimed => "Starting", JobRunNodeState.Unknown => "Outcome unknown", _ => state.ToString() };
     private static string ReasonLabel(string reason) => reason switch
     {
-        JobRunNodeReasons.StoppedAfterNodeFailure => "This node did not start because another node failed (StoppedAfterNodeFailure).",
-        JobRunNodeReasons.StoppedAfterUnknownExecution => "This node did not start because physical execution remains uncertain (StoppedAfterUnknownExecution).",
-        JobRunNodeReasons.ParentCancelled => "The parent run was cancelled before this node started (ParentCancelled).",
+        JobRunNodeReasons.StoppedAfterNodeFailure => "Not started after another node failed.",
+        JobRunNodeReasons.StoppedAfterUnknownExecution => "Not started while another execution is uncertain.",
+        JobRunNodeReasons.ParentCancelled => "Cancelled before starting.",
         _ => reason
     };
+    private static string CountsLabel(JobRunNodeCountsDto counts) => string.Join(" · ", new[]
+    {
+        (counts.Queued, "queued"), (counts.Running, "running"), (counts.Succeeded, "succeeded"), (counts.Failed, "failed"),
+        (counts.Skipped, "skipped"), (counts.Cancelled, "cancelled"), (counts.TimedOut, "timed out"), (counts.Unknown, "uncertain")
+    }.Where(item => item.Item1 > 0).Select(item => $"{item.Item1} {item.Item2}"));
     private static Color NodeColor(JobRunNodeState state) => state switch { JobRunNodeState.Succeeded => Color.Success, JobRunNodeState.Failed or JobRunNodeState.TimedOut => Color.Error, JobRunNodeState.Running => Color.Info, _ => Color.Warning };
     private static string Window(JobRunNodeDto node) => node.StartedAtMicros is not { } start ? "Not started"
         : node.State == JobRunNodeState.Unknown ? "Duration unknown"

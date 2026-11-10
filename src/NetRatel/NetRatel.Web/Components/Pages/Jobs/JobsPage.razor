@@ -263,24 +263,20 @@
                     </HeaderContent>
                     <RowTemplate>
                         <MudTd DataLabel="Workflow">
-                            <MudText Typo="Typo.body2">@DisplayJobName(context)</MudText>
-                            <MudText Typo="Typo.caption" Color="Color.Secondary">@((context.TenantDisplayName ?? context.TenantId?.ToString()) ?? "Unassigned") · #@context.Id</MudText>
+                            <MudLink Href="@($"/jobs/{context.JobId}/runs/{context.Id}")" Typo="Typo.body2" Underline="Underline.Hover">@DisplayJobName(context)</MudLink>
+                            <span class="jobs-run-tenant"> · @(context.TenantDisplayName ?? "Unassigned")</span>
                         </MudTd>
                         <MudTd DataLabel="Status">
                             <MudChip T="string" Color="@RunStatusColor(context.Status)" Variant="Variant.Outlined" Size="Size.Small">@context.Status</MudChip>
                         </MudTd>
                         <MudTd DataLabel="Target / environment">
-                            <MudTooltip Text="@context.AgentId?.ToString()">
-                                <span>@(context.IsAggregate ? $"{context.TargetCount} nodes · {context.TargetSource}" : context.ClientDisplayName ?? (context.AgentId.HasValue ? $"Agent {context.AgentId.Value.ToString("N")[..8]}" : "Target unavailable"))</span>
-                            </MudTooltip>
-                            <MudText Typo="Typo.caption" Color="Color.Secondary">@(context.Environment?.ToShortLabel() ?? "Unknown environment")</MudText>
+                            <span>@(context.IsAggregate ? context.TargetSource == JobTargetSource.ExecutionGroup && context.TargetCount == 1 ? "HA Group · 1 worker" : $"{context.TargetCount} nodes" : context.ClientDisplayName ?? "Target unavailable")</span>
+                            <span class="jobs-run-tenant"> · @(context.Environment?.ToShortLabel() ?? "Environment unknown")</span>
                         </MudTd>
                         <MudTd DataLabel="Timing">
-                            <MudText Typo="Typo.caption">@(context.StartedAtMicros.HasValue ? "Started" : "Created") @FormatTimestamp(context.StartedAtMicros ?? context.CreatedAtMicros)</MudText>
-                            @if (context.CompletedAtMicros.HasValue)
-                            {
-                                <MudText Typo="Typo.caption" Color="Color.Secondary">Ended @FormatTimestamp(context.CompletedAtMicros)</MudText>
-                            }
+                            <span>@FormatTimestamp(context.StartedAtMicros ?? context.CreatedAtMicros)</span>
+                            @if (context.StartedAtMicros is { } start && context.CompletedAtMicros is { } finish)
+                            { <span class="jobs-run-tenant"> · @RunDuration(finish - start)</span> }
                         </MudTd>
                         <MudTd DataLabel="Actions" Class="text-right">
                             <span @onclick:stopPropagation="true">
@@ -308,6 +304,12 @@
 
 
 @code {
+    private static string RunDuration(long micros)
+    {
+        var duration = TimeSpan.FromMilliseconds(Math.Max(0, micros) / 1000d);
+        return duration.TotalMinutes < 1 ? $"{duration.TotalSeconds:0.#}s" : duration.TotalHours < 1 ? $"{(int)duration.TotalMinutes}m {duration.Seconds}s" : $"{(int)duration.TotalHours}h {duration.Minutes}m";
+    }
+
     [SupplyParameterFromQuery(Name = "search")]
     public string? Search { get; set; }
 
@@ -772,7 +774,7 @@
     {
         if (job.Target is { } target) return target.Source switch
         {
-            JobTargetSource.ExecutionGroup => "Execution group · all members",
+            JobTargetSource.ExecutionGroup => "HA Group · one worker per run",
             JobTargetSource.ExplicitNodes => $"{target.AgentIds?.Distinct().Count() ?? 0} selected nodes",
             JobTargetSource.NodeFilter => "Node filter",
             JobTargetSource.RuntimeInput => "Provided at run time",
@@ -786,7 +788,7 @@
 
     private static string GetClientTooltip(JobDto job) => job.Target?.Source switch
     {
-        JobTargetSource.ExecutionGroup => $"Group {job.Target.ExecutionGroupId}",
+        JobTargetSource.ExecutionGroup => "HA Group: each run uses one healthy worker, balanced across the pool.",
         JobTargetSource.NodeFilter => job.Target.Filter ?? string.Empty,
         JobTargetSource.RuntimeInput => $"{job.Target.RuntimeInput?.Name}: {job.Target.RuntimeInput?.Kind}",
         JobTargetSource.ExplicitNodes => $"{job.Target.AgentIds?.Count ?? 0} stable client identities",
