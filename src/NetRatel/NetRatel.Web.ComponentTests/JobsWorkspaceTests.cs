@@ -207,14 +207,14 @@ public sealed class JobsWorkspaceTests : AsyncBunitContext
     public async Task Cancel_keep_editing_retains_draft_and_explicit_discard_closes()
     {
         var (cut, reference) = await OpenEditorAsync(jobId: 42);
-        Name(cut).Change("Draft to keep");
-        Button(cut, "Cancel").Click();
+        await cut.InvokeAsync(() => Name(cut).Change("Draft to keep"));
+        await cut.InvokeAsync(() => Button(cut, "Cancel").Click());
         _dialogs.WaitForElement(".mud-message-box");
-        Button(_dialogs, "Keep editing").Click();
+        await _dialogs.InvokeAsync(() => Button(_dialogs, "Keep editing").Click());
         Name(cut).GetAttribute("value").Should().Be("Draft to keep");
-        Button(cut, "Cancel").Click();
+        await cut.InvokeAsync(() => Button(cut, "Cancel").Click());
         _dialogs.WaitForElement(".mud-message-box");
-        Button(_dialogs, "Discard").Click();
+        await _dialogs.InvokeAsync(() => Button(_dialogs, "Discard").Click());
         (await reference.Result)!.Canceled.Should().BeTrue();
         _transport.UpdateCalls.Should().Be(0);
     }
