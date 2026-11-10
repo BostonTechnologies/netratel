@@ -70,7 +70,7 @@ public static partial class JobRunEndpoints
             if (!string.IsNullOrWhiteSpace(search)) q = q.Where(x => $"{x.JobName} {x.TenantDisplayName} {x.ClientDisplayName} {x.Id}".Contains(search, StringComparison.OrdinalIgnoreCase));
             var total = q.Count(); return Results.Ok(new PagedJobRunsDto(q.OrderByDescending(x => x.CreatedAtMicros).Skip(Math.Max(0, page) * Math.Clamp(pageSize, 1, 100)).Take(Math.Clamp(pageSize, 1, 100)).ToList(), total));
         });
-        group.MapGet("/{id:long}/steps", async (ulong id, HttpContext http, [FromServices] IEffectiveAccessService access, IJobRunService runs, OrchestratorDbContext db, CancellationToken ct) =>
+        group.MapGet("/{id:long}/steps", async (ulong id, HttpContext http, [FromServices] IEffectiveAccessService access, IJobRunService runs, [FromServices] OrchestratorDbContext db, CancellationToken ct) =>
         {
             var detail = await runs.GetDetailsAsync(id, ct); if (detail is null) return Results.NotFound();
             if (!await CanManageAsync(http, access, detail.Run.TenantId, ct)) return Results.Forbid();
@@ -85,7 +85,7 @@ public static partial class JobRunEndpoints
             }
             return Results.Ok(detail.Steps.OrderBy(x => x.Ordinal).Select(x => MapStepRun(x, detail.Activities.FirstOrDefault(a => a.RequestId == x.TaskRequestId))));
         });
-        group.MapGet("/{id:long}/steps/{ordinal:int}/logs", async (ulong id, int ordinal, HttpContext http, [FromServices] IEffectiveAccessService access, IJobRunService runs, OrchestratorDbContext db, CancellationToken ct) =>
+        group.MapGet("/{id:long}/steps/{ordinal:int}/logs", async (ulong id, int ordinal, HttpContext http, [FromServices] IEffectiveAccessService access, IJobRunService runs, [FromServices] OrchestratorDbContext db, CancellationToken ct) =>
         {
             var detail = await runs.GetDetailsAsync(id, ct); if (detail is null) return Results.NotFound();
             if (!await CanManageAsync(http, access, detail.Run.TenantId, ct)) return Results.Forbid();
