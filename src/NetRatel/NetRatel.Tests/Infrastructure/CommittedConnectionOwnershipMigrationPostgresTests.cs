@@ -56,6 +56,7 @@ public sealed partial class CommittedConnectionOwnershipMigrationPostgresTests(P
     private const string FlowDeletionMigration = "20261107094602_AddFlowDeletion";
     private const string FlowDeletionAuditCorrelationMigration = "20261107100937_AddFlowDeletionAuditCorrelation";
     private const string JobTargetPlansMigration = "20261110053148_AddJobTargetPlans";
+    private const string ExecutionGroupsMigration = "20261110054634_AddExecutionGroups";
 
     [Fact]
     public async Task True_foundation_upgrade_preserves_legacy_jobs_and_matches_fresh_pre_pairing_schema()
@@ -212,7 +213,7 @@ public sealed partial class CommittedConnectionOwnershipMigrationPostgresTests(P
                 .Append(ScopeOrchestrationExecutionAttemptsMigration).Append(PairedCatalogInputPresentationMigration).Append(CallbackTerminalRejectionMigration).Append(RetainJobDefinitionHistoryMigration)
                 .Append(ComputerUseSessionsMigration).Append(IntegrationPolicyHierarchyMigration).Append(SoftwareInventoryMigration)
                 .Append(ConversationTraceAndScriptPlacementMigration).Append(TenantAndUpdateRetirementMigration).Append(ExecutionAdmissionsMigration).Append(FlowExecutionPinsMigration).Append(ScriptExecutionDispatchMigration).Append(ScriptExecutionReplayMigration)
-                .Append(FlowDeletionMigration).Append(FlowDeletionAuditCorrelationMigration).Append(JobTargetPlansMigration),
+                .Append(FlowDeletionMigration).Append(FlowDeletionAuditCorrelationMigration).Append(JobTargetPlansMigration).Append(ExecutionGroupsMigration),
             "registered history retains the exact historical ownership range followed by pairing, client metadata/offboarding, notification connectors, client operations, Netclaw investigations, tenant prompts, AI flow continuations and local client release deletion");
         // These historical Down/Up proofs explicitly stop at the shipped native-refresh range.
         // Later pairing, client metadata/offboarding, notification connector, client operation,
