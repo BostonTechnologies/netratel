@@ -1,5 +1,4 @@
 using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -49,9 +48,10 @@ public sealed record JobTargetDefinition
             {
                 JobTargetSource.ExecutionGroup => ExecutionGroupId is null || ExecutionGroupId == Guid.Empty,
                 JobTargetSource.ExplicitNodes => AgentIds is null || AgentIds.Count is < 1 or > 10_000 || AgentIds.Contains(Guid.Empty),
-                JobTargetSource.NodeFilter => string.IsNullOrWhiteSpace(Filter) || Filter.Length > 8192,
+                JobTargetSource.NodeFilter => string.IsNullOrWhiteSpace(Filter) || Filter.Length > 4096,
                 JobTargetSource.RuntimeInput => RuntimeInput is null || !Enum.IsDefined(RuntimeInput.Kind) ||
                     string.IsNullOrWhiteSpace(RuntimeInput.Name) || RuntimeInput.Name.Length > 128 ||
+                    RuntimeInput.Name.Any(character => !char.IsAsciiLetterOrDigit(character) && character is not ('_' or '-')) ||
                     RuntimeInput.DefaultValues?.Count > 10_000 ||
                     RuntimeInput.DefaultValues?.Any(value => string.IsNullOrWhiteSpace(value) || value.Length > 1024) == true ||
                     RuntimeInput.AllOf && RuntimeInput.Kind is not (JobRuntimeTargetKind.Tag or JobRuntimeTargetKind.Tags),
@@ -92,6 +92,13 @@ public sealed record JobResolvedTargetPlan
         JobTargetDefinition target, long? groupRevision, IReadOnlyList<JobTargetBindingProvenance> bindings,
         IReadOnlyList<JobTargetNode> nodes, JobExecutionPolicy executionPolicy)
     {
+        ArgumentNullException.ThrowIfNull(target);
+        ArgumentNullException.ThrowIfNull(executionPolicy);
+        ArgumentNullException.ThrowIfNull(bindings);
+        ArgumentNullException.ThrowIfNull(nodes);
+        if (string.IsNullOrWhiteSpace(definitionDigest) || bindings.Any(binding => binding is null) ||
+            nodes.Any(node => node is null || node.Tags is null || node.Tags.Any(tag => tag is null)))
+            throw new ArgumentException("The resolved job target plan contains missing material.");
         Version = version;
         TenantId = tenantId;
         JobId = jobId;
@@ -107,12 +114,23 @@ public sealed record JobResolvedTargetPlan
         GroupRevision = groupRevision;
         Bindings = Array.AsReadOnly(bindings.OrderBy(binding => binding.Name, StringComparer.Ordinal)
             .ThenBy(binding => binding.Source, StringComparer.Ordinal).ToArray());
-        Nodes = Array.AsReadOnly(nodes.GroupBy(node => node.AgentId).Select(group => group.First())
+        var frozenNodes = nodes.Select(node => node with
+            { Tags = Array.AsReadOnly(node.Tags.Order(StringComparer.OrdinalIgnoreCase).ToArray()) }).ToArray();
+        foreach (var duplicate in frozenNodes.GroupBy(node => node.AgentId))
+            if (duplicate.Skip(1).Any(node => !SameSnapshot(duplicate.First(), node)))
+                throw new ArgumentException("Duplicate target identities have conflicting presentation snapshots.");
+        Nodes = Array.AsReadOnly(frozenNodes.GroupBy(node => node.AgentId).Select(group => group.First())
             .OrderBy(node => node.Hostname, StringComparer.OrdinalIgnoreCase).ThenBy(node => node.AgentId)
-            .Select(node => node with { Tags = Array.AsReadOnly(node.Tags.Order(StringComparer.OrdinalIgnoreCase).ToArray()) }).ToArray());
+            .ToArray());
         ExecutionPolicy = executionPolicy;
         Validate();
     }
+
+    private static bool SameSnapshot(JobTargetNode left, JobTargetNode right)
+        => left.Hostname == right.Hostname && left.DisplayName == right.DisplayName && left.Name == right.Name &&
+           left.OperatingSystem == right.OperatingSystem && left.Architecture == right.Architecture &&
+           left.Environment == right.Environment && left.IsOnline == right.IsOnline && left.IsEnabled == right.IsEnabled &&
+           left.Tags.SequenceEqual(right.Tags, StringComparer.OrdinalIgnoreCase);
 
     public void Validate()
     {

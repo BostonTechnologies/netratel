@@ -113,7 +113,9 @@ public sealed class OperationsDashboardPostgresTests(PostgreSqlPersistenceFixtur
             db.JobRuns.AddRange(
                 new JobRunRecord { Id = 1, JobId = 1, TenantId = 1, CreatedAtUtc = now, Status = 2 },
                 new JobRunRecord { Id = 2, JobId = 2, TenantId = 1, CreatedAtUtc = now.AddSeconds(1), Status = 2 },
-                new JobRunRecord { Id = 3, JobId = 1, TenantId = 2, CreatedAtUtc = now.AddSeconds(2), Status = 2 });
+                new JobRunRecord { Id = 3, JobId = 1, TenantId = 2, CreatedAtUtc = now.AddSeconds(2), Status = 2 },
+                new JobRunRecord { Id = 4, JobId = 1, TenantId = 1, ParentRunId = 1,
+                    AgentId = Guid.NewGuid(), CreatedAtUtc = now.AddSeconds(3), Status = 2 });
             await db.SaveChangesAsync();
             (await new JobDefinitionService(db).DeleteAsync(1)).Should().NotBeNull();
         }

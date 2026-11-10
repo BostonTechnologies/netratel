@@ -3105,6 +3105,59 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.ToTable("FlowVersions", (string)null);
                 });
 
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.JobAggregateControlRecord", b =>
+                {
+                    b.Property<long>("ParentRunId")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTimeOffset?>("ActionDeadlineAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("AdmissionKey")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<DateTimeOffset?>("CancellationRequestedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<bool>("DispatchClosed")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("GateReason")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<string>("IntegrationCredentialId")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<string>("PrincipalId")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<long>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("SourceKind")
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<DateTimeOffset?>("TerminalReadyAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("TerminalResultHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.HasKey("ParentRunId");
+
+                    b.HasIndex("AdmissionKey")
+                        .IsUnique();
+
+                    b.ToTable("JobAggregateControls", (string)null);
+                });
+
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.JobDefinition", b =>
                 {
                     b.Property<long>("Id")
@@ -3129,6 +3182,9 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.Property<string>("Description")
                         .HasColumnType("text");
 
+                    b.Property<string>("ExecutionPolicyJson")
+                        .HasColumnType("text");
+
                     b.Property<string>("FolderPath")
                         .IsRequired()
                         .HasColumnType("text");
@@ -3138,6 +3194,9 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                         .HasColumnType("text");
 
                     b.Property<string>("OptionsJson")
+                        .HasColumnType("text");
+
+                    b.Property<string>("TargetJson")
                         .HasColumnType("text");
 
                     b.Property<int?>("TenantId")
@@ -3295,6 +3354,61 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                         });
                 });
 
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.JobRunNodeRecord", b =>
+                {
+                    b.Property<long>("ParentRunId")
+                        .HasColumnType("bigint");
+
+                    b.Property<Guid>("AgentId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset?>("ClaimedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("CompletedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long?>("NativeRunId")
+                        .HasColumnType("bigint");
+
+                    b.Property<int>("Ordinal")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Reason")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<DateTimeOffset?>("StartedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("State")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("TargetJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("integer");
+
+                    b.HasKey("ParentRunId", "AgentId");
+
+                    b.HasIndex("NativeRunId")
+                        .IsUnique();
+
+                    b.HasIndex("ParentRunId", "Ordinal")
+                        .IsUnique();
+
+                    b.HasIndex("ParentRunId", "State");
+
+                    b.ToTable("JobRunNodes", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_JobRunNodes_Identity", "\"TenantId\" > 0 AND \"AgentId\" <> '00000000-0000-0000-0000-000000000000'::uuid AND \"Ordinal\" > 0");
+
+                            t.HasCheckConstraint("CK_JobRunNodes_State", "\"State\" BETWEEN 0 AND 8");
+                        });
+                });
+
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.JobRunRecord", b =>
                 {
                     b.Property<long>("Id")
@@ -3316,6 +3430,10 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.Property<int>("CurrentStepOrdinal")
                         .HasColumnType("integer");
 
+                    b.Property<string>("DefinitionDigest")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
                     b.Property<int?>("Environment")
                         .HasColumnType("integer");
 
@@ -3328,11 +3446,17 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.Property<string>("InputsJson")
                         .HasColumnType("text");
 
+                    b.Property<bool>("IsAggregate")
+                        .HasColumnType("boolean");
+
                     b.Property<long>("JobId")
                         .HasColumnType("bigint");
 
                     b.Property<string>("OptionsJson")
                         .HasColumnType("text");
+
+                    b.Property<long?>("ParentRunId")
+                        .HasColumnType("bigint");
 
                     b.Property<string>("ProtectedExecutionJson")
                         .HasColumnType("text");
@@ -3356,6 +3480,13 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.Property<string>("TargetName")
                         .HasColumnType("text");
 
+                    b.Property<string>("TargetPlanDigest")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("TargetPlanJson")
+                        .HasColumnType("text");
+
                     b.Property<int?>("TenantId")
                         .HasColumnType("integer");
 
@@ -3367,11 +3498,19 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("JobId");
 
+                    b.HasIndex("ParentRunId");
+
                     b.HasIndex("TenantId");
+
+                    b.HasIndex("Id", "TenantId")
+                        .IsUnique();
 
                     b.HasIndex("TenantId", "AgentId", "CreatedAtUtc");
 
-                    b.ToTable("JobRuns", (string)null);
+                    b.ToTable("JobRuns", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_JobRuns_AggregateTarget", "NOT \"IsAggregate\" OR (\"AgentId\" IS NULL AND \"ParentRunId\" IS NULL AND \"TenantId\" IS NOT NULL)");
+                        });
                 });
 
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.JobShadowObservationRecord", b =>
@@ -7698,6 +7837,15 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                         .IsRequired();
                 });
 
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.JobAggregateControlRecord", b =>
+                {
+                    b.HasOne("NetRatel.Infrastructure.Persistence.JobRunRecord", null)
+                        .WithOne()
+                        .HasForeignKey("NetRatel.Infrastructure.Persistence.JobAggregateControlRecord", "ParentRunId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.JobGatewayLifecycleReceiptRecord", b =>
                 {
                     b.HasOne("NetRatel.Infrastructure.Persistence.JobRunRecord", null)
@@ -7727,6 +7875,20 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                         .IsRequired();
                 });
 
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.JobRunNodeRecord", b =>
+                {
+                    b.HasOne("NetRatel.Infrastructure.Persistence.JobRunRecord", null)
+                        .WithMany()
+                        .HasForeignKey("NativeRunId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("NetRatel.Infrastructure.Persistence.JobRunRecord", null)
+                        .WithMany()
+                        .HasForeignKey("ParentRunId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.JobRunRecord", b =>
                 {
                     b.HasOne("NetRatel.Infrastructure.Persistence.JobDefinition", "Job")
@@ -7734,6 +7896,11 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                         .HasForeignKey("JobId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
+
+                    b.HasOne("NetRatel.Infrastructure.Persistence.JobRunRecord", null)
+                        .WithMany()
+                        .HasForeignKey("ParentRunId")
+                        .OnDelete(DeleteBehavior.Restrict);
 
                     b.Navigation("Job");
                 });

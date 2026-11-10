@@ -22,7 +22,7 @@ public sealed class OperationsRecentJobsService(IEffectiveAccessService access, 
         var rows = await (from run in db.JobRuns.AsNoTracking()
                           join job in db.Jobs.IgnoreQueryFilters().AsNoTracking() on run.JobId equals job.Id into definitions
                           from job in definitions.DefaultIfEmpty()
-                          where run.TenantId == tenantId
+                          where run.TenantId == tenantId && run.ParentRunId == null
                           orderby run.CreatedAtUtc descending, run.Id descending
                           select new { run.Id, run.JobId, run.AgentId, run.Status,
                               StartedAtUtc = run.StartedAtUtc ?? run.CreatedAtUtc,

@@ -58,7 +58,7 @@ public sealed class JobDefinitionService(OrchestratorDbContext db) : IJobDefinit
             AgentId = command.Target is null ? command.AgentId : null,
             TargetJson = command.Target is null ? null : JsonSerializer.Serialize(command.Target, JobTargetJsonContext.Default.JobTargetDefinition),
             ExecutionPolicyJson = command.ExecutionPolicy is null ? null : JsonSerializer.Serialize(command.ExecutionPolicy, JobTargetJsonContext.Default.JobExecutionPolicy),
-            ClientIdentity = command.ClientIdentity.Trim(),
+            ClientIdentity = command.Target is null ? command.ClientIdentity.Trim() : string.Empty,
             OptionsJson = NormalizeNullable(command.OptionsJson),
             CreatedAtUtc = now,
             UpdatedAtUtc = now
