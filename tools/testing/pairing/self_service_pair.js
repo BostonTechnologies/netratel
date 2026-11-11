@@ -139,7 +139,7 @@ module.exports = async function selfServicePair(h) {
         const workflow = document.querySelector('[data-testid="request-workflow-summary"]');
         const header = document.querySelector('[data-testid="request-committed-state"]');
         return row?.textContent?.includes(failed ? 'Failed' : 'Completed') &&
-          workflow?.textContent?.includes(failed ? 'Blocked' : 'Completed') &&
+          workflow?.textContent?.includes(failed ? 'Failed' : 'Completed') &&
           header?.textContent?.toLowerCase().includes(failed ? 'on hold' : 'resolved');
       }, { taskId, failed }, { timeout: 120000, polling: 50 }).then(() => ({ observedAt: Date.now() }), error => ({ error }));
       const admissionKey = [submitted.requestId, taskId, admitted.automationAttemptCorrelationId].join(':');
