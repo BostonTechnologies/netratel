@@ -5,6 +5,9 @@ using NetRatel.Infrastructure.Identity;
 using NetRatel.Infrastructure.Identity.Authorization;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Shared.SystemPairing;
+using NetRatel.Infrastructure.Services;
+using System.Text.Json;
+using NetRatel.Shared.Contracts.Jobs;
 namespace NetRatel.Infrastructure.SystemPairing;
 
 public sealed class PairingAuthority(IEffectiveAccessService access, NetRatelIdentityDbContext identity, OrchestratorDbContext db)
@@ -57,16 +60,33 @@ public sealed class PairingAuthority(IEffectiveAccessService access, NetRatelIde
     public async Task<PairingResourceConstraints> ResourcesAsync(int tenant, CancellationToken ct)
     {
         var agents = await db.Agents.AsNoTracking().Where(x => x.TenantId == tenant && x.IsEnabled && x.Status == AgentStatus.Active && x.RevokedAtUtc == null && x.DeletedAtUtc == null && x.SupersededAtUtc == null && x.SupersededByAgentId == null).Select(x => x.Id).ToArrayAsync(ct);
-        var jobs = await db.Jobs.AsNoTracking().Where(x => x.TenantId == tenant && x.AgentId != null && agents.Contains(x.AgentId.Value)).Select(x => new { x.Id, x.AgentId }).ToArrayAsync(ct);
-        return new() { TenantId = tenant.ToString(CultureInfo.InvariantCulture), ResourceIds = jobs.Select(x => x.AgentId!.Value.ToString("D")).Distinct().Order(StringComparer.Ordinal).ToArray(), RequestDefinitionIds = jobs.Select(x => x.Id.ToString(CultureInfo.InvariantCulture)).Order(StringComparer.Ordinal).ToArray() };
+        var jobs = await db.Jobs.AsNoTracking().Where(x => x.TenantId == tenant).ToArrayAsync(ct);
+        var allowedJobs = new List<string>();
+        var resources = new HashSet<Guid>();
+        foreach (var job in jobs)
+        {
+            JobTargetDefinition? target;
+            try { target = job.TargetJson is null ? null : JsonSerializer.Deserialize(job.TargetJson, JobTargetJsonContext.Default.JobTargetDefinition); }
+            catch (JsonException) { continue; }
+            if (target is null && job.AgentId is null || !await PairedJobTargets.ValidAsync(db, tenant, target, job.AgentId, job.ClientIdentity, ct)) continue;
+            allowedJobs.Add(job.Id.ToString(CultureInfo.InvariantCulture));
+            if (target is null)
+                resources.Add((await PairedJobTargets.LegacyAgentAsync(db, tenant, job.AgentId, job.ClientIdentity, ct))!.Value);
+            else if (target.Source == JobTargetSource.ExplicitNodes) resources.UnionWith(target.AgentIds!);
+            else if (target.Source == JobTargetSource.ExecutionGroup)
+                resources.UnionWith(await db.ExecutionGroupMembers.AsNoTracking().Where(member => member.TenantId == tenant &&
+                    member.GroupId == target.ExecutionGroupId && agents.Contains(member.AgentId)).Select(member => member.AgentId).ToArrayAsync(ct));
+            else resources.UnionWith(agents); // Tenant-owned selectors/runtime operands are resolved again at admission.
+        }
+        return new() { TenantId = tenant.ToString(CultureInfo.InvariantCulture), ResourceIds = resources.Select(id => id.ToString("D")).Order(StringComparer.Ordinal).ToArray(), RequestDefinitionIds = allowedJobs.Order(StringComparer.Ordinal).ToArray() };
     }
     public async Task<bool> ResourcesCurrentAsync(int tenant, PairingResourceConstraints constraints, CancellationToken ct)
     {
         if (constraints.TenantId != tenant.ToString(CultureInfo.InvariantCulture) || constraints.OrganizationId is not null || constraints.CustomerIds.Length != 0 || constraints.RequestIds.Length != 0 || constraints.TaskIds.Length != 0 || constraints.ResourceIds is null || constraints.RequestDefinitionIds is null) return false;
-        var resources = new List<Guid>(); var jobs = new List<long>();
-        foreach (var value in constraints.ResourceIds) { if (!Guid.TryParseExact(value, "D", out var id) || resources.Contains(id)) return false; resources.Add(id); }
-        foreach (var value in constraints.RequestDefinitionIds) { if (!long.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var id) || id <= 0 || jobs.Contains(id)) return false; jobs.Add(id); }
-        if (await db.Agents.AsNoTracking().CountAsync(x => resources.Contains(x.Id) && x.TenantId == tenant && x.IsEnabled && x.Status == AgentStatus.Active && x.RevokedAtUtc == null && x.DeletedAtUtc == null && x.SupersededAtUtc == null && x.SupersededByAgentId == null, ct) != resources.Count) return false;
-        return await db.Jobs.AsNoTracking().CountAsync(x => jobs.Contains(x.Id) && x.TenantId == tenant && x.AgentId != null && resources.Contains(x.AgentId.Value), ct) == jobs.Count;
+        var current = await ResourcesAsync(tenant, ct);
+        return constraints.ResourceIds.Distinct(StringComparer.Ordinal).Count() == constraints.ResourceIds.Length &&
+            constraints.RequestDefinitionIds.Distinct(StringComparer.Ordinal).Count() == constraints.RequestDefinitionIds.Length &&
+            constraints.ResourceIds.All(id => current.ResourceIds.Contains(id, StringComparer.Ordinal)) &&
+            constraints.RequestDefinitionIds.All(id => current.RequestDefinitionIds.Contains(id, StringComparer.Ordinal));
     }
 }

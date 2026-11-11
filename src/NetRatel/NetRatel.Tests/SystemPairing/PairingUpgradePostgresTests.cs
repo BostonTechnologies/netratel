@@ -15,6 +15,44 @@ namespace NetRatel.Tests.SystemPairing;
 [Collection(PostgreSqlPersistenceCollection.Name)]
 public sealed class PairingUpgradePostgresTests(PostgreSqlPersistenceFixture postgres)
 {
+    [Fact]
+    public async Task Managed_aggregate_upgrade_preserves_existing_single_agent_attempt_and_pending_callback()
+    {
+        var connection = await postgres.CreateDatabaseAsync();
+        await using var db = new OrchestratorDbContext(new DbContextOptionsBuilder<OrchestratorDbContext>().UseNpgsql(connection).Options);
+        await db.GetService<IMigrator>().MigrateAsync("20261110142747_AddHaGroupWorkerCursor");
+        var history = (await db.Database.GetAppliedMigrationsAsync()).ToArray();
+        var request = new RequestRecord { SourceSystem = "service:synthetic", TargetClientIdentity = "retained-agent", JobDefinitionId = "9007199254740995", Status = "running", Logs = [], CreatedAtUtc = DateTimeOffset.UtcNow, UpdatedAtUtc = DateTimeOffset.UtcNow };
+        db.Requests.Add(request);
+        await db.SaveChangesAsync();
+        var principal = Guid.NewGuid(); var agent = Guid.NewGuid();
+        await db.Database.ExecuteSqlInterpolatedAsync($"""
+            INSERT INTO "ManagedOrchestrationRequestBindings"
+                ("RequestId", "ServicePrincipalId", "TenantId", "AgentId", "JobDefinitionId", "ExecutionId",
+                 "ParentRequestId", "RequestTaskId", "CorrelationId", "IngestFingerprint", "LinkId", "LinkRevision",
+                 "GrantHash", "PeerInstanceId", "PeerTenantId", "CallbackUrl", "CreatedAtUtc")
+            VALUES ({request.Id}, {principal}, 23, {agent}, '9007199254740995', '9007199254740993',
+                    'retained-request', 'retained-task', 'retained-attempt', {new string('a', 64)}, 'retained-connection', 7,
+                    {new string('b', 64)}, 'retained-peer', 'retained-organization', 'https://rd.example.test/callback', CURRENT_TIMESTAMP)
+            """);
+        db.Add(new OrchestrationCallbackDelivery { RequestId = request.Id, Phase = "running", NextAttemptAtUtc = DateTimeOffset.UtcNow, Attempts = 2, Revision = 3 });
+        await db.SaveChangesAsync();
+        await using var sql = new NpgsqlConnection(connection); await sql.OpenAsync();
+        await using var before = new NpgsqlCommand("SELECT to_jsonb(b)::text FROM \"ManagedOrchestrationRequestBindings\" b", sql);
+        var original = await before.ExecuteScalarAsync();
+
+        await db.Database.MigrateAsync(); db.ChangeTracker.Clear();
+
+        await using var after = new NpgsqlCommand("SELECT (to_jsonb(b) - 'TargetPlanDigest')::text FROM \"ManagedOrchestrationRequestBindings\" b", sql);
+        Assert.Equal(original, await after.ExecuteScalarAsync());
+        Assert.Equal(history.Append("20261111070535_AddManagedAggregateBindings"), await db.Database.GetAppliedMigrationsAsync());
+        var binding = await db.Set<ManagedOrchestrationRequestBinding>().SingleAsync();
+        Assert.Equal(agent, binding.AgentId); Assert.Null(binding.TargetPlanDigest);
+        var delivery = await db.Set<OrchestrationCallbackDelivery>().SingleAsync();
+        Assert.Equal(2, delivery.Attempts); Assert.Equal(3, delivery.Revision); Assert.Null(delivery.DeliveredAtUtc);
+        Assert.Equal("running", (await db.Requests.SingleAsync()).Status);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

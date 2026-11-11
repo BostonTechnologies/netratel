@@ -1,5 +1,15 @@
 # Release engineering
 
+## 0.1.5-beta.4 candidate — paired canonical job targets
+
+[Release notes](../release-notes/0.1.5-beta.4.md) cover the coordinated
+RatelDesk 0.1.3-beta.9 repair. Upgrade NetRatel first and retain existing saved
+pairing authority. The automatic additive migration preserves fixed-agent work
+while recording aggregate managed target plans. Follow the same reviewed exact-
+source build, authenticated receipts and hosted publication process below. All
+five image families, public assets, checksums and anonymous digest pulls remain
+required; functional deployment acceptance remains pending owner testing.
+
 All first-party components evaluate their product version from
 `Directory.Build.props`. Change the version there only. The component inventory
 is `release/release-manifest.json`; CI adds the derived version to the bundled

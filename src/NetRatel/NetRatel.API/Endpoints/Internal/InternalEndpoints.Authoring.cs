@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using NetRatel.API.Services.Orchestration;
 using NetRatel.Application.Jobs;
 using NetRatel.Infrastructure.Persistence;
+using NetRatel.Infrastructure.Services;
 
 namespace NetRatel.API.Endpoints;
 
@@ -16,14 +17,19 @@ public static partial class InternalEndpoints
             IJobDefinitionService jobs, OrchestratorDbContext db, CancellationToken ct) =>
         {
             var principal = await OrchestrationManagedAuthorization.ResolveAsync(http, OrchestrationManagedAuthorization.InvokeScope, ct);
-            if (principal is null) return Results.Forbid();
-            if (request.TenantId != principal.TenantId) return Results.Forbid();
-            if (!ValidCatalogText(request.Name, 256) || !ValidCatalogText(request.ClientIdentity, 256) ||
+            if (principal is null) return AutomationError(http, 403, "authoring", "access_denied");
+            if (request.TenantId != principal.TenantId) return AutomationError(http, 403, "authoring", "access_denied");
+            if (!ValidCatalogText(request.Name, 256) || request.Target is null && !ValidCatalogText(request.ClientIdentity, 256) ||
                 request.FolderPath is not { Length: > 0 and <= 512 } || request.FolderPath.Any(char.IsControl) ||
-                request.Description is { Length: > 2048 })
-                return Results.BadRequest(new { code = "invalid_request_definition" });
-            var target = await ResolveTargetAsync(db, principal.TenantId, request.ClientIdentity, ct);
-            if (target is null) return Results.Forbid();
+                request.Description is { Length: > 2048 } || !ValidCatalogInputs(request.Inputs) ||
+                request.Target is not null && (!string.IsNullOrWhiteSpace(request.ClientIdentity) || string.IsNullOrWhiteSpace(request.Command)) ||
+                request.Command is not null && (string.IsNullOrWhiteSpace(request.Command) || request.Command.Length > 65536 || request.Runner is not ("bash" or "pwsh" or "powershell" or "cmd")))
+                return AutomationError(http, 400, "create-job", "invalid_request_definition", "Choose a target and provide a supported runner, command and bounded job inputs.");
+            var agent = request.Target is null ? await PairedJobTargets.LegacyAgentAsync(db, principal.TenantId, null, request.ClientIdentity, ct) : null;
+            if (!await PairedJobTargets.ValidAsync(db, principal.TenantId, request.Target, agent, request.ClientIdentity, ct))
+                return AutomationError(http, 422, "create-job", "target_invalid", "Choose current nodes or an enabled execution group in this connection's tenant.");
+            try { request.ExecutionPolicy?.Validate(); }
+            catch (ArgumentException) { return AutomationError(http, 422, "create-job", "execution_policy_invalid"); }
 
             var name = request.Name.Trim();
             var folder = NormalizeCatalogFolder(request.FolderPath);
@@ -38,13 +44,34 @@ public static partial class InternalEndpoints
             if (existing is not null)
             {
                 var description = string.IsNullOrWhiteSpace(request.Description) ? null : request.Description.Trim();
-                if (existing.AgentId != target.AgentId || !string.Equals(existing.Description, description, StringComparison.Ordinal))
-                    return Results.Conflict(new { code = "request_definition_name_conflict" });
+                var existingInfo = await jobs.GetAsync(checked((ulong)existing.Id), ct);
+                var steps = await jobs.ListStepsAsync(checked((ulong)existing.Id), ct);
+                var parameters = await db.JobParameters.AsNoTracking().Where(row => row.JobId == existing.Id).ToArrayAsync(ct);
+                if (existing.AgentId != agent || !string.Equals(existing.Description, description, StringComparison.Ordinal) ||
+                    JsonSerializer.Serialize(existingInfo?.Target) != JsonSerializer.Serialize(request.Target) ||
+                    existingInfo?.ExecutionPolicy != request.ExecutionPolicy ||
+                    request.Command is not null && (steps.Count != 1 || steps[0].Command != request.Command || steps[0].Runner != request.Runner) ||
+                    parameters.Length != request.Inputs.Count || parameters.Any(row => !request.Inputs.Any(input =>
+                        row.Name == input.Key && (row.Label ?? row.Name) == input.Label && row.SortOrder == input.Order &&
+                        row.Type == input.Type && row.Required == input.Required && row.DefaultValue == input.DefaultValue &&
+                        row.Description == NormalizeOptional(input.HelpText) && row.OptionsJson == NormalizeOptional(input.OptionsJson))))
+                    return AutomationError(http, 409, "authoring", "request_definition_name_conflict");
                 var replay = await MapCatalogJobsAsync(db, [await jobs.GetAsync(checked((ulong)existing.Id), ct) ?? throw new InvalidOperationException("Existing definition disappeared.")], ct);
                 return Results.Ok(ToRequestDefinition(replay.Single()));
             }
             var created = await jobs.CreateAsync(new CreateJobDefinitionCommand(name, folder, request.Description,
-                principal.TenantId, string.Empty, AgentId: target.AgentId), ct);
+                principal.TenantId, string.Empty, AgentId: agent) { Target = request.Target, ExecutionPolicy = request.ExecutionPolicy }, ct);
+            if (request.Command is not null)
+                await jobs.AddStepAsync(new(created.Id, 1, JobStepKind.RunCommand, request.Runner, request.Command, null, null, true), ct);
+            foreach (var input in request.Inputs)
+                await jobs.AddParamAsync(new(created.Id, input.Key, input.Type, input.Required, input.DefaultValue, input.HelpText, input.OptionsJson), ct);
+            foreach (var parameter in await db.JobParameters.Where(row => row.JobId == checked((long)created.Id)).ToListAsync(ct))
+            {
+                var input = request.Inputs.Single(input => input.Key == parameter.Name);
+                parameter.Label = input.Label;
+                parameter.SortOrder = input.Order;
+            }
+            await db.SaveChangesAsync(ct);
             var catalog = await MapCatalogJobsAsync(db, [created], ct);
             if (transaction is not null) await transaction.CommitAsync(ct);
             return Results.Created($"/internal/catalog/request-definitions/{created.Id}", ToRequestDefinition(catalog.Single()));
@@ -55,18 +82,18 @@ public static partial class InternalEndpoints
             IJobDefinitionService jobs, OrchestratorDbContext db, CancellationToken ct) =>
         {
             var principal = await OrchestrationManagedAuthorization.ResolveAsync(http, OrchestrationManagedAuthorization.InvokeScope, ct);
-            if (principal is null) return Results.Forbid();
+            if (principal is null) return AutomationError(http, 403, "authoring", "access_denied");
             if (!ulong.TryParse(id, NumberStyles.None, CultureInfo.InvariantCulture, out var jobId) || jobId == 0 || jobId > long.MaxValue ||
                 jobId.ToString(CultureInfo.InvariantCulture) != id)
-                return Results.BadRequest(new { code = "invalid_request_definition_id" });
+                return AutomationError(http, 400, "authoring", "invalid_request_definition_id");
             var constraints = OrchestrationManagedAuthorization.Constraints(principal);
-            if (!constraints.RequestDefinitionIds.Contains(id, StringComparer.Ordinal)) return Results.Forbid();
             var job = await jobs.GetAsync(jobId, ct);
-            if (job is null || job.TenantId != principal.TenantId) return Results.Forbid();
+            if (job is null || job.TenantId != principal.TenantId) return AutomationError(http, 403, "authoring", "access_denied");
             var target = await ValidateTargetAsync(db, job, ct);
-            if (target is null || !constraints.ResourceIds.Contains(target.AgentId.ToString("D"), StringComparer.Ordinal))
-                return Results.Forbid();
-            if (!ValidCatalogInputs(request.Inputs)) return Results.BadRequest(new { code = "invalid_request_definition_inputs" });
+            if (target is null) return AutomationError(http, 422, "sync-inputs", "target_unavailable");
+            if (!constraints.RequestDefinitionIds.Contains(id, StringComparer.Ordinal) || target.AgentId is { } fixedAgent && !constraints.ResourceIds.Contains(fixedAgent.ToString("D"), StringComparer.Ordinal))
+                return AutomationError(http, 403, "authoring", "access_denied");
+            if (!ValidCatalogInputs(request.Inputs)) return AutomationError(http, 400, "sync-inputs", "invalid_request_definition_inputs");
 
             await using var transaction = db.Database.IsRelational() ? await db.Database.BeginTransactionAsync(ct) : null;
             if (db.Database.IsNpgsql())
@@ -76,13 +103,14 @@ public static partial class InternalEndpoints
                 await db.Database.ExecuteSqlInterpolatedAsync(
                     $"UPDATE \"Jobs\" SET \"UpdatedAtUtc\" = \"UpdatedAtUtc\" WHERE \"Id\" = {checked((long)jobId)}", ct);
             // Recheck the live target under the write fence, including revocation or a changed job assignment.
+            var originalTarget = JsonSerializer.Serialize(job.Target);
             job = await jobs.GetAsync(jobId, ct);
             if (job is null || job.TenantId != principal.TenantId ||
-                await ValidateTargetAsync(db, job, ct) is not { } currentTarget || currentTarget.AgentId != target.AgentId)
-                return Results.Forbid();
+                await ValidateTargetAsync(db, job, ct) is not { } currentTarget || currentTarget.AgentId != target.AgentId || JsonSerializer.Serialize(job.Target) != originalTarget)
+                return AutomationError(http, 403, "authoring", "access_denied");
             var rows = await db.JobParameters.Where(x => x.JobId == checked((long)jobId)).ToListAsync(ct);
             if (rows.Select(x => x.Name).Distinct(StringComparer.OrdinalIgnoreCase).Count() != rows.Count)
-                return Results.Conflict(new { code = "request_definition_existing_inputs_conflict" });
+                return AutomationError(http, 409, "authoring", "request_definition_existing_inputs_conflict");
             var desiredKeys = request.Inputs.Select(x => x.Key.Trim()).ToHashSet(StringComparer.OrdinalIgnoreCase);
             db.JobParameters.RemoveRange(rows.Where(row => !desiredKeys.Contains(row.Name)));
             foreach (var input in request.Inputs)

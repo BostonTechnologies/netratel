@@ -245,7 +245,8 @@ public static class ExecutionLifecycleOutbox
                 if (HasSubmission(db, request)) value = value with { DefinitionSourceKind = FlowExecutionSourceKind.Job };
                 if (LinkedJob(db, request) is { } run)
                 {
-                    value = CorrelateJob(value, run);
+                    value = CorrelateJob(value, run, run.IsAggregate && value.Target.AgentId is null
+                        ? db.Set<JobRunNodeRecord>().AsNoTracking().Where(node => node.ParentRunId == run.Id).ToArray() : []);
                     if (FlowExecutionOutcomes.FromAuthoritativeStatus(value.RawStatus) == FlowExecutionOutcome.TimedOut)
                         value = RequestTimeoutOutcome(value, run, Control(db, run));
                 }
@@ -270,7 +271,8 @@ public static class ExecutionLifecycleOutbox
                 if (await HasTrustedSubmissionAsync(db, request, ct)) value = value with { DefinitionSourceKind = FlowExecutionSourceKind.Job };
                 if (await LinkedJobAsync(db, request, ct) is { } run)
                 {
-                    value = CorrelateJob(value, run);
+                    value = CorrelateJob(value, run, run.IsAggregate && value.Target.AgentId is null
+                        ? await db.Set<JobRunNodeRecord>().AsNoTracking().Where(node => node.ParentRunId == run.Id).ToArrayAsync(ct) : []);
                     if (FlowExecutionOutcomes.FromAuthoritativeStatus(value.RawStatus) == FlowExecutionOutcome.TimedOut)
                         value = RequestTimeoutOutcome(value, run, await ControlAsync(db, run, ct));
                 }
@@ -293,7 +295,8 @@ public static class ExecutionLifecycleOutbox
         if (await HasTrustedSubmissionAsync(db, row, ct)) value = value with { DefinitionSourceKind = FlowExecutionSourceKind.Job };
         if (await LinkedJobAsync(db, row, ct) is { } run)
         {
-            value = CorrelateJob(value, run);
+            value = CorrelateJob(value, run, run.IsAggregate && value.Target.AgentId is null
+                ? await db.Set<JobRunNodeRecord>().AsNoTracking().Where(node => node.ParentRunId == run.Id).ToArrayAsync(ct) : []);
             if (FlowExecutionOutcomes.FromAuthoritativeStatus(value.RawStatus) == FlowExecutionOutcome.TimedOut)
                 value = RequestTimeoutOutcome(value, run, await ControlAsync(db, run, ct));
         }
@@ -492,7 +495,10 @@ public static class ExecutionLifecycleOutbox
         // Combined subscriptions wait for this known parent's terminal-ready result separately.
         return db.JobRuns.AsNoTracking().Where(run => run.Id == runId && run.JobId == jobId &&
             run.TenantId == row.TargetTenantId && run.StartedBy == row.SourceSystem &&
-            (run.AgentId == row.TargetAgentId || run.IsAggregate && run.AgentId == null && run.TargetPlanDigest != null &&
+            (run.AgentId == row.TargetAgentId && (!run.IsAggregate || row.TargetAgentId != null ||
+                db.Set<ManagedOrchestrationRequestBinding>().Any(binding => binding.RequestId == row.Id &&
+                    binding.AgentId == null && binding.TargetPlanDigest != null && binding.TargetPlanDigest == run.TargetPlanDigest)) ||
+                run.IsAggregate && run.AgentId == null && run.TargetPlanDigest != null &&
                 db.Set<JobRunNodeRecord>().Count(node => node.ParentRunId == run.Id) == 1 &&
                 db.Set<JobRunNodeRecord>().Any(node => node.ParentRunId == run.Id && node.TenantId == row.TargetTenantId &&
                     node.AgentId == row.TargetAgentId)));
@@ -673,38 +679,67 @@ public static class ExecutionLifecycleOutbox
         return value with { Target = target, Replay = value.Replay is not { } replay ? null : replay with { Target = target } };
     }
 
-    private static FlowExecutionEventDto CorrelateJob(FlowExecutionEventDto value, JobRunRecord run)
+    private static FlowExecutionEventDto CorrelateJob(FlowExecutionEventDto value, JobRunRecord run,
+        IReadOnlyList<JobRunNodeRecord> nodes)
     {
         var id = Decimal(run.Id);
         var metadata = JobRunInputProtection.Metadata(run);
         var definition = new FlowExecutionDefinitionDto(Decimal(run.JobId), Bound(metadata.DefinitionName, 512),
             metadata.DefinitionRevision, TrustedReplayHash(run, metadata));
         JobTargetNode? singleton = null;
+        FlowExecutionAggregateDto? aggregate = null;
         if (run.IsAggregate)
         {
             var plan = JsonSerializer.Deserialize<JobResolvedTargetPlan>(run.TargetPlanJson ?? "null",
                 new JsonSerializerOptions(JsonSerializerDefaults.Web));
             if (plan is null || plan.TenantId != value.TenantId || plan.JobId != checked((ulong)run.JobId) ||
-                plan.ComputeDigest() != run.TargetPlanDigest || plan.Nodes.Count != 1 || plan.Nodes[0].AgentId != value.Target.AgentId)
-                throw new InvalidOperationException("The correlated Request does not have its exact protected singleton target plan.");
-            singleton = plan.Nodes[0];
+                plan.ComputeDigest() != run.TargetPlanDigest || plan.DefinitionDigest != run.DefinitionDigest)
+                throw new InvalidOperationException("The correlated Request does not have its exact protected target plan.");
+            if (value.Target.AgentId is { } fixedAgent)
+            {
+                if (plan.Nodes.Count != 1 || plan.Nodes[0].AgentId != fixedAgent)
+                    throw new InvalidOperationException("The correlated Request does not have its exact protected singleton target plan.");
+                singleton = plan.Nodes[0];
+            }
+            else
+            {
+                if (run.AgentId is not null || run.ParentRunId is not null || nodes.Count != plan.Nodes.Count ||
+                    nodes.Any(node => node.TenantId != run.TenantId) ||
+                    !nodes.Select(node => node.AgentId).Order().SequenceEqual(plan.Nodes.Select(node => node.AgentId).Order()))
+                    throw new InvalidOperationException("The correlated aggregate Request differs from its frozen node set.");
+                var counts = Counts(nodes.Select(node => node.State));
+                // A mutable Request label cannot invent the parent's completed node facts.
+                // Its parent correlation remains usable before accepted aggregate completion.
+                if ((JobRunState)run.Status is not (JobRunState.Pending or JobRunState.Running) &&
+                    counts.Queued == 0 && counts.Running == 0 &&
+                    (value.Outcome != FlowExecutionOutcome.Succeeded || counts.Succeeded == nodes.Count))
+                    aggregate = new(nodes.Count, run.TargetPlanDigest!, counts);
+            }
         }
         var target = new FlowExecutionTargetDto(value.Target.AgentId,
             Bound(singleton?.DisplayName ?? run.TargetDisplayName ?? run.TargetName ?? value.Target.DisplayName, 512),
             Bound(singleton?.Hostname ?? run.TargetHostName ?? value.Target.HostName, 512));
+        var replay = JobReplay(run, definition, target);
+        if (run.IsAggregate && target.AgentId is null && aggregate is null)
+            replay = replay with { Supported = false, UnsupportedReason = "aggregate_result_not_terminal", TargetPlanDigest = null };
         return value with
         {
             CorrelationId = "job-run:" + id, ParentExecutionId = id, RootExecutionId = id, AttemptId = id,
-            Definition = definition, DefinitionSourceKind = FlowExecutionSourceKind.Job, Target = target, Replay = JobReplay(run, definition, target)
+            Definition = definition, DefinitionSourceKind = FlowExecutionSourceKind.Job, Target = target, Replay = replay, Aggregate = aggregate
         };
     }
 
-    private static JobRunNodeCountsDto Counts(IReadOnlyList<JobRunNodeDto> nodes) => new(
-        nodes.Count(node => node.State == JobRunNodeState.NeverStarted),
-        nodes.Count(node => node.State is JobRunNodeState.Claimed or JobRunNodeState.Running),
-        nodes.Count(node => node.State == JobRunNodeState.Succeeded), nodes.Count(node => node.State == JobRunNodeState.Failed),
-        nodes.Count(node => node.State == JobRunNodeState.Skipped), nodes.Count(node => node.State == JobRunNodeState.Cancelled),
-        nodes.Count(node => node.State == JobRunNodeState.TimedOut), nodes.Count(node => node.State == JobRunNodeState.Unknown));
+    private static JobRunNodeCountsDto Counts(IReadOnlyList<JobRunNodeDto> nodes) => Counts(nodes.Select(node => node.State));
+
+    private static JobRunNodeCountsDto Counts(IEnumerable<JobRunNodeState> states)
+    {
+        var counts = states.GroupBy(state => state).ToDictionary(group => group.Key, group => group.Count());
+        return new(counts.GetValueOrDefault(JobRunNodeState.NeverStarted),
+            counts.GetValueOrDefault(JobRunNodeState.Claimed) + counts.GetValueOrDefault(JobRunNodeState.Running),
+            counts.GetValueOrDefault(JobRunNodeState.Succeeded), counts.GetValueOrDefault(JobRunNodeState.Failed),
+            counts.GetValueOrDefault(JobRunNodeState.Skipped), counts.GetValueOrDefault(JobRunNodeState.Cancelled),
+            counts.GetValueOrDefault(JobRunNodeState.TimedOut), counts.GetValueOrDefault(JobRunNodeState.Unknown));
+    }
 
     private static string? TrustedReplayHash(JobRunRecord row, JobRunInputProtection.Sensitivity metadata) =>
         row.ProtectedExecutionJson is not null && metadata.PinnedReplayDefinitionHash is { Length: 64 } hash &&

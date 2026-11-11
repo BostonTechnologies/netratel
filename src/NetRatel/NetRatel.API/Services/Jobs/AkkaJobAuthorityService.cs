@@ -278,8 +278,14 @@ public sealed class AkkaJobAuthorityService(
         return StartCoreAsync(snapshot.Definition.Job.Id, request, null, null, cancellationToken, snapshot);
     }
 
-    public Task<JobRunInfo> StartManagedAsync(ulong jobId, RunJobRequest request, int recordedRequestId, ClaimsPrincipal principal, CancellationToken cancellationToken)
-        => StartCoreAsync(jobId, request, recordedRequestId, principal, cancellationToken);
+    public async Task<JobRunInfo> StartManagedAsync(ulong jobId, RunJobRequest request, int recordedRequestId, ClaimsPrincipal principal, CancellationToken cancellationToken)
+    {
+        if (db is not null && await db.Set<ManagedOrchestrationRequestBinding>().AsNoTracking()
+            .AnyAsync(row => row.RequestId == recordedRequestId && row.TargetPlanDigest != null, cancellationToken))
+            return await (aggregates ?? throw new ManagedOrchestrationGrantUnavailableException("Managed aggregate authority is unavailable."))
+                .StartManagedAsync(jobId, recordedRequestId, principal, cancellationToken);
+        return await StartCoreAsync(jobId, request, recordedRequestId, principal, cancellationToken);
+    }
 
     public async Task<JobRunInfo> StartRequestAsync(ulong jobId, RunJobRequest request, int recordedRequestId,
         CancellationToken cancellationToken)
@@ -674,7 +680,11 @@ public sealed class AkkaJobAuthorityService(
                     await db.SaveChangesAsync(cancellationToken);
                 }
             }
-            catch (AgentJobGatewaySessionUnavailableException) { }
+            catch (AgentJobGatewaySessionUnavailableException)
+            {
+                // Keep cancellation intent durable when the exact physical owner disappears.
+                NetRatelAkkaTelemetry.RecordAuthorityFailure(Feature, Authority, environment.EnvironmentName);
+            }
         }
         return true;
     }

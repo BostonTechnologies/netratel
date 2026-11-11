@@ -44,7 +44,8 @@ public static class FlowExecutionEventValidator
         {
             Hash(aggregate.TargetPlanDigest, "target_plan_hash");
             var counts = aggregate.Counts;
-            if (value.SourceKind != FlowExecutionSourceKind.Job ||
+            if (value.SourceKind != FlowExecutionSourceKind.Job &&
+                !(value.SourceKind == FlowExecutionSourceKind.Request && value.DefinitionSourceKind == FlowExecutionSourceKind.Job) ||
                 value.Target?.AgentId != aggregate.LegacyTargetAgentId ||
                 aggregate.LegacyTargetAgentId is { } legacy && (legacy == Guid.Empty || aggregate.TargetCount != 1) ||
                 aggregate.TargetCount is < 1 or > 10000 || aggregate.TargetPlanDigest is not { Length: 64 } || counts is null ||

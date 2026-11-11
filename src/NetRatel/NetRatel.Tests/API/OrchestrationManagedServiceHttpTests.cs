@@ -101,7 +101,7 @@ public sealed class OrchestrationManagedServiceHttpTests(PostgreSqlPersistenceFi
             Assert.Equal(HttpStatusCode.OK, (await client.PostAsJsonAsync("/internal/catalog/request-definitions", authoring)).StatusCode);
             Assert.Equal(HttpStatusCode.Forbidden, (await client.PostAsJsonAsync("/internal/catalog/request-definitions",
                 new { name = "Foreign", folderPath = "/", tenantId = 72, clientIdentity = otherAgent.ToString("D") })).StatusCode);
-            Assert.Equal(HttpStatusCode.Forbidden, (await client.PostAsJsonAsync("/internal/catalog/request-definitions",
+            Assert.Equal(HttpStatusCode.UnprocessableEntity, (await client.PostAsJsonAsync("/internal/catalog/request-definitions",
                 new { name = "Wrong agent", folderPath = "/", tenantId = 71, clientIdentity = otherAgent.ToString("D") })).StatusCode);
             var syncPath = $"/internal/catalog/request-definitions/{createdDto.RequestDefinitionId}/inputs/sync";
             var input = new NetRatelCatalogInputDefinitionDto { Key = "path", Label = "Target path", Type = "text", Required = true,
@@ -175,7 +175,11 @@ public sealed class OrchestrationManagedServiceHttpTests(PostgreSqlPersistenceFi
                 var oldRun = await db.JobRuns.SingleAsync();
                 oldRun.Status = (int)JobRunState.Failed;
                 (await db.Requests.SingleAsync()).Status = "Failed";
-                (await db.Set<JobRunControlRecord>().SingleAsync()).TerminalReadyAtUtc = DateTimeOffset.UtcNow;
+                var terminalControl = await db.Set<JobRunControlRecord>().SingleAsync();
+                terminalControl.TerminalReadyAtUtc = DateTimeOffset.UtcNow;
+                await db.SaveChangesAsync();
+                var terminalDetails = (await scope.ServiceProvider.GetRequiredService<IJobRunService>().GetDetailsAsync(checked((ulong)oldRun.Id)))!;
+                terminalControl.TerminalResultHash = OrchestrationCallbackProjection.ResultHash(terminalDetails);
                 await db.SaveChangesAsync();
             }
             var retries = await Task.WhenAll(
@@ -273,7 +277,10 @@ public sealed class OrchestrationManagedServiceHttpTests(PostgreSqlPersistenceFi
                 await db.SaveChangesAsync();
             }
             Assert.Empty((await client.GetFromJsonAsync<JsonElement>("/internal/catalog/jobs")).EnumerateArray());
-            Assert.Equal(HttpStatusCode.Forbidden, (await client.PostAsJsonAsync("/internal/ingest", Ingest("7001"))).StatusCode);
+            // Losing current eligibility cannot dispatch a new attempt, but an identical
+            // retry still observes its already recorded execution without another start.
+            Assert.Equal(HttpStatusCode.OK, (await client.PostAsJsonAsync("/internal/ingest", Ingest("7001"))).StatusCode);
+            Assert.Equal(HttpStatusCode.UnprocessableEntity, (await client.PostAsJsonAsync("/internal/ingest", Ingest("7001", correlation: "target-unavailable-attempt"))).StatusCode);
             Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/internal/health")).StatusCode);
             Assert.NotEmpty(await TokenAsync(client, credential, string.Join(' ', ServiceIdentityScopes.Business)));
             await using (var scope = app.Services.CreateAsyncScope())
@@ -291,7 +298,7 @@ public sealed class OrchestrationManagedServiceHttpTests(PostgreSqlPersistenceFi
     private static NetRatelIngestRequest Ingest(string definition, string payload = "{\"value\":1}", string? callback = null, string correlation = "corr-managed") => new()
     { RequestId = "parent-request", RequestTaskId = "parent-task", CorrelationId = correlation, NetRatelRequestDefinitionId = definition, NetRatelJobDefinitionId = definition, JobName = "Permitted job", PayloadJson = payload, CallbackUrl = callback };
 
-    private static async Task<WebApplication> StartAsync(string connection, string directory, ECDsa legacyKey)
+    internal static async Task<WebApplication> StartAsync(string connection, string directory, ECDsa legacyKey, Action<IServiceCollection>? configure = null)
     {
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = Environments.Production }); builder.WebHost.UseTestServer();
         builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
@@ -327,6 +334,7 @@ public sealed class OrchestrationManagedServiceHttpTests(PostgreSqlPersistenceFi
         builder.Services.AddSingleton<JobAuthorityIdGenerator>();
         builder.Services.AddScoped<IAkkaJobAuthorityService, RecordingAuthority>(); builder.Services.AddOrchestrationManagedServices();
         foreach (var worker in builder.Services.Where(item => item.ServiceType == typeof(OrchestrationCallbackReconciler) || item.ServiceType == typeof(IHostedService) && (item.ImplementationType == typeof(OrchestrationCallbackWorker) || item.ImplementationType == typeof(ManagedJobRunRecoveryWorker))).ToArray()) builder.Services.Remove(worker);
+        configure?.Invoke(builder.Services);
         var app = builder.Build(); app.UseAuthentication(); app.UseAuthorization(); app.UseRateLimiter(); app.MapInternalEndpoints(); app.MapSystemEndpoints(); app.MapM2MTokenEndpoints(); app.MapServiceIdentityMetadataEndpoints();
         app.MapGet("/broad-legacy", () => Results.Ok()).RequireAuthorization("M2MOnly"); await app.StartAsync(); return app;
     }
@@ -360,7 +368,7 @@ public sealed class OrchestrationManagedServiceHttpTests(PostgreSqlPersistenceFi
         public Task RecordLifecycleAsync(NetRatel.Application.Presence.ClientKey client, JobLifecycleUpdateEnvelope lifecycle, CancellationToken ct) => Task.CompletedTask;
         public Task<bool> CancelAsync(ulong id, string reason, CancellationToken ct) => Task.FromResult(false);
     }
-    private static async Task<string> TokenAsync(HttpClient client, CreatedServiceClient credential, string scope)
+    internal static async Task<string> TokenAsync(HttpClient client, CreatedServiceClient credential, string scope)
     {
         var response = await client.PostAsync("/connect/token", new FormUrlEncodedContent(new Dictionary<string, string>
         { ["grant_type"] = "client_credentials", ["client_id"] = credential.Principal.ClientId, ["client_secret"] = credential.ClientSecret, ["scope"] = scope }));

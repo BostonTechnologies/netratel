@@ -5,6 +5,8 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using NetRatel.API.Gateway;
+using NetRatel.API.Services.Orchestration;
+using System.Globalization;
 using NetRatel.Application.Jobs;
 using NetRatel.Application.Operations;
 using NetRatel.Application.Requests;
@@ -34,7 +36,7 @@ public sealed class JobAggregateOrchestrator(
     TimeProvider clock, IOptions<JobAggregateOptions> options, IHttpContextAccessor? http = null,
     IExecutionAdmissionStore? admissions = null, IKeyedExecutionAuthority? keyedAuthority = null,
     IMcpAggregateExecutionAuthority? mcpAuthority = null, IRequestService? requests = null,
-    HaGroupWorkerSelector? haWorkers = null) : IJobAggregatePump
+    HaGroupWorkerSelector? haWorkers = null, ManagedOrchestrationInvocationGuard? managedGuard = null) : IJobAggregatePump
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
@@ -98,6 +100,71 @@ public sealed class JobAggregateOrchestrator(
         await RequirePrincipalAsync(authority.PrincipalId, authority.CredentialId, plan, ct);
         return await PersistAsync(ids.Next(), snapshot, request, plan, key, authority.PrincipalId,
             authority.CredentialId, occurrenceId is null ? "manual" : "schedule", null, null, ct);
+    }
+
+    /// <summary>Ingress holds its task-attempt fence and commits this parent before waking the coordinator.</summary>
+    public async Task<JobRunInfo> PrepareManagedAsync(ulong jobId, NetRatelIngestRequest ingest,
+        ManagedOrchestrationRequestBinding binding, string inputs, ClaimsPrincipal principal, CancellationToken ct)
+    {
+        if (managedGuard is null || binding.AgentId is not null || binding.ExecutionId is not null ||
+            db.Database.IsRelational() && db.Database.CurrentTransaction is null)
+            throw new ManagedOrchestrationGrantUnavailableException("Managed aggregate admission requires a durable ingress transaction.");
+        var snapshot = await snapshots.CaptureAsync(jobId, binding.TenantId, ct);
+        await managedGuard.AuthorizeStartAsync(binding.RequestId, snapshot.Definition.Job, principal, ct);
+        if (snapshot.Definition.Job.Target is { Source: JobTargetSource.ExecutionGroup, ExecutionGroupId: { } groupId } && db.Database.IsNpgsql())
+        {
+            // Take the worker-selection lock before the resolver's membership read.
+            // Two different jobs in the same group must not both upgrade a shared lock.
+            await db.ExecutionGroups.FromSqlInterpolated($"SELECT * FROM \"ExecutionGroups\" WHERE \"TenantId\" = {binding.TenantId} AND \"Id\" = {groupId} FOR UPDATE")
+                .AsNoTracking().SingleOrDefaultAsync(ct);
+        }
+        var request = ManagedRequest(snapshot.Definition.Job, binding.SourceSystem, inputs) with
+        { ExpectedRuntimeSeconds = ingest.ExpectedRuntimeSeconds, GraceSeconds = ingest.GraceSeconds, HardTimeoutSeconds = ingest.HardTimeoutSeconds };
+        var plan = await ResolvePlanAsync(snapshot, request, ct);
+        var parent = await PersistAsync(ids.Next(), snapshot, request, plan,
+            $"managed:{binding.ServicePrincipalId:N}:{binding.RequestId}", null, null, "managed", null, clock.GetUtcNow().Add(JobExecutionRuntimePolicy.FromJobAndRequest(snapshot.Definition.Job, request).HardTimeout), ct, deferWakeup: true);
+        binding.ExecutionId = parent.Id.ToString(CultureInfo.InvariantCulture);
+        binding.TargetPlanDigest = parent.TargetPlanDigest;
+        await db.SaveChangesAsync(ct);
+        return parent;
+    }
+
+    public async Task<JobRunInfo> StartManagedAsync(ulong jobId, int requestId, ClaimsPrincipal principal, CancellationToken ct)
+    {
+        var binding = await db.Set<ManagedOrchestrationRequestBinding>().AsNoTracking().SingleAsync(row => row.RequestId == requestId, ct);
+        if (managedGuard is null || binding.TargetPlanDigest is null || !ulong.TryParse(binding.ExecutionId, out var id))
+            throw new ManagedOrchestrationGrantUnavailableException("The admitted managed parent is unavailable.");
+        var parent = await runs.GetAsync(id, ct) ?? throw new ManagedOrchestrationGrantUnavailableException("The admitted parent is unavailable.");
+        if (parent.JobId != jobId) throw new ManagedOrchestrationGrantUnavailableException("The admitted job differs from this invocation.");
+        var job = await definitions.GetAsync(jobId, ct) ?? throw new ManagedOrchestrationGrantUnavailableException("The managed job is unavailable.");
+        await managedGuard.AuthorizeStartAsync(requestId, job, principal, ct, id);
+        // Terminal and ambiguous responses are observations of this identity, never another admission.
+        if (!IsTerminal(parent.Status)) await wakeup.WakeAsync(id, ct);
+        return parent;
+    }
+
+    public static RunJobRequest ManagedRequest(JobDefinitionInfo job, string source, string? inputs)
+    {
+        JobRuntimeTargetInput? runtime = null;
+        if (job.Target?.RuntimeInput is { } schema && !string.IsNullOrWhiteSpace(inputs))
+        {
+            using var json = JsonDocument.Parse(inputs);
+            var root = json.RootElement;
+            if (root.TryGetProperty("input", out var nested) && nested.ValueKind == JsonValueKind.Object) root = nested;
+            if (root.TryGetProperty(schema.Name, out var value) && value.ValueKind != JsonValueKind.Null)
+            {
+                // Form mappings may transport a literal array as JSON text. It is data, never a selector expression.
+                if (value.ValueKind == JsonValueKind.String && value.GetString()?.TrimStart().StartsWith('[') == true)
+                {
+                    using var array = JsonDocument.Parse(value.GetString()!);
+                    runtime = new(schema.Kind, array.RootElement.EnumerateArray().Select(item => item.GetString() ?? string.Empty).ToArray(), schema.AllOf);
+                }
+                else runtime = new(schema.Kind, value.ValueKind == JsonValueKind.Array
+                    ? value.EnumerateArray().Select(item => item.GetString() ?? string.Empty).ToArray()
+                    : [value.GetString() ?? string.Empty], schema.AllOf);
+            }
+        }
+        return new(source, inputs, null) { RuntimeTarget = runtime };
     }
 
     public async Task<JobRunInfo> StartReviewedAsync(McpOperatorJobExecutionSnapshot snapshot,
@@ -222,10 +289,10 @@ public sealed class JobAggregateOrchestrator(
     private async Task<JobRunInfo> PersistAsync(ulong parentId, PinnedJobExecutionSnapshot snapshot,
         RunJobRequest request, JobResolvedTargetPlan plan, string? admissionKey, string? principalId,
         string? credentialId, string sourceKind, McpOperatorJobExecutionSnapshot? mcpSnapshot,
-        DateTimeOffset? actionDeadline, CancellationToken ct, int? sourceRequestId = null)
+        DateTimeOffset? actionDeadline, CancellationToken ct, int? sourceRequestId = null, bool deferWakeup = false)
     {
         // An advisory key also covers the absent-row case for same-occurrence reservations.
-        await using var transaction = db.Database.IsRelational() ? await db.Database.BeginTransactionAsync(ct) : null;
+        await using var transaction = db.Database.IsRelational() && db.Database.CurrentTransaction is null ? await db.Database.BeginTransactionAsync(ct) : null;
         if (db.Database.IsNpgsql())
         {
             var fence = admissionKey ?? $"aggregate:{parentId}";
@@ -291,7 +358,7 @@ public sealed class JobAggregateOrchestrator(
             await transaction.CommitAsync(ct);
             await transaction.DisposeAsync();
         }
-        await wakeup.WakeAsync(parentId, ct);
+        if (!deferWakeup) await wakeup.WakeAsync(parentId, ct);
         return (await runs.GetAsync(parentId, ct))!;
     }
 
@@ -452,6 +519,17 @@ public sealed class JobAggregateOrchestrator(
             if (snapshot?.TargetPlan is not { } approved || mcpAuthority is null || !plan.MatchesAdmissionPlan(approved))
                 throw new ExecutionAdmissionDeniedException("The reviewed aggregate authority is unavailable.");
             await mcpAuthority.RequireAllowedAsync(snapshot, agentId, ct);
+        }
+        else if (control.SourceKind == "managed")
+        {
+            try
+            {
+                if (managedGuard is null) throw new ManagedOrchestrationGrantUnavailableException("Managed authority is unavailable.");
+                await managedGuard.AuthorizeAggregateAsync((await runs.GetAsync(parentId, ct))!, plan,
+                    await runs.GetExecutionInputsAsync(parentId, ct), ct);
+            }
+            catch (Exception error) when (error is InvalidOperationException or ArgumentException or KeyNotFoundException)
+            { throw new ExecutionAdmissionDeniedException("The paired managed target or connection authority is no longer available."); }
         }
         else if (control.SourceKind == "legacy-schedule")
         {

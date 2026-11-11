@@ -53,7 +53,7 @@ public sealed class OrchestrationCallbackReconciler(OrchestratorDbContext db, IR
         var details = await runs.GetDetailsAsync(runId, ct);
         if (details is null || !OrchestrationCallbackProjection.Matches(request, details.Run, binding) ||
             !await OrchestrationCallbackProjection.TerminalReadyAsync(db, details, ct)) return;
-        var callback = OrchestrationCallbackProjection.Build(request, details, binding);
+        var callback = await OrchestrationCallbackProjection.BuildAsync(db, runs, request, details, binding, ct);
         var requestStatus = OrchestrationCallbackProjection.RequestStatus(details.Run.Status);
         if (request.Status != requestStatus)
         {
