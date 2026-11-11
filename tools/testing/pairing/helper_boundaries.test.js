@@ -13,3 +13,12 @@ test('unknown error types and stack locations cannot supply exported text', () =
   const actual = safeFailure({ constructor: { name: 'sensitive-response-body' }, stack: 'private-host:11:22' });
   assert.deepEqual(actual, { exceptionType: 'Error', reasonCode: 'actual_business_assertion_or_transport_failed', helperFile: null, helperLine: null });
 });
+const { admissionIdentity } = require('./admission_identity');
+test('admission observation matches production General JSON naming', () => {
+  const actualWireBody = { RequestId: 'request-1', RequestTaskId: 'task-1', CorrelationId: 'attempt-1', Payload: { private: 'ignored' } };
+  assert.equal(admissionIdentity(actualWireBody), 'request-1:task-1:attempt-1');
+});
+test('malformed admission identity fails without exporting the body', () => {
+  assert.throws(() => admissionIdentity({ RequestId: 'sensitive-response-body\n' }),
+    { message: 'The actual admission tuple must contain bounded fixture identities' });
+});

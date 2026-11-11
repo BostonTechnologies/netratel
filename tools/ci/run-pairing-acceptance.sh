@@ -38,7 +38,7 @@ command -v node >/dev/null
 command -v docker >/dev/null
 command -v openssl >/dev/null
 PAIRING_STAGE=helper-checks
-node --test "$PAIRING_HELPER_ROOT/safe_failure.test.js"
+node --test "$PAIRING_HELPER_ROOT/helper_boundaries.test.js"
 PAIRING_STAGE=build
 PAIRING_BUILD_LOG=''
 cleanup_failure() {

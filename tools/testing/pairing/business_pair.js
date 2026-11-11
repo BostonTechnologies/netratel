@@ -6,6 +6,7 @@ const http = require('http');
 const crypto = require('crypto');
 const child = require('child_process');
 const { safeFailure } = require('./safe_failure');
+const { admissionIdentity } = require('./admission_identity');
 function requiredDirectory(name) {
   const value = process.env[name];
   if (!value || !path.isAbsolute(value)) throw new Error(name + ' must explicitly select an absolute owned fixture/source directory');
@@ -124,9 +125,7 @@ async function runProxy(productName = 'rateldesk') {
       }
       if (productName === 'netratel' && incoming.method === 'POST' && incoming.url === '/internal/ingest') {
         const value = JSON.parse(body.toString('utf8'));
-        requireProof([value.requestId, value.requestTaskId, value.correlationId].every(id => typeof id === 'string' && /^[a-zA-Z0-9_.:-]{1,128}$/.test(id)),
-          'The actual admission tuple must contain bounded fixture identities');
-        const key = [value.requestId, value.requestTaskId, value.correlationId].join(':');
+        const key = admissionIdentity(value);
         admissionCounts.set(key, (admissionCounts.get(key) || 0) + 1);
       }
       if (productName === 'netratel' && blockReads && incoming.method === 'GET' && incoming.url.startsWith('/internal/executions/')) {
