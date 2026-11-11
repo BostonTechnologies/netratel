@@ -70,7 +70,7 @@ public sealed class OrchestrationManagedServiceHttpTests(PostgreSqlPersistenceFi
                 await PairingBusinessAuthorityFixture.SeedAdministratorAsync(scope.ServiceProvider.GetRequiredService<NetRatelIdentityDbContext>());
                 var registry = scope.ServiceProvider.GetRequiredService<IServicePrincipalRegistry>();
                 read = await PairingBusinessAuthorityFixture.CreateAsync(db, registry, 71, [ServiceIdentityScopes.OrchestrationRead], protection: scope.ServiceProvider.GetRequiredService<IDataProtectionProvider>());
-                invoke = await PairingBusinessAuthorityFixture.CreateAsync(db, registry, 71, [ServiceIdentityScopes.OrchestrationInvoke], protection: scope.ServiceProvider.GetRequiredService<IDataProtectionProvider>());
+                invoke = await PairingBusinessAuthorityFixture.CreateAsync(db, registry, 71, [ServiceIdentityScopes.OrchestrationInvoke, ServiceIdentityScopes.OrchestrationRead], protection: scope.ServiceProvider.GetRequiredService<IDataProtectionProvider>());
             }
             var client = app.GetTestClient();
             var readToken = await TokenAsync(client, read, ServiceIdentityScopes.OrchestrationRead);
@@ -155,6 +155,17 @@ public sealed class OrchestrationManagedServiceHttpTests(PostgreSqlPersistenceFi
             var duplicate = await client.PostAsJsonAsync("/internal/ingest", Ingest("7001")); duplicate.EnsureSuccessStatusCode();
             Assert.Equal(acknowledgement.ExecutionId, (await duplicate.Content.ReadFromJsonAsync<NetRatelIngestResponse>())!.ExecutionId);
             Assert.Equal(HttpStatusCode.Conflict, (await client.PostAsJsonAsync("/internal/ingest", Ingest("7001", payload: "{\"value\":2}"))).StatusCode);
+            var executionReadToken = await TokenAsync(client, invoke, ServiceIdentityScopes.OrchestrationRead);
+            var receiptPath = $"/internal/executions/{acknowledgement.RequestId}/{acknowledgement.ExecutionId}";
+            async Task<HttpResponseMessage> ReadReceiptAsync(string? route = null, string parent = "parent-request",
+                string task = "parent-task", string correlation = "corr-managed")
+            {
+                using var readRequest = new HttpRequestMessage(HttpMethod.Get, route ?? receiptPath);
+                readRequest.Headers.Add("X-RatelDesk-Request-Id", parent);
+                readRequest.Headers.Add("X-RatelDesk-Task-Id", task);
+                readRequest.Headers.Add("X-Correlation-Id", correlation);
+                return await client.SendAsync(readRequest);
+            }
             await using (var scope = app.Services.CreateAsyncScope())
             {
                 var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
@@ -163,18 +174,81 @@ public sealed class OrchestrationManagedServiceHttpTests(PostgreSqlPersistenceFi
                 // Reproduce a crash after durable run registration and before the request ACK projection.
                 (await db.Requests.SingleAsync()).ExecutionId = null; await db.SaveChangesAsync();
             }
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", executionReadToken);
+            using (var partialReceipt = await ReadReceiptAsync()) Assert.Equal(HttpStatusCode.NotFound, partialReceipt.StatusCode);
+            await using (var scope = app.Services.CreateAsyncScope())
+                Assert.Null((await scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>().Requests.SingleAsync()).ExecutionId);
+            Assert.Equal(1, app.Services.GetRequiredService<InvocationCounter>().Starts);
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", invokeToken);
             var recovered = await client.PostAsJsonAsync("/internal/ingest", Ingest("7001")); recovered.EnsureSuccessStatusCode();
             Assert.Equal(acknowledgement.ExecutionId, (await recovered.Content.ReadFromJsonAsync<NetRatelIngestResponse>())!.ExecutionId);
+            Assert.Equal(1, app.Services.GetRequiredService<InvocationCounter>().Starts);
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", executionReadToken);
+            using (var exactReceipt = await ReadReceiptAsync())
+            {
+                Assert.Equal(HttpStatusCode.OK, exactReceipt.StatusCode);
+                Assert.True(exactReceipt.Headers.CacheControl?.NoStore);
+                var row = await exactReceipt.Content.ReadFromJsonAsync<JsonElement>();
+                Assert.Equal(acknowledgement.ExecutionId, row.GetProperty("orchestrationRunId").GetString());
+                Assert.Equal("parent-task", row.GetProperty("requestTaskId").GetString());
+                Assert.Equal("corr-managed", row.GetProperty("correlationId").GetString());
+                Assert.Contains(row.GetProperty("status").GetString(), new[] { "pending", "running" });
+            }
+            // Status reconciliation must not trigger legacy input archival or terminal-hash repair.
+            foreach (var legacyRequest in new[] { true, false })
+            {
+                string? protectedRequest; string? protectedRun; string? previousHash; DateTimeOffset? previousReady;
+                await using (var scope = app.Services.CreateAsyncScope())
+                {
+                    var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+                    var request = await db.Requests.SingleAsync(); var run = await db.JobRuns.SingleAsync();
+                    var control = await db.Set<JobRunControlRecord>().SingleAsync();
+                    protectedRequest = request.ProtectedJobInputsJson; protectedRun = run.ProtectedExecutionJson;
+                    previousHash = control.TerminalResultHash; previousReady = control.TerminalReadyAtUtc;
+                    if (legacyRequest) request.ProtectedJobInputsJson = null;
+                    else run.ProtectedExecutionJson = null;
+                    control.TerminalReadyAtUtc = DateTimeOffset.UtcNow; control.TerminalResultHash = "unproven-hash-must-remain-unchanged";
+                    await db.SaveChangesAsync();
+                }
+                using var legacyReceipt = await ReadReceiptAsync();
+                Assert.Equal(HttpStatusCode.NotFound, legacyReceipt.StatusCode);
+                await using (var scope = app.Services.CreateAsyncScope())
+                {
+                    var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+                    var request = await db.Requests.SingleAsync(); var run = await db.JobRuns.SingleAsync();
+                    var control = await db.Set<JobRunControlRecord>().SingleAsync();
+                    if (legacyRequest) Assert.Null(request.ProtectedJobInputsJson);
+                    else Assert.Null(run.ProtectedExecutionJson);
+                    Assert.Equal("unproven-hash-must-remain-unchanged", control.TerminalResultHash);
+                    request.ProtectedJobInputsJson = protectedRequest; run.ProtectedExecutionJson = protectedRun;
+                    control.TerminalResultHash = previousHash; control.TerminalReadyAtUtc = previousReady;
+                    await db.SaveChangesAsync();
+                }
+                Assert.Equal(1, app.Services.GetRequiredService<InvocationCounter>().Starts);
+            }
+            foreach (var mismatch in new[]
+            {
+                (Route: receiptPath, Parent: "other-request", Task: "parent-task", Correlation: "corr-managed"),
+                (Route: receiptPath, Parent: "parent-request", Task: "other-task", Correlation: "corr-managed"),
+                (Route: receiptPath, Parent: "parent-request", Task: "parent-task", Correlation: "old-attempt"),
+                (Route: $"/internal/executions/{acknowledgement.RequestId}/1", Parent: "parent-request", Task: "parent-task", Correlation: "corr-managed")
+            })
+                Assert.Equal(HttpStatusCode.NotFound, (await ReadReceiptAsync(mismatch.Route, mismatch.Parent, mismatch.Task, mismatch.Correlation)).StatusCode);
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", readToken);
+            Assert.Equal(HttpStatusCode.NotFound, (await ReadReceiptAsync()).StatusCode);
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", invokeToken);
+            Assert.Equal(HttpStatusCode.Forbidden, (await ReadReceiptAsync()).StatusCode);
             Assert.Equal(1, app.Services.GetRequiredService<InvocationCounter>().Starts);
             var whileRunning = await client.PostAsJsonAsync("/internal/ingest", Ingest("7001", correlation: "new-attempt"));
             Assert.Equal(HttpStatusCode.Conflict, whileRunning.StatusCode);
             Assert.Contains("ingest_previous_attempt_not_terminal", await whileRunning.Content.ReadAsStringAsync());
-            await using (var scope = app.Services.CreateAsyncScope())
+            async Task SetProvenTerminalAsync(JobRunState state)
             {
+                await using var scope = app.Services.CreateAsyncScope();
                 var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
                 var oldRun = await db.JobRuns.SingleAsync();
-                oldRun.Status = (int)JobRunState.Failed;
-                (await db.Requests.SingleAsync()).Status = "Failed";
+                oldRun.Status = (int)state; oldRun.CompletedAtUtc = DateTimeOffset.UtcNow;
+                (await db.Requests.SingleAsync()).Status = OrchestrationCallbackProjection.RequestStatus(state);
                 var terminalControl = await db.Set<JobRunControlRecord>().SingleAsync();
                 terminalControl.TerminalReadyAtUtc = DateTimeOffset.UtcNow;
                 await db.SaveChangesAsync();
@@ -182,6 +256,54 @@ public sealed class OrchestrationManagedServiceHttpTests(PostgreSqlPersistenceFi
                 terminalControl.TerminalResultHash = OrchestrationCallbackProjection.ResultHash(terminalDetails);
                 await db.SaveChangesAsync();
             }
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", executionReadToken);
+            foreach (var (state, expected) in new[]
+            {
+                (JobRunState.Succeeded, "succeeded"), (JobRunState.Failed, "failed"),
+                (JobRunState.Cancelled, "cancelled"), (JobRunState.TimedOut, "failed"),
+                (JobRunState.Unknown, "unknown"), ((JobRunState)int.MaxValue, "unknown")
+            })
+            {
+                await SetProvenTerminalAsync(state);
+                using var terminalReceipt = await ReadReceiptAsync();
+                Assert.Equal(HttpStatusCode.OK, terminalReceipt.StatusCode);
+                Assert.True(terminalReceipt.Headers.CacheControl?.NoStore);
+                var row = await terminalReceipt.Content.ReadFromJsonAsync<JsonElement>();
+                Assert.Equal(expected, row.GetProperty("status").GetString());
+                Assert.Equal(expected == "unknown", row.GetProperty("completedAtUtc").ValueKind == JsonValueKind.Null);
+                if (state == JobRunState.TimedOut) Assert.Equal("Provider confirmed an execution timeout.", row.GetProperty("message").GetString());
+                Assert.Equal(1, app.Services.GetRequiredService<InvocationCounter>().Starts);
+            }
+            await SetProvenTerminalAsync(JobRunState.Failed);
+            foreach (var proof in new[] { "missing-hash", "different-hash", "missing-ready" })
+            {
+                string? savedHash; DateTimeOffset? savedReady;
+                await using (var scope = app.Services.CreateAsyncScope())
+                {
+                    var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+                    var control = await db.Set<JobRunControlRecord>().SingleAsync();
+                    savedHash = control.TerminalResultHash; savedReady = control.TerminalReadyAtUtc;
+                    if (proof == "missing-ready") control.TerminalReadyAtUtc = null;
+                    else control.TerminalResultHash = proof == "missing-hash" ? null : "different-unaccepted-hash";
+                    await db.SaveChangesAsync();
+                }
+                using var unproven = await ReadReceiptAsync();
+                Assert.Equal(HttpStatusCode.OK, unproven.StatusCode);
+                var row = await unproven.Content.ReadFromJsonAsync<JsonElement>();
+                Assert.Equal("unknown", row.GetProperty("status").GetString());
+                Assert.Equal(JsonValueKind.Null, row.GetProperty("completedAtUtc").ValueKind);
+                await using (var scope = app.Services.CreateAsyncScope())
+                {
+                    var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+                    var control = await db.Set<JobRunControlRecord>().SingleAsync();
+                    Assert.Equal(proof == "missing-hash" ? null : proof == "different-hash" ? "different-unaccepted-hash" : savedHash, control.TerminalResultHash);
+                    Assert.Equal(proof == "missing-ready" ? null : savedReady, control.TerminalReadyAtUtc);
+                    control.TerminalResultHash = savedHash; control.TerminalReadyAtUtc = savedReady;
+                    await db.SaveChangesAsync();
+                }
+            }
+            Assert.Equal(1, app.Services.GetRequiredService<InvocationCounter>().Starts);
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", invokeToken);
             var retries = await Task.WhenAll(
                 client.PostAsJsonAsync("/internal/ingest", Ingest("7001", correlation: "new-attempt")),
                 client.PostAsJsonAsync("/internal/ingest", Ingest("7001", correlation: "concurrent-attempt")));
@@ -204,6 +326,8 @@ public sealed class OrchestrationManagedServiceHttpTests(PostgreSqlPersistenceFi
             Assert.Equal(HttpStatusCode.Unauthorized, (await client.PostAsJsonAsync("/internal/ingest", Ingest("7001"))).StatusCode);
             Assert.Equal(HttpStatusCode.Unauthorized, (await client.PostAsJsonAsync("/internal/catalog/request-definitions", authoring)).StatusCode);
             Assert.Equal(HttpStatusCode.Unauthorized, (await client.PostAsJsonAsync(syncPath, new { inputs = new[] { input } })).StatusCode);
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", executionReadToken);
+            using (var revokedRead = await ReadReceiptAsync()) Assert.Equal(HttpStatusCode.Unauthorized, revokedRead.StatusCode);
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", readToken);
             Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/internal/catalog/jobs")).StatusCode);
             await using (var scope = app.Services.CreateAsyncScope())
