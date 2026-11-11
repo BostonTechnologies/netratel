@@ -60,17 +60,22 @@ when selecting resources, saving and using a business capability.
 
 ## Target-aware self-service automation
 
-The compatible pair is RatelDesk **0.1.3-beta.9** and NetRatel **0.1.5-beta.4**.
+The planned pair for durable deadline/receipt reconciliation is RatelDesk
+**0.1.3-beta.10** and NetRatel **0.1.5-beta.5**. Candidate release and paired
+acceptance gates remain pending; use their verified public artifacts after
+those gates complete. Existing catalogue, invocation and callback contracts
+from the **0.1.3-beta.9 / 0.1.5-beta.4** pair remain supported.
 Upgrade NetRatel first, complete its ordinary automatic database migrations and
 replace older API replicas before admitting modern automation. Then upgrade
 RatelDesk. Keep the current pairing, named tenant connections, primary
 organization, protected credentials and persistent keys. This upgrade needs no
 new credential, scope, manual policy/configuration change or re-pairing.
 
-NetRatel's additive migration permits an absent fixed agent and records the
-aggregate target-plan digest on managed bindings. Existing fixed-agent bindings,
-in-flight intents, callbacks and history retain their identities. RatelDesk adds
-no database migration for this repair and continues to support SQLite and
+The additive migration introduced in NetRatel **0.1.5-beta.4** permits an absent
+fixed agent and records the aggregate target-plan digest on managed bindings.
+Existing fixed-agent bindings, in-flight intents, callbacks and history retain
+their identities. NetRatel **0.1.5-beta.5** adds no schema migration; RatelDesk
+applies its own normal upgrade migrations and continues to support SQLite and
 PostgreSQL. Back up the databases and persistent keys through the normal upgrade
 procedure.
 
