@@ -37,7 +37,8 @@ public sealed class PairingLifecycleTests
         using var receipt = JsonDocument.Parse(await File.ReadAllTextAsync(receiptPath, TestContext.Current.CancellationToken));
         var stages = receipt.RootElement.GetProperty("stages");
         foreach (var stage in new[] { "pairedFromRatelDesk", "pairedFromNetRatel", "incidentReceiptReplay",
-            "nativeAutomationResult", "sideEffectFreeTest", "deleteWhilePeerOffline" })
+            "nativeAutomationResult", "nativeAggregateAutomationResult-explicit", "nativeAggregateAutomationResult-ha",
+            "sideEffectFreeTest", "deleteWhilePeerOffline" })
             Assert.Equal("passed", stages.GetProperty(stage).GetString());
         var sources = receipt.RootElement.GetProperty("sources");
         foreach (var product in new[] { "netratelSha", "rateldeskSha" })

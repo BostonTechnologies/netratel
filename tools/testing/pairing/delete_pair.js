@@ -54,7 +54,8 @@ async function main() {
     await login(nrPage, nr); await login(rdPage, rd);
     const baseline = counts();
     expect(baseline.incidentCount).toBe(1); expect(baseline.receiptCount).toBe(1);
-    expect(baseline.jobRunCount).toBe(1); expect(baseline.taskCount).toBe(1);
+    // One legacy run, two aggregate parent/child pairs and one task for each path.
+    expect(baseline.jobRunCount).toBe(5); expect(baseline.taskCount).toBe(3);
     const activeCredential = await control('cached-receiver-status');
     expect(activeCredential.status, 'The exact cached business credential must be accepted immediately before deletion').toBe(200);
     expect(counts(), 'Exact committed replay must preserve all business counts before deletion').toEqual(baseline);

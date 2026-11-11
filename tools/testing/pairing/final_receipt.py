@@ -37,7 +37,8 @@ def prepare():
                   'netratel-to-rateldesk-rendered-pair-and-single-save',
                   'side-effect-free-test-current-counts', 'deleteWhilePeerOffline']:
         require(statuses.get(stage) == 'passed', 'A real rendered acceptance stage has not passed: ' + stage)
-    for stage in ['incidentReceiptReplay', 'nativeAutomationResult']:
+    for stage in ['incidentReceiptReplay', 'nativeAutomationResult',
+                  'nativeAggregateAutomationResult-explicit', 'nativeAggregateAutomationResult-ha']:
         require(business['stages'].get(stage) == 'passed', 'A real native business stage has not passed: ' + stage)
     require(business['historyPreserved'] is True and business['resultReceived'] is True,
             'Durable real execution/result history was not verified')
@@ -73,6 +74,7 @@ def prepare():
     data = {'fixtureId': browser['fixtureId'], 'stages': {
         'pairedFromRatelDesk': 'passed', 'pairedFromNetRatel': 'passed',
         'incidentReceiptReplay': 'passed', 'nativeAutomationResult': 'passed',
+        'nativeAggregateAutomationResult-explicit': 'passed', 'nativeAggregateAutomationResult-ha': 'passed',
         'sideEffectFreeTest': 'passed', 'deleteWhilePeerOffline': 'passed'},
         'sources': {'netratelSha': nr_sha, 'rateldeskSha': rd_sha,
                     'netratelDirty': nr_dirty, 'rateldeskDirty': rd_dirty,
@@ -80,7 +82,10 @@ def prepare():
                     'runtimeAssemblySha256': {name: entry['runtimeAssemblySha256'] for name, entry in private_state['products'].items()},
                     'netratelClientBinarySha256': client_hash, 'cleanSourceRequired': clean_required},
         'result': {'incidentCount': business['incidentCount'], 'receiptCount': business['receiptCount'], 'executionId': str(business['executionId']),
-                   'resultReceived': True, 'historyPreserved': True, 'cleanupComplete': False}}
+                   'resultReceived': True, 'historyPreserved': True, 'cleanupComplete': False,
+                   'executions': [{key: row[key] for key in ['stage', 'executionId', 'nativeExitCode', 'callbackReplayHarmless']}
+                                  for row in business['results'] if row.get('stage') in [
+                                      'nativeAutomationResult', 'nativeAggregateAutomationResult-explicit', 'nativeAggregateAutomationResult-ha']]}}
     write(root / 'pending-receipt.json', data)
 
 def finalize():
