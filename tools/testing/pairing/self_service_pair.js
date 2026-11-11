@@ -2,6 +2,7 @@
 const path = require('path');
 const crypto = require('crypto');
 const child = require('child_process');
+const fs = require('fs');
 
 module.exports = async function selfServicePair(h) {
   const { runtimeRoot, fixture, state, nrApi, rdApi, connection, sample, apiJson, sql, literal,
@@ -77,6 +78,7 @@ module.exports = async function selfServicePair(h) {
       requireProof(submissionContext.canSubmit === true, 'The published form must be eligible for the actual rendered requester');
       await page.goto(web + '/self-service/request/' + form.id);
       await page.getByLabel('Synthetic choice', { exact: false }).fill('Opt1');
+      await page.getByLabel('Synthetic choice', { exact: false }).press('Tab');
       if (mode === 'on-behalf') {
         await page.getByRole('button', { name: 'Select', exact: true }).click();
         await page.getByPlaceholder('Search users').fill(ordinaryEmail);
@@ -87,7 +89,27 @@ module.exports = async function selfServicePair(h) {
       }
       await page.getByRole('button', { name: 'Submit', exact: true }).click();
       if (mode === 'on-behalf') await page.getByRole('button', { name: 'Yes', exact: true }).click();
-      await expect(page.getByRole('heading', { name: 'Request submitted', exact: true })).toBeVisible({ timeout: 90000 });
+      const submittedHeading = page.getByRole('heading', { name: 'Request submitted', exact: true });
+      try {
+        await submittedHeading.or(page.locator('.self-service-form-page [role="alert"]')).first().waitFor({ state: 'visible', timeout: 90000 });
+        await expect(submittedHeading).toBeVisible();
+      } catch (error) {
+        // Only fixed flags/counts and a masked synthetic page survive cleanup.
+        // Never export alert text, HTTP bodies, cookies or arbitrary exceptions.
+        const alerts = await page.locator('.self-service-form-page [role="alert"]').allTextContents();
+        const entered = page.getByLabel('Synthetic choice', { exact: false });
+        const diagnostic = { mode, receiptVisible: await page.getByTestId('submitted-request-receipt').count() > 0,
+          expectedInputPresent: await entered.count() === 1 && await entered.inputValue() === 'Opt1',
+          requiredFieldInvalid: await entered.count() === 1 && await entered.getAttribute('aria-invalid') === 'true',
+          requiredAlert: alerts.some(text => /complete.*required|required.*field/i.test(text)),
+          unconfirmedAlert: alerts.some(text => /could not confirm/i.test(text)),
+          signInAlert: alerts.some(text => /sign in|sign-in/i.test(text)),
+          counts: sql('rateldesk', `SELECT json_build_object('requests',(SELECT count(*) FROM "Tickets" WHERE "Discriminator"='Request' AND "RequestFormId"=${literal(form.id)}),'tasks',(SELECT count(*) FROM "Tickets" WHERE "Discriminator"='RequestTask' AND "RequestId" IN (SELECT "Id" FROM "Tickets" WHERE "RequestFormId"=${literal(form.id)})),'requesterLinks',(SELECT count(*) FROM "CustomerAuthLinks" WHERE "LocalAccountId"=${literal(requester.id)}))`) };
+        fs.writeFileSync(path.join(evidence, mode + '-rendered-failure.json'), JSON.stringify(diagnostic, null, 2), { mode: 0o600 });
+        await page.screenshot({ path: path.join(evidence, mode + '-rendered-failure.png'), fullPage: true, animations: 'disabled',
+          mask: [page.locator('input'), page.locator('textarea')] });
+        throw error;
+      }
       const receiptElement = page.getByTestId('submitted-request-receipt');
       const submitted = { requestId: await receiptElement.getAttribute('data-request-id'), trackingId: await receiptElement.getAttribute('data-tracking-id') };
       requireProof(submitted.requestId && submitted.trackingId, 'Rendered form must expose its real committed receipt');
