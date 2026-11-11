@@ -89,7 +89,8 @@ def prepare():
                 'Actual admission/retry uniqueness is not proven')
         require(row.get('nativeExitCode') == (42 if mode == 'self-failure' else 0), 'The intended native command outcome is missing')
         require(row.get('localStatus') == ('failed' if mode == 'self-failure' else 'succeeded'), 'The actual local terminal outcome is missing')
-        require(row.get('parentStatus') in ['Completed', 'Blocked', 'InProgress'], 'The actual parent workflow state is missing')
+        expected_parent = 'Failed' if mode == 'self-failure' else 'InProgress' if mode == 'lost-callback' else 'Completed'
+        require(row.get('parentStatus') == expected_parent, 'The intended parent workflow outcome is missing')
         require(row.get('requesterKind') in ['ordinary-local', 'local-administrator'], 'The rendered actor kind is missing')
         require(mode != 'self-success' or row.get('ordinaryMyRequestsVerified') is True, 'Ordinary request ownership is unproven')
         require(mode != 'on-behalf' or row.get('selectedPersonPreserved') is True, 'A distinct selected requester is unproven')

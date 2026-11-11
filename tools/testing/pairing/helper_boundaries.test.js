@@ -13,6 +13,13 @@ test('unknown error types and stack locations cannot supply exported text', () =
   const actual = safeFailure({ constructor: { name: 'sensitive-response-body' }, stack: 'private-host:11:22' });
   assert.deepEqual(actual, { exceptionType: 'Error', reasonCode: 'actual_business_assertion_or_transport_failed', helperFile: null, helperLine: null });
 });
+test('shared assertion wrapper preserves the bounded caller without exporting its message', () => {
+  const error = new Error('sensitive-response-body');
+  error.stack = error.message + '\n at requireProof (/owned/business_pair.js:29:66)\n at selfServicePair (/owned/self_service_pair.js:198:9)';
+  assert.deepEqual(safeFailure(error), { exceptionType: 'Error',
+    reasonCode: 'actual_business_assertion_or_transport_failed', helperFile: 'self_service_pair.js', helperLine: 198 });
+  assert.equal(JSON.stringify(safeFailure(error)).includes('sensitive-response-body'), false);
+});
 const { admissionIdentity } = require('./admission_identity');
 test('admission observation matches production General JSON naming', () => {
   const actualWireBody = { RequestId: 'request-1', RequestTaskId: 'task-1', CorrelationId: 'attempt-1', Payload: { private: 'ignored' } };

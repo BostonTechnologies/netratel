@@ -381,9 +381,10 @@ def cleanup(state, purge=False):
                     screenshot = business_receipt.parent / (name + suffix)
                     if screenshot.is_file() and screenshot.stat().st_size <= 2 * 1024 * 1024:
                         shutil.copy2(screenshot, destination / screenshot.name)
-                diagnostic = business_receipt.parent / (name + '-rendered-failure.json')
-                if diagnostic.is_file() and diagnostic.stat().st_size <= 8192:
-                    shutil.copy2(diagnostic, destination / diagnostic.name)
+                for suffix in ['-rendered-failure.json', '-recovery-observations.json']:
+                    diagnostic = business_receipt.parent / (name + suffix)
+                    if diagnostic.is_file() and diagnostic.stat().st_size <= 8192:
+                        shutil.copy2(diagnostic, destination / diagnostic.name)
         shutil.rmtree(FIXTURE)
         private_json(ROOT / 'cleanup-receipt.json', {'fixtureId': state['fixtureId'],
             'processesStopped': True, 'containersRemoved': True, 'privateCredentialsRemoved': not FIXTURE.exists()})

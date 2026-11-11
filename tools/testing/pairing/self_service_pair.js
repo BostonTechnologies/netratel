@@ -45,6 +45,13 @@ module.exports = async function selfServicePair(h) {
       await page.getByTestId('local-login-form').locator('button[type="submit"]').click();
       await expect(page).not.toHaveURL(/\/login(?:[/?]|$)/);
       const failed = mode === 'self-failure', held = mode === 'lost-callback';
+      const recoveryObservations = [];
+      const observeRecovery = (step, flags) => {
+        if (!held) return;
+        recoveryObservations.push({ step, ...flags });
+        fs.writeFileSync(path.join(evidence, mode + '-recovery-observations.json'),
+          JSON.stringify({ mode, observations: recoveryObservations }, null, 2), { mode: 0o600 });
+      };
       if (held) {
         await control('hold-terminal-callbacks');
         await control('block-execution-reads', 'netratel');
@@ -129,6 +136,9 @@ module.exports = async function selfServicePair(h) {
       const automation = rows.items.filter(task => task.type === 2);
       requireProof(automation.length === 1, 'One form submission must generate exactly one automation task');
       const taskId = automation[0].id;
+      const manualTasks = rows.items.filter(task => task.type === 1);
+      requireProof(!held || manualTasks.length === 1, 'The recovery scenario must retain one actual manual dependent');
+      const manualTaskId = held ? manualTasks[0].id : null;
       const admitted = await until('Rendered request native admission', async () => {
         const task = await apiJson(rdApi, '/api/v1/request-tasks/' + taskId);
         return task.orchestratorExecutionId && task.orchestrationExternalRequestId ? task : null;
@@ -176,14 +186,19 @@ module.exports = async function selfServicePair(h) {
       dockerCall(['exec', state.clientContainer || ('pairing-native-client-' + state.fixtureId), 'touch', gate]);
       if (held) {
         await until('Actual terminal callback withheld at transport boundary', async () => (await control('callback-fault-state')).held.length > 0, 60);
+        observeRecovery('terminal-callback-held', { observed: true });
         child.execFileSync('python3', [path.join(__dirname, 'native_pair.py'), 'restart', 'rateldesk'], { env: process.env, timeout: 90000, stdio: 'ignore' });
         const unknown = await until('Restart-safe durable execution deadline', async () => {
           const task = await apiJson(rdApi, '/api/v1/request-tasks/' + taskId);
           return task.lastAutomationStatus === 'ExecutionUnknownManualReconcile' ? task : null;
         }, 150);
+        observeRecovery('deadline-unknown-after-restart', {
+          runMatches: unknown.orchestratorExecutionId === admitted.orchestratorExecutionId,
+          timedOutRecorded: Boolean(unknown.automationTimedOutAt) });
         requireProof(unknown.orchestratorExecutionId === admitted.orchestratorExecutionId && unknown.automationTimedOutAt,
           'Timeout must retain the exact admitted run and persisted unknown outcome');
         const parent = await apiJson(rdApi, '/api/v1/requests/' + submitted.requestId);
+        observeRecovery('parent-reconciliation-hold', { held: parent.workflowStatus === 'NeedsReconciliation' });
         requireProof(parent.workflowStatus === 'NeedsReconciliation', 'Unknown outcome must hold the parent');
         await page.goto(web + '/requests/' + submitted.requestId);
         await expect(page.getByTestId('app-main-content')).toHaveAttribute('data-interactive', 'true', { timeout: 90000 });
@@ -194,12 +209,18 @@ module.exports = async function selfServicePair(h) {
         await expect(unknownRow).toContainText('Timed out');
         await expect(unknownRow.getByRole('link', { name: 'Open recovery' })).toBeVisible();
         await expect(unknownRow.getByRole('button', { name: 'Retry task', exact: true })).toHaveCount(0);
-        const heldDependents = await apiJson(rdApi, '/api/v1/request-tasks/?requestId=' + encodeURIComponent(submitted.requestId));
-        requireProof(heldDependents.items.some(task => task.type === 1 && task.isBlocked),
+        const heldDependent = await apiJson(rdApi, '/api/v1/request-tasks/' + encodeURIComponent(manualTaskId));
+        observeRecovery('manual-dependent-held', { requestMatches: heldDependent.requestId === submitted.requestId,
+          manual: heldDependent.type === 1, blocked: heldDependent.isBlocked === true });
+        requireProof(heldDependent.requestId === submitted.requestId && heldDependent.type === 1 && heldDependent.isBlocked === true,
           'Unknown execution must leave dependent work blocked without offering an execution retry');
+        const unknownIncidents = sql('rateldesk', `SELECT count(*) FROM "Tickets" WHERE "Discriminator"='Incident' AND "Description" LIKE ${literal('%Source self-service request: ' + submitted.requestId + '%')}`);
+        requireProof(unknownIncidents === 0, 'Unconfirmed execution must not create a confirmed-failure policy incident');
         const transport = await control('restore-execution-reads', 'netratel');
+        observeRecovery('receipt-reads-restored', { unavailableReadsObserved: transport.blockedReads > 0 });
         requireProof(transport.blockedReads > 0, 'Actual deadline processing must have observed the unavailable provider read');
         const delivered = await control('release-terminal-callbacks');
+        observeRecovery('original-terminal-callback-released', { exactlyOneDelivered: delivered.delivered === 1 });
         requireProof(delivered.delivered === 1, 'Exactly one original held terminal result must be released');
       }
       const completed = await until('Actual rendered submission final native result', async () => {
@@ -207,9 +228,10 @@ module.exports = async function selfServicePair(h) {
         return task.lastAutomationStatus === (failed ? 'failed' : 'succeeded') ? task : null;
       }, 120);
       requireProof(completed.orchestratorExecutionId === admitted.orchestratorExecutionId, 'Final outcome must update the original attempt');
+      const expectedParentStatus = failed ? 'Failed' : held ? 'InProgress' : 'Completed';
       const parent = await until('Committed parent workflow recomputation', async () => {
         const current = await apiJson(rdApi, '/api/v1/requests/' + submitted.requestId);
-        return current.workflowStatus && !['NeedsReconciliation', 'Running', 'NotStarted'].includes(current.workflowStatus) ? current : null;
+        return current.workflowStatus === expectedParentStatus ? current : null;
       }, 30);
       requireProof(parent.workflowStatus !== 'NeedsReconciliation', 'Late terminal outcome must recover its parent hold');
       const actualRun = await apiJson(nrApi, '/api/v1/jobruns/' + admitted.orchestratorExecutionId);
@@ -240,8 +262,12 @@ module.exports = async function selfServicePair(h) {
       }
 
       if (held) {
-        const dependents = await apiJson(rdApi, '/api/v1/request-tasks/?requestId=' + encodeURIComponent(submitted.requestId));
-        requireProof(dependents.items.some(task => task.type === 1 && !task.isBlocked), 'Late same-attempt success must unblock dependent work');
+        const dependent = await until('Late same-attempt manual dependency recovery', async () => {
+          const current = await apiJson(rdApi, '/api/v1/request-tasks/' + encodeURIComponent(manualTaskId));
+          return current.requestId === submitted.requestId && current.type === 1 && current.isBlocked === false ? current : null;
+        }, 30);
+        requireProof(dependent.id === manualTaskId, 'Late same-attempt success must unblock the original dependent task');
+        observeRecovery('same-attempt-recovery-completed', { originalDependentUnblocked: true, exactlyOneAdmission: await admissionCount() === 1 });
       }
       await page.reload();
       await expect(page.getByTestId('request-workflow-summary')).toBeVisible({ timeout: 90000 });
