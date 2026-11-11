@@ -63,12 +63,17 @@ module.exports = async function selfServicePair(h) {
       const service = await apiJson(rdApi, '/api/v1/services/', { name, description: 'Owned rendered self-service acceptance', allowedCustomerIds: [], allowedOrganizationIds: [mapping.ratelDeskOrganizationId] }, 'POST');
       const form = await apiJson(rdApi, '/api/v1/request-forms/', { serviceId: service.id, title: name,
         description: 'Synthetic native execution proof', organizationId: mapping.ratelDeskOrganizationId,
-        allowedOrganizationIds: [mapping.ratelDeskOrganizationId], releaseStatus: 0,
+        allowedOrganizationIds: [mapping.ratelDeskOrganizationId], releaseStatus: 1,
         jsonSchema: JSON.stringify({ title: name, description: 'Synthetic native execution proof', fields: [{ id: 'choice', name: 'choice', label: 'Synthetic choice', type: 'text', required: true }], tasks }) }, 'POST');
       const binding = await apiJson(rdApi, '/api/v1/admin/orchestration/bindings', { systemConnectionId: mapping.id,
         requestFormId: form.id, taskTemplateId: template, orchestrationRequestDefinitionId: String(job.requestDefinitionId),
         orchestrationRequestDefinitionName: name, orchestrationJobDefinitionId: String(job.orchestrationJobDefinitionId), orchestrationJobDefinitionName: name }, 'POST');
       requireProof(binding.systemConnectionId === mapping.id && binding.enabled, 'Self form must retain the exact saved binding');
+      // Production=1 is required for an ordinary requester; InTesting=0 is
+      // intentionally restricted even when its organization and binding match.
+      const submissionContext = await apiJson(requesterApi,
+        '/api/v1/self-service/submission-context?requestFormId=' + encodeURIComponent(form.id));
+      requireProof(submissionContext.canSubmit === true, 'The published form must be eligible for the actual rendered requester');
       await page.goto(web + '/self-service/request/' + form.id);
       await page.getByLabel('Synthetic choice', { exact: false }).fill('Opt1');
       if (mode === 'on-behalf') {
