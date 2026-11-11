@@ -159,7 +159,9 @@ module.exports = async function selfServicePair(h) {
         requireProof(parent.workflowStatus === 'NeedsReconciliation', 'Unknown outcome must hold the parent');
         await page.goto(web + '/requests/' + submitted.requestId);
         await page.getByRole('tab', { name: /^Tasks/ }).click();
-        const unknownRow = page.locator('[data-task-id="' + taskId + '"]');
+        const unknownRow = page.locator('tbody tr').filter({
+          has: page.locator('.request-task-state[data-task-id="' + taskId + '"]') });
+        await expect(unknownRow).toHaveCount(1);
         await expect(unknownRow).toContainText('Timed out');
         await expect(unknownRow.getByRole('link', { name: 'Open recovery' })).toBeVisible();
         await expect(unknownRow.getByRole('button', { name: 'Retry task', exact: true })).toHaveCount(0);
