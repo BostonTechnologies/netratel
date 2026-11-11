@@ -38,6 +38,8 @@ public sealed class PairingLifecycleTests
         var stages = receipt.RootElement.GetProperty("stages");
         foreach (var stage in new[] { "pairedFromRatelDesk", "pairedFromNetRatel", "incidentReceiptReplay",
             "nativeAutomationResult", "nativeAggregateAutomationResult-explicit", "nativeAggregateAutomationResult-ha",
+            "renderedSelfService-self-success", "renderedSelfService-self-failure",
+            "renderedSelfService-on-behalf", "renderedSelfService-lost-callback",
             "sideEffectFreeTest", "deleteWhilePeerOffline" })
             Assert.Equal("passed", stages.GetProperty(stage).GetString());
         var sources = receipt.RootElement.GetProperty("sources");
@@ -46,12 +48,13 @@ public sealed class PairingLifecycleTests
         Assert.Equal(await GitIdentityAsync(source), sources.GetProperty("netratelSha").GetString());
         Assert.Equal(await GitIdentityAsync(companion), sources.GetProperty("rateldeskSha").GetString());
         var result = receipt.RootElement.GetProperty("result");
-        Assert.Equal(1, result.GetProperty("incidentCount").GetInt32());
+        Assert.Equal(2, result.GetProperty("incidentCount").GetInt32());
         Assert.Equal(1, result.GetProperty("receiptCount").GetInt32());
         Assert.False(string.IsNullOrWhiteSpace(result.GetProperty("executionId").GetString()));
         Assert.True(result.GetProperty("resultReceived").GetBoolean());
         Assert.True(result.GetProperty("historyPreserved").GetBoolean());
         Assert.True(result.GetProperty("cleanupComplete").GetBoolean());
+        Assert.Equal(4, result.GetProperty("selfServiceExecutions").GetArrayLength());
     }
 
     private static string RequiredDirectory(string name)

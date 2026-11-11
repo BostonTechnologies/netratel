@@ -1,6 +1,7 @@
 // Actual local deletion from each rendered owner page while the peer is offline.
 const fs = require('fs');
 const path = require('path');
+const { safeFailure } = require('./safe_failure');
 const { execFileSync } = require('child_process');
 const { product, record, jsonRequest, login, account, visualMatrix, identifiers, state, root, fixture } = require('./browser_pair');
 const { chromium, expect } = require(path.join(root, 'browser/node_modules/@playwright/test'));
@@ -53,9 +54,10 @@ async function main() {
     nrPage.setDefaultTimeout(25000); rdPage.setDefaultTimeout(25000);
     await login(nrPage, nr); await login(rdPage, rd);
     const baseline = counts();
-    expect(baseline.incidentCount).toBe(1); expect(baseline.receiptCount).toBe(1);
-    // One legacy run, two aggregate parent/child pairs and one task for each path.
-    expect(baseline.jobRunCount).toBe(5); expect(baseline.taskCount).toBe(3);
+    expect(baseline.incidentCount).toBe(2); expect(baseline.receiptCount).toBe(1);
+    // Existing three paths plus four rendered self-service parent/child pairs
+    // and the timeout scenario's dependent manual task remain in history.
+    expect(baseline.jobRunCount).toBe(13); expect(baseline.taskCount).toBe(8);
     const activeCredential = await control('cached-receiver-status');
     expect(activeCredential.status, 'The exact cached business credential must be accepted immediately before deletion').toBe(200);
     expect(counts(), 'Exact committed replay must preserve all business counts before deletion').toEqual(baseline);
@@ -82,4 +84,4 @@ async function main() {
     await context.close();
   } finally { await browser.close(); }
 }
-main().catch(error => { record('deleteWhilePeerOffline', 'failed', { exceptionType: error.constructor.name, reason: String(error.message).split('\n')[0].slice(0, 240) }); process.exitCode = 1; });
+main().catch(error => { record('deleteWhilePeerOffline', 'failed', { ...safeFailure(error) }); process.exitCode = 1; });

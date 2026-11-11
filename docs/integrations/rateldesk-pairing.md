@@ -60,17 +60,22 @@ when selecting resources, saving and using a business capability.
 
 ## Target-aware self-service automation
 
-The compatible pair is RatelDesk **0.1.3-beta.9** and NetRatel **0.1.5-beta.4**.
+The planned pair for durable deadline/receipt reconciliation is RatelDesk
+**0.1.3-beta.10** and NetRatel **0.1.5-beta.5**. Candidate release and paired
+acceptance gates remain pending; use their verified public artifacts after
+those gates complete. Existing catalogue, invocation and callback contracts
+from the **0.1.3-beta.9 / 0.1.5-beta.4** pair remain supported.
 Upgrade NetRatel first, complete its ordinary automatic database migrations and
 replace older API replicas before admitting modern automation. Then upgrade
 RatelDesk. Keep the current pairing, named tenant connections, primary
 organization, protected credentials and persistent keys. This upgrade needs no
 new credential, scope, manual policy/configuration change or re-pairing.
 
-NetRatel's additive migration permits an absent fixed agent and records the
-aggregate target-plan digest on managed bindings. Existing fixed-agent bindings,
-in-flight intents, callbacks and history retain their identities. RatelDesk adds
-no database migration for this repair and continues to support SQLite and
+The additive migration introduced in NetRatel **0.1.5-beta.4** permits an absent
+fixed agent and records the aggregate target-plan digest on managed bindings.
+Existing fixed-agent bindings, in-flight intents, callbacks and history retain
+their identities. NetRatel **0.1.5-beta.5** adds no schema migration; RatelDesk
+applies its own normal upgrade migrations and continues to support SQLite and
 PostgreSQL. Back up the databases and persistent keys through the normal upgrade
 procedure.
 
@@ -114,6 +119,33 @@ checking the intended nodes and parent outcome. Create a job from real target an
 content choices, independently find it in NetRatel, bind and run it, then inspect
 correlation/run links and any structured errors. Hosted source/distribution
 verification is separate from this owner deployment acceptance.
+
+## Execution deadlines and outcome reads
+
+### Execution reconciliation
+
+The additive authenticated `GET /internal/executions/{orchestrationRequestId}/{orchestrationRunId}`
+receipt accepts the original RatelDesk request, task and attempt identity in
+`X-RatelDesk-Request-Id`, `X-RatelDesk-Task-Id` and `X-Correlation-Id` headers.
+The read URL contains no query string. It matches the admitted service principal, tenant, saved mapping,
+revision, peer identity and current authority. A receipt read never admits,
+recovers, replays or resubmits work. Terminal status requires the existing durable
+terminal-readiness/result-hash proof; otherwise the outcome remains unknown.
+
+RatelDesk can use this receipt to reconcile a missed callback. Its own persisted
+deadline remains authoritative for the local waiting period. An unavailable or
+older provider cannot confirm termination: the task needs reconciliation and
+must retain its attempt identifiers without automatically retrying. The normal
+authenticated callback can reconcile that same attempt later. Existing pairing
+and read/invoke grants remain unchanged.
+
+The opt-in source-pair lane also drives the real rendered self-service form using
+an ordinary unlinked local requester and the existing unlinked administrator in their original organization. It records
+correlated success, controlled native failure, explicit on-behalf regression,
+normal local requester ownership in My Requests, idempotent request retry and a dropped-callback/provider-read outage across a
+RatelDesk restart. Faults exist only in the owned loopback transport fixture;
+restoring the original terminal callback must recover the same task and parent.
+Passing source/CI receipts and owner production testing remain distinct.
 
 ## Upgrade from the retired pre-pairing setup
 
