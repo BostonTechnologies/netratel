@@ -41,6 +41,7 @@ PAIRING_STAGE=helper-checks
 node --test "$PAIRING_HELPER_ROOT/helper_boundaries.test.js"
 PAIRING_STAGE=build
 PAIRING_BUILD_LOG=''
+PAIRING_BUILD_TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 cleanup_failure() {
   local exit_status=$?
   trap - EXIT
@@ -96,7 +97,14 @@ build() {
   PAIRING_BUILD_LOG="$2-build.log"
   # The workflow's NetRatel VERSION would otherwise become MSBuild's Version
   # property in the companion checkout as well. Each root owns its own version.
-  env -u VERSION "$DOTNET_PAIRING_HOST" build "$1" --configuration Debug -m:1 -nr:false > "$NETRATEL_PAIRING_RUNTIME_ROOT/$2-build.log" 2>&1
+  local build_host="$DOTNET_PAIRING_HOST"
+  local metadata=(-p:PublicBuildTimestamp="$PAIRING_BUILD_TIMESTAMP" -p:PublicSourceRevision="$PAIRING_EXPECTED_NETRATEL_SHA")
+  if [[ "$2" == rd-* ]]; then
+    build_host="${RATELDESK_PAIRING_DOTNET_HOST:-$DOTNET_PAIRING_HOST}"
+    metadata=(-p:BuildTimestamp="$PAIRING_BUILD_TIMESTAMP" -p:SourceRevisionId="$PAIRING_EXPECTED_RATELDESK_SHA")
+  fi
+  env -u VERSION "$build_host" build "$1" --configuration Debug -m:1 -nr:false \
+    -p:UseSharedCompilation=false "${metadata[@]}" > "$NETRATEL_PAIRING_RUNTIME_ROOT/$2-build.log" 2>&1
 }
 build "$NETRATEL_PAIRING_SOURCE_ROOT/src/NetRatel/NetRatel.Migrations/NetRatel.Migrations.csproj" nr-migrations
 build "$NETRATEL_PAIRING_SOURCE_ROOT/src/NetRatel/NetRatel.API/NetRatel.API.csproj" nr-api
