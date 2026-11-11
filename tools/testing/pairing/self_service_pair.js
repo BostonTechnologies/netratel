@@ -77,8 +77,12 @@ module.exports = async function selfServicePair(h) {
         '/api/v1/self-service/submission-context?requestFormId=' + encodeURIComponent(form.id));
       requireProof(submissionContext.canSubmit === true, 'The published form must be eligible for the actual rendered requester');
       await page.goto(web + '/self-service/request/' + form.id);
-      await page.getByLabel('Synthetic choice', { exact: false }).fill('Opt1');
-      await page.getByLabel('Synthetic choice', { exact: false }).press('Tab');
+      await expect(page.getByTestId('app-main-content')).toHaveAttribute('data-interactive', 'true', { timeout: 90000 });
+      await expect(page.getByRole('heading', { name, exact: true })).toBeVisible();
+      const choice = page.getByLabel('Synthetic choice', { exact: false });
+      await choice.fill('Opt1');
+      await choice.press('Tab');
+      await expect(choice).toHaveValue('Opt1');
       if (mode === 'on-behalf') {
         await page.getByRole('button', { name: 'Select', exact: true }).click();
         await page.getByPlaceholder('Search users').fill(ordinaryEmail);
@@ -91,12 +95,12 @@ module.exports = async function selfServicePair(h) {
       if (mode === 'on-behalf') await page.getByRole('button', { name: 'Yes', exact: true }).click();
       const submittedHeading = page.getByRole('heading', { name: 'Request submitted', exact: true });
       try {
-        await submittedHeading.or(page.locator('.self-service-form-page [role="alert"]')).first().waitFor({ state: 'visible', timeout: 90000 });
+        await submittedHeading.or(page.locator('.self-service-form-page .mud-alert')).first().waitFor({ state: 'visible', timeout: 90000 });
         await expect(submittedHeading).toBeVisible();
       } catch (error) {
         // Only fixed flags/counts and a masked synthetic page survive cleanup.
         // Never export alert text, HTTP bodies, cookies or arbitrary exceptions.
-        const alerts = await page.locator('.self-service-form-page [role="alert"]').allTextContents();
+        const alerts = await page.locator('.self-service-form-page .mud-alert').allTextContents();
         const entered = page.getByLabel('Synthetic choice', { exact: false });
         const diagnostic = { mode, receiptVisible: await page.getByTestId('submitted-request-receipt').count() > 0,
           expectedInputPresent: await entered.count() === 1 && await entered.inputValue() === 'Opt1',
@@ -146,6 +150,7 @@ module.exports = async function selfServicePair(h) {
       }
       if (mode === 'self-success') {
         await page.goto(web + '/self-service/my-requests');
+        await expect(page.getByTestId('app-main-content')).toHaveAttribute('data-interactive', 'true', { timeout: 90000 });
         await page.getByRole('textbox', { name: 'Search tracking ID or title' }).fill(submitted.trackingId);
         await expect(page.getByRole('link', { name: 'Open request ' + submitted.trackingId + ': ' + saved.title, exact: true })).toBeVisible();
         const owned = await apiJson(ordinaryApi, '/api/v1/self-service/requests?q=' + encodeURIComponent(submitted.trackingId));
@@ -153,6 +158,7 @@ module.exports = async function selfServicePair(h) {
           'The newly linked ordinary requester must find its actual request without the instance-admin exception');
       }
       await page.goto(web + '/requests/' + submitted.requestId);
+      await expect(page.getByTestId('app-main-content')).toHaveAttribute('data-interactive', 'true', { timeout: 90000 });
       await page.getByRole('tab', { name: /^Tasks/ }).click();
       await expect(page.getByTestId('request-live-updates')).toContainText('Live');
       await expect(page.getByTestId('request-live-updates')).toHaveAttribute('aria-busy', 'false');
@@ -180,6 +186,7 @@ module.exports = async function selfServicePair(h) {
         const parent = await apiJson(rdApi, '/api/v1/requests/' + submitted.requestId);
         requireProof(parent.workflowStatus === 'NeedsReconciliation', 'Unknown outcome must hold the parent');
         await page.goto(web + '/requests/' + submitted.requestId);
+        await expect(page.getByTestId('app-main-content')).toHaveAttribute('data-interactive', 'true', { timeout: 90000 });
         await page.getByRole('tab', { name: /^Tasks/ }).click();
         const unknownRow = page.locator('tbody tr').filter({
           has: page.locator('.request-task-state[data-task-id="' + taskId + '"]') });
