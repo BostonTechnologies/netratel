@@ -48,7 +48,7 @@ public sealed class PairingLifecycleTests
         Assert.Equal(await GitIdentityAsync(source), sources.GetProperty("netratelSha").GetString());
         Assert.Equal(await GitIdentityAsync(companion), sources.GetProperty("rateldeskSha").GetString());
         var result = receipt.RootElement.GetProperty("result");
-        Assert.Equal(1, result.GetProperty("incidentCount").GetInt32());
+        Assert.Equal(2, result.GetProperty("incidentCount").GetInt32());
         Assert.Equal(1, result.GetProperty("receiptCount").GetInt32());
         Assert.False(string.IsNullOrWhiteSpace(result.GetProperty("executionId").GetString()));
         Assert.True(result.GetProperty("resultReceived").GetBoolean());

@@ -424,7 +424,7 @@ def start():
     environment['POSTGRES_PASSWORD'] = state['databasePassword']
     command(DOCKER + ['run', '--detach', '--rm', '--name', state['container'],
         '-e', 'POSTGRES_PASSWORD', '-p', f"127.0.0.1:{state['databasePort']}:5432",
-        'postgres:16-alpine'], environment=environment, log_name='postgres-start.log')
+        'postgres:16-alpine', '-c', 'track_commit_timestamp=on'], environment=environment, log_name='postgres-start.log')
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
         result = subprocess.run(DOCKER + ['exec', state['container'], 'pg_isready',

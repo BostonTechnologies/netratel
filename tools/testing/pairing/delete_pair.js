@@ -53,7 +53,7 @@ async function main() {
     nrPage.setDefaultTimeout(25000); rdPage.setDefaultTimeout(25000);
     await login(nrPage, nr); await login(rdPage, rd);
     const baseline = counts();
-    expect(baseline.incidentCount).toBe(1); expect(baseline.receiptCount).toBe(1);
+    expect(baseline.incidentCount).toBe(2); expect(baseline.receiptCount).toBe(1);
     // Existing three paths plus four rendered self-service parent/child pairs
     // and the timeout scenario's dependent manual task remain in history.
     expect(baseline.jobRunCount).toBe(13); expect(baseline.taskCount).toBe(8);

@@ -135,7 +135,7 @@ authenticated callback can reconcile that same attempt later. Existing pairing
 and read/invoke grants remain unchanged.
 
 The opt-in source-pair lane also drives the real rendered self-service form using
-the existing unlinked local owner in its original organization. It records
+an ordinary unlinked local requester and the existing unlinked administrator in their original organization. It records
 correlated success, controlled native failure, explicit on-behalf regression,
 normal local requester ownership in My Requests, idempotent request retry and a dropped-callback/provider-read outage across a
 RatelDesk restart. Faults exist only in the owned loopback transport fixture;

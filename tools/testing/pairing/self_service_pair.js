@@ -13,24 +13,25 @@ module.exports = async function selfServicePair(h) {
     'Rendered acceptance must begin with an enabled unlinked local owner already in the saved connection organization');
   const web = `http://127.0.0.1:${state.products.rateldesk.webPort}`;
   const ordinaryEmail = 'self-requester-' + state.fixtureId + '@example.test';
+  const ordinaryPassword = 'Fixture.Aa1!' + state.adminPassword;
   // Technician creation deliberately leaves the supported local account unlinked.
   // It grants normal organization-scoped access, with no instance-admin exception.
   const activation = await apiJson(rdApi, '/api/v1/local-auth/users', { displayName: 'Synthetic self requester',
     email: ordinaryEmail, role: 'Technician', organizationId: mapping.ratelDeskOrganizationId }, 'POST');
   await apiJson(rdApi, '/api/v1/local-auth/activate', { email: ordinaryEmail,
-    activationToken: activation.activationToken, newPassword: state.adminPassword }, 'POST');
+    activationToken: activation.activationToken, newPassword: ordinaryPassword }, 'POST');
   const ordinary = sql('rateldesk', `SELECT json_build_object('id',u."Id",'name',u."Name",'organizationId',u."OrganizationId",'administrator',a."IsInstanceAdministrator",'links',(SELECT count(*) FROM "CustomerAuthLinks" l WHERE l."LocalAccountId"=u."Id")) FROM "Users" u JOIN "AspNetUsers" a ON a."Id"=u."Id" WHERE u."Id"=${literal(activation.userId)}`);
   requireProof(ordinary && !ordinary.administrator && ordinary.links === 0 && ordinary.organizationId === mapping.ratelDeskOrganizationId,
     'The ordinary rendered requester must begin unlinked in its original authorized organization');
   const ordinaryApi = await request.newContext({ baseURL: `http://127.0.0.1:${state.products.rateldesk.apiPort}`,
     extraHTTPHeaders: { Origin: web, 'X-Requested-With': 'XMLHttpRequest' } });
-  const login = await ordinaryApi.post('/api/v1/local-auth/login', { data: { email: ordinaryEmail, password: state.adminPassword, rememberMe: false } });
+  const login = await ordinaryApi.post('/api/v1/local-auth/login', { data: { email: ordinaryEmail, password: ordinaryPassword, rememberMe: false } });
   requireProof(login.status() === 204, 'Ordinary local requester must authenticate normally');
   const browser = await chromium.launch({ headless: true });
   let context, page;
   try {
     for (const mode of ['self-success', 'self-failure', 'on-behalf', 'lost-callback']) {
-      const requester = mode === 'self-success' ? ordinary : owner;
+      const requester = ['self-success', 'on-behalf'].includes(mode) ? ordinary : owner;
       const requesterEmail = mode === 'self-success' ? ordinaryEmail : state.products.rateldesk.email;
       const requesterApi = mode === 'self-success' ? ordinaryApi : rdApi;
       if (context) await context.close();
@@ -39,7 +40,7 @@ module.exports = async function selfServicePair(h) {
       await page.goto(web + '/login');
       await page.locator('[data-testid="local-login-form"][data-interactive="true"]').waitFor({ state: 'attached', timeout: 90000 });
       await page.locator('input[name="email"]').fill(requesterEmail);
-      await page.locator('input[name="password"]').fill(state.adminPassword);
+      await page.locator('input[name="password"]').fill(mode === 'self-success' ? ordinaryPassword : state.adminPassword);
       await page.getByTestId('local-login-form').locator('button[type="submit"]').click();
       await expect(page).not.toHaveURL(/\/login(?:[/?]|$)/);
       const failed = mode === 'self-failure', held = mode === 'lost-callback';
@@ -72,8 +73,8 @@ module.exports = async function selfServicePair(h) {
       await page.getByLabel('Synthetic choice', { exact: false }).fill('Opt1');
       if (mode === 'on-behalf') {
         await page.getByRole('button', { name: 'Select', exact: true }).click();
-        await page.getByPlaceholder('Search users').fill(state.products.rateldesk.email);
-        await page.getByRole('button', { name: 'Select ' + owner.name, exact: true }).first().click();
+        await page.getByPlaceholder('Search users').fill(ordinaryEmail);
+        await page.getByRole('button', { name: 'Select ' + ordinary.name, exact: true }).first().click();
       } else {
         await expect(page.getByText('Submit this request as yourself.', { exact: true })).toBeVisible();
         await expect(page.getByTestId('submission-organization')).toContainText('Acceptance RatelDesk organization');
@@ -88,7 +89,7 @@ module.exports = async function selfServicePair(h) {
       requireProof(/^[0-9a-f]{32}$/.test(saved.submissionId), 'Rendered form must persist its retry identity');
       const submissionId = saved.submissionId.replace(/^(........)(....)(....)(....)(............)$/, '$1-$2-$3-$4-$5');
       const originalDto = { submissionId, requestFormId: form.id, title: saved.title, description: saved.description,
-        payloadJson: saved.payloadJson, requestedForPersonId: mode === 'on-behalf' ? owner.id : null,
+        payloadJson: saved.payloadJson, requestedForPersonId: mode === 'on-behalf' ? ordinary.id : null,
         requestedForPersonSource: mode === 'on-behalf' ? 0 : null };
       const retry = await apiJson(requesterApi, '/api/v1/self-service/requests', originalDto, 'POST');
       requireProof(retry.requestId === submitted.requestId, 'Exact correction/retry must retain one original request');
@@ -125,6 +126,18 @@ module.exports = async function selfServicePair(h) {
       }
       await page.goto(web + '/requests/' + submitted.requestId);
       await page.getByRole('tab', { name: /^Tasks/ }).click();
+      await expect(page.getByTestId('request-live-updates')).toContainText('Live');
+      const liveObservation = held ? null : page.waitForFunction(({ taskId, failed }) => {
+        const row = document.querySelector('.request-task-state[data-task-id="' + taskId + '"]');
+        const workflow = document.querySelector('[data-testid="request-workflow-summary"]');
+        const header = document.querySelector('[data-testid="request-committed-state"]');
+        return row?.textContent?.includes(failed ? 'Failed' : 'Completed') &&
+          workflow?.textContent?.includes(failed ? 'Blocked' : 'Completed') &&
+          header?.textContent?.toLowerCase().includes(failed ? 'on hold' : 'resolved');
+      }, { taskId, failed }, { timeout: 120000, polling: 50 }).then(() => ({ observedAt: Date.now() }), error => ({ error }));
+      const admissionKey = [submitted.requestId, taskId, admitted.automationAttemptCorrelationId].join(':');
+      const admissionCount = async () => (await control('admission-counts', 'netratel')).admissions.find(row => row.key === admissionKey)?.count || 0;
+      requireProof(await admissionCount() === 1, 'Exactly one initial admission must be observed before native command release');
       dockerCall(['exec', state.clientContainer || ('pairing-native-client-' + state.fixtureId), 'touch', gate]);
       if (held) {
         await until('Actual terminal callback withheld at transport boundary', async () => (await control('callback-fault-state')).held.length > 0, 60);
@@ -162,16 +175,30 @@ module.exports = async function selfServicePair(h) {
       }, 30);
       requireProof(parent.workflowStatus !== 'NeedsReconciliation', 'Late terminal outcome must recover its parent hold');
       const actualRun = await apiJson(nrApi, '/api/v1/jobruns/' + admitted.orchestratorExecutionId);
-      requireProof(actualRun.status === (failed ? 3 : 2), 'Provider terminal state must be truthful for controlled success/failure');
+      requireProof(actualRun.status === (failed ? 3 : 2) && String(actualRun.jobId) === String(job.orchestrationJobDefinitionId)
+        && actualRun.isAggregate && actualRun.targetCount === 1, 'The exact selected native job and target must confirm controlled success/failure');
+      const activities = sql('netratel', `SELECT COALESCE(json_agg(json_build_object('agentId',"AgentId",'result',"ResultJson")), '[]'::json) FROM "JobTaskActivities" WHERE "JobRunId" IN (SELECT "NativeRunId" FROM "JobRunNodes" WHERE "ParentRunId"=${literal(admitted.orchestratorExecutionId)}::bigint)`);
+      requireProof(activities.length === 1 && activities[0].agentId === sample.agentId, 'Exactly one native task must execute on the selected agent');
+      const native = JSON.parse(activities[0].result);
+      requireProof(native.exitCode === (failed ? 42 : 0) && Array.isArray(native.stdout) && native.stdout.includes(marker),
+        'The actual intended command must emit its unique marker and exact controlled exit code');
+      requireProof(await admissionCount() === 1, 'Deadline, restart and recovery must never replay even an idempotent admission');
+      let failureIncidentId = null;
+      if (failed) {
+        const incidents = sql('rateldesk', `SELECT COALESCE(json_agg("Id"),'[]'::json) FROM "Tickets" WHERE "Discriminator"='Incident' AND "OrganizationId"=${literal(requester.organizationId)} AND "CustomerId"=${literal(requestProof.requester)} AND "Description" LIKE ${literal('%Source self-service request: ' + submitted.requestId + '%')}`);
+        requireProof(incidents.length === 1, 'Confirmed self-service failure must retain its one correlated policy incident');
+        failureIncidentId = incidents[0];
+      }
       let liveConvergenceMilliseconds = null;
       if (!held) {
-        const observedAt = Date.now();
-        await expect(page.locator('[data-task-id="' + taskId + '"]')).toContainText(failed ? 'Failed' : 'Completed', { timeout: 1500 });
-        await expect(page.getByTestId('request-workflow-summary')).toContainText(parent.workflowStatus.replace(/([a-z])([A-Z])/g, '$1 $2'), { timeout: 1500 });
-        const expectedHeader = ['New', 'Waiting reply', 'Replied', 'In progress', 'Pending approval', 'On hold', 'Resolved'][parent.state];
-        await expect(page.getByTestId('request-committed-state')).toContainText(expectedHeader, { timeout: 1500 });
-        liveConvergenceMilliseconds = Date.now() - observedAt;
-        requireProof(liveConvergenceMilliseconds <= 1500, 'Healthy committed state must converge through the actual gateway stream within the remaining two-second budget');
+        const observation = await liveObservation;
+        if (observation.error) throw observation.error;
+        const journal = sql('rateldesk', `SELECT json_build_object('committedAt',min(pg_xact_commit_timestamp(xmin)),'events',count(*)) FROM "Notifications" WHERE "CorrelationId"=${literal(admitted.automationAttemptCorrelationId)} AND "Title"=${literal('DomainEvent.RequestTask.Automation' + (failed ? 'Failed' : 'Completed'))}`);
+        requireProof(journal.events === 1 && Number.isFinite(Date.parse(journal.committedAt)),
+          'The actual committed terminal journal transaction must supply one durable measurement origin');
+        liveConvergenceMilliseconds = observation.observedAt - Date.parse(journal.committedAt);
+        requireProof(liveConvergenceMilliseconds >= 0 && liveConvergenceMilliseconds <= 2000,
+          'Healthy task/header/workflow must converge within two seconds of the actual persisted transaction commit');
       }
 
       if (held) {
@@ -185,7 +212,9 @@ module.exports = async function selfServicePair(h) {
         organizationId: requester.organizationId, requesterKind: mode === 'self-success' ? 'ordinary-local' : 'local-administrator', ordinaryMyRequestsVerified: mode === 'self-success', taskId, connectionId: mapping.id, jobId: String(job.requestDefinitionId),
         providerRequestId: admitted.orchestrationExternalRequestId, providerRunId: admitted.orchestratorExecutionId,
         correlationId: admitted.automationAttemptCorrelationId, providerState: actualRun.status,
-        localStatus: completed.lastAutomationStatus, parentStatus: parent.workflowStatus, submissionRetryRetained: true, liveConvergenceMilliseconds });
+        localStatus: completed.lastAutomationStatus, parentStatus: parent.workflowStatus, submissionRetryRetained: true,
+        nativeExitCode: native.exitCode, admissionCount: await admissionCount(), failureIncidentId,
+        selectedPersonPreserved: mode === 'on-behalf' && requester.id !== owner.id, liveConvergenceMilliseconds });
     }
   } finally {
     if (context) await context.close(); await browser.close(); await ordinaryApi.dispose();

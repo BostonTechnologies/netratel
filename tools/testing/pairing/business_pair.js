@@ -5,6 +5,7 @@ const path = require('path');
 const http = require('http');
 const crypto = require('crypto');
 const child = require('child_process');
+const { safeFailure } = require('./safe_failure');
 function requiredDirectory(name) {
   const value = process.env[name];
   if (!value || !path.isAbsolute(value)) throw new Error(name + ' must explicitly select an absolute owned fixture/source directory');
@@ -70,6 +71,7 @@ async function runProxy(productName = 'rateldesk') {
   let armed = false, lost = false, original = null, callback = null;
   let holdCallbacks = false, blockReads = false, blockedReads = 0;
   const heldCallbacks = new Map();
+  const admissionCounts = new Map();
   const observations = [];
   const server = http.createServer(async (incoming, outgoing) => {
     try {
@@ -86,6 +88,7 @@ async function runProxy(productName = 'rateldesk') {
         else if (command.action === 'block-execution-reads') { blockReads = true; result = { blocked: true }; }
         else if (command.action === 'restore-execution-reads') { blockReads = false; result = { blocked: false, blockedReads }; }
         else if (command.action === 'callback-fault-state') result = { held: Array.from(heldCallbacks.keys()), blockedReads };
+        else if (command.action === 'admission-counts') result = { admissions: Array.from(admissionCounts, ([key, count]) => ({ key, count })) };
         else if (command.action === 'release-terminal-callbacks') {
           holdCallbacks = false;
           for (const held of heldCallbacks.values()) {
@@ -118,6 +121,13 @@ async function runProxy(productName = 'rateldesk') {
           requireProof(reply.status === 204, 'Identical actual provider result callback replay must remain harmless'); result = { status: reply.status };
         } else throw new Error('Unknown fixture control operation');
         outgoing.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' }); outgoing.end(JSON.stringify(result)); return;
+      }
+      if (productName === 'netratel' && incoming.method === 'POST' && incoming.url === '/internal/ingest') {
+        const value = JSON.parse(body.toString('utf8'));
+        requireProof([value.requestId, value.requestTaskId, value.correlationId].every(id => typeof id === 'string' && /^[a-zA-Z0-9_.:-]{1,128}$/.test(id)),
+          'The actual admission tuple must contain bounded fixture identities');
+        const key = [value.requestId, value.requestTaskId, value.correlationId].join(':');
+        admissionCounts.set(key, (admissionCounts.get(key) || 0) + 1);
       }
       if (productName === 'netratel' && blockReads && incoming.method === 'GET' && incoming.url.startsWith('/internal/executions/')) {
         blockedReads++; outgoing.writeHead(503, { 'content-type': 'application/json' }); outgoing.end('{"code":"owned-transport-unavailable"}'); return;
@@ -449,11 +459,15 @@ async function runBusiness() {
     await nrApi.dispose(); await rdApi.dispose(); nrApi = await owner(product('netratel')); rdApi = await owner(product('rateldesk'));
     const preserved = await apiJson(rdApi, '/api/v1/request-tasks/' + receipt.taskId);
     requireProof(preserved.orchestratorExecutionId === receipt.executionId && preserved.lastAutomationStatus === 'succeeded', 'Restart must preserve actual task execution/result history');
-    const durable = counts(); requireProof(durable.rateldesk.receipts === 1 && durable.rateldesk.incidents === 1 && durable.netratel.jobs === 13, 'Restart must preserve one incident/receipt, one legacy run and both aggregate parent/child pairs');
+    const durable = counts(); requireProof(durable.rateldesk.receipts === 1 && durable.rateldesk.incidents === 2 && durable.netratel.jobs === 13, 'Restart must preserve the original receiver incident/receipt, one correlated self-service failure incident and all native runs');
+    const originalIncident = sql('rateldesk', `SELECT json_build_object('count',count(*)) FROM "Tickets" WHERE "Discriminator"='Incident' AND "Id"=${literal(receipt.incidentId)}`);
+    requireProof(originalIncident.count === 1, 'The original managed receiver incident remains unique and retained');
+    receipt.incidentCount = durable.rateldesk.incidents;
     receipt.historyPreserved = true; record('historyPreserved');
   } catch (error) {
     await captureIncidentFailure(nrApi);
-    receipt.results.push({ stage: 'actualBusinessAcceptance', status: 'failed', exceptionType: error.constructor.name, reason: String(error.message).split('\n')[0].slice(0, 240) });
+    fs.writeFileSync(path.join(evidence, 'private-failure.log'), String(error.stack || error).slice(0, 8192), { mode: 0o600 });
+    receipt.results.push({ stage: 'actualBusinessAcceptance', status: 'failed', ...safeFailure(error) });
     safeJson(path.join(evidence, 'receipt.json'), receipt); throw error;
   } finally {
     if (nrApi) await nrApi.dispose(); if (rdApi) await rdApi.dispose();
@@ -466,6 +480,6 @@ async function runBusiness() {
   }
 }
 if (require.main === module) {
-  (process.argv[2] === 'proxy' ? runProxy() : process.argv[2] === 'provider-proxy' ? runProxy('netratel') : runBusiness()).catch(error => { console.error('Actual business fixture failed: ' + String(error.message).split('\n')[0].slice(0, 240)); process.exitCode = 1; });
+  (process.argv[2] === 'proxy' ? runProxy() : process.argv[2] === 'provider-proxy' ? runProxy('netratel') : runBusiness()).catch(error => { console.error('Actual business fixture failed: ' + JSON.stringify(safeFailure(error))); process.exitCode = 1; });
 }
 module.exports = { control, counts, sql, runBusiness };
