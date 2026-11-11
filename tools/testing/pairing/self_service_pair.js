@@ -58,7 +58,8 @@ module.exports = async function selfServicePair(h) {
           target: { version: 1, source: 2, agentIds: [sample.agentId] }, runner: 'bash', command,
           executionPolicy: { threadCount: 1, nodeFailurePolicy: 1 }, inputs: [] }, 'POST');
       const template = crypto.randomUUID();
-      const tasks = [{ id: template, name, order: 1, type: 'automation', autoStart: true, dependsOn: [], expectedRuntimeMinutes: 1, graceRuntimeMinutes: 0 }];
+      const tasks = [{ id: template, name, order: 1, type: 'automation', autoStart: true, dependsOn: [],
+        expectedRuntimeMinutes: 1, graceRuntimeMinutes: 0, isCritical: true, failurePolicy: 'FailRequest', maxRetries: 0 }];
       if (held) tasks.push({ id: crypto.randomUUID(), name: 'Dependent manual review', order: 2, type: 'manual', autoStart: false, dependsOn: [template] });
       const service = await apiJson(rdApi, '/api/v1/services/', { name, description: 'Owned rendered self-service acceptance', allowedCustomerIds: [], allowedOrganizationIds: [mapping.ratelDeskOrganizationId] }, 'POST');
       const form = await apiJson(rdApi, '/api/v1/request-forms/', { serviceId: service.id, title: name,
