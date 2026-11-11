@@ -113,6 +113,12 @@ public sealed partial class JobAggregatePostgresTests
             (await duplicate.Content.ReadFromJsonAsync<NetRatelIngestResponse>(ct))!.ExecutionId.Should().Be(receipt.ExecutionId);
             (await client.PostAsJsonAsync("/internal/ingest", Ingest(payload: "{\"changed\":true}"), ct)).StatusCode.Should().Be(HttpStatusCode.Conflict);
             (await client.PostAsJsonAsync("/internal/ingest", Ingest(correlation: "attempt-too-early"), ct)).StatusCode.Should().Be(HttpStatusCode.Conflict);
+            await using (var descriptiveEdit = app.Services.CreateAsyncScope())
+            {
+                var db = descriptiveEdit.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+                (await db.Jobs.SingleAsync(row => row.Id == 41, ct)).Description = "Description updated while admitted work retains its protected source";
+                await db.SaveChangesAsync(ct);
+            }
             await h.FillAsync(parent, ct);
             var first = h.Gateway.Active.Keys.Min();
             await h.SucceedNodeAsync(first, ct); await h.FillAsync(parent, ct);
@@ -177,7 +183,7 @@ public sealed partial class JobAggregatePostgresTests
             {
                 var db = edit.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
                 if (ha) (await db.Set<NetRatel.Infrastructure.SystemPairing.PairingConnectionRecord>().SingleAsync(ct)).Active = false;
-                else (await db.Jobs.SingleAsync(row => row.Id == 41, ct)).Description = "Changed after admission";
+                else (await db.Jobs.SingleAsync(row => row.Id == 41, ct)).TargetJson = JsonSerializer.Serialize(new JobTargetDefinition { Source = JobTargetSource.ExplicitNodes, AgentIds = h.AgentIds.Take(4).ToArray() });
                 await db.SaveChangesAsync(ct);
             }
             await h.FillAsync(driftId, ct);

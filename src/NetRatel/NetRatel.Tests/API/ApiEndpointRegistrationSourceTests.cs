@@ -260,11 +260,13 @@ public sealed class ApiEndpointRegistrationSourceTests
         authorization.Should().Contain("options.ForwardDefault = \"ManagedService\"");
         authorization.Should().Contain("registry.ResolvePrincipalAsync(http.User, scope, ct)");
         source.Should().Contain("job.TenantId == principal.TenantId");
-        source.Should().Contain("constraints.ResourceIds.Contains(target.AgentId.ToString(\"D\"), StringComparer.Ordinal)");
+        source.Should().Contain("constraints.ResourceIds.Contains(target.AgentId.Value.ToString(\"D\"), StringComparer.Ordinal)");
         source.Should().Contain("profile.Revision != principal.LinkRevision || profile.AuthorityHash != principal.GrantHash");
         source.Should().Contain("profile.Peer.InstallationId != principal.PeerInstanceId || profile.Mapping.RatelDeskOrganizationId != principal.PeerTenantId");
         source.Should().Contain("db.Set<ManagedOrchestrationRequestBinding>().Add(binding)");
         source.Should().Contain("authority.StartManagedAsync");
+        source.Should().Contain("GetRequiredService<JobAggregateOrchestrator>().PrepareManagedAsync");
+        source.Should().Contain("constraints.RequestDefinitionIds.Contains(job.Id.ToString(CultureInfo.InvariantCulture), StringComparer.Ordinal)");
         source.Should().Contain("IAkkaJobAuthorityService");
         source.Should().Contain("OrchestratorDbContext");
         source.Should().NotContain("SpacetimeDbService");

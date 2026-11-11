@@ -67,7 +67,7 @@ async function login(page, entry) {
       await page.locator('[data-testid="local-login-form"][data-interactive="true"]').waitFor({ state: 'attached' });
       await page.locator('input[name="email"]').fill(entry.email);
       await page.locator('input[name="password"]').fill(state.adminPassword);
-      await page.getByRole('button', { name: /^Sign in to / }).click();
+      await page.getByTestId('local-login-form').locator('button[type="submit"]').click();
     }
     await expect(page).not.toHaveURL(/\/login(?:[/?]|$)/);
     record(entry.name + '-normal-rendered-local-login', 'passed', { loginHttpStatus });

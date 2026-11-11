@@ -4,6 +4,8 @@ using Microsoft.EntityFrameworkCore;
 using NetRatel.Application.Jobs;
 using NetRatel.API.Services.Jobs;
 using NetRatel.Shared.Contracts.Jobs;
+using NetRatel.Infrastructure.Services;
+using System.Text.Json;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Infrastructure.ServiceIdentity;
 using NetRatel.Infrastructure.SystemPairing;
@@ -12,7 +14,7 @@ namespace NetRatel.API.Services.Orchestration;
 
 /// <summary>Rechecks the server-owned ingress grant at the real gateway dispatch boundary.</summary>
 public sealed class ManagedOrchestrationInvocationGuard(OrchestratorDbContext db, IServicePrincipalRegistry registry, TimeProvider clock, PairingAuthority authority,
-    IJobExecutionSnapshotCapture? snapshots = null, IJobTargetResolver? targets = null)
+    IJobRunService? runs = null, IJobTargetResolver? targets = null)
 {
     public async Task AuthorizeStartAsync(int requestId, JobDefinitionInfo job, ClaimsPrincipal principal, CancellationToken ct, ulong? preparedRunId = null)
     {
@@ -51,12 +53,24 @@ public sealed class ManagedOrchestrationInvocationGuard(OrchestratorDbContext db
         var binding = await db.Set<ManagedOrchestrationRequestBinding>().AsNoTracking().SingleOrDefaultAsync(row => row.ExecutionId == executionId, ct);
         if (binding is null || binding.AgentId is not null || binding.TargetPlanDigest != plan.ComputeDigest() ||
             parent.TargetPlanDigest != binding.TargetPlanDigest || !parent.IsAggregate || parent.ParentRunId is not null ||
-            parent.StartedBy != binding.SourceSystem || snapshots is null || targets is null)
+            parent.StartedBy != binding.SourceSystem || runs is null || targets is null)
             throw new ManagedOrchestrationGrantUnavailableException("The managed aggregate differs from its recorded ingress authority.");
-        var snapshot = await snapshots.CaptureAsync(parent.JobId, binding.TenantId, ct);
-        await AuthorizeBindingAsync(binding, snapshot.Definition.Job, ct);
-        if (snapshot.ComputeDigest() != plan.DefinitionDigest)
-            throw new ManagedOrchestrationGrantUnavailableException("The managed job definition changed after admission.");
+        // Hold the definition fence until the native dispatch intent commits. Reuse
+        // the accepted protected content/defaults; descriptive edits cannot invalidate
+        // an in-flight execution, while target, policy and environment drift can.
+        if (db.Database.IsRelational())
+            await db.Database.ExecuteSqlInterpolatedAsync($"UPDATE \"Jobs\" SET \"UpdatedAtUtc\" = \"UpdatedAtUtc\" WHERE \"Id\" = {checked((long)parent.JobId)}", ct);
+        var currentJob = await new JobDefinitionService(db).GetAsync(parent.JobId, ct)
+            ?? throw new ManagedOrchestrationGrantUnavailableException("The managed job is unavailable.");
+        await AuthorizeBindingAsync(binding, currentJob, ct);
+        var snapshot = await runs.GetPinnedExecutionSnapshotAsync(parent.Id, ct)
+            ?? throw new ManagedOrchestrationGrantUnavailableException("The admitted managed definition is unavailable.");
+        var currentTarget = currentJob.Target ?? (currentJob.AgentId is { } fixedAgent ? JobTargetDefinition.FromLegacy(fixedAgent) : null);
+        static string TargetIdentity(JobTargetDefinition? value) => JsonSerializer.Serialize(value is null ? null :
+            value with { AgentIds = value.AgentIds?.Distinct().Order().ToArray() });
+        if (snapshot.ComputeDigest() != plan.DefinitionDigest || TargetIdentity(currentTarget) != TargetIdentity(plan.Target) ||
+            (currentJob.ExecutionPolicy ?? new()) != plan.ExecutionPolicy || JobExecutionContextPolicy.FromJob(currentJob) != parent.Environment)
+            throw new ManagedOrchestrationGrantUnavailableException("The managed target or execution policy changed after admission.");
         var invocation = JobAggregateOrchestrator.ManagedRequest(snapshot.Definition.Job, binding.SourceSystem, inputs);
         var current = await targets.ResolveAsync(binding.TenantId, plan.Target, parent.Environment,
             JobAggregateOrchestrator.TargetParameters(snapshot.Definition, inputs), invocation.RuntimeTarget, null, ct);
