@@ -16,10 +16,12 @@ using NetRatel.Application.Presence;
 using NetRatel.Application.Requests;
 using NetRatel.Application.Scripts;
 using NetRatel.Infrastructure.Identity;
+using NetRatel.Infrastructure.Flows;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Infrastructure.ServiceIdentity;
 using NetRatel.Infrastructure.Services;
 using NetRatel.Shared.Contracts.Jobs;
+using NetRatel.Shared.Contracts.Flows;
 using NetRatel.Shared.ServiceIdentity;
 using NetRatel.Tests.Infrastructure;
 using Xunit;
@@ -148,8 +150,17 @@ public sealed partial class JobAggregatePostgresTests
                 var details = (await proof.ServiceProvider.GetRequiredService<IJobRunService>().GetDetailsAsync(parent, ct))!;
                 OrchestrationCallbackProjection.Matches(request!, details.Run, binding).Should().BeTrue();
                 (await OrchestrationCallbackProjection.TerminalReadyAsync(db, details, ct)).Should().BeTrue();
-                var callback = OrchestrationCallbackProjection.Build(request!, details, binding, await JobRunNodeProjection.ReadAsync(db, checked((long)parent), ct));
-                callback.Status.Should().Be("succeeded"); callback.ResultJson.Should().Contain("parentRunId");
+                var callback = await OrchestrationCallbackProjection.BuildAsync(db, proof.ServiceProvider.GetRequiredService<IJobRunService>(), request!, details, binding, ct);
+                callback.Status.Should().Be("succeeded"); callback.ResultJson.Should().Contain("parentRunId").And.Contain("childResults");
+                (await OrchestrationCallbackProjection.ProjectRequestStatusAsync(db, proof.ServiceProvider.GetRequiredService<IRequestService>(),
+                    binding.RequestId, details.Run.Status, callback.Message, callback.ResultJson, DateTimeOffset.UtcNow, ct)).Should().BeTrue();
+                var events = await db.OutboxMessages.AsNoTracking().Where(row => row.Type == FlowExecutionEventLimits.OutboxType).ToArrayAsync(ct);
+                var requestFact = events.Select(row => JsonSerializer.Deserialize(row.PayloadJson, FlowExecutionEventJsonContext.Default.FlowExecutionEventDto)!)
+                    .Single(value => value.SourceKind == FlowExecutionSourceKind.Request);
+                requestFact.Aggregate!.TargetCount.Should().Be(ha ? 1 : 5);
+                requestFact.Aggregate.Counts.Succeeded.Should().Be(ha ? 1 : 5);
+                requestFact.Target.AgentId.Should().BeNull(); requestFact.Replay!.TargetPlanDigest.Should().Be(binding.TargetPlanDigest);
+                FlowExecutionEventValidator.Validate(requestFact).Valid.Should().BeTrue();
                 (await db.Set<JobAggregateControlRecord>().SingleAsync(row => row.ParentRunId == checked((long)parent), ct)).TerminalResultHash = "invalid";
                 await db.SaveChangesAsync(ct);
                 (await OrchestrationCallbackProjection.TerminalReadyAsync(db, details, ct)).Should().BeFalse();
