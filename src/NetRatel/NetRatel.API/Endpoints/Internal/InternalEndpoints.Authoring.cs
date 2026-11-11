@@ -46,10 +46,15 @@ public static partial class InternalEndpoints
                 var description = string.IsNullOrWhiteSpace(request.Description) ? null : request.Description.Trim();
                 var existingInfo = await jobs.GetAsync(checked((ulong)existing.Id), ct);
                 var steps = await jobs.ListStepsAsync(checked((ulong)existing.Id), ct);
+                var parameters = await db.JobParameters.AsNoTracking().Where(row => row.JobId == existing.Id).ToArrayAsync(ct);
                 if (existing.AgentId != agent || !string.Equals(existing.Description, description, StringComparison.Ordinal) ||
                     JsonSerializer.Serialize(existingInfo?.Target) != JsonSerializer.Serialize(request.Target) ||
                     existingInfo?.ExecutionPolicy != request.ExecutionPolicy ||
-                    request.Command is not null && (steps.Count != 1 || steps[0].Command != request.Command || steps[0].Runner != request.Runner))
+                    request.Command is not null && (steps.Count != 1 || steps[0].Command != request.Command || steps[0].Runner != request.Runner) ||
+                    parameters.Length != request.Inputs.Count || parameters.Any(row => !request.Inputs.Any(input =>
+                        row.Name == input.Key && (row.Label ?? row.Name) == input.Label && row.SortOrder == input.Order &&
+                        row.Type == input.Type && row.Required == input.Required && row.DefaultValue == input.DefaultValue &&
+                        row.Description == NormalizeOptional(input.HelpText) && row.OptionsJson == NormalizeOptional(input.OptionsJson))))
                     return AutomationError(http, 409, "authoring", "request_definition_name_conflict");
                 var replay = await MapCatalogJobsAsync(db, [await jobs.GetAsync(checked((ulong)existing.Id), ct) ?? throw new InvalidOperationException("Existing definition disappeared.")], ct);
                 return Results.Ok(ToRequestDefinition(replay.Single()));
@@ -60,6 +65,13 @@ public static partial class InternalEndpoints
                 await jobs.AddStepAsync(new(created.Id, 1, JobStepKind.RunCommand, request.Runner, request.Command, null, null, true), ct);
             foreach (var input in request.Inputs)
                 await jobs.AddParamAsync(new(created.Id, input.Key, input.Type, input.Required, input.DefaultValue, input.HelpText, input.OptionsJson), ct);
+            foreach (var parameter in await db.JobParameters.Where(row => row.JobId == checked((long)created.Id)).ToListAsync(ct))
+            {
+                var input = request.Inputs.Single(input => input.Key == parameter.Name);
+                parameter.Label = input.Label;
+                parameter.SortOrder = input.Order;
+            }
+            await db.SaveChangesAsync(ct);
             var catalog = await MapCatalogJobsAsync(db, [created], ct);
             if (transaction is not null) await transaction.CommitAsync(ct);
             return Results.Created($"/internal/catalog/request-definitions/{created.Id}", ToRequestDefinition(catalog.Single()));

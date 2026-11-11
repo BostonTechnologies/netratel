@@ -78,18 +78,23 @@ public sealed partial class JobAggregatePostgresTests
             var choices = await client.GetFromJsonAsync<NetRatelAutomationTargetChoice[]>("/internal/catalog/target-choices", ct);
             choices!.Count(choice => choice.Kind == "explicitNodes").Should().Be(5);
             // A real canonical job created after pairing is immediately in the refreshed effective grant.
-            using var create = await client.PostAsJsonAsync("/internal/catalog/request-definitions", new CreateNetRatelRequestDefinitionDto
+            var authoring = new CreateNetRatelRequestDefinitionDto
             {
                 Name = "Created through paired authoring", TenantId = 7, Target = JobTargetDefinition.FromLegacy(h.AgentIds[0]),
-                Runner = "bash", Command = "printf '%s' @message@",
-                Inputs = [new() { Key = "message", Label = "Message", Type = "text", Required = true }]
-            }, ct);
+                Runner = "bash", Command = "printf '%s' @option.message@",
+                Inputs = [new() { Key = "message", Label = "Message to print", Order = 3, Type = "text", Required = true }]
+            };
+            using var create = await client.PostAsJsonAsync("/internal/catalog/request-definitions", authoring, ct);
             create.EnsureSuccessStatusCode();
             var authored = (await create.Content.ReadFromJsonAsync<NetRatelCatalogRequestDefinitionDto>(ct))!;
+            authored.Inputs.Should().ContainSingle(input => input.Label == "Message to print" && input.Order == 3 && input.Required);
+            (await client.PostAsJsonAsync("/internal/catalog/request-definitions", authoring, ct)).StatusCode.Should().Be(HttpStatusCode.OK);
+            authoring.Inputs[0].Required = false;
+            (await client.PostAsJsonAsync("/internal/catalog/request-definitions", authoring, ct)).StatusCode.Should().Be(HttpStatusCode.Conflict);
             await using (var independent = app.Services.CreateAsyncScope())
             {
                 var details = await independent.ServiceProvider.GetRequiredService<IJobDefinitionService>().GetDetailsAsync(ulong.Parse(authored.RequestDefinitionId), ct);
-                details!.Steps.Should().ContainSingle(step => step.Command == "printf '%s' @message@");
+                details!.Steps.Should().ContainSingle(step => step.Command == "printf '%s' @option.message@");
                 details.Job.Target!.AgentIds.Should().Equal(h.AgentIds[0]);
             }
             var catalogue = (await client.GetFromJsonAsync<NetRatelCatalogRequestDefinitionDto[]>("/internal/catalog/request-definitions", ct))!;
