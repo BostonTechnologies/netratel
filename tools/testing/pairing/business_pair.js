@@ -48,11 +48,11 @@ async function until(label, operation, seconds = 60) {
   }
   throw new Error(label + ' did not complete within its bounded deadline');
 }
-function upstream(method, route, headers, body) {
+function upstream(method, route, headers, body, productName = 'rateldesk') {
   return new Promise((resolve, reject) => {
     const clean = { ...headers }; delete clean.host; delete clean.connection; delete clean['transfer-encoding'];
     clean['content-length'] = body.length;
-    const request = http.request({ host: '127.0.0.1', port: state.products.rateldesk.apiPort, path: route, method, headers: clean, timeout: 30000 }, response => {
+    const request = http.request({ host: '127.0.0.1', port: state.products[productName].internalApiPort || state.products[productName].apiPort, path: route, method, headers: clean, timeout: 30000 }, response => {
       const parts = []; let length = 0;
       response.on('data', part => { length += part.length; if (length > 512 * 1024) response.destroy(new Error('Actual peer response exceeded fixture bound')); else parts.push(part); });
       response.on('error', reject);
@@ -62,11 +62,14 @@ function upstream(method, route, headers, body) {
     request.on('error', reject); request.end(body);
   });
 }
-async function runProxy() {
-  requireProof(Number.isInteger(state.products.rateldesk.proxyPort), 'Launcher must allocate rateldesk.proxyPort before starting the fixture proxy');
+async function runProxy(productName = 'rateldesk') {
+  const listenPort = productName === 'rateldesk' ? state.products.rateldesk.proxyPort : state.products.netratel.apiPort;
+  requireProof(Number.isInteger(listenPort), 'Launcher must allocate rateldesk.proxyPort before starting the fixture proxy');
   const controlToken = crypto.randomBytes(32).toString('base64url');
-  safeJson(path.join(fixture, 'proxy-private.json'), { controlToken });
+  safeJson(path.join(fixture, productName === 'rateldesk' ? 'proxy-private.json' : 'netratel-proxy-private.json'), { controlToken });
   let armed = false, lost = false, original = null, callback = null;
+  let holdCallbacks = false, blockReads = false, blockedReads = 0;
+  const heldCallbacks = new Map();
   const observations = [];
   const server = http.createServer(async (incoming, outgoing) => {
     try {
@@ -79,6 +82,18 @@ async function runProxy() {
         const command = JSON.parse(body.toString('utf8') || '{}');
         let result;
         if (command.action === 'arm') { armed = true; result = { armed: true }; }
+        else if (command.action === 'hold-terminal-callbacks') { holdCallbacks = true; result = { holding: true }; }
+        else if (command.action === 'block-execution-reads') { blockReads = true; result = { blocked: true }; }
+        else if (command.action === 'restore-execution-reads') { blockReads = false; result = { blocked: false, blockedReads }; }
+        else if (command.action === 'callback-fault-state') result = { held: Array.from(heldCallbacks.keys()), blockedReads };
+        else if (command.action === 'release-terminal-callbacks') {
+          holdCallbacks = false;
+          for (const held of heldCallbacks.values()) {
+            const delivered = await upstream(held.method, held.route, held.headers, held.body);
+            requireProof(delivered.status === 204, 'The original held authenticated callback must reconcile successfully');
+          }
+          result = { delivered: heldCallbacks.size }; heldCallbacks.clear();
+        }
         else if (command.action === 'observations') result = { lost, observations };
         else if (command.action === 'replay') {
           requireProof(original !== null && lost, 'An actual committed response-loss request must exist before replay');
@@ -104,7 +119,18 @@ async function runProxy() {
         } else throw new Error('Unknown fixture control operation');
         outgoing.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' }); outgoing.end(JSON.stringify(result)); return;
       }
-      const reply = await upstream(incoming.method, incoming.url, incoming.headers, body);
+      if (productName === 'netratel' && blockReads && incoming.method === 'GET' && incoming.url.startsWith('/internal/executions/')) {
+        blockedReads++; outgoing.writeHead(503, { 'content-type': 'application/json' }); outgoing.end('{"code":"owned-transport-unavailable"}'); return;
+      }
+      if (productName === 'rateldesk' && holdCallbacks && incoming.method === 'POST' && incoming.url === '/api/v1/orchestration/provider/callback') {
+        const value = JSON.parse(body.toString('utf8'));
+        if (['succeeded', 'failed', 'cancelled', 'unknown'].includes(value.status)) {
+          heldCallbacks.set(value.requestTaskId + ':' + value.orchestrationRunId + ':' + value.status,
+            { method: incoming.method, route: incoming.url, headers: { ...incoming.headers }, body });
+          outgoing.writeHead(204); outgoing.end(); return;
+        }
+      }
+      const reply = await upstream(incoming.method, incoming.url, incoming.headers, body, productName);
       if (incoming.method === 'POST' && incoming.url === '/api/v1/orchestration/provider/callback' && reply.status === 204) {
         const value = JSON.parse(body.toString('utf8'));
         if (value.status === 'succeeded') callback = { method: incoming.method, route: incoming.url, headers: { ...incoming.headers }, body };
@@ -128,14 +154,15 @@ async function runProxy() {
       fs.appendFileSync(path.join(evidence, 'proxy-errors.log'), error.constructor.name + '\n', { mode: 0o600 });
     }
   });
-  server.listen(state.products.rateldesk.proxyPort, '127.0.0.1', () => console.log('Owned actual-business proxy ready'));
+  server.listen(listenPort, '127.0.0.1', () => console.log('Owned actual-business proxy ready'));
   const close = () => { original = null; callback = null; server.close(() => process.exit(0)); };
   process.on('SIGTERM', close); process.on('SIGINT', close);
   setTimeout(close, 20 * 60 * 1000).unref();
 }
-async function control(action) {
-  const privateControl = JSON.parse(fs.readFileSync(path.join(fixture, 'proxy-private.json'), 'utf8'));
-  const response = await fetch(`http://127.0.0.1:${state.products.rateldesk.proxyPort}/__fixture/control`, { method: 'POST',
+async function control(action, productName = 'rateldesk') {
+  const privateControl = JSON.parse(fs.readFileSync(path.join(fixture, productName === 'rateldesk' ? 'proxy-private.json' : 'netratel-proxy-private.json'), 'utf8'));
+  const controlPort = productName === 'rateldesk' ? state.products.rateldesk.proxyPort : state.products.netratel.apiPort;
+  const response = await fetch(`http://127.0.0.1:${controlPort}/__fixture/control`, { method: 'POST',
     headers: { 'content-type': 'application/json', 'X-Fixture-Control': privateControl.controlToken }, body: JSON.stringify({ action }), signal: AbortSignal.timeout(30000) });
   requireProof(response.ok, 'Owned actual-business fixture control failed'); return response.json();
 }
@@ -414,13 +441,15 @@ async function runBusiness() {
     await actualAutomation(nrApi, rdApi, automation, sample);
     await actualAutomation(nrApi, rdApi, automation, sample, 'explicit');
     await actualAutomation(nrApi, rdApi, automation, sample, 'ha');
+    await require('./self_service_pair')({ runtimeRoot, fixture, state, nrApi, rdApi, connection: automation, sample, apiJson, sql, literal,
+      until, requireProof, control, dockerCall, record, evidence });
     // Normal process restart; read preserved real histories after current owner login.
     child.execFileSync('python3', [path.join(__dirname, 'native_pair.py'), 'restart', 'netratel'], { env: process.env, timeout: 90000, stdio: 'ignore' });
     child.execFileSync('python3', [path.join(__dirname, 'native_pair.py'), 'restart', 'rateldesk'], { env: process.env, timeout: 90000, stdio: 'ignore' });
     await nrApi.dispose(); await rdApi.dispose(); nrApi = await owner(product('netratel')); rdApi = await owner(product('rateldesk'));
     const preserved = await apiJson(rdApi, '/api/v1/request-tasks/' + receipt.taskId);
     requireProof(preserved.orchestratorExecutionId === receipt.executionId && preserved.lastAutomationStatus === 'succeeded', 'Restart must preserve actual task execution/result history');
-    const durable = counts(); requireProof(durable.rateldesk.receipts === 1 && durable.rateldesk.incidents === 1 && durable.netratel.jobs === 5, 'Restart must preserve one incident/receipt, one legacy run and both aggregate parent/child pairs');
+    const durable = counts(); requireProof(durable.rateldesk.receipts === 1 && durable.rateldesk.incidents === 1 && durable.netratel.jobs === 13, 'Restart must preserve one incident/receipt, one legacy run and both aggregate parent/child pairs');
     receipt.historyPreserved = true; record('historyPreserved');
   } catch (error) {
     await captureIncidentFailure(nrApi);
@@ -437,6 +466,6 @@ async function runBusiness() {
   }
 }
 if (require.main === module) {
-  (process.argv[2] === 'proxy' ? runProxy() : runBusiness()).catch(error => { console.error('Actual business fixture failed: ' + String(error.message).split('\n')[0].slice(0, 240)); process.exitCode = 1; });
+  (process.argv[2] === 'proxy' ? runProxy() : process.argv[2] === 'provider-proxy' ? runProxy('netratel') : runBusiness()).catch(error => { console.error('Actual business fixture failed: ' + String(error.message).split('\n')[0].slice(0, 240)); process.exitCode = 1; });
 }
 module.exports = { control, counts, sql, runBusiness };

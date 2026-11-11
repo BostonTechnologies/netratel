@@ -115,6 +115,33 @@ content choices, independently find it in NetRatel, bind and run it, then inspec
 correlation/run links and any structured errors. Hosted source/distribution
 verification is separate from this owner deployment acceptance.
 
+## Execution deadlines and outcome reads
+
+### Execution reconciliation
+
+The additive authenticated `GET /internal/executions/{orchestrationRequestId}/{orchestrationRunId}`
+receipt accepts the original RatelDesk request, task and attempt identity in
+`X-RatelDesk-Request-Id`, `X-RatelDesk-Task-Id` and `X-Correlation-Id` headers.
+The read URL contains no query string. It matches the admitted service principal, tenant, saved mapping,
+revision, peer identity and current authority. A receipt read never admits,
+recovers, replays or resubmits work. Terminal status requires the existing durable
+terminal-readiness/result-hash proof; otherwise the outcome remains unknown.
+
+RatelDesk can use this receipt to reconcile a missed callback. Its own persisted
+deadline remains authoritative for the local waiting period. An unavailable or
+older provider cannot confirm termination: the task needs reconciliation and
+must retain its attempt identifiers without automatically retrying. The normal
+authenticated callback can reconcile that same attempt later. Existing pairing
+and read/invoke grants remain unchanged.
+
+The opt-in source-pair lane also drives the real rendered self-service form using
+the existing unlinked local owner in its original organization. It records
+correlated success, controlled native failure, explicit on-behalf regression,
+normal local requester ownership in My Requests, idempotent request retry and a dropped-callback/provider-read outage across a
+RatelDesk restart. Faults exist only in the owned loopback transport fixture;
+restoring the original terminal callback must recover the same task and parent.
+Passing source/CI receipts and owner production testing remain distinct.
+
 ## Upgrade from the retired pre-pairing setup
 
 Upgrade both products before pairing. Forward migrations retire previous

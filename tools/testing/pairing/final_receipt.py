@@ -38,7 +38,9 @@ def prepare():
                   'side-effect-free-test-current-counts', 'deleteWhilePeerOffline']:
         require(statuses.get(stage) == 'passed', 'A real rendered acceptance stage has not passed: ' + stage)
     for stage in ['incidentReceiptReplay', 'nativeAutomationResult',
-                  'nativeAggregateAutomationResult-explicit', 'nativeAggregateAutomationResult-ha']:
+                  'nativeAggregateAutomationResult-explicit', 'nativeAggregateAutomationResult-ha',
+                  'renderedSelfService-self-success', 'renderedSelfService-self-failure',
+                  'renderedSelfService-on-behalf', 'renderedSelfService-lost-callback']:
         require(business['stages'].get(stage) == 'passed', 'A real native business stage has not passed: ' + stage)
     require(business['historyPreserved'] is True and business['resultReceived'] is True,
             'Durable real execution/result history was not verified')
@@ -75,7 +77,9 @@ def prepare():
         'pairedFromRatelDesk': 'passed', 'pairedFromNetRatel': 'passed',
         'incidentReceiptReplay': 'passed', 'nativeAutomationResult': 'passed',
         'nativeAggregateAutomationResult-explicit': 'passed', 'nativeAggregateAutomationResult-ha': 'passed',
-        'sideEffectFreeTest': 'passed', 'deleteWhilePeerOffline': 'passed'},
+        'sideEffectFreeTest': 'passed', 'deleteWhilePeerOffline': 'passed',
+        'renderedSelfService-self-success': 'passed', 'renderedSelfService-self-failure': 'passed',
+        'renderedSelfService-on-behalf': 'passed', 'renderedSelfService-lost-callback': 'passed'},
         'sources': {'netratelSha': nr_sha, 'rateldeskSha': rd_sha,
                     'netratelDirty': nr_dirty, 'rateldeskDirty': rd_dirty,
                     'captured': captured_summary, 'current': current_summary,
@@ -83,6 +87,7 @@ def prepare():
                     'netratelClientBinarySha256': client_hash, 'cleanSourceRequired': clean_required},
         'result': {'incidentCount': business['incidentCount'], 'receiptCount': business['receiptCount'], 'executionId': str(business['executionId']),
                    'resultReceived': True, 'historyPreserved': True, 'cleanupComplete': False,
+                   'selfServiceExecutions': [row for row in business['results'] if row.get('stage', '').startswith('renderedSelfService-')],
                    'executions': [{key: row[key] for key in ['stage', 'executionId', 'nativeExitCode', 'callbackReplayHarmless']}
                                   for row in business['results'] if row.get('stage') in [
                                       'nativeAutomationResult', 'nativeAggregateAutomationResult-explicit', 'nativeAggregateAutomationResult-ha']]}}

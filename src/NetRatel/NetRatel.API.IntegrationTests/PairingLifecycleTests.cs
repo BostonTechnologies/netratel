@@ -38,6 +38,8 @@ public sealed class PairingLifecycleTests
         var stages = receipt.RootElement.GetProperty("stages");
         foreach (var stage in new[] { "pairedFromRatelDesk", "pairedFromNetRatel", "incidentReceiptReplay",
             "nativeAutomationResult", "nativeAggregateAutomationResult-explicit", "nativeAggregateAutomationResult-ha",
+            "renderedSelfService-self-success", "renderedSelfService-self-failure",
+            "renderedSelfService-on-behalf", "renderedSelfService-lost-callback",
             "sideEffectFreeTest", "deleteWhilePeerOffline" })
             Assert.Equal("passed", stages.GetProperty(stage).GetString());
         var sources = receipt.RootElement.GetProperty("sources");
@@ -52,6 +54,7 @@ public sealed class PairingLifecycleTests
         Assert.True(result.GetProperty("resultReceived").GetBoolean());
         Assert.True(result.GetProperty("historyPreserved").GetBoolean());
         Assert.True(result.GetProperty("cleanupComplete").GetBoolean());
+        Assert.Equal(4, result.GetProperty("selfServiceExecutions").GetArrayLength());
     }
 
     private static string RequiredDirectory(string name)

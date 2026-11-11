@@ -114,6 +114,8 @@ def create_state():
         state['products'][product] = {'apiPort': free_port(), 'webPort': free_port(),
             'gatewayPort': free_port(), 'database': product + '_' + suffix,
             'email': product + '.admin@example.test', 'pids': {}}
+        if product == 'netratel':
+            state['products'][product]['internalApiPort'] = free_port()
         if product == 'rateldesk':
             state['products'][product]['proxyPort'] = free_port()
             state['products'][product]['proxyApiOrigin'] = f"http://127.0.0.1:{state['products'][product]['proxyPort']}"
@@ -162,17 +164,18 @@ def environment_for(state, product, role):
     entry = state['products'][product]
     directory = FIXTURE / product
     api = f"http://127.0.0.1:{entry['apiPort']}"
+    internal_api = f"http://127.0.0.1:{entry.get('internalApiPort', entry['apiPort'])}"
     web = f"http://127.0.0.1:{entry['webPort']}"
     canonical_api = f"http://127.0.0.1:{entry['proxyPort']}" if product == 'rateldesk' and 'proxyPort' in entry else api
     connection = (f"Host=127.0.0.1;Port={state['databasePort']};"
         f"Database={entry['database']};Username=postgres;Password={state['databasePassword']}")
     environment = tool_env()
     environment.update(ASPNETCORE_ENVIRONMENT='Production',
-        ASPNETCORE_URLS=api if role == 'api' else web,
+        ASPNETCORE_URLS=internal_api if role == 'api' else web,
         Authentication__Mode='Local',
         Bootstrap__StateDirectory=str(directory / 'bootstrap'),
-        ApiBaseUrl=api + '/',
-        ReverseProxy__Clusters__apiCluster__Destinations__api1__Address=api + '/',
+        ApiBaseUrl=internal_api + '/',
+        ReverseProxy__Clusters__apiCluster__Destinations__api1__Address=internal_api + '/',
         ServiceIdentity__ApiBaseUrl=canonical_api, ServiceIdentity__WebBaseUrl=web,
         ServiceIdentity__Issuer=canonical_api + '/services',
         ServiceIdentity__Audience=product + '.services',
@@ -184,7 +187,7 @@ def environment_for(state, product, role):
             DataProtection__KeysDirectory=str(directory / 'keys'),
             NetRatel_KEYS_DIR=str(directory / 'keys'),
             Authentication__Local__AllowInsecureLocalhost='true',
-            NetRatel_HTTP_PORT=str(entry['apiPort']),
+            NetRatel_HTTP_PORT=str(entry.get('internalApiPort', entry['apiPort'])),
             NetRatelAkka__GatewayGrpcPort=str(entry['gatewayPort']),
             # Match the Client's five-second genuine collection cadence in server policy.
             TelemetryInteractive__BaselineSlowIntervalSeconds='5',
@@ -283,7 +286,8 @@ def start_product(state, product):
         entry['pids'][role] = process.pid
         private_json(STATE, state)
         route = ('/api/v2/setup/status' if product == 'netratel' else '/api/v1/setup/status') if role == 'api' else '/'
-        wait_host(f"http://127.0.0.1:{entry[role + 'Port']}" + route, process,
+        listen_port = entry.get('internalApiPort', entry['apiPort']) if role == 'api' else entry['webPort']
+        wait_host(f"http://127.0.0.1:{listen_port}" + route, process,
             product + ' ' + role)
         print(product + ' ' + role + ' healthy', flush=True)
 
@@ -372,6 +376,10 @@ def cleanup(state, purge=False):
             destination = SAFE_EVIDENCE / state['fixtureId']
             destination.mkdir(parents=True, exist_ok=True)
             shutil.copy2(business_receipt, destination / 'business-receipt.json')
+            for name in ['self-success', 'self-failure', 'on-behalf', 'lost-callback']:
+                screenshot = business_receipt.parent / (name + '-rendered-outcome.png')
+                if screenshot.is_file() and screenshot.stat().st_size <= 2 * 1024 * 1024:
+                    shutil.copy2(screenshot, destination / screenshot.name)
         shutil.rmtree(FIXTURE)
         private_json(ROOT / 'cleanup-receipt.json', {'fixtureId': state['fixtureId'],
             'processesStopped': True, 'containersRemoved': True, 'privateCredentialsRemoved': not FIXTURE.exists()})
@@ -397,14 +405,15 @@ def counts(state):
 
 def start_proxy(state):
     helper = Path(__file__).with_name('business_pair.js')
-    with (FIXTURE / 'incident-capture-proxy.log').open('ab') as output:
-        process = subprocess.Popen(['node', str(helper), 'proxy'], env=tool_env(),
-            stdout=output, stderr=subprocess.STDOUT, start_new_session=True)
-    state.setdefault('helperPids', {})['incidentProxy'] = process.pid
-    private_json(STATE, state)
-    wait_host(state['products']['rateldesk']['proxyApiOrigin'] + '/__fixture/health',
-        process, 'Owned business acceptance proxy')
-    print('Owned loopback business acceptance proxy healthy', flush=True)
+    for product, mode in [('rateldesk', 'proxy'), ('netratel', 'provider-proxy')]:
+        with (FIXTURE / (product + '-capture-proxy.log')).open('ab') as output:
+            process = subprocess.Popen(['node', str(helper), mode], env=tool_env(),
+                stdout=output, stderr=subprocess.STDOUT, start_new_session=True)
+        state.setdefault('helperPids', {})[product + 'Proxy'] = process.pid
+        private_json(STATE, state)
+        port = state['products'][product].get('proxyPort', state['products'][product]['apiPort'])
+        wait_host(f"http://127.0.0.1:{port}/__fixture/health", process, 'Owned business acceptance proxy')
+    print('Owned loopback business acceptance proxies healthy', flush=True)
 
 
 def start():

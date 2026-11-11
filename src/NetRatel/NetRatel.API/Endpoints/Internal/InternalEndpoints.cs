@@ -73,6 +73,8 @@ public static partial class InternalEndpoints
                     "executionGroup", new JobTargetDefinition { Source = JobTargetSource.ExecutionGroup, ExecutionGroupId = row.Id }))));
         }).RequireAuthorization(OrchestrationManagedAuthorization.ReadPolicy);
         group.MapInternalCatalogAuthoringEndpoints();
+        group.MapGet("/executions/{orchestrationRequestId:int}/{orchestrationRunId}", ReadManagedExecution)
+            .RequireAuthorization(OrchestrationManagedAuthorization.ReadPolicy);
 
         group.MapPost("/ingest", async (
             NetRatelIngestRequest request,
