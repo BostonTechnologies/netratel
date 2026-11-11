@@ -44,7 +44,22 @@ public sealed class CreateNetRatelRequestDefinitionDto
     public string? Description { get; set; }
     public int? TenantId { get; set; }
     public string ClientIdentity { get; set; } = string.Empty;
+    public NetRatel.Shared.Contracts.Jobs.JobTargetDefinition? Target { get; set; }
+    public NetRatel.Shared.Contracts.Jobs.JobExecutionPolicy? ExecutionPolicy { get; set; }
+    public string? Runner { get; set; }
+    public string? Command { get; set; }
+    public IReadOnlyList<NetRatelCatalogInputDefinitionDto> Inputs { get; set; } = [];
 }
+
+public sealed record NetRatelAutomationCapabilities(int ContractVersion, string[] TargetKinds,
+    bool Catalogue, bool Authoring, bool AggregateExecution);
+
+public sealed record NetRatelAutomationTargetChoice(string Id, string Name, string Kind,
+    NetRatel.Shared.Contracts.Jobs.JobTargetDefinition Target);
+
+public sealed record NetRatelAutomationTarget(int Version, string Kind, string Summary,
+    NetRatel.Shared.Contracts.Jobs.JobTargetDefinition? Definition, Guid? LegacyAgentId,
+    string Readiness, IReadOnlyList<string> RequiredInputs);
 
 public sealed class SyncNetRatelRequestDefinitionInputsDto
 {
@@ -53,6 +68,8 @@ public sealed class SyncNetRatelRequestDefinitionInputsDto
 
 public sealed class NetRatelCatalogJobDto
 {
+    public int ContractVersion { get; set; } = 2;
+    public NetRatelAutomationTarget? Target { get; set; }
     public string Id { get; set; } = string.Empty;
     public string Name { get; set; } = string.Empty;
     public string DisplayName { get; set; } = string.Empty;
@@ -74,6 +91,8 @@ public sealed class NetRatelCatalogJobDto
 
 public sealed class NetRatelCatalogRequestDefinitionDto
 {
+    public int ContractVersion { get; set; } = 2;
+    public NetRatelAutomationTarget? Target { get; set; }
     public string RequestDefinitionId { get; set; } = string.Empty;
     public string RequestDefinitionName { get; set; } = string.Empty;
     public string DisplayName { get; set; } = string.Empty;

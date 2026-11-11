@@ -47,7 +47,8 @@ public static class ManagedOrchestrationRecovery
 
     private static bool SameTarget(JobRunInfo run, ManagedOrchestrationRequestBinding binding) =>
         run.StartedBy == binding.SourceSystem && run.TenantId == binding.TenantId && run.AgentId == binding.AgentId &&
-        run.JobId.ToString(CultureInfo.InvariantCulture) == binding.JobDefinitionId;
+        run.JobId.ToString(CultureInfo.InvariantCulture) == binding.JobDefinitionId && run.ParentRunId is null &&
+        (binding.TargetPlanDigest is null ? !run.IsAggregate : run.IsAggregate && run.TargetPlanDigest == binding.TargetPlanDigest);
 
     private static bool HasLocalRequest(string? inputs, int requestId)
     {

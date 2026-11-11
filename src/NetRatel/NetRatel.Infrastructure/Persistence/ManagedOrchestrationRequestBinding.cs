@@ -8,7 +8,8 @@ public sealed class ManagedOrchestrationRequestBinding
     public int RequestId { get; set; }
     public Guid ServicePrincipalId { get; set; }
     public int TenantId { get; set; }
-    public Guid AgentId { get; set; }
+    public Guid? AgentId { get; set; }
+    public string? TargetPlanDigest { get; set; }
     public string JobDefinitionId { get; set; } = "";
     public string? ExecutionId { get; set; }
     public string ParentRequestId { get; set; } = "";
@@ -56,6 +57,7 @@ public static class ManagedOrchestrationModelConfiguration
             e.HasOne<RequestRecord>().WithOne().HasForeignKey<ManagedOrchestrationRequestBinding>(x => x.RequestId).OnDelete(DeleteBehavior.Restrict);
             foreach (var field in new[] { nameof(ManagedOrchestrationRequestBinding.JobDefinitionId), nameof(ManagedOrchestrationRequestBinding.ExecutionId), nameof(ManagedOrchestrationRequestBinding.ParentRequestId), nameof(ManagedOrchestrationRequestBinding.RequestTaskId), nameof(ManagedOrchestrationRequestBinding.CorrelationId), nameof(ManagedOrchestrationRequestBinding.LinkId), nameof(ManagedOrchestrationRequestBinding.PeerInstanceId), nameof(ManagedOrchestrationRequestBinding.PeerTenantId) })
                 e.Property(field).HasMaxLength(256);
+            e.Property(x => x.TargetPlanDigest).HasMaxLength(64);
             e.Property(x => x.IngestFingerprint).HasMaxLength(64);
             e.Property(x => x.GrantHash).HasMaxLength(64);
             e.Property(x => x.CallbackUrl).HasMaxLength(2048);

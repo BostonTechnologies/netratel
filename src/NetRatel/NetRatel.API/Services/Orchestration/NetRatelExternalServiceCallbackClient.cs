@@ -52,7 +52,7 @@ public sealed class NetRatelExternalServiceCallbackClient(
             !await OrchestrationCallbackProjection.TerminalReadyAsync(db, details, ct) ||
             request.Status != OrchestrationCallbackProjection.Status(details.Run.Status))
             return new(OrchestrationCallbackDisposition.Rejected, FailureCode: "callback-result-unavailable");
-        request = OrchestrationCallbackProjection.Build(stored, details, binding);
+        request = await OrchestrationCallbackProjection.BuildAsync(db, runs, stored, details, binding, ct);
 
         for (var attempt = 0; attempt <= RetryDelays.Length; attempt++)
         {

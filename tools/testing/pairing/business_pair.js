@@ -303,12 +303,37 @@ async function actualIncident(nrApi, rdApi, mapping, sample) {
   receipt.incidentCount = 1; receipt.receiptCount = 1; receipt.incidentId = original.incidentId; receipt.receiptId = original.id; receipt.flowRunId = run.run.id;
   record('incidentReceiptReplay', { incidentId: original.incidentId, receiptId: original.id, key: original.key, fingerprint: original.fingerprint, mappingId: mapping.mapping.id, committedBeforeLoss: true });
 }
-async function actualAutomation(nrApi, rdApi, connection, sample) {
-  const mapping = connection.mapping, name = 'Actual source-pair native command';
+async function actualAutomation(nrApi, rdApi, connection, sample, mode = 'legacy') {
+  const mapping = connection.mapping, name = 'Actual source-pair native command ' + mode;
   const marker = 'pairing-native-result-' + state.fixtureId;
-  const job = await apiJson(nrApi, '/api/v1/jobs/', { name, folderPath: '/', description: 'Bounded genuine production Client command', tenantId: Number(mapping.netRatelTenantId), clientIdentity: '', agentId: sample.agentId, expectedRuntimeSeconds: 30, graceSeconds: 10, hardTimeoutSeconds: 60 }, 'POST');
   const command = "remaining=45; while [ \"$remaining\" -gt 0 ]; do if test -f /client/acceptance-command-release; then printf '%s\\n' " + marker + "; exit 0; fi; remaining=$((remaining-1)); sleep 1; done; exit 70";
-  await apiJson(nrApi, `/api/v1/jobs/${job.id}/steps`, { ordinal: 1, type: 0, runner: 'bash', command, scriptId: null, payloadJson: null, enabled: true }, 'POST');
+  const query = '?organizationId=' + encodeURIComponent(mapping.ratelDeskOrganizationId) + '&connectionId=' + encodeURIComponent(mapping.id);
+  let job;
+  if (mode === 'legacy') {
+    job = await apiJson(nrApi, '/api/v1/jobs/', { name, folderPath: '/', description: 'Bounded genuine production Client command', tenantId: Number(mapping.netRatelTenantId), clientIdentity: '', agentId: sample.agentId, expectedRuntimeSeconds: 30, graceSeconds: 10, hardTimeoutSeconds: 60 }, 'POST');
+    await apiJson(nrApi, `/api/v1/jobs/${job.id}/steps`, { ordinal: 1, type: 0, runner: 'bash', command, scriptId: null, payloadJson: null, enabled: true }, 'POST');
+  } else {
+    let target = { version: 1, source: 2, agentIds: [sample.agentId] };
+    if (mode === 'ha') {
+      const createdGroup = await apiJson(nrApi, `/api/v2/tenants/${mapping.netRatelTenantId}/execution-groups/`,
+        { name: 'Paired synthetic HA workers', description: 'Owned source-pair fixture', enabled: true, archived: false, agentIds: [sample.agentId] }, 'POST');
+      target = { version: 1, source: 1, executionGroupId: createdGroup.group.id };
+    }
+    const choices = await apiJson(rdApi, '/api/v1/admin/orchestration/catalog/target-choices' + query);
+    requireProof(choices.some(choice => choice.id === (mode === 'ha' ? target.executionGroupId : sample.agentId)), 'Paired authoring must discover the real tenant target');
+    const created = await apiJson(rdApi, '/api/v1/admin/orchestration/catalog/request-definitions' + query,
+      { name, folderPath: '/', tenantId: Number(mapping.netRatelTenantId), target, runner: 'bash', command,
+        executionPolicy: { threadCount: 2, nodeFailurePolicy: 1 }, inputs: [] }, 'POST');
+    job = { id: created.orchestrationJobDefinitionId, name: created.requestDefinitionName };
+    requireProof(created.clientIdentity === '' && created.target?.kind === (mode === 'ha' ? 'executionGroup' : 'explicitNodes'), 'Canonical modern catalogue must have typed targeting and no fabricated legacy identity');
+    const independent = await apiJson(nrApi, `/api/v1/jobs/${job.id}`);
+    requireProof(String(independent.job.id) === String(job.id) && independent.steps.length === 1, 'Paired creation must produce an ordinary executable NetRatel job');
+    const catalogue = await apiJson(rdApi, '/api/v1/admin/orchestration/catalog/request-definitions' + query);
+    requireProof(catalogue.some(item => item.requestDefinitionId === String(job.id)), 'The same existing saved connection must discover the newly authored job');
+  }
+  const ownedClient = JSON.parse(fs.readFileSync(statePath, 'utf8')).clientContainer;
+  requireProof(ownedClient === 'pairing-native-client-' + state.fixtureId, 'Command gate belongs to the owned native fixture');
+  dockerCall(['exec', ownedClient, 'rm', '-f', '/client/acceptance-command-release']);
   const templateId = crypto.randomUUID();
   const service = await apiJson(rdApi, '/api/v1/services/', { name, description: 'Disposable scoped actual automation', allowedCustomerIds: mapping.ratelDeskCustomerId ? [mapping.ratelDeskCustomerId] : [], allowedOrganizationIds: [mapping.ratelDeskOrganizationId] }, 'POST');
   const schema = JSON.stringify({ fields: [], tasks: [{ id: templateId, name, order: 1, type: 'automation', autoStart: true, dependsOn: [], expectedRuntimeMinutes: 1, graceRuntimeMinutes: 1 }] });
@@ -329,8 +354,8 @@ async function actualAutomation(nrApi, rdApi, connection, sample) {
     const run = await apiJson(nrApi, '/api/v1/jobruns/' + current.orchestratorExecutionId);
     return run.status === 1 ? current : null;
   }, 30);
-  const bindingProof = sql('netratel', `SELECT COALESCE(json_agg(json_build_object('tenantId',"TenantId",'agentId',"AgentId",'executionId',"ExecutionId",'mappingId',"LinkId",'taskId',"RequestTaskId",'parentId',"ParentRequestId",'externalRequestId',"RequestId")), '[]'::json) FROM "ManagedOrchestrationRequestBindings" WHERE "RequestTaskId"=${literal(taskId)} AND "ParentRequestId"=${literal(parent.id)}`);
-  requireProof(bindingProof.length === 1 && bindingProof[0].agentId === sample.agentId && bindingProof[0].mappingId === mapping.id && bindingProof[0].executionId === acknowledged.orchestratorExecutionId && bindingProof[0].tenantId === Number(mapping.netRatelTenantId) && String(bindingProof[0].externalRequestId) === acknowledged.orchestrationExternalRequestId,
+  const bindingProof = sql('netratel', `SELECT COALESCE(json_agg(json_build_object('tenantId',"TenantId",'agentId',"AgentId",'targetPlanDigest',"TargetPlanDigest",'executionId',"ExecutionId",'mappingId',"LinkId",'taskId',"RequestTaskId",'parentId',"ParentRequestId",'externalRequestId',"RequestId")), '[]'::json) FROM "ManagedOrchestrationRequestBindings" WHERE "RequestTaskId"=${literal(taskId)} AND "ParentRequestId"=${literal(parent.id)}`);
+  requireProof(bindingProof.length === 1 && (mode === 'legacy' ? bindingProof[0].agentId === sample.agentId : bindingProof[0].agentId === null && typeof bindingProof[0].targetPlanDigest === 'string') && bindingProof[0].mappingId === mapping.id && bindingProof[0].executionId === acknowledged.orchestratorExecutionId && bindingProof[0].tenantId === Number(mapping.netRatelTenantId) && String(bindingProof[0].externalRequestId) === acknowledged.orchestrationExternalRequestId,
     'Actual acknowledged execution must preserve one server-owned selected mapping/task/agent binding');
   const nativeContainer = JSON.parse(fs.readFileSync(statePath, 'utf8')).clientContainer;
   requireProof(nativeContainer === 'pairing-native-client-' + state.fixtureId, 'Command release must belong to the owned native Client');
@@ -343,8 +368,8 @@ async function actualAutomation(nrApi, rdApi, connection, sample) {
   const executionId = completed.orchestratorExecutionId;
   requireProof(executionId && completed.completedAt && completed.orchestrationExternalRequestId, 'Actual acknowledged task must preserve correlated execution and completion identity');
   const run = await apiJson(nrApi, '/api/v1/jobruns/' + executionId);
-  requireProof(run.status === 2 && run.agentId === sample.agentId && run.jobId === job.id, 'Actual current production Client job must succeed on the selected authorized agent');
-  const activities = sql('netratel', `SELECT COALESCE(json_agg(json_build_object('agentId',"AgentId",'result',"ResultJson")), '[]'::json) FROM "JobTaskActivities" WHERE "JobRunId"=${literal(executionId)}::bigint`);
+  requireProof(run.status === 2 && String(run.jobId) === String(job.id) && (mode === 'legacy' ? run.agentId === sample.agentId : run.isAggregate && run.agentId === null && run.targetCount === 1), 'Actual current production Client job must succeed on the selected authorized agent');
+  const activities = sql('netratel', `SELECT COALESCE(json_agg(json_build_object('agentId',"AgentId",'result',"ResultJson")), '[]'::json) FROM "JobTaskActivities" WHERE "JobRunId"=${literal(executionId)}::bigint OR "JobRunId" IN (SELECT "NativeRunId" FROM "JobRunNodes" WHERE "ParentRunId"=${literal(executionId)}::bigint)` );
   requireProof(activities.length === 1, 'Actual execution must record exactly one native task activity');
   const output = JSON.parse(activities[0].result);
   requireProof(output.exitCode === 0 && Array.isArray(output.stdout) && output.stdout.includes(marker), 'Actual native command result must include the unique marker and successful exit code');
@@ -358,7 +383,7 @@ async function actualAutomation(nrApi, rdApi, connection, sample) {
   const after = await apiJson(rdApi, `/api/v1/requests/${parent.id}/worklogs`);
   requireProof(JSON.stringify(before.map(r => r.id).sort()) === JSON.stringify(after.map(r => r.id).sort()), 'Actual terminal callback replay must not duplicate task worklogs');
   receipt.executionId = String(executionId); receipt.resultReceived = true; receipt.taskId = taskId; receipt.parentRequestId = parent.id;
-  record('nativeAutomationResult', { executionId: String(executionId), taskId, parentRequestId: parent.id, nativeExitCode: output.exitCode, callbackReplayHarmless: true });
+  record(mode === 'legacy' ? 'nativeAutomationResult' : 'nativeAggregateAutomationResult-' + mode, { executionId: String(executionId), taskId, parentRequestId: parent.id, nativeExitCode: output.exitCode, callbackReplayHarmless: true });
 }
 async function runBusiness() {
   let container = null, nrApi = null, rdApi = null;
@@ -387,13 +412,15 @@ async function runBusiness() {
     record('actualNativeClientAdmission', { agentId: sample.agentId, diskScope: sample.disk.scope, actualCollectionId: sample.disk.collectionId });
     await actualIncident(nrApi, rdApi, incident, sample);
     await actualAutomation(nrApi, rdApi, automation, sample);
+    await actualAutomation(nrApi, rdApi, automation, sample, 'explicit');
+    await actualAutomation(nrApi, rdApi, automation, sample, 'ha');
     // Normal process restart; read preserved real histories after current owner login.
     child.execFileSync('python3', [path.join(__dirname, 'native_pair.py'), 'restart', 'netratel'], { env: process.env, timeout: 90000, stdio: 'ignore' });
     child.execFileSync('python3', [path.join(__dirname, 'native_pair.py'), 'restart', 'rateldesk'], { env: process.env, timeout: 90000, stdio: 'ignore' });
     await nrApi.dispose(); await rdApi.dispose(); nrApi = await owner(product('netratel')); rdApi = await owner(product('rateldesk'));
     const preserved = await apiJson(rdApi, '/api/v1/request-tasks/' + receipt.taskId);
     requireProof(preserved.orchestratorExecutionId === receipt.executionId && preserved.lastAutomationStatus === 'succeeded', 'Restart must preserve actual task execution/result history');
-    const durable = counts(); requireProof(durable.rateldesk.receipts === 1 && durable.rateldesk.incidents === 1 && durable.netratel.jobs === 1, 'Restart must preserve exactly one incident/receipt and actual job history');
+    const durable = counts(); requireProof(durable.rateldesk.receipts === 1 && durable.rateldesk.incidents === 1 && durable.netratel.jobs === 5, 'Restart must preserve one incident/receipt, one legacy run and both aggregate parent/child pairs');
     receipt.historyPreserved = true; record('historyPreserved');
   } catch (error) {
     await captureIncidentFailure(nrApi);

@@ -414,6 +414,9 @@ public sealed partial class JobAggregatePostgresTests(PostgreSqlPersistenceFixtu
         public AggregateAccess Access { get; } = new();
         public SyntheticGateway Gateway { get; private set; } = null!;
         public ClaimCommitCrash ClaimCrash { get; } = new();
+        private ServiceProvider? originalServices;
+        public IJobRuntimeRouter NativeRouter => _native;
+        public void UseServices(ServiceProvider services) { originalServices = Services; Services = services; }
         private ActorSystem _actors = null!;
         private NativeRouter _native = null!;
         private static readonly ClaimsPrincipal Principal = new(new ClaimsIdentity([new("netratel_principal_id", "synthetic-manager")], "fixture"));
@@ -513,7 +516,7 @@ public sealed partial class JobAggregatePostgresTests(PostgreSqlPersistenceFixtu
                     status == JobGatewayLifecycleStatus.Failed ? 1 : 0, AuthenticatedOwner: Gateway.Owners[client]), ct);
             if (JobAggregateOrchestrator.IsTerminal((await ReadAsync(child, ct)).Status)) Gateway.Active.TryRemove(child, out _);
         }
-        public async ValueTask DisposeAsync() { await _actors.Terminate(); await Services.DisposeAsync(); }
+        public async ValueTask DisposeAsync() { await _actors.Terminate(); await (originalServices ?? Services).DisposeAsync(); }
     }
 
     private sealed class SyntheticGateway(AggregateHarness harness) : IAgentJobGatewaySessionRegistry

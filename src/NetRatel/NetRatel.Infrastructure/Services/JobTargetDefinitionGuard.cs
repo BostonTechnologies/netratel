@@ -7,14 +7,14 @@ namespace NetRatel.Infrastructure.Services;
 
 internal static class JobTargetDefinitionGuard
 {
-    internal static async Task RequireAsync(OrchestratorDbContext db, int? tenantId, JobTargetDefinition? target, CancellationToken ct)
+    internal static async Task RequireAsync(OrchestratorDbContext db, int? tenantId, JobTargetDefinition? target, CancellationToken ct, bool lockDefinition = true)
     {
         if (target is null) return;
         if (tenantId is not > 0) throw new JobTargetValidationException("target_tenant_required", "A tenant-owned target requires a tenant.");
         target.Validate();
         if (target.Source == JobTargetSource.ExecutionGroup)
         {
-            var query = db.Database.IsRelational()
+            var query = db.Database.IsRelational() && lockDefinition
                 ? db.ExecutionGroups.FromSqlInterpolated($"SELECT * FROM \"ExecutionGroups\" WHERE \"TenantId\" = {tenantId.Value} AND \"Id\" = {target.ExecutionGroupId!.Value} FOR SHARE")
                 : db.ExecutionGroups.Where(x => x.TenantId == tenantId && x.Id == target.ExecutionGroupId);
             if (!await query.AsNoTracking().AnyAsync(x => x.Enabled && !x.Archived, ct).ConfigureAwait(false))

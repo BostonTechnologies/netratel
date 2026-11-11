@@ -207,7 +207,7 @@ public sealed partial class PairingService
             }
         }
         await RequireUnchangedAsync(pair, id, row.OperationId, row.Revision, ct);
-        return new(true, "Authenticated access and the saved tenant mapping/capabilities are current.", clock.GetUtcNow());
+        return new(true, mapping.RunAutomation ? "Authenticated access and the saved mapping are current. NetRatel automation contract 2 supports target-aware catalogue, command authoring and aggregate invocation. Worker eligibility and required inputs are checked at invocation. No job was created or run." : "Authenticated access and the saved tenant mapping/capabilities are current.", clock.GetUtcNow());
     }
     public async Task<PairingTestResult> TestAsync(string pairId, Guid id, ClaimsPrincipal actor, CancellationToken ct)
     {

@@ -3979,7 +3979,7 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.Property<int>("RequestId")
                         .HasColumnType("integer");
 
-                    b.Property<Guid>("AgentId")
+                    b.Property<Guid?>("AgentId")
                         .HasColumnType("uuid");
 
                     b.Property<string>("CallbackUrl")
@@ -4041,6 +4041,10 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
 
                     b.Property<Guid>("ServicePrincipalId")
                         .HasColumnType("uuid");
+
+                    b.Property<string>("TargetPlanDigest")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
 
                     b.Property<int>("TenantId")
                         .HasColumnType("integer");
