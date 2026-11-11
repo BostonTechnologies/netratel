@@ -138,6 +138,7 @@ public static partial class InternalEndpoints
                     http.RequestServices.GetRequiredService<IJobRunService>(), priorBinding, ct);
                 if (prior is null || prior.ExecutionId != priorBinding.ExecutionId || prior.ExecutionId is not { } executionId)
                     return AutomationError(http, 409, "invoke-job", "ingest_recovery_required");
+                if (transaction is not null) await transaction.CommitAsync(ct);
                 return Results.Ok(new NetRatelIngestResponse { RequestId = prior.Id.ToString(), RunId = executionId, ExecutionId = executionId, Status = prior.Status == "New" ? "Accepted" : prior.Status, Message = prior.ResultMessage });
             }
             var target = await ValidateTargetAsync(db, job, ct);

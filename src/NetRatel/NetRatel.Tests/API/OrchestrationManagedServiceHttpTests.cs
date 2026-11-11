@@ -182,6 +182,9 @@ public sealed class OrchestrationManagedServiceHttpTests(PostgreSqlPersistenceFi
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", invokeToken);
             var recovered = await client.PostAsJsonAsync("/internal/ingest", Ingest("7001")); recovered.EnsureSuccessStatusCode();
             Assert.Equal(acknowledgement.ExecutionId, (await recovered.Content.ReadFromJsonAsync<NetRatelIngestResponse>())!.ExecutionId);
+            await using (var scope = app.Services.CreateAsyncScope())
+                Assert.Equal(acknowledgement.ExecutionId,
+                    (await scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>().Requests.AsNoTracking().SingleAsync()).ExecutionId);
             Assert.Equal(1, app.Services.GetRequiredService<InvocationCounter>().Starts);
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", executionReadToken);
             using (var exactReceipt = await ReadReceiptAsync())
