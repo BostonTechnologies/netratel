@@ -1,6 +1,7 @@
 // Real rendered parent pages and actual new endpoints; no routing or auth mocks.
 const fs = require('fs');
 const path = require('path');
+const { safeFailure } = require('./safe_failure');
 const { execFileSync } = require('child_process');
 const root = process.env.NETRATEL_PAIRING_RUNTIME_ROOT;
 if (!root) throw new Error('An explicit disposable NETRATEL_PAIRING_RUNTIME_ROOT is required');
@@ -383,4 +384,4 @@ async function main() {
   } finally { await browser.close(); }
 }
 module.exports = { product, record, jsonRequest, login, account, visualMatrix, selectChoice, seedCustomer, identifiers, state, root, fixture, evidence };
-if (require.main === module) main().catch(error => { record('actual-rendered-pair-acceptance', 'failed', { exceptionType: error.constructor.name, reason: String(error.message).split('\n')[0].slice(0, 240) }); process.exitCode = 1; });
+if (require.main === module) main().catch(error => { record('actual-rendered-pair-acceptance', 'failed', { ...safeFailure(error) }); process.exitCode = 1; });

@@ -1,6 +1,7 @@
 // Actual local deletion from each rendered owner page while the peer is offline.
 const fs = require('fs');
 const path = require('path');
+const { safeFailure } = require('./safe_failure');
 const { execFileSync } = require('child_process');
 const { product, record, jsonRequest, login, account, visualMatrix, identifiers, state, root, fixture } = require('./browser_pair');
 const { chromium, expect } = require(path.join(root, 'browser/node_modules/@playwright/test'));
@@ -83,4 +84,4 @@ async function main() {
     await context.close();
   } finally { await browser.close(); }
 }
-main().catch(error => { record('deleteWhilePeerOffline', 'failed', { exceptionType: error.constructor.name, reason: String(error.message).split('\n')[0].slice(0, 240) }); process.exitCode = 1; });
+main().catch(error => { record('deleteWhilePeerOffline', 'failed', { ...safeFailure(error) }); process.exitCode = 1; });
