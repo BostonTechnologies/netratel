@@ -281,7 +281,8 @@ async function visiblePair(page, consumer, generatorPage, generator, mappingName
     record(consumer.name + '-final-input-values', 'failed', comparisons);
     throw error;
   }
-  const connected = page.getByTestId(ids.success).filter({ hasText: 'Connected' });
+  const savedNotice = consumer.name === 'rateldesk' ? 'Connection configured.' : 'Connected';
+  const connected = page.getByTestId(ids.success).filter({ hasText: savedNotice });
   const saveError = page.getByTestId(consumer.name === 'netratel' ? 'pairing-save-error' : ids.error);
   const saveControl = page.getByTestId(consumer.name === 'netratel' ? 'pairing-save' : 'save-system-connection');
   const saveStarted = Date.now();
@@ -295,7 +296,7 @@ async function visiblePair(page, consumer, generatorPage, generator, mappingName
     await finalDialog.getByRole('button', { name: 'Save', exact: true }).click();
     // Wait for this one async Save's real outcome at the existing page action deadline.
     await connected.or(saveError).first().waitFor({ state: 'visible' });
-    await expect(page.getByTestId(ids.success)).toContainText('Connected');
+    await expect(page.getByTestId(ids.success)).toContainText(savedNotice);
     await expect(page.getByTestId(ids.final)).toHaveCount(0);
     record(consumer.name + '-single-save-terminal', 'passed', await saveOutcome());
   } catch (error) {
