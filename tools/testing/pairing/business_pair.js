@@ -326,8 +326,8 @@ async function actualAutomation(nrApi, rdApi, connection, sample, mode = 'legacy
         executionPolicy: { threadCount: 2, nodeFailurePolicy: 1 }, inputs: [] }, 'POST');
     job = { id: created.orchestrationJobDefinitionId, name: created.requestDefinitionName };
     requireProof(created.clientIdentity === '' && created.target?.kind === (mode === 'ha' ? 'executionGroup' : 'explicitNodes'), 'Canonical modern catalogue must have typed targeting and no fabricated legacy identity');
-    const independent = await apiJson(nrApi, `/api/v1/jobs/${job.id}`);
-    requireProof(String(independent.job.id) === String(job.id) && independent.steps.length === 1, 'Paired creation must produce an ordinary executable NetRatel job');
+    const independent = await apiJson(nrApi, `/api/v1/jobs/${job.id}/details`);
+    requireProof(independent.job && String(independent.job.id) === String(job.id) && Array.isArray(independent.steps) && independent.steps.length === 1, 'Paired creation must produce an ordinary executable NetRatel job');
     const catalogue = await apiJson(rdApi, '/api/v1/admin/orchestration/catalog/request-definitions' + query);
     requireProof(catalogue.some(item => item.requestDefinitionId === String(job.id)), 'The same existing saved connection must discover the newly authored job');
   }
