@@ -64,7 +64,7 @@ module.exports = async function selfServicePair(h) {
       const form = await apiJson(rdApi, '/api/v1/request-forms/', { serviceId: service.id, title: name,
         description: 'Synthetic native execution proof', organizationId: mapping.ratelDeskOrganizationId,
         allowedOrganizationIds: [mapping.ratelDeskOrganizationId], releaseStatus: 0,
-        jsonSchema: JSON.stringify({ title: name, fields: [{ id: 'choice', name: 'choice', label: 'Synthetic choice', type: 'text', required: true }], tasks }) }, 'POST');
+        jsonSchema: JSON.stringify({ title: name, description: 'Synthetic native execution proof', fields: [{ id: 'choice', name: 'choice', label: 'Synthetic choice', type: 'text', required: true }], tasks }) }, 'POST');
       const binding = await apiJson(rdApi, '/api/v1/admin/orchestration/bindings', { systemConnectionId: mapping.id,
         requestFormId: form.id, taskTemplateId: template, orchestrationRequestDefinitionId: String(job.requestDefinitionId),
         orchestrationRequestDefinitionName: name, orchestrationJobDefinitionId: String(job.orchestrationJobDefinitionId), orchestrationJobDefinitionName: name }, 'POST');
@@ -127,6 +127,7 @@ module.exports = async function selfServicePair(h) {
       await page.goto(web + '/requests/' + submitted.requestId);
       await page.getByRole('tab', { name: /^Tasks/ }).click();
       await expect(page.getByTestId('request-live-updates')).toContainText('Live');
+      await expect(page.getByTestId('request-live-updates')).toHaveAttribute('aria-busy', 'false');
       const liveObservation = held ? null : page.waitForFunction(({ taskId, failed }) => {
         const row = document.querySelector('.request-task-state[data-task-id="' + taskId + '"]');
         const workflow = document.querySelector('[data-testid="request-workflow-summary"]');
