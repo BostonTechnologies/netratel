@@ -167,6 +167,14 @@ public static class FlowExecutionEvidenceFormatter
         return true;
     }
 
+    public static AutomationTrace.Contracts.IncidentPresentationSupplement PresentationSupplement(
+        FlowExecutionEventDto original, int tenantId, Guid runId, Guid versionId, FlowAiResultDto? ai,
+        IReadOnlyList<FlowRecoveryAttemptEvidence>? attempts)
+    {
+        ValidateContext(original, tenantId, runId, versionId, ai, attempts);
+        return new(DescribeOriginal(original), DescribeAi(ai), DescribeRecovery(original, runId, attempts ?? []));
+    }
+
     private static string DescribeAi(FlowAiResultDto? ai)
     {
         if (ai is null) return "AI investigation\nOutcome: Not run\nFindings: Unavailable";

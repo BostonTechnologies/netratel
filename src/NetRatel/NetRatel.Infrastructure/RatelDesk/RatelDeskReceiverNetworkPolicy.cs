@@ -94,6 +94,9 @@ public sealed class RatelDeskReceiverNetworkPolicy(IOptionsMonitor<RatelDeskRece
             !(endpoint == ReceiverWireValidation.Endpoint(api, ReceiverWireValidation.CapabilitiesPath) ||
               endpoint == ReceiverWireValidation.Endpoint(api, ReceiverWireValidation.CreatePath) ||
               endpoint == ReceiverWireValidation.Endpoint(api, ReceiverWireValidation.TargetsPath) ||
+              endpoint == ReceiverWireValidation.Endpoint(api, ReceiverWireValidation.PresentationCreatePath) ||
+              endpoint == ReceiverWireValidation.Endpoint(api, ReceiverWireValidation.TemplateCataloguePath) ||
+              endpoint == ReceiverWireValidation.Endpoint(api, ReceiverWireValidation.TemplatePreviewPath) ||
               IsReceiptEndpoint(api, endpoint)))
             throw new InvalidDataException("receiver-endpoint-outside-approved-api-base");
         PairingEndpointPolicy.Validate(new Uri(endpoint, UriKind.Absolute), "RatelDesk receiver endpoint", CurrentAllowPrivateHttp(mode));

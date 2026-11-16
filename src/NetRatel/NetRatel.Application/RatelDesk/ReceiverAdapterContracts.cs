@@ -28,6 +28,8 @@ public sealed record RatelDeskVerifiedCapability(
     long MinimumReceiptRetentionSeconds, long MaximumAutomaticReplaySeconds,
     DateTimeOffset ObservedAtUtc)
 {
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public RatelDeskIncidentPresentationCapability? AutomationPresentation { get; init; }
     // Presentation observed through the authenticated receiver; never used as authority or a delivery identity.
     public string? OrganizationName { get; init; }
     public string? CustomerName { get; init; }
@@ -39,14 +41,22 @@ public sealed record RatelDeskReceiverPreparationV2(
     string ReceiverIdempotencyKey, string KeyAlgorithm,
     string ExactCreateBodyJson, string ReceiverFingerprint,
     DateTimeOffset OriginalActionCreatedAtUtc, DateTimeOffset AutomaticReplayUntilUtc,
-    string EvidenceFingerprint);
+    string EvidenceFingerprint)
+{
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public string? PresentationContract { get; init; }
+}
 
 // Existing IncidentDto fields may be additive; retain the complete accepted body privately.
 public sealed record RatelDeskVerifiedReceipt(
     string ContractVersion, string ReceiverInstanceId, Guid SourceNamespaceId,
     Guid SourceInstanceId, string Key, string Fingerprint, string Outcome,
     string IncidentId, string TrackingId, string OrganizationId, string CustomerId,
-    DateTimeOffset CommittedAtUtc, string Location, string ExactAcceptedBodyJson);
+    DateTimeOffset CommittedAtUtc, string Location, string ExactAcceptedBodyJson)
+{
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public AutomationTrace.Contracts.AutomationIncidentReceipt? PresentationReceipt { get; init; }
+}
 
 public sealed record RatelDeskDispatchEvidence(
     RatelDeskReceiverPreparationV2 Prepared, bool MayHaveCommitted,

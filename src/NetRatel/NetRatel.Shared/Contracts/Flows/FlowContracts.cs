@@ -33,11 +33,15 @@ public sealed record FlowIncidentMappingDto(string TitleTemplate, string Descrip
 public sealed record FlowActionTargetDto(Guid Id, FlowActionKind Kind, Guid? ConnectorId = null, long? ConnectorRevision = null)
 {
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public AutomationTrace.Contracts.IncidentPresentationReference? IncidentPresentation { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? Name { get; init; }
 }
 public sealed record FlowNodeDto(Guid Id, FlowNodeKind Kind, string Name, FlowPositionDto Position,
     FlowConditionDto? Condition = null, FlowIncidentMappingDto? Mapping = null, Guid? ConnectorId = null, long? ConnectorRevision = null)
 {
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public AutomationTrace.Contracts.IncidentPresentationReference? IncidentPresentation { get; init; }
     // Omit this new property for historical graphs: their persisted configuration hash remains valid.
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public IReadOnlyList<FlowActionTargetDto>? Actions { get; init; }
@@ -77,7 +81,11 @@ public sealed record FlowEventDataDto(Guid AgentId, Guid RuleId, string RuleName
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public MonitoringPresentationSnapshotDto? Presentation { get; init; }
 }
-public sealed record FlowIncidentFieldsDto(string Title, string Description, int? Priority = null);
+public sealed record FlowIncidentFieldsDto(string Title, string Description, int? Priority = null)
+{
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public AutomationTrace.Contracts.IncidentPresentationSupplement? PresentationSupplement { get; init; }
+}
 public sealed record FlowDryRunRequest(FlowGraphDto Graph, FlowEventDataDto Input);
 public sealed record FlowDryRunResultDto(bool Valid, bool Skipped, string Code, FlowIncidentFieldsDto? Incident,
     IReadOnlyList<Guid> VisitedNodeIds, IReadOnlyList<FlowValidationIssueDto> Issues)

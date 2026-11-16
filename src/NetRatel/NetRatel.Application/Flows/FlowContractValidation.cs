@@ -34,8 +34,13 @@ public static class FlowContractValidation
         FlowGraphValidator.IsBoundedText(action.Target.OrganizationId, 256) && FlowGraphValidator.IsBoundedText(action.Target.CustomerId, 256) &&
         (action.Target.AssignedToId is null || FlowGraphValidator.IsBoundedText(action.Target.AssignedToId, 256)) && action.Target.CategoryIds is not null &&
         action.Target.CategoryIds.Count <= 16 && action.Target.CategoryIds.All(id => id != Guid.Empty) && action.Target.CategoryIds.Distinct().Count() == action.Target.CategoryIds.Count &&
+        (draft.IncidentPresentation is null ? action.PresentationPayload is null : action.PresentationPayload is { } presentation &&
+            presentation.Presentation == draft.IncidentPresentation && presentation.Context.FlowRunId == draft.RunId.ToString("D") &&
+            presentation.Context.ActionId == draft.ActionNodeId.ToString("D") &&
+            JsonSerializer.Serialize(presentation.Context.Origin) == JsonSerializer.Serialize(draft.Event.ExecutionEvent?.OriginContext)) &&
         action.SemanticFingerprint == Fingerprint(action) && JsonSerializer.SerializeToUtf8Bytes(action).Length <=
-            (draft.Event.ExecutionEvent is null ? FlowLimits.MaximumActionBytes : FlowGraphV2Limits.MaximumActionBytes);
+            (draft.IncidentPresentation is not null ? FlowGraphV2Limits.MaximumPresentationActionBytes :
+                draft.Event.ExecutionEvent is null ? FlowLimits.MaximumActionBytes : FlowGraphV2Limits.MaximumActionBytes);
 
     public static string Fingerprint(FlowIncidentActionRequest action) => Hash(JsonSerializer.SerializeToUtf8Bytes(action with { SemanticFingerprint = "" }));
     public static string Hash(ReadOnlySpan<byte> bytes) => Convert.ToHexStringLower(SHA256.HashData(bytes));

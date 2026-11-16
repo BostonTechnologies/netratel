@@ -127,6 +127,8 @@ public sealed partial class FlowPersistenceService(IServiceScopeFactory scopes, 
             if (!connector.Enabled || !connector.CanExecute) return new(FlowWriteDisposition.ConnectorDenied, Code: connector.UnavailableReason ?? "connector-unavailable");
             if (action.ConnectorRevision is { } selectedRevision && selectedRevision != connector.Revision)
                 return new(FlowWriteDisposition.Conflict, Code: "connector-revision-conflict");
+            if (!await ValidateIncidentPresentationAsync(provider, tenantId, action, ["monitoring"], ct))
+                return new(FlowWriteDisposition.Invalid, Code: "incident-presentation-incompatible-or-unavailable");
             pinned.Add(action.Id, action with { ConnectorRevision = connector.Revision, Name = connector.Name });
         }
         graph = graph with { Nodes = graph.Nodes.Select(node => node.Kind switch
@@ -144,6 +146,21 @@ public sealed partial class FlowPersistenceService(IServiceScopeFactory scopes, 
         Audit(db, row, authority.PrincipalId, "version-published"); await db.SaveChangesAsync(ct).ConfigureAwait(false); if (transaction is not null) await transaction.CommitAsync(ct).ConfigureAwait(false);
         return new(FlowWriteDisposition.Stored, Version(version));
     });
+
+    private static async Task<bool> ValidateIncidentPresentationAsync(IServiceProvider services, int tenantId,
+        FlowActionTargetDto action, IReadOnlyList<string> sources, CancellationToken ct)
+    {
+        if (action.IncidentPresentation is null) return true;
+        try
+        {
+            await services.GetRequiredService<NetRatel.Infrastructure.RatelDesk.RatelDeskIncidentTemplateClient>()
+                .ValidateSelectionAsync(tenantId, action.ConnectorId!.Value, action.IncidentPresentation, sources, ct);
+            return true;
+        }
+        catch (Exception error) when (error is InvalidOperationException or ArgumentException or UnauthorizedAccessException or
+            NetRatel.Shared.SystemPairing.PairingException or IOException or HttpRequestException)
+        { return false; }
+    }
 
     public Task<IReadOnlyList<FlowVersionDto>> GetVersionsAsync(int tenantId, Guid flowId, CancellationToken ct = default) => WithDb<IReadOnlyList<FlowVersionDto>>(async (db, _) =>
         (await db.FlowVersions.AsNoTracking().Where(row => row.TenantId == tenantId && row.FlowId == flowId).OrderByDescending(row => row.VersionNumber).Take(FlowLimits.MaximumVersionsPerFlow).ToListAsync(ct).ConfigureAwait(false)).Select(Version).ToArray());

@@ -43,6 +43,8 @@ public interface IFlowExecutionAuthorityVerifier
 public sealed record FlowIncidentActionDraft(int TenantId, Guid RunId, Guid ActionNodeId, Guid ConnectorId, long ConnectorRevision,
     Guid SourceInstanceId, string IdempotencyKey, FlowEventEnvelope Event, FlowIncidentFieldsDto Fields)
 {
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public AutomationTrace.Contracts.IncidentPresentationReference? IncidentPresentation { get; init; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public FlowActionKind Kind { get; init; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -56,7 +58,11 @@ public sealed record FlowIncidentTargetDto(string OrganizationId, string Custome
 /// <summary>Preparation resolves and pins connector mapping before this exact semantic request is persisted and sent.</summary>
 public sealed record FlowIncidentActionRequest(int TenantId, Guid RunId, Guid ActionNodeId, Guid ConnectorId,
     long ConnectorRevision, Guid SourceInstanceId, string IdempotencyKey, FlowEventEnvelope Event,
-    FlowIncidentFieldsDto Fields, FlowIncidentTargetDto Target, bool SupportsSafeReplay, string SemanticFingerprint);
+    FlowIncidentFieldsDto Fields, FlowIncidentTargetDto Target, bool SupportsSafeReplay, string SemanticFingerprint)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public AutomationTrace.Contracts.AutomationIncidentCreate? PresentationPayload { get; init; }
+}
 public enum FlowIncidentPreparationStatus { Ready, Unavailable, Denied, Invalid }
 public sealed record FlowIncidentPreparationResult(FlowIncidentPreparationStatus Status, FlowIncidentActionRequest? Action = null, string? Code = null);
 public enum FlowIncidentActionResultKind { Succeeded, Failed, RetryableSafe, DeliveryUnknown, Unavailable, Waiting }

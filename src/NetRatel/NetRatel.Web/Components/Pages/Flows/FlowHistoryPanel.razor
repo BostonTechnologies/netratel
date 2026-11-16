@@ -28,6 +28,7 @@
     else if (Detail is { } detail)
     {
         <div class="history-result" data-testid="flow-run-result">
+            <NetRatel.Web.Components.Shared.AutomationRelatedResources TenantId="TenantId" Kind="flow-run" ResourceId="@(detail.Run.Id.ToString("D"))" />
             <MudButton StartIcon="@Icons.Material.Filled.ArrowBack" OnClick="Back" data-testid="flow-history-back">Back to history</MudButton>
             <MudButton id="flow-run-replay" StartIcon="@Icons.Material.Outlined.PlayCircle" OnClick="() => ReplayRun.InvokeAsync(detail)" Disabled="Busy" data-testid="flow-run-replay">Replay recorded run</MudButton>
             @if (detail.DataUnavailableReason is { Length: > 0 } unavailableReason)

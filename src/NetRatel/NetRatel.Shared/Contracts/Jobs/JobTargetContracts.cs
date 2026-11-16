@@ -312,7 +312,7 @@ public static class JobRunNodeReasons
 public sealed record JobRunNodeCountsDto(int Queued, int Running, int Succeeded, int Failed,
     int Skipped, int Cancelled, int TimedOut, int Unknown);
 
-public sealed record JobRunNodeDto(ulong ParentRunId, Guid AgentId, int Ordinal, ulong? NativeRunId,
+public sealed record JobRunNodeDto([property: System.Text.Json.Serialization.JsonNumberHandling(System.Text.Json.Serialization.JsonNumberHandling.WriteAsString | System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString)] ulong ParentRunId, Guid AgentId, int Ordinal, [property: System.Text.Json.Serialization.JsonNumberHandling(System.Text.Json.Serialization.JsonNumberHandling.WriteAsString | System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString)] ulong? NativeRunId,
     JobRunNodeState State, string Hostname, string? DisplayName, string? Reason,
     long? StartedAtMicros, long? CompletedAtMicros)
 {

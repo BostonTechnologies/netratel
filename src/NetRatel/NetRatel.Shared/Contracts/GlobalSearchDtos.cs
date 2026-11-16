@@ -32,6 +32,8 @@ public sealed record GlobalSearchAlertDto(Guid OccurrenceId, int TenantId, strin
 
 public sealed record GlobalSearchFlowDto(Guid FlowId, int TenantId, string Title, string TenantName,
     bool Enabled, int PublishedVersionNumber);
+public sealed record AutomationResourceSearchDto(int TenantId, string ResourceKind, string ResourceId, string Title,
+    string Reference, string ReferenceKind, string PeerInstanceId, string PeerOrganizationId, string Url, string? ExternalUrl);
 
 public sealed record GlobalSearchInvestigationDto(Guid InvestigationId, int TenantId, string Title, string TenantName,
     string State, string? ClientContext, Guid? OccurrenceId, Guid? FlowRunId, bool IsGeneralChat = false);

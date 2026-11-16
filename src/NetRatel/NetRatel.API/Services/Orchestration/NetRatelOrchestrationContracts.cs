@@ -2,6 +2,7 @@ namespace NetRatel.API.Services.Orchestration;
 
 public sealed class NetRatelIngestRequest
 {
+    public AutomationTrace.Contracts.AutomationOriginContext? OriginContext { get; set; }
     public string RequestId { get; set; } = string.Empty;
     public string RequestTaskId { get; set; } = string.Empty;
     public string CorrelationId { get; set; } = string.Empty;
@@ -52,7 +53,10 @@ public sealed class CreateNetRatelRequestDefinitionDto
 }
 
 public sealed record NetRatelAutomationCapabilities(int ContractVersion, string[] TargetKinds,
-    bool Catalogue, bool Authoring, bool AggregateExecution);
+    bool Catalogue, bool Authoring, bool AggregateExecution)
+{
+    public string OriginContextSchema { get; init; } = AutomationTrace.Contracts.AutomationTraceContract.OriginVersion;
+}
 
 public sealed record NetRatelAutomationTargetChoice(string Id, string Name, string Kind,
     NetRatel.Shared.Contracts.Jobs.JobTargetDefinition Target);

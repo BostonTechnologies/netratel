@@ -15,6 +15,7 @@ public sealed partial class PairingService
         mapping.CreateIncidents ? "rateldesk.incidents.create" : null,
         mapping.CreateIncidents ? "rateldesk.incident-receipts.read" : null,
         mapping.CreateIncidents ? "rateldesk.incident-targets.read" : null,
+        mapping.UseIncidentTemplates && mapping.CreateIncidents ? "rateldesk.incident-templates.read" : null,
         mapping.RunAutomation ? "rateldesk.orchestration.callback" : null
     }.Where(x => x != null).Select(x => x!).Order(StringComparer.Ordinal).ToArray();
     private async Task ValidateRemoteCredentialAsync(SystemPairRecord pair, PairingMapping mapping, PairingBusinessCredential? credential, CancellationToken ct)

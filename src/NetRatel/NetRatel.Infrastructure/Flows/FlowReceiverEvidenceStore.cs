@@ -78,7 +78,7 @@ public sealed partial class FlowPersistenceService
             evidence.AutomaticReplayUntilUtc > run.CreatedAtUtc + FlowLimits.MaximumRetryAge ||
             !RatelDeskReceiverKey.IsConforming(evidence.ReceiverIdempotencyKey) ||
             ReceiverPreparationBuilder.EvidenceHash(evidence) != evidence.EvidenceFingerprint ||
-            Encoding.UTF8.GetByteCount(serialized) > 65_536 ||
+            Encoding.UTF8.GetByteCount(serialized) > (evidence.PresentationContract is not null ? 262_144 : 65_536) ||
             !ReceiverPreparedBinding.Valid(evidence, prepared, draft, run.CreatedAtUtc,
                 services.GetRequiredService<IRatelDeskReceiverFingerprint>())) return false;
         var existing = await db.Set<FlowReceiverEvidenceRecord>().SingleOrDefaultAsync(x =>
@@ -192,7 +192,8 @@ public sealed partial class FlowPersistenceService
         var serialized = Serialize(verified);
         if (record.FullReceiptJson is not null && Serialize(Parse<RatelDeskVerifiedReceipt>(record.FullReceiptJson)) != serialized) return false;
         record.FullReceiptJson ??= serialized; record.MayHaveCommitted = false; record.RowVersion = checked(record.RowVersion + 1);
-        action.ReceiptJson = Serialize(new FlowActionReceiptDto(verified.IncidentId, verified.TrackingId, null));
+        action.ReceiptJson = Serialize(new FlowActionReceiptDto(verified.IncidentId, verified.TrackingId, verified.PresentationReceipt?.PublicLink));
+        AutomationReferenceProjection.QueueReceipt(db, prepared, verified, Parse<FlowIncidentActionRequest>(action.PreparedJson));
         action.Status = FlowActionStatus.Succeeded; action.Code = "incident-receipt-verified";
         await db.SaveChangesAsync(ct); if (tx is not null) await tx.CommitAsync(ct); return true;
     });

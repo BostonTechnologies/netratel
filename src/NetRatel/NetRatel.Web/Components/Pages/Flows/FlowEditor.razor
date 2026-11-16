@@ -222,11 +222,17 @@
                                     <a href="@($"/flows/connectors?tenantId={Definition.TenantId}")">Manage RatelDesk connectors</a>
                                 }
                                 @if (selected.Kind == FlowNodeKind.CreateIncident)
-                                { <button type="button" @onclick="() => ConvertToGroup(selected)" data-testid="flow-convert-action-group">Add more actions</button> }
+                                {
+                                    <FlowIncidentTemplateFields TenantId="Definition.TenantId" ConnectorId="selected.ConnectorId"
+                                        Presentation="selected.IncidentPresentation" SourceKinds="IncidentSourceKinds"
+                                        Disabled="@(ReadOnly || !EditingAllowed || _busy)" Changed="reference => UpdateNode(selected with { IncidentPresentation = reference })" />
+                                    <button type="button" @onclick="() => ConvertToGroup(selected)" data-testid="flow-convert-action-group">Add more actions</button>
+                                }
                             }
                             @if (selected.Kind == FlowNodeKind.ActionGroup)
                             {
                                 <FlowActionGroupFields Node="selected" Targets="Connectors" TenantId="Definition.TenantId"
+                                    IncidentSourceKinds="IncidentSourceKinds"
                                     Disabled="@(ReadOnly || !EditingAllowed || _busy)" Changed="UpdateNode" ManageTargetsRequested="ManageNotificationTargetsAsync" />
                             }
                             <button type="button" @onclick="() => RequestRemoveAsync(selected.Id)" data-testid="flow-remove-node">Remove node</button>
@@ -677,9 +683,9 @@
     }
     private void ConvertToGroup(FlowNodeDto node) => UpdateNode(node with
     {
-        Kind = FlowNodeKind.ActionGroup, Name = "Action group", ConnectorId = null, ConnectorRevision = null,
+        Kind = FlowNodeKind.ActionGroup, Name = "Action group", ConnectorId = null, ConnectorRevision = null, IncidentPresentation = null,
         Actions = [new(Guid.NewGuid(), TargetKind(node), node.ConnectorId, node.ConnectorRevision)
-            { Name = SelectedConnector(node)?.Name }]
+            { Name = SelectedConnector(node)?.Name, IncidentPresentation = node.IncidentPresentation }]
     });
     private bool HasNodeKind(FlowNodeKind kind) => _adapter?.SchemaVersion == FlowGraphV2Limits.SchemaVersion
         ? FlowNodeCatalogue.IsTrigger(kind) && _adapter.Metadata.Values.Any(node => FlowNodeCatalogue.IsTrigger(node.Kind))
@@ -794,8 +800,11 @@
     private void SelectConnector(FlowNodeDto node, ChangeEventArgs e)
     {
         var reference = Guid.TryParse(e.Value?.ToString(), out var id) ? Connectors.FirstOrDefault(c => c.Id == id && c.TenantId == Definition.TenantId && c.Kind == TargetKind(node)) : null;
-        UpdateNode(node with { ConnectorId = reference?.Id, ConnectorRevision = reference is { Revision: > 0 } ? reference.Revision : null });
+        UpdateNode(node with { ConnectorId = reference?.Id, ConnectorRevision = reference is { Revision: > 0 } ? reference.Revision : null,
+            IncidentPresentation = node.ConnectorId == reference?.Id ? node.IncidentPresentation : null });
     }
+    private IReadOnlyList<string> IncidentSourceKinds => _adapter?.Capture().Nodes.Where(node => node.ExecutionTrigger is not null)
+        .SelectMany(node => node.ExecutionTrigger!.Sources).Select(source => source.ToString().ToLowerInvariant()).Distinct().ToArray() is { Length: > 0 } kinds ? kinds : ["monitoring"];
     private void UpdateAiDeadline(FlowNodeDto node, ChangeEventArgs args)
     {
         if (!int.TryParse(args.Value?.ToString(), out var minutes) || minutes is < 1 or > 60) { _error = "Choose an investigation deadline between 1 and 60 minutes."; return; }

@@ -32,6 +32,8 @@ public static class FlowGraphValidator
             if (node is null || node.Id == Guid.Empty || !nodes.TryAdd(node.Id, node)) { Error("node-id"); continue; }
             if (!Enum.IsDefined(node.Kind) || (int)node.Kind > 6) Error("node-kind", node.Id);
             if (!IsBoundedText(node.Name, FlowLimits.MaximumNameLength) || node.Position is null || !ValidCoordinate(node.Position.X) || !ValidCoordinate(node.Position.Y)) Error("node-layout", node.Id);
+            if (node.IncidentPresentation is { } presentation && (node.Kind != FlowNodeKind.CreateIncident || !ValidIncidentPresentation(presentation)))
+                Error("incident-presentation", node.Id);
             if (node.ExecutionTrigger is not null || node.ExecutionAction is not null || node.Rerun is not null ||
                 node.Predicate is not null || node.Inputs is not null) Error("node-properties", node.Id);
             if (node.Kind != FlowNodeKind.Condition && node.Condition is not null || node.Kind != FlowNodeKind.MapIncident && node.Mapping is not null ||
@@ -76,6 +78,8 @@ public static class FlowGraphValidator
                 {
                     if (action is null || action.Id == Guid.Empty || !actionIds.Add(action.Id)) { Error("action-id", node.Id); continue; }
                     if (!Enum.IsDefined(action.Kind)) Error("action-kind", node.Id);
+                    if (action.IncidentPresentation is { } actionPresentation && (action.Kind != FlowActionKind.RatelDeskIncident || !ValidIncidentPresentation(actionPresentation)))
+                        Error("incident-presentation", action.Id);
                     if (action.Name is not null && !IsBoundedText(action.Name, FlowLimits.MaximumNameLength)) Error("action-name", node.Id);
                     if (action.ConnectorId == Guid.Empty || action.ConnectorRevision is <= 0) Error("connector-reference", node.Id);
                     if (complete && action.ConnectorId is null) Error("connector-required", node.Id);
@@ -139,12 +143,17 @@ public static class FlowGraphValidator
 
     public static IReadOnlyList<FlowActionTargetDto> ActionTargets(FlowGraphDto graph) => graph.Nodes.SelectMany(node =>
         node.Kind is FlowNodeKind.CreateIncident or FlowNodeKind.InvestigateWithAi
-            ? (IEnumerable<FlowActionTargetDto>)[new(node.Id, node.Kind == FlowNodeKind.InvestigateWithAi ? FlowActionKind.NetclawInvestigation : FlowActionKind.RatelDeskIncident, node.ConnectorId, node.ConnectorRevision)]
+            ? (IEnumerable<FlowActionTargetDto>)[new(node.Id, node.Kind == FlowNodeKind.InvestigateWithAi ? FlowActionKind.NetclawInvestigation : FlowActionKind.RatelDeskIncident, node.ConnectorId, node.ConnectorRevision) { IncidentPresentation = node.IncidentPresentation }]
             : node.Kind == FlowNodeKind.ActionGroup ? node.Actions ?? [] : []).ToArray();
     public static bool ValidCondition(FlowConditionDto condition) => Enum.IsDefined(condition.Field) && Enum.IsDefined(condition.Comparison) &&
         (condition.Field == FlowValueField.NumericValue
             ? condition.NumericValue is { } value && double.IsFinite(value) && condition.TextValue is null
             : condition.NumericValue is null && IsBoundedText(condition.TextValue, FlowLimits.MaximumEventTextLength) && condition.Comparison is FlowComparison.Equal or FlowComparison.NotEqual);
+    public static bool ValidIncidentPresentation(AutomationTrace.Contracts.IncidentPresentationReference value) =>
+        value.Mode is "standard" or "template" && value.SchemaVersion == AutomationTrace.Contracts.AutomationTraceContract.ContextVersion &&
+        IsBoundedText(value.TemplateId, 256) && IsBoundedText(value.Revision, 32) &&
+        value.ContentDigest is { Length: 64 } && value.LayoutDigest is { Length: 64 } &&
+        value.ContentDigest.Concat(value.LayoutDigest).All(c => c is >= 'a' and <= 'f' or >= '0' and <= '9');
 
     public static bool ValidTemplate(string? template, int maximum, bool multiline = false)
     {

@@ -41,9 +41,12 @@ public sealed class RatelDeskReceiverHttpPipeline(IHttpClientFactory clients,
         }
         var canonicalApiBase = RatelDeskApiBase.Canonical(approvedApiBase);
         var expectedMethod = endpoint == ReceiverWireValidation.Endpoint(canonicalApiBase, ReceiverWireValidation.CreatePath) ||
-            endpoint == ReceiverWireValidation.Endpoint(canonicalApiBase, ReceiverWireValidation.TargetsPath)
+            endpoint == ReceiverWireValidation.Endpoint(canonicalApiBase, ReceiverWireValidation.TargetsPath) ||
+            endpoint == ReceiverWireValidation.Endpoint(canonicalApiBase, ReceiverWireValidation.PresentationCreatePath) ||
+            endpoint == ReceiverWireValidation.Endpoint(canonicalApiBase, ReceiverWireValidation.TemplatePreviewPath)
             ? HttpMethod.Post : HttpMethod.Get;
-        var isCreate = endpoint == ReceiverWireValidation.Endpoint(canonicalApiBase, ReceiverWireValidation.CreatePath);
+        var isCreate = endpoint == ReceiverWireValidation.Endpoint(canonicalApiBase, ReceiverWireValidation.CreatePath) ||
+            endpoint == ReceiverWireValidation.Endpoint(canonicalApiBase, ReceiverWireValidation.PresentationCreatePath);
         if (method != expectedMethod || isCreate != (idempotencyKey is not null) ||
             expectedMethod == HttpMethod.Get && body is not null ||
             expectedMethod == HttpMethod.Post && body is null)
@@ -57,7 +60,9 @@ public sealed class RatelDeskReceiverHttpPipeline(IHttpClientFactory clients,
         if (idempotencyKey is not null) request.Headers.Add("Idempotency-Key", idempotencyKey);
         if (body is not null)
         {
-            if (body.Length > RatelDeskConnectorLimits.MaximumRequestBytes) throw new InvalidDataException("receiver-request-too-large");
+            var maximum = endpoint == ReceiverWireValidation.Endpoint(canonicalApiBase, ReceiverWireValidation.PresentationCreatePath) ||
+                endpoint == ReceiverWireValidation.Endpoint(canonicalApiBase, ReceiverWireValidation.TemplatePreviewPath) ? 131_072 : RatelDeskConnectorLimits.MaximumRequestBytes;
+            if (body.Length > maximum) throw new InvalidDataException("receiver-request-too-large");
             request.Content = new ByteArrayContent(body);
             request.Content.Headers.ContentType = new("application/json");
         }

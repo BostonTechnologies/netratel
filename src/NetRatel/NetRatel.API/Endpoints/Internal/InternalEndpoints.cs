@@ -112,6 +112,14 @@ public static partial class InternalEndpoints
             if (profile.Revision != principal.LinkRevision || profile.AuthorityHash != principal.GrantHash ||
                 profile.Peer.InstallationId != principal.PeerInstanceId || profile.Mapping.RatelDeskOrganizationId != principal.PeerTenantId)
                 return AutomationError(http, 403, "paired-automation", "access_denied");
+            if (request.OriginContext is { } origin &&
+                (!AutomationTrace.AutomationTraceValidation.Origin(origin) ||
+                 origin.SourceInstanceId != principal.PeerInstanceId || origin.Organization.Id != principal.PeerTenantId ||
+                 origin.Request.Id != request.RequestId || origin.Task.Id != request.RequestTaskId ||
+                 origin.AttemptId != correlationId || origin.CorrelationId != correlationId ||
+                 origin.Links.Any(link => link.Kind != "source-request" ||
+                     link.Url != profile.Peer.WebOrigin.TrimEnd('/') + "/requests/" + Uri.EscapeDataString(request.RequestId))))
+                return AutomationError(http, 403, "invoke-job", "origin_context_rejected");
             var callbackUrl = profile.Peer.ApiOrigin + "/api/v1/orchestration/provider/callback";
             if (request.CallbackUrl is { Length: > 0 } suppliedCallback && suppliedCallback != callbackUrl) return AutomationError(http, 403, "paired-automation", "access_denied");
             var fingerprint = IngestFingerprint(request, job, payload);
@@ -169,6 +177,7 @@ public static partial class InternalEndpoints
                 LinkId = principal.LinkId, LinkRevision = principal.LinkRevision, GrantHash = principal.GrantHash,
                 PeerInstanceId = principal.PeerInstanceId, PeerTenantId = principal.PeerTenantId, CallbackUrl = callbackUrl,
                 CreatedAtUtc = http.RequestServices.GetRequiredService<TimeProvider>().GetUtcNow()
+                , OriginContextJson = request.OriginContext is null ? null : JsonSerializer.Serialize(request.OriginContext, AutomationTrace.AutomationTraceValidation.Json)
             };
             RequestInfo created;
             {
@@ -274,6 +283,9 @@ public static partial class InternalEndpoints
         var json = JsonSerializer.Serialize(new { JobId = job.Id.ToString(CultureInfo.InvariantCulture), request.RequestId,
             request.RequestTaskId, request.CorrelationId, request.AutomationBindingId, Payload = payload,
             request.ExpectedRuntimeSeconds, request.GraceSeconds, request.HardTimeoutSeconds });
+        // Keep the exact legacy fingerprint when no negotiated origin was supplied.
+        if (request.OriginContext is not null)
+            json += "|" + JsonSerializer.Serialize(request.OriginContext, AutomationTrace.AutomationTraceValidation.Json);
         return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(json)));
     }
 

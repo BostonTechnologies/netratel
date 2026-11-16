@@ -155,6 +155,22 @@ public sealed class JobRunService(OrchestratorDbContext db, IDataProtectionProvi
                 .Select(x => SanitizeActivity(run, ProtectActivity(x))).ToList());
     }
 
+    public async Task<JobRunDetails?> GetIncidentEvidenceAsync(ulong runId, CancellationToken ct = default)
+    {
+        await ProtectLegacyAsync(checked((long)runId), ct);
+        var row = await _db.JobRuns.AsNoTracking().SingleOrDefaultAsync(x => x.Id == checked((long)runId), ct);
+        if (row is null) return null;
+        var steps = await _db.JobStepRuns.AsNoTracking().Where(x => x.JobRunId == row.Id &&
+            x.Status != (int)JobStepRunState.Succeeded && x.Status != (int)JobStepRunState.Skipped && x.Status != (int)JobStepRunState.Pending && x.Status != (int)JobStepRunState.Running)
+            .OrderBy(x => x.Ordinal).ThenBy(x => x.Id).Take(8).ToArrayAsync(ct);
+        var failedActivities = _db.JobTaskActivities.AsNoTracking().Where(x => x.JobRunId == row.Id &&
+            (x.ExitCode != null && x.ExitCode != 0 || x.Status == "Failed" || x.Status == "TimedOut" || x.Status == "Cancelled" || x.Status == "Unknown"));
+        var failedCount = await failedActivities.CountAsync(ct);
+        var activities = await failedActivities.OrderBy(x => x.CreatedAtUtc).ThenBy(x => x.Id).Take(8).ToArrayAsync(ct);
+        return new(await EnrichAsync(Map(row), ct), steps.Select(x => Map(x) with { Error = _protection.Diagnostic(row, x.Error) }).ToArray(),
+            activities.Select(x => SanitizeActivity(row, ProtectActivity(x))).ToArray()) { FailedActivityCount = failedCount };
+    }
+
     public async Task DeleteAsync(ulong runId, CancellationToken ct = default)
     {
         var retention = await _db.JobRuns.AsNoTracking().Where(row => row.Id == checked((long)runId))

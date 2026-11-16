@@ -38,7 +38,7 @@
         _read?.Cancel(); _read?.Dispose(); _read = new(); _read.CancelAfter(TimeSpan.FromMilliseconds(1200));
         var token = _read.Token; var generation = ++_generation;
         _results = []; _error = null; _hasMore = false;
-        if (Section is not ("alerts" or "flows" or "investigations")) { _error = "Choose an available search group."; return; }
+        if (Section is not ("alerts" or "flows" or "investigations" or "automation")) { _error = "Choose an available search group."; return; }
         var section = Section; var path = $"/api/v1/global-search/{section}?q={Uri.EscapeDataString(Search ?? "")}&pageSize=25&page={Page}";
         _loading = true;
         try
@@ -46,6 +46,9 @@
             var client = Clients.CreateClient("OrchestratorApi");
             var results = section switch
             {
+                "automation" => (await client.GetFromJsonAsync<PagedResult<AutomationResourceSearchDto>>(path, token))?.Items.Select(row =>
+                    new GlobalSearchResult("Related automation", row.Title, row.ReferenceKind + " · " + row.Reference,
+                        row.ResourceKind, row.Url, "")).ToArray(),
                 "alerts" => (await client.GetFromJsonAsync<PagedResult<GlobalSearchAlertDto>>(path, token))?.Items.Select(row =>
                     new GlobalSearchResult(Title, row.Title, $"{row.TenantName} · {row.ClientName}", $"{row.Severity} · {row.State} · {row.Resource}", $"/monitoring?tenantId={row.TenantId}&alert={row.OccurrenceId:D}", "")).ToArray(),
                 "flows" => (await client.GetFromJsonAsync<PagedResult<GlobalSearchFlowDto>>(path, token))?.Items.Select(row =>

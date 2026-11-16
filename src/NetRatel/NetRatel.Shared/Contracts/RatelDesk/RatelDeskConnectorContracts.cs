@@ -31,6 +31,12 @@ public sealed record RatelDeskDryRunResult(RatelDeskCreateIncidentDto Payload, s
 
 public enum RatelDeskDeliveryStatus { Succeeded, AuthenticationRejected, PayloadRejected, RateLimited, Unavailable, DeliveryUnknown }
 public sealed record RatelDeskIncidentReceipt(string IncidentId, string TrackingId, string? SafeLink);
+public sealed record RatelDeskIncidentPresentationCapability(string ContractVersion, string SchemaVersion,
+    AutomationTrace.Contracts.IncidentPresentationReference Standard, string CreateEndpoint,
+    string CatalogueEndpoint, string PreviewEndpoint, string TemplateScope, string WebOrigin);
+public sealed record RatelDeskIncidentPresentationCatalogue(RatelDeskIncidentPresentationCapability Capability,
+    IReadOnlyList<AutomationTrace.Contracts.IncidentTemplateCatalogueItem> Templates, string CatalogueState = "available");
+public sealed record RatelDeskIncidentPreviewRequest(AutomationTrace.Contracts.IncidentPresentationReference Presentation, string SourceKind);
 public sealed record RatelDeskDeliveryResult(RatelDeskDeliveryStatus Status, string Code,
     RatelDeskIncidentReceipt? Receipt = null, int? RetryAfterSeconds = null);
 

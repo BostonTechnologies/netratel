@@ -104,6 +104,7 @@
                     </MudSelect>
                 }
                 <MudTextField T="string" Label="Connection name" @bind-Value="_name" Immediate="true" Disabled="@_busy" Variant="Variant.Outlined" Margin="Margin.Dense" Class="mt-2" MaxLength="128" data-testid="pairing-connection-name" />
+                <MudCheckBox T="bool" @bind-Value="_useIncidentTemplates" Label="Browse and preview internal incident templates" Dense="true" Disabled="@(_busy || !_createIncidents)" />
                 <MudCheckBox T="bool" Value="@_createIncidents" ValueChanged="IncidentsChanged" Disabled="@_busy" Label="Create incidents — NetRatel → RatelDesk" Dense="true" data-testid="pairing-create-incidents" />
                 <MudCheckBox T="bool" @bind-Value="_runAutomation" Disabled="@_busy" Label="Run automation — RatelDesk → NetRatel" Dense="true" data-testid="pairing-run-automation" />
                 @if (_saveError is not null) { <MudAlert Severity="Severity.Error" Dense="true" data-testid="pairing-save-error">@_saveError</MudAlert> }
@@ -146,6 +147,7 @@
     private string _address = "", _pairingCode = "", _name = "", _netRatelTenant = "", _organization = "", _customer = "";
     private string? _error, _saveError, _notice, _directoryError, _operationInput;
     private Guid _operationId = Guid.NewGuid(), _mappingId;
+    private bool _useIncidentTemplates;
     private bool _loading = true, _busy, _createOpen, _createIncidents, _runAutomation, _directoryLoading, _clipboardError, _disposed, _tenantHintUnavailable;
     private int _selectionGeneration, _listGeneration;
     private bool CanPair => TryNormalizeAddress(_address, out _) && Regex.IsMatch(_pairingCode.Trim(), "^[A-Za-z0-9]{4}-?[A-Za-z0-9]{4}$");
@@ -218,7 +220,7 @@
         _selected = connection; _saveError = _directoryError = null; _createOpen = false; _pairingCode = ""; _tenantHintUnavailable = false;
         _mappingId = connection.Mapping?.Id ?? Guid.NewGuid(); _name = connection.Mapping?.Name ?? $"NetRatel ↔ {connection.Peer.Name}";
         _netRatelTenant = connection.Mapping?.NetRatelTenantId ?? ""; _organization = connection.Mapping?.RatelDeskOrganizationId ?? ""; _customer = connection.Mapping?.RatelDeskCustomerId ?? "";
-        _createIncidents = connection.Mapping?.CreateIncidents ?? false; _runAutomation = connection.Mapping?.RunAutomation ?? false; _directory = null;
+        _createIncidents = connection.Mapping?.CreateIncidents ?? false; _runAutomation = connection.Mapping?.RunAutomation ?? false; _useIncidentTemplates = connection.Mapping?.UseIncidentTemplates ?? false; _directory = null;
         await LoadDirectoryAsync(connection, generation);
     }
     private Task ReloadDirectoryAsync() => _selected is { } selected ? LoadDirectoryAsync(selected, _selectionGeneration) : Task.CompletedTask;
@@ -250,7 +252,7 @@
     {
         if (_busy || _disposed || _selected is not { } selected || !CanSave) return;
         var generation = _selectionGeneration;
-        var mapping = new PairingMapping(_mappingId, selected.PairId, _name.Trim(), _netRatelTenant, _organization, _createIncidents ? _customer : null, _createIncidents, _runAutomation);
+        var mapping = new PairingMapping(_mappingId, selected.PairId, _name.Trim(), _netRatelTenant, _organization, _createIncidents ? _customer : null, _createIncidents, _runAutomation) { UseIncidentTemplates = _createIncidents && _useIncidentTemplates };
         _busy = true; _saveError = _notice = null;
         try
         {

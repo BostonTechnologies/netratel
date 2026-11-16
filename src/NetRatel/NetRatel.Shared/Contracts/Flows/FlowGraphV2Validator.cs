@@ -52,6 +52,8 @@ public static class FlowGraphV2Validator
             if (FlowNodeCatalogue.Find(node.Kind) is null) { Error("node-kind", node.Id); continue; }
             if (!Text(node.Name, FlowLimits.MaximumNameLength) || node.Position is null ||
                 !Coordinate(node.Position.X) || !Coordinate(node.Position.Y)) Error("node-layout", node.Id);
+            if (node.IncidentPresentation is { } presentation && (node.Kind != FlowNodeKind.CreateIncident || !FlowGraphValidator.ValidIncidentPresentation(presentation)))
+                Error("incident-presentation", node.Id);
 
             // Retain existing connector, prompt and independent-action validation without teaching v1 new kinds.
             if ((int)node.Kind <= 6)

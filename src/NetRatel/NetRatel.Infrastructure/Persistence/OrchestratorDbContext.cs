@@ -137,6 +137,7 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
         PreserveComputerUseAudit();
         AdvanceScriptSourceRevisions();
         PreserveUpdateReleaseReference();
+        NetRatel.Infrastructure.RatelDesk.AutomationReferenceProjection.CaptureBindings(this);
         ExecutionLifecycleOutbox.CaptureTracked(this);
         ExecutionLifecycleSubscriptions.Capture(this);
         var result = base.SaveChanges(sourceTransaction is null && acceptAllChangesOnSuccess);
@@ -155,6 +156,7 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
         PreserveComputerUseAudit();
         AdvanceScriptSourceRevisions();
         PreserveUpdateReleaseReference();
+        NetRatel.Infrastructure.RatelDesk.AutomationReferenceProjection.CaptureBindings(this);
         await ExecutionLifecycleOutbox.CaptureTrackedAsync(this, cancellationToken);
         await ExecutionLifecycleSubscriptions.CaptureAsync(this, cancellationToken);
         var result = await base.SaveChangesAsync(sourceTransaction is null && acceptAllChangesOnSuccess, cancellationToken);
@@ -217,6 +219,7 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
         modelBuilder.ConfigureServiceIdentityModel();
         modelBuilder.ConfigurePairingModel();
         modelBuilder.ConfigureManagedOrchestrationModel();
+        modelBuilder.ConfigureExternalResourceReferences();
         modelBuilder.ConfigureExecutionGroupModel();
         modelBuilder.ConfigureJobRunControlModel();
         modelBuilder.ConfigureJobAggregateModel();

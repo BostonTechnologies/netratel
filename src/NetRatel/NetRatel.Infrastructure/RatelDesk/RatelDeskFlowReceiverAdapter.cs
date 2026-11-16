@@ -8,7 +8,8 @@ namespace NetRatel.Infrastructure.RatelDesk;
 public sealed class RatelDeskFlowReceiverAdapter(IRatelDeskConnectorStore connectors,
     IRatelDeskConnectorBindingStore bindings, IRatelDeskConnectorAuthorization authorization,
     IRatelDeskOutboundBindingResolver credentials, IRatelDeskReceiverTransport receiver,
-    ReceiverPreparationBuilder builder, IFlowReceiverEvidenceStore evidenceStore, TimeProvider clock)
+    ReceiverPreparationBuilder builder, IFlowReceiverEvidenceStore evidenceStore, TimeProvider clock,
+    AutomationIncidentContextBuilder? contexts = null, RatelDeskIncidentTemplateClient? templates = null)
     : IFlowReceiverDispatcher
 {
     public async Task<FlowReceiverPreparationResult> PrepareReceiverAsync(FlowIncidentActionDraft draft,
@@ -36,6 +37,14 @@ public sealed class RatelDeskFlowReceiverAdapter(IRatelDeskConnectorStore connec
             draft.ConnectorId, draft.ConnectorRevision, draft.SourceInstanceId, draft.IdempotencyKey, draft.Event,
             new(body.Title, body.Description, body.Priority),
             new(body.OrganizationId, body.CustomerId, body.AssignedToId, body.CategoryIds), true, "");
+        if (draft.IncidentPresentation is { } presentation)
+        {
+            if (contexts is null || templates is null) return new(FlowIncidentPreparationStatus.Unavailable, Code: "incident-presentation-unavailable");
+            var context = await contexts.BuildAsync(draft, ct);
+            _ = await templates.CheckAsync(connector, peer, capability, new(presentation, context), ct);
+            action = action with { PresentationPayload = new(AutomationTrace.Contracts.AutomationTraceContract.IncidentVersion,
+                new(peer.OrganizationId, peer.CustomerId, peer.AssignedToId, peer.CategoryIds, priority), presentation, context) };
+        }
         action = action with { SemanticFingerprint = FlowContractValidation.Fingerprint(action) };
         if (!FlowContractValidation.ValidPrepared(action, draft))
             return new(FlowIncidentPreparationStatus.Invalid, Code: "invalid-incident-payload");

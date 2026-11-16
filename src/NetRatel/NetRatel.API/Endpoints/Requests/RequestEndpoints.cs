@@ -32,6 +32,7 @@ public static class RequestEndpoints
             IRequestService requests,
             IJobRunService jobRuns,
             IJobDefinitionService jobs,
+            OrchestratorDbContext db,
             CancellationToken ct) =>
         {
             var requestList = await requests.ListAsync(ct);
@@ -41,7 +42,13 @@ public static class RequestEndpoints
             foreach (var request in requestList)
                 if (await CanManageAsync(http, access, request.TargetTenantId, ct))
                     payload.Add(MapRequestDto(request, RequestJobRunLinkResolver.Resolve(request, runLookup), jobLookup));
-            return Results.Ok(payload);
+            var ids = payload.Select(x => x.Id).ToArray();
+            var references = await db.Set<ExternalResourceReferenceRecord>().AsNoTracking().Where(x => x.ResourceKind == "request" &&
+                x.NativeRequestId != null && ids.Contains(x.NativeRequestId.Value) && db.Requests.Any(request =>
+                    request.Id == x.NativeRequestId && request.TargetTenantId == x.TenantId))
+                .Select(x => new { x.NativeRequestId, x.Reference }).Distinct().ToArrayAsync(ct);
+            return Results.Ok(payload.Select(request => request with { ExternalReferences = references.Where(x => x.NativeRequestId == request.Id)
+                .Select(x => x.Reference).Distinct().Order().Take(32).ToArray() }));
         });
 
         group.MapGet("/{id:int}", async (

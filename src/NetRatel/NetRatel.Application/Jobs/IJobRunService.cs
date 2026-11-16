@@ -218,7 +218,10 @@ public sealed record UpdateJobTaskActivityStatusCommand(
 public sealed record JobRunDetails(
     JobRunInfo Run,
     IReadOnlyList<JobStepRunInfo> Steps,
-    IReadOnlyList<JobTaskActivityInfo> Activities);
+    IReadOnlyList<JobTaskActivityInfo> Activities)
+{
+    public int? FailedActivityCount { get; init; }
+}
 
 public interface IJobRunService
 {
@@ -258,6 +261,8 @@ public interface IJobRunService
     Task<IReadOnlyList<JobRunInfo>> ListAsync(CancellationToken ct = default);
     Task<JobRunInfo?> GetAsync(ulong runId, CancellationToken ct = default);
     Task<JobRunDetails?> GetDetailsAsync(ulong runId, CancellationToken ct = default);
+    /// <summary>Authorized callers use the same redaction boundary with failed-first bounded evidence.</summary>
+    Task<JobRunDetails?> GetIncidentEvidenceAsync(ulong runId, CancellationToken ct = default) => GetDetailsAsync(runId, ct);
     Task DeleteAsync(ulong runId, CancellationToken ct = default);
     Task<JobTaskActivityInfo?> GetActivityByIdAsync(ulong activityId, CancellationToken ct = default);
     Task<JobTaskActivityInfo?> GetActivityByRequestIdAsync(string requestId, CancellationToken ct = default);

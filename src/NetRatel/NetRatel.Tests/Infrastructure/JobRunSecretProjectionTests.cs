@@ -11,6 +11,42 @@ namespace NetRatel.Tests.Infrastructure;
 public sealed class JobRunSecretProjectionTests
 {
     [Fact]
+    public async Task Incident_evidence_selects_late_failures_before_limits_and_applies_retained_secret_protection()
+    {
+        await using var db = CreateDb();
+        db.Jobs.Add(new() { Id = 67, TenantId = 7, Name = "Synthetic directory test" });
+        db.JobParameters.Add(new() { Id = 68, JobId = 67, Name = "credential", Type = "secret" });
+        await db.SaveChangesAsync();
+        var keys = new Microsoft.AspNetCore.DataProtection.EphemeralDataProtectionProvider();
+        var service = new JobRunService(db, keys);
+        var now = DateTimeOffset.UtcNow;
+        await service.UpsertRunAsync(new(639300000000000001, 67, 7, "", "fixture", JobRunState.Failed, 20,
+            now, now, now, null, "{\"credential\":\"synthetic-secret-sentinel\"}", null));
+        for (var ordinal = 1; ordinal <= 20; ordinal++)
+        {
+            var failed = ordinal >= 6;
+            var request = "synthetic-step-" + ordinal;
+            await service.UpsertStepRunAsync(new((ulong)(100 + ordinal), 639300000000000001, (ulong)ordinal,
+                failed ? JobStepRunState.Failed : JobStepRunState.Succeeded, ordinal, request, null, now, now));
+            await service.CreateTaskActivityAsync(new(request, 639300000000000001, null, "", 7, "inert",
+                failed ? "Failed" : "Succeeded", null, now.AddMilliseconds(ordinal), now,
+                ResultJson: failed ? "{\"stderr\":[\"Directory not found: synthetic-secret-sentinel\"]}" : "{\"stdout\":[\"success\"]}",
+                ExitCode: failed ? 2 : 0, ScriptName: failed ? "List requested directory" : "Earlier successful activity"));
+        }
+        db.ChangeTracker.Clear();
+        var evidence = (await new JobRunService(db, keys).GetIncidentEvidenceAsync(639300000000000001))!;
+        Assert.Equal(15, evidence.FailedActivityCount);
+        Assert.Equal(8, evidence.Activities.Count);
+        Assert.Equal(6, evidence.Steps[0].Ordinal);
+        var target = NetRatel.Infrastructure.RatelDesk.AutomationIncidentContextBuilder.Evidence(evidence,
+            "node-demo", "Demo node", "demo.example.test", "Failed");
+        Assert.Equal(7, target.OmittedSteps);
+        Assert.Equal(6, target.FailedSteps[0].Ordinal);
+        Assert.All(target.FailedSteps, step => { Assert.Equal(2, step.ExitCode); Assert.Equal("redacted", step.DiagnosticState); });
+        JsonSerializer.Serialize(target).Should().Contain("Directory not found").And.NotContain("synthetic-secret-sentinel");
+    }
+
+    [Fact]
     public async Task Submitted_secret_is_absent_from_ordinary_reads_and_both_option_paths()
     {
         await using var db = CreateDb();
