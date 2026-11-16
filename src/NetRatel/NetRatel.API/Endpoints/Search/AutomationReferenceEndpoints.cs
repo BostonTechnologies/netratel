@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using NetRatel.Infrastructure.Identity.Authorization;
 using NetRatel.Infrastructure.Persistence;
@@ -10,7 +11,7 @@ public static class AutomationReferenceEndpoints
     public static void MapAutomationReferenceEndpoints(this IEndpointRouteBuilder app)
     {
         app.MapGet("/api/v1/global-search/automation", async (string? q, int? page, int? pageSize, HttpContext http,
-            OrchestratorDbContext db, IEffectiveAccessService access, CancellationToken ct) =>
+            [FromServices] OrchestratorDbContext db, [FromServices] IEffectiveAccessService access, CancellationToken ct) =>
         {
             var term = (q ?? "").Trim().ToUpperInvariant();
             if (term.Length is < 2 or > 128) return Results.Ok(new PagedResult<AutomationResourceSearchDto>([], 1, 25, 0));
@@ -20,7 +21,7 @@ public static class AutomationReferenceEndpoints
             return Results.Ok(await PageAsync(db, query, term, page, pageSize, ct));
         }).RequireAuthorization("InteractiveAccount").WithTags("Global Search");
         app.MapGet("/api/v1/tenants/{tenantId:int}/automation-resources/{kind}/{id}", async (int tenantId, string kind,
-            string id, int? page, int? pageSize, HttpContext http, OrchestratorDbContext db, IEffectiveAccessService access, CancellationToken ct) =>
+            string id, int? page, int? pageSize, HttpContext http, [FromServices] OrchestratorDbContext db, [FromServices] IEffectiveAccessService access, CancellationToken ct) =>
         {
             if (kind is not ("request" or "job-run" or "flow-run") || id.Length > 256) return Results.BadRequest();
             var jobs = await access.GetAuthorizedTenantIdsAsync(http.User, NetRatelPermissions.JobManagement, ct);
@@ -34,7 +35,7 @@ public static class AutomationReferenceEndpoints
             return Results.Ok(await PageAsync(db, related, "", page, pageSize, ct));
         }).RequireAuthorization().WithTags("Automation related resources");
         app.MapGet("/api/v1/tenants/{tenantId:int}/automation-resources/{kind}/{id}/origins", async (int tenantId,
-            string kind, string id, HttpContext http, OrchestratorDbContext db, IEffectiveAccessService access, CancellationToken ct) =>
+            string kind, string id, HttpContext http, [FromServices] OrchestratorDbContext db, [FromServices] IEffectiveAccessService access, CancellationToken ct) =>
         {
             if (kind is not ("request" or "job-run" or "flow-run") || id.Length > 256) return Results.BadRequest();
             var jobs = await access.GetAuthorizedTenantIdsAsync(http.User, NetRatelPermissions.JobManagement, ct);

@@ -376,6 +376,12 @@ def cleanup(state, purge=False):
             destination = SAFE_EVIDENCE / state['fixtureId']
             destination.mkdir(parents=True, exist_ok=True)
             shutil.copy2(business_receipt, destination / 'business-receipt.json')
+            for screenshot in business_receipt.parent.glob('traceability-*.png'):
+                if re.fullmatch(r'traceability-[a-z0-9-]+\.png', screenshot.name) and screenshot.stat().st_size <= 2 * 1024 * 1024:
+                    shutil.copy2(screenshot, destination / screenshot.name)
+            traceability = business_receipt.parent / 'automation-traceability.json'
+            if traceability.is_file() and traceability.stat().st_size <= 8192:
+                shutil.copy2(traceability, destination / traceability.name)
             for name in ['self-success', 'self-failure', 'on-behalf', 'lost-callback']:
                 for suffix in ['-rendered-outcome.png', '-rendered-failure.png']:
                     screenshot = business_receipt.parent / (name + suffix)

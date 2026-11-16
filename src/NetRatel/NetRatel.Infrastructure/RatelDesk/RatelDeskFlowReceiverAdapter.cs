@@ -1,3 +1,4 @@
+using Microsoft.Extensions.DependencyInjection;
 using NetRatel.Application.Flows;
 using NetRatel.Application.RatelDesk;
 using NetRatel.Shared.SystemPairing;
@@ -9,7 +10,7 @@ public sealed class RatelDeskFlowReceiverAdapter(IRatelDeskConnectorStore connec
     IRatelDeskConnectorBindingStore bindings, IRatelDeskConnectorAuthorization authorization,
     IRatelDeskOutboundBindingResolver credentials, IRatelDeskReceiverTransport receiver,
     ReceiverPreparationBuilder builder, IFlowReceiverEvidenceStore evidenceStore, TimeProvider clock,
-    AutomationIncidentContextBuilder? contexts = null, RatelDeskIncidentTemplateClient? templates = null)
+    IServiceScopeFactory? presentationScopes = null)
     : IFlowReceiverDispatcher
 {
     public async Task<FlowReceiverPreparationResult> PrepareReceiverAsync(FlowIncidentActionDraft draft,
@@ -39,9 +40,12 @@ public sealed class RatelDeskFlowReceiverAdapter(IRatelDeskConnectorStore connec
             new(body.OrganizationId, body.CustomerId, body.AssignedToId, body.CategoryIds), true, "");
         if (draft.IncidentPresentation is { } presentation)
         {
-            if (contexts is null || templates is null) return new(FlowIncidentPreparationStatus.Unavailable, Code: "incident-presentation-unavailable");
-            var context = await contexts.BuildAsync(draft, ct);
-            _ = await templates.CheckAsync(connector, peer, capability, new(presentation, context), ct);
+            if (presentationScopes is null) return new(FlowIncidentPreparationStatus.Unavailable, Code: "incident-presentation-unavailable");
+            // Resolve new presentation dependencies only for explicitly opted-in actions. Legacy adapters retain their original dependency path.
+            await using var presentationScope = presentationScopes.CreateAsyncScope();
+            var context = await presentationScope.ServiceProvider.GetRequiredService<AutomationIncidentContextBuilder>().BuildAsync(draft, ct);
+            _ = await presentationScope.ServiceProvider.GetRequiredService<RatelDeskIncidentTemplateClient>()
+                .CheckAsync(connector, peer, capability, new(presentation, context), ct);
             action = action with { PresentationPayload = new(AutomationTrace.Contracts.AutomationTraceContract.IncidentVersion,
                 new(peer.OrganizationId, peer.CustomerId, peer.AssignedToId, peer.CategoryIds, priority), presentation, context) };
         }
@@ -70,6 +74,8 @@ public sealed class RatelDeskFlowReceiverAdapter(IRatelDeskConnectorStore connec
         }
         catch (Exception error) when (error is HttpRequestException or IOException or OperationCanceledException)
         { return new(FlowIncidentPreparationStatus.Unavailable, Code: "receiver-preparation-interrupted", RetryAfter: TimeSpan.FromSeconds(5)); }
+        catch (InvalidOperationException error) when (error.Message == "managed-origin-context-unavailable")
+        { return new(FlowIncidentPreparationStatus.Invalid, Code: "managed-origin-context-unavailable"); }
         catch (Exception error) when (error is ArgumentException or InvalidOperationException or System.Text.Json.JsonException)
         { return new(FlowIncidentPreparationStatus.Invalid, Code: "receiver-preparation-invalid"); }
     }

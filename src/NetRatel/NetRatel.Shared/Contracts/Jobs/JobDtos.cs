@@ -11,7 +11,7 @@ public sealed record JobScheduleDto(
 );
 
 public record JobDto(
-    ulong Id,
+    [property: System.Text.Json.Serialization.JsonNumberHandling(System.Text.Json.Serialization.JsonNumberHandling.WriteAsString | System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString)] ulong Id,
     string Name,
     string FolderPath,
     string? Description,
@@ -38,8 +38,8 @@ public record JobDto(
 
 
 public record JobParamDto(
-    ulong Id,
-    ulong JobId,
+    [property: System.Text.Json.Serialization.JsonNumberHandling(System.Text.Json.Serialization.JsonNumberHandling.WriteAsString | System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString)] ulong Id,
+    [property: System.Text.Json.Serialization.JsonNumberHandling(System.Text.Json.Serialization.JsonNumberHandling.WriteAsString | System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString)] ulong JobId,
     string Name,
     string Type,
     bool Required,
@@ -51,13 +51,13 @@ public record JobParamDto(
 public enum JobStepTypeDto { RunCommand = 0, LibraryScript = 1, HttpAction = 2 }
 
 public record JobStepDto(
-    ulong Id,
-    ulong JobId,
+    [property: System.Text.Json.Serialization.JsonNumberHandling(System.Text.Json.Serialization.JsonNumberHandling.WriteAsString | System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString)] ulong Id,
+    [property: System.Text.Json.Serialization.JsonNumberHandling(System.Text.Json.Serialization.JsonNumberHandling.WriteAsString | System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString)] ulong JobId,
     int Ordinal,
     JobStepTypeDto Type,
     string? Runner,
     string? Command,
-    ulong? ScriptId,
+    [property: System.Text.Json.Serialization.JsonNumberHandling(System.Text.Json.Serialization.JsonNumberHandling.WriteAsString | System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString)] ulong? ScriptId,
     string? PayloadJson,
     bool Enabled
 );
@@ -136,7 +136,7 @@ public record AddJobStepRequest(
     JobStepTypeDto Type,
     string? Runner,
     string? Command,
-    ulong? ScriptId,
+    [property: System.Text.Json.Serialization.JsonNumberHandling(System.Text.Json.Serialization.JsonNumberHandling.WriteAsString | System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString)] ulong? ScriptId,
     string? PayloadJson,
     bool? Enabled
 );
@@ -145,7 +145,7 @@ public record UpdateJobStepRequest(
     JobStepTypeDto? Type,
     string? Runner,
     string? Command,
-    ulong? ScriptId,
+    [property: System.Text.Json.Serialization.JsonNumberHandling(System.Text.Json.Serialization.JsonNumberHandling.WriteAsString | System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString)] ulong? ScriptId,
     string? PayloadJson,
     bool? Enabled
 );

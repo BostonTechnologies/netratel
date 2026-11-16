@@ -41,6 +41,11 @@ on:
       companion_ref:
         description: Explicit RatelDesk source ref for the pairing suite (both candidates are built from source)
         required: false
+      pairing_traceability:
+        description: Include the v2 report, source relation, search and rendered template journey in the pairing suite
+        type: boolean
+        default: false
+        required: false
       baseline_ref:
         description: Client measurement baseline ref; macOS PTY Debug comparison requires an exact baseline SHA
         default: main
@@ -156,6 +161,7 @@ jobs:
           RATELDESK_PAIRING_SOURCE_ROOT: ${{ github.workspace }}/work/rateldesk
           NETRATEL_PAIRING_RUNTIME_ROOT: ${{ runner.temp }}/pairing-${{ github.run_id }}-${{ github.run_attempt }}
           PAIRING_BROWSER_WITH_DEPS: '1'
+          PAIRING_AUTOMATION_TRACEABILITY: ${{ inputs.pairing_traceability && '1' || '0' }}
         shell: bash
         run: |
           set -euo pipefail

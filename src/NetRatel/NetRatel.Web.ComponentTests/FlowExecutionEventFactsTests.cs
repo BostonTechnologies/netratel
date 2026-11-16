@@ -10,8 +10,11 @@ namespace NetRatel.Web.ComponentTests;
 
 public sealed class FlowExecutionEventFactsTests : AsyncBunitContext
 {
-    public FlowExecutionEventFactsTests() =>
+    public FlowExecutionEventFactsTests()
+    {
+        Services.AddSingleton<IHttpClientFactory>(new AutomationRelatedResourcesFixture());
         Services.AddMudServices(options => options.PopoverOptions.CheckForPopoverProvider = false);
+    }
     [Fact]
     public void Request_failure_renders_immutable_execution_facts_without_an_alert_or_invented_replay()
     {

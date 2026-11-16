@@ -278,7 +278,7 @@ public static class ReceiverWireValidation
             throw new InvalidDataException("receiver-boolean-unverified");
         return value.GetBoolean();
     }
-    private static string SafeId(string value) => value.Length <= 128 &&
+    private static string SafeId(string? value) => value is { Length: > 0 and <= 128 } &&
         value.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_') ? value :
             throw new InvalidDataException("receiver-identity-unverified");
     private static void Equal(string? actual, string expected)

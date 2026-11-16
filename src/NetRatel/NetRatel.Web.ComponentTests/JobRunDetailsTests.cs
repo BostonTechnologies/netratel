@@ -238,6 +238,8 @@ public sealed class JobRunDetailsTests : AsyncBunitContext
             }
             object result = request.RequestUri!.AbsolutePath switch
             {
+                var path when path.Contains("/automation-resources/", StringComparison.Ordinal) && path.EndsWith("/origins", StringComparison.Ordinal) => Array.Empty<AutomationTrace.Contracts.AutomationOriginContext>(),
+                var path when path.Contains("/automation-resources/", StringComparison.Ordinal) => new NetRatel.Shared.Contracts.PagedResult<NetRatel.Shared.Contracts.AutomationResourceSearchDto>([], 1, 25, 0),
                 "/api/v1/jobruns/9" => Run,
                 "/api/v1/jobruns/10" => Run with { Id = 10, JobName = "Next route" },
                 "/api/v1/jobruns/10/steps" => Steps.Select(step => step with { Id = step.Id + 10, JobRunId = 10 }).ToList(),

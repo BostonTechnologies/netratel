@@ -19,6 +19,8 @@ public sealed partial class FlowsPageTests : AsyncBunitContext
     private readonly IRenderedComponent<MudDialogProvider> _dialogs;
     public FlowsPageTests()
     {
+        Services.AddSingleton<IHttpClientFactory>(new AutomationRelatedResourcesFixture());
+
         JSInterop.Mode = JSRuntimeMode.Loose;
         JSInterop.SetupModule("./_content/VeloxDev.Razor/veloxdev.workflow.js").Mode = JSRuntimeMode.Loose;
         JSInterop.SetupModule("./js/flows-playback.js").Mode = JSRuntimeMode.Loose;

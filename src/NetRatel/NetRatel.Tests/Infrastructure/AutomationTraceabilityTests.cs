@@ -27,6 +27,12 @@ public sealed class AutomationTraceabilityTests
         Assert.Equal("639300000000000002", wire.RootElement.GetProperty("parentRunId").GetString());
         Assert.Equal(value.Id, JsonSerializer.Deserialize<NetRatel.Shared.Contracts.Jobs.JobRunDto>(
             json.Replace("\"639300000000000001\"", "639300000000000001"), AutomationTraceValidation.Json)!.Id);
+        var job = new NetRatel.Shared.Contracts.Jobs.JobDto(9007199254740993, "Demo job", "/", null, 7, "", 0, 0);
+        var script = new NetRatel.Shared.Contracts.Scripts.ScriptDto(9007199254740995, "Demo script", "/", null, null, "bash", default, default);
+        foreach (var (document, exact) in new[] {
+            (JsonSerializer.SerializeToElement(job, AutomationTraceValidation.Json), "9007199254740993"),
+            (JsonSerializer.SerializeToElement(script, AutomationTraceValidation.Json), "9007199254740995") })
+            Assert.Equal(exact, document.GetProperty("id").GetString());
     }
 
     [Fact]

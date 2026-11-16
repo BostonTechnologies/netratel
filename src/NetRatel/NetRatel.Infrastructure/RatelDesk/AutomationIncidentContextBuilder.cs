@@ -31,6 +31,7 @@ public sealed class AutomationIncidentContextBuilder(OrchestratorDbContext db, I
         if (binding is not null)
         {
             if (source?.SourceKind != FlowExecutionSourceKind.Script) execution = binding.ExecutionId;
+            if (binding.OriginContextJson is null) throw new InvalidOperationException("managed-origin-context-unavailable");
             var trusted = binding.OriginContextJson is null ? null : JsonSerializer.Deserialize<AutomationOriginContext>(binding.OriginContextJson, AutomationTraceValidation.Json);
             if (JsonSerializer.Serialize(origin, AutomationTraceValidation.Json) != JsonSerializer.Serialize(trusted, AutomationTraceValidation.Json))
                 throw new InvalidOperationException("source-origin-binding-changed");
@@ -42,7 +43,8 @@ public sealed class AutomationIncidentContextBuilder(OrchestratorDbContext db, I
                 aggregate.Counts.Failed - aggregate.Counts.Skipped - aggregate.Counts.Cancelled - aggregate.Counts.TimedOut)) : null;
         var context = new AutomationIncidentContext(AutomationTraceContract.ContextVersion,
             source?.SourceKind.ToString().ToLowerInvariant() ?? "monitoring", origin, source?.NativeRequestId,
-            source?.Definition.Id is { } definitionId ? new(definitionId, source.Definition.Name) : null,
+            source?.Definition.Id is { } definitionId ? new(definitionId, source.Definition.Name) :
+                draft.Event.Data is { } monitoring ? new(monitoring.RuleId.ToString("D"), Bound(monitoring.RuleName, 256)) : null,
             execution, draft.RunId.ToString("D"), draft.ActionNodeId.ToString("D"), outcome,
             source?.StartedAtUtc, source?.CompletedAtUtc, totals, [], totals?.Total ?? 0, "unavailable", [])
         { Supplement = draft.Fields.PresentationSupplement ?? (source is null
