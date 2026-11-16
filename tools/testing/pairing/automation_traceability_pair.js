@@ -154,7 +154,10 @@ async function rendered(h, ids) {
         await login(job, nr); await job.goto(nr.web + `/jobs/${ids.jobId}/runs/${ids.runId}`);
         const incident = await context.newPage(); incident.setDefaultTimeout(30000);
         await login(incident, rd); await incident.goto(rd.web + `/incidents/${ids.incidentId}`);
-        await incident.getByRole('tab', { name: 'Automation', exact: true }).click();
+        await expect(incident.getByTestId('app-main-content')).toHaveAttribute('data-interactive', 'true');
+        const automationTab = incident.getByRole('tab', { name: 'Automation', exact: true });
+        await automationTab.click();
+        await expect(automationTab).toHaveAttribute('aria-selected', 'true');
         const editor = await context.newPage(); editor.setDefaultTimeout(30000);
         await editor.goto(nr.web + `/flows?tenantId=${ids.tenant}&draftId=${ids.flowId}&nodeId=${ids.actionId}`);
         await resizeForVisualCapture(editor, { width: 1440, height: 1000 });
@@ -205,6 +208,10 @@ async function rendered(h, ids) {
             if (palette) await palette.evaluate(element => element.remove());
           }
         }
+      } catch (error) {
+        await Promise.allSettled(context.pages().map((page, index) => capture(page,
+          path.join(h.evidence, `traceability-failure-${batch.zoom}x-${index}.png`), batch.zoom)));
+        throw error;
       } finally { await context.close(); if (batch.zoom === 2) fs.rmSync(profile, { recursive: true, force: true }); }
     }
   } finally { await browser.close(); }
