@@ -97,7 +97,10 @@ module.exports = async function automationTraceabilityPair(h) {
     const tasks = await apiJson(rdApi, '/api/v1/request-tasks/?requestId=' + submitted.requestId);
     return tasks.items?.length === 1 && tasks.items[0].lastAutomationStatus === 'failed' ? tasks.items[0] : null;
   });
-  const runId = String(task.orchestratorExecutionId);
+  const detailedTask = await apiJson(rdApi, '/api/v1/request-tasks/' + task.id);
+  const runId = String(detailedTask.orchestratorExecutionId);
+  requireProof(runId === context.jobExecution?.runId && detailedTask.lastAutomationStatus === 'failed',
+    'The task detail must retain the same failed native attempt accepted into the report');
   const original = await apiJson(nrApi, '/api/v1/jobruns/' + runId);
   requireProof(original.status === 3 && original.isAggregate && original.targetCount === 1, 'Successful incident delivery must preserve the failed native aggregate');
   for (const ticketId of [submitted.requestId, accepted.incidentId]) {
