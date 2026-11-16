@@ -50,7 +50,7 @@ public sealed partial class ManagedOperationsMcpTests
             alternatives.Select(item => item.GetProperty("properties").GetProperty("operation").GetProperty("const").GetString())
                 .Should().BeEquivalentTo(ManagedOperationCatalog.Operations.Where(item => item.Tool == name).Select(item => item.Operation));
         }
-        http["netratel_flows"].ProtocolTool.InputSchema.GetRawText().Should().Contain("InvestigateWithAi").And.Contain("expectedRevision");
+        http["netratel_flows"].ProtocolTool.InputSchema.GetRawText().Should().Contain("InvestigateWithAi").And.Contain("expectedRevision").And.Contain("incidentPresentation").And.Contain("layoutDigest");
         http["netratel_monitoring"].ProtocolTool.InputSchema.GetRawText().Should().Contain("expectedConfigurationRevision");
         http["netratel_ai"].ProtocolTool.InputSchema.GetRawText().Should().Contain("selectedKey").And.Contain("callId");
     }

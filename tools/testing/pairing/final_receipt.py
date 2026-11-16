@@ -45,7 +45,12 @@ def prepare():
     require(business['historyPreserved'] is True and business['resultReceived'] is True,
             'Durable real execution/result history was not verified')
     require(bool(str(business.get('executionId', ''))), 'An actual execution identity is missing')
-    require(business.get('incidentCount') == 2 and business.get('receiptCount') == 1,
+    traceability = os.environ.get('PAIRING_AUTOMATION_TRACEABILITY') == '1'
+    if traceability:
+        require(business['stages'].get('automationTraceability') == 'passed' and
+                business.get('automationTraceability', {}).get('replayStable') is True,
+                'The actual v2 source/report/relation/search/rendered acceptance is incomplete')
+    require(business.get('incidentCount') == (3 if traceability else 2) and business.get('receiptCount') == (2 if traceability else 1),
             'The original receiver receipt and its incident plus one self-service failure incident must be retained')
     from native_pair import source_identity
     private_state = read(fixture / 'private-state.json')
@@ -120,6 +125,9 @@ def prepare():
                    'executions': [{key: row[key] for key in ['stage', 'executionId', 'nativeExitCode', 'callbackReplayHarmless']}
                                   for row in business['results'] if row.get('stage') in [
                                       'nativeAutomationResult', 'nativeAggregateAutomationResult-explicit', 'nativeAggregateAutomationResult-ha']]}}
+    if traceability:
+        data['stages']['automationTraceability'] = 'passed'
+        data['result']['automationTraceability'] = business['automationTraceability']
     write(root / 'pending-receipt.json', data)
 
 def finalize():

@@ -24,6 +24,7 @@ public sealed class GlobalSearchService : IGlobalSearchService
         new("scripts", "Scripts", Icons.Material.Filled.Terminal, "/scriptlibrary"),
         new("jobs", "Jobs", Icons.Material.Filled.Work, "/jobs"),
         new("requests", "Requests", Icons.Material.Filled.Hub, "/requests"),
+        new("automation", "Related automation", Icons.Material.Filled.Link, "/search"),
         new("tasks", "Tasks", Icons.Material.Filled.TaskAlt, "/tasks/history"),
         new("alerts", "Monitoring alerts", Icons.Material.Filled.NotificationsActive, "/monitoring"),
         new("flows", "Flows", Icons.Material.Filled.AccountTree, "/flows"),
@@ -174,6 +175,7 @@ public sealed class GlobalSearchService : IGlobalSearchService
             "scripts" => BuildGroup(key, term, await ReadPageAsync<ScriptDto>(http, BuildUrl(key, term), cancellationToken), MatchScripts),
             "jobs" => BuildGroup(key, term, await ReadPageAsync<JobDto>(http, BuildUrl(key, term), cancellationToken), MatchJobs),
             "requests" => BuildGroup(key, term, await ReadPageAsync<GlobalSearchRequestDto>(http, BuildUrl(key, term), cancellationToken), MatchRequests),
+            "automation" => BuildGroup(key, term, await ReadPageAsync<AutomationResourceSearchDto>(http, BuildUrl(key, term), cancellationToken), MatchAutomation),
             "tasks" => BuildGroup(key, term, await ReadPageAsync<TaskDto>(http, BuildUrl(key, term), cancellationToken), MatchTasks),
             "alerts" => BuildGroup(key, term, await ReadPageAsync<GlobalSearchAlertDto>(http, BuildUrl(key, term), cancellationToken), MatchAlerts),
             "flows" => BuildGroup(key, term, await ReadPageAsync<GlobalSearchFlowDto>(http, BuildUrl(key, term), cancellationToken), MatchFlows),
@@ -238,7 +240,7 @@ public sealed class GlobalSearchService : IGlobalSearchService
 
     private static string ContinueHref(SectionDefinition section, string term)
     {
-        if (section.Key is "alerts" or "flows" or "investigations")
+        if (section.Key is "alerts" or "flows" or "investigations" or "automation")
             return $"/search?section={section.Key}&search={Escape(term)}";
         var separator = section.Href.Contains('?', StringComparison.Ordinal) ? "&" : "?";
         return $"{section.Href}{separator}search={Escape(term)}";
@@ -378,6 +380,11 @@ public sealed class GlobalSearchService : IGlobalSearchService
                 Icons.Material.Filled.Work));
         }
     }
+
+    private static IEnumerable<ScoredResult> MatchAutomation(IEnumerable<AutomationResourceSearchDto> rows, string term) =>
+        rows.Select(row => new ScoredResult(row.Reference.Equals(term, StringComparison.OrdinalIgnoreCase) ? 100 : 60,
+            new GlobalSearchResult("Related automation", row.Title, row.ReferenceKind + " · " + row.Reference,
+                row.ResourceKind, row.Url, Icons.Material.Filled.Link)));
 
     private static IEnumerable<ScoredResult> MatchRequests(IEnumerable<GlobalSearchRequestDto> requests, string term)
     {

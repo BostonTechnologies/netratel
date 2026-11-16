@@ -39,7 +39,7 @@ public sealed class PairingAuthority(IEffectiveAccessService access, NetRatelIde
     {
         if (mapping is null || !int.TryParse(mapping.NetRatelTenantId, NumberStyles.None, CultureInfo.InvariantCulture, out var tenant) || tenant <= 0 || tenant.ToString(CultureInfo.InvariantCulture) != mapping.NetRatelTenantId ||
             mapping.Id == Guid.Empty || mapping.PairId is not { Length: 64 } || mapping.Name is not { Length: > 0 and <= 128 } || mapping.Name.Any(char.IsControl) || !SafeId(mapping.RatelDeskOrganizationId) || !mapping.CreateIncidents && !mapping.RunAutomation ||
-            mapping.CreateIncidents && !SafeId(mapping.RatelDeskCustomerId) || !mapping.CreateIncidents && mapping.RatelDeskCustomerId is not null)
+            mapping.CreateIncidents && !SafeId(mapping.RatelDeskCustomerId) || !mapping.CreateIncidents && mapping.RatelDeskCustomerId is not null || mapping.UseIncidentTemplates && !mapping.CreateIncidents)
             throw new PairingException(422, "mapping-invalid", "Choose a NetRatel tenant, RatelDesk organization and customer, at least one capability, and enter a connection name.");
     }
     public async Task RequireMappingAsync(PairingMapping mapping, string owner, CancellationToken ct)

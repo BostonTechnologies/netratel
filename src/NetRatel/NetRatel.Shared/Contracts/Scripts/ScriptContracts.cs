@@ -1,7 +1,7 @@
-﻿namespace NetRatel.Shared.Contracts.Scripts;
+namespace NetRatel.Shared.Contracts.Scripts;
 
 public sealed record ScriptDto(
-    ulong Id,
+    [property: System.Text.Json.Serialization.JsonNumberHandling(System.Text.Json.Serialization.JsonNumberHandling.WriteAsString | System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString)] ulong Id,
     string Name,
     string? FolderPath,
     string? Description,
@@ -27,14 +27,14 @@ public sealed record UpdateScriptRequest(
     long? ExpectedSourceRevision = null);
 
 public sealed record ScriptSummaryDto(
-    ulong Id,
+    [property: System.Text.Json.Serialization.JsonNumberHandling(System.Text.Json.Serialization.JsonNumberHandling.WriteAsString | System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString)] ulong Id,
     string Name,
     string? Description,
     string? ScriptType,
     string[]? Tags);
 
 public record ScriptResponse(
-    ulong Id,
+    [property: System.Text.Json.Serialization.JsonNumberHandling(System.Text.Json.Serialization.JsonNumberHandling.WriteAsString | System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString)] ulong Id,
     string Name,
     string FolderPath,
     string Description,

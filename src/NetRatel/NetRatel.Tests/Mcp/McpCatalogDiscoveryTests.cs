@@ -13,8 +13,8 @@ namespace NetRatel.Tests.Mcp;
 public sealed class McpCatalogDiscoveryTests
 {
     [Theory]
-    [InlineData(NetRatelMcpTransport.StreamableHttp, "dev", 29, "56c7373b8a262325339e7247b0d7a7b625ca221c54a7edfd6b08ae3fe74b16bf")]
-    [InlineData(NetRatelMcpTransport.Stdio, "prod", 35, "4def7fe62f8eacec95bdfc4764bf6ebeb701ad9aea37e86714165b236307c56c")]
+    [InlineData(NetRatelMcpTransport.StreamableHttp, "dev", 29, "56d768bf272277eb31494ae986fcc871866185e099aa9a2d61c5f6a6a04a3b71")]
+    [InlineData(NetRatelMcpTransport.Stdio, "prod", 35, "d7404c5a88701a0ad2793cbf64c9195bf0019eb1ce03d1f8a54c938e971988be")]
     public void Factory_preserves_frozen_schema_bytes_for_selected_surfaces(
         NetRatelMcpTransport transport, string instance, int count, string expectedDigest)
     {
@@ -50,7 +50,15 @@ public sealed class McpCatalogDiscoveryTests
         Assert.Equal("DiskFreePercent", critical.GetProperty("condition").GetProperty("kind").GetString());
         Assert.Equal(10, critical.GetProperty("condition").GetProperty("breachThreshold").GetInt32());
         Assert.Equal(15, critical.GetProperty("condition").GetProperty("recoveryThreshold").GetInt32());
-        Assert.Equal(expectedDigest, Convert.ToHexStringLower(SHA256.HashData(bytes.ToArray())));
+        var digest = Convert.ToHexStringLower(SHA256.HashData(bytes.ToArray()));
+        var export = Environment.GetEnvironmentVariable("NETRATEL_SCHEMA_EXPORT_DIR");
+        if (!string.IsNullOrWhiteSpace(export))
+        {
+            Directory.CreateDirectory(export);
+            File.WriteAllBytes(Path.Combine(export, transport + ".json"), bytes.ToArray());
+            File.WriteAllText(Path.Combine(export, transport + ".sha256"), digest + "\n");
+        }
+        Assert.Equal(expectedDigest, digest);
     }
 
     [Theory]

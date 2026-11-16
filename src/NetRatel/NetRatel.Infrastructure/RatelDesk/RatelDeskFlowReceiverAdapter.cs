@@ -1,3 +1,4 @@
+using Microsoft.Extensions.DependencyInjection;
 using NetRatel.Application.Flows;
 using NetRatel.Application.RatelDesk;
 using NetRatel.Shared.SystemPairing;
@@ -8,7 +9,8 @@ namespace NetRatel.Infrastructure.RatelDesk;
 public sealed class RatelDeskFlowReceiverAdapter(IRatelDeskConnectorStore connectors,
     IRatelDeskConnectorBindingStore bindings, IRatelDeskConnectorAuthorization authorization,
     IRatelDeskOutboundBindingResolver credentials, IRatelDeskReceiverTransport receiver,
-    ReceiverPreparationBuilder builder, IFlowReceiverEvidenceStore evidenceStore, TimeProvider clock)
+    ReceiverPreparationBuilder builder, IFlowReceiverEvidenceStore evidenceStore, TimeProvider clock,
+    IServiceScopeFactory? presentationScopes = null)
     : IFlowReceiverDispatcher
 {
     public async Task<FlowReceiverPreparationResult> PrepareReceiverAsync(FlowIncidentActionDraft draft,
@@ -36,6 +38,17 @@ public sealed class RatelDeskFlowReceiverAdapter(IRatelDeskConnectorStore connec
             draft.ConnectorId, draft.ConnectorRevision, draft.SourceInstanceId, draft.IdempotencyKey, draft.Event,
             new(body.Title, body.Description, body.Priority),
             new(body.OrganizationId, body.CustomerId, body.AssignedToId, body.CategoryIds), true, "");
+        if (draft.IncidentPresentation is { } presentation)
+        {
+            if (presentationScopes is null) return new(FlowIncidentPreparationStatus.Unavailable, Code: "incident-presentation-unavailable");
+            // Resolve new presentation dependencies only for explicitly opted-in actions. Legacy adapters retain their original dependency path.
+            await using var presentationScope = presentationScopes.CreateAsyncScope();
+            var context = await presentationScope.ServiceProvider.GetRequiredService<AutomationIncidentContextBuilder>().BuildAsync(draft, ct);
+            _ = await presentationScope.ServiceProvider.GetRequiredService<RatelDeskIncidentTemplateClient>()
+                .CheckAsync(connector, peer, capability, new(presentation, context), ct);
+            action = action with { PresentationPayload = new(AutomationTrace.Contracts.AutomationTraceContract.IncidentVersion,
+                new(peer.OrganizationId, peer.CustomerId, peer.AssignedToId, peer.CategoryIds, priority), presentation, context) };
+        }
         action = action with { SemanticFingerprint = FlowContractValidation.Fingerprint(action) };
         if (!FlowContractValidation.ValidPrepared(action, draft))
             return new(FlowIncidentPreparationStatus.Invalid, Code: "invalid-incident-payload");
@@ -61,6 +74,8 @@ public sealed class RatelDeskFlowReceiverAdapter(IRatelDeskConnectorStore connec
         }
         catch (Exception error) when (error is HttpRequestException or IOException or OperationCanceledException)
         { return new(FlowIncidentPreparationStatus.Unavailable, Code: "receiver-preparation-interrupted", RetryAfter: TimeSpan.FromSeconds(5)); }
+        catch (InvalidOperationException error) when (error.Message == "managed-origin-context-unavailable")
+        { return new(FlowIncidentPreparationStatus.Invalid, Code: "managed-origin-context-unavailable"); }
         catch (Exception error) when (error is ArgumentException or InvalidOperationException or System.Text.Json.JsonException)
         { return new(FlowIncidentPreparationStatus.Invalid, Code: "receiver-preparation-invalid"); }
     }
@@ -108,7 +123,8 @@ public sealed class RatelDeskFlowReceiverAdapter(IRatelDeskConnectorStore connec
         if (!gate.Allowed) return new(RatelDeskReceiverObservationKind.AuthenticationRejected, gate.Code);
         // Async target probes may have raced disable/rotation/mapping update.
         current = await CurrentConnector(prepared.Peer.LocalTenantId, prepared.ConnectorId, prepared.ConnectorRevision, ct);
-        var createBearer = await credentials.GetBearerAsync(current, prepared.Peer, "rateldesk.incidents.create", ct);
+        var createScope = CreateScope(prepared);
+        var createBearer = await credentials.GetBearerAsync(current, prepared.Peer, createScope, ct);
         gate = await recheckFlowGuard(ct);
         if (!gate.Allowed) return new(RatelDeskReceiverObservationKind.AuthenticationRejected, gate.Code);
         if (!await evidenceStore.MarkPostAttemptAsync(lease, nodeId, ct))
@@ -121,11 +137,22 @@ public sealed class RatelDeskFlowReceiverAdapter(IRatelDeskConnectorStore connec
         if (!await authorization.CanExecuteAsync(lease.Event.Authority.PrincipalId,
                 lease.Event.Authority.IntegrationCredentialId, lease.Event.TenantId, ct))
             return new(RatelDeskReceiverObservationKind.AuthenticationRejected, "connector-current-authority-denied");
-        createBearer = await credentials.GetBearerAsync(current, prepared.Peer, "rateldesk.incidents.create", ct);
+        createBearer = await credentials.GetBearerAsync(current, prepared.Peer, createScope, ct);
         gate = await recheckFlowGuard(ct);
         if (!gate.Allowed) return new(RatelDeskReceiverObservationKind.AuthenticationRejected, gate.Code);
         ct.ThrowIfCancellationRequested();
         return await receiver.CreateAsync(prepared, createBearer, ct);
+    }
+
+    private static string CreateScope(RatelDeskReceiverPreparationV2 prepared)
+    {
+        const string create = "rateldesk.incidents.create";
+        // Custom rendering consumes both explicitly approved capabilities. Read the
+        // frozen selection; credential acquisition still rechecks the current mapping.
+        return prepared.PresentationContract is not null && System.Text.Json.JsonSerializer.Deserialize<
+            AutomationTrace.Contracts.AutomationIncidentCreate>(prepared.ExactCreateBodyJson,
+                AutomationTrace.AutomationTraceValidation.Json)?.Presentation.Mode == "template"
+            ? create + " rateldesk.incident-templates.read" : create;
     }
 
     private async Task<RatelDeskConnectorState> CurrentConnector(int tenant, Guid id, long revision, CancellationToken ct)

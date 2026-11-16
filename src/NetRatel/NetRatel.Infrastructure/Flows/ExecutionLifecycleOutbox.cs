@@ -253,6 +253,7 @@ public static class ExecutionLifecycleOutbox
             }
             value = ApplyAdmission(value, Admission(db, value));
             value = ApplyNativeScriptReplay(db, value);
+            value = ApplyManagedOrigin(value, ManagedOriginQuery(db, value).SingleOrDefault());
             if (!db.OutboxMessages.Local.Any(x => x.Id == value.EventId) &&
                 db.OutboxMessages.AsNoTracking().Any(x => x.Id == value.EventId)) continue;
             Append(db, value);
@@ -279,6 +280,7 @@ public static class ExecutionLifecycleOutbox
             }
             value = ApplyAdmission(value, await AdmissionAsync(db, value, ct));
             value = await ApplyNativeScriptReplayAsync(db, value, ct);
+            value = ApplyManagedOrigin(value, await ManagedOriginQuery(db, value).SingleOrDefaultAsync(ct));
             if (!db.OutboxMessages.Local.Any(x => x.Id == value.EventId) &&
                 await db.OutboxMessages.AsNoTracking().AnyAsync(x => x.Id == value.EventId, ct)) continue;
             Append(db, value);
@@ -301,6 +303,7 @@ public static class ExecutionLifecycleOutbox
                 value = RequestTimeoutOutcome(value, run, await ControlAsync(db, run, ct));
         }
         value = ApplyAdmission(value, await AdmissionAsync(db, value, ct));
+        value = ApplyManagedOrigin(value, await ManagedOriginQuery(db, value).SingleOrDefaultAsync(ct));
         if (db.OutboxMessages.Local.Any(x => x.Id == value.EventId) ||
             await db.OutboxMessages.AsNoTracking().AnyAsync(x => x.Id == value.EventId, ct)) return;
         Append(db, value);
@@ -358,9 +361,31 @@ public static class ExecutionLifecycleOutbox
                 details.Run.NodeCounts ?? Counts(nodes)) { LegacyTargetAgentId = legacyTarget?.AgentId } : null
         };
         value = ApplyAdmission(value, await AdmissionAsync(db, value, ct));
+        value = ApplyManagedOrigin(value, await ManagedOriginQuery(db, value).SingleOrDefaultAsync(ct));
         if (db.OutboxMessages.Local.Any(x => x.Id == value.EventId) ||
             await db.OutboxMessages.AsNoTracking().AnyAsync(x => x.Id == value.EventId, ct)) return;
         Append(db, value);
+    }
+
+    private static IQueryable<ManagedOrchestrationRequestBinding> ManagedOriginQuery(OrchestratorDbContext db, FlowExecutionEventDto value)
+    {
+        var query = db.Set<ManagedOrchestrationRequestBinding>().AsNoTracking().Where(x => x.TenantId == value.TenantId);
+        if (value.SourceKind == FlowExecutionSourceKind.Request && int.TryParse(value.ExecutionId, out var requestId))
+            return query.Where(x => x.RequestId == requestId);
+        var execution = value.RootExecutionId ?? value.ParentExecutionId ?? value.ExecutionId;
+        return query.Where(x => x.ExecutionId == execution);
+    }
+
+    private static FlowExecutionEventDto ApplyManagedOrigin(FlowExecutionEventDto value, ManagedOrchestrationRequestBinding? binding)
+    {
+        if (binding is null) return value;
+        var origin = binding.OriginContextJson is null ? null : JsonSerializer.Deserialize<AutomationTrace.Contracts.AutomationOriginContext>(
+            binding.OriginContextJson, AutomationTrace.AutomationTraceValidation.Json);
+        if (origin is not null && (!AutomationTrace.AutomationTraceValidation.Origin(origin) ||
+            origin.SourceInstanceId != binding.PeerInstanceId || origin.Organization.Id != binding.PeerTenantId ||
+            origin.Request.Id != binding.ParentRequestId || origin.Task.Id != binding.RequestTaskId || origin.AttemptId != binding.CorrelationId))
+            throw new InvalidOperationException("The retained managed origin does not match its admitted attempt.");
+        return value with { OriginContext = origin, NativeRequestId = binding.RequestId.ToString(CultureInfo.InvariantCulture) };
     }
 
     private static async Task<JobTargetNode?> LegacyScheduleTargetAsync(OrchestratorDbContext db, JobRunRecord row,

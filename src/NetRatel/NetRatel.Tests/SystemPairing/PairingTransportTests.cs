@@ -9,6 +9,34 @@ namespace NetRatel.Tests.SystemPairing;
 public sealed class PairingTransportTests
 {
     [Theory]
+    [InlineData("rateldesk.incidents.create", false, true)]
+    [InlineData("rateldesk.incidents.create rateldesk.incident-templates.read", true, true)]
+    [InlineData("rateldesk.incidents.create rateldesk.incident-templates.read", false, false)]
+    [InlineData("rateldesk.incidents.create unapproved-scope", true, false)]
+    [InlineData("rateldesk.incidents.create rateldesk.incidents.create", true, false)]
+    public async Task Token_request_contains_only_the_exact_explicitly_approved_scope_set(string requested, bool templates, bool allowed)
+    {
+        var handler = new ScopeHandler(); using var http = new HttpClient(handler);
+        var transport = new PairingTransport(http);
+        var peer = new PairingMetadata(PairingProtocol.Contract, "rateldesk", Guid.NewGuid().ToString("D"), "Synthetic peer",
+            "https://peer.example.test", "https://peer.example.test", null);
+        var grants = templates ? new[] { "rateldesk.incidents.create", "rateldesk.incident-templates.read" } : ["rateldesk.incidents.create"];
+        var credential = new PairingBusinessCredential("synthetic-client", "synthetic-private-secret", "https://peer.example.test/connect/token",
+            "audience", "issuer", grants, null, null);
+        if (allowed)
+        {
+            Assert.Equal("synthetic-access-token", await transport.TokenAsync(peer, credential, requested, default));
+            Assert.Equal(requested, handler.RequestedScope); Assert.Equal(1, handler.Calls);
+        }
+        else
+        {
+            Assert.Equal("business-credential-mismatch", (await Assert.ThrowsAsync<PairingException>(() =>
+                transport.TokenAsync(peer, credential, requested, default))).Code);
+            Assert.Equal(0, handler.Calls);
+        }
+    }
+
+    [Theory]
     [InlineData("not-json synthetic-private-token")]
     [InlineData("[]")]
     [InlineData("{\"access_token\":123}")]
@@ -138,6 +166,19 @@ public sealed class PairingTransportTests
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
             Task.FromResult(new HttpResponseMessage(HttpStatusCode.UnprocessableEntity)
             { Content = JsonContent.Create(new { code = "saved-access-unavailable", message, diagnostic }) });
+    }
+    private sealed class ScopeHandler : HttpMessageHandler
+    {
+        public string? RequestedScope;
+        public int Calls;
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            Calls++;
+            var fields = (await request.Content!.ReadAsStringAsync(cancellationToken)).Split('&')
+                .Select(x => x.Split('=', 2)).ToDictionary(x => WebUtility.UrlDecode(x[0]), x => WebUtility.UrlDecode(x[1]));
+            RequestedScope = fields["scope"];
+            return new(HttpStatusCode.OK) { Content = JsonContent.Create(new { access_token = "synthetic-access-token" }) };
+        }
     }
     private sealed class TokenHandler(string body) : HttpMessageHandler
     {

@@ -48,16 +48,17 @@ async function deleteLocal(page, context, entry, expected) {
 async function main() {
   const browser = await chromium.launch({ headless: true });
   try {
-    const context = await browser.newContext();
+    const context = await browser.newContext({ ignoreHTTPSErrors: !!state.products.netratel.publicWebOrigin });
     const nr = product('netratel'), rd = product('rateldesk');
     const nrPage = await context.newPage(), rdPage = await context.newPage();
     nrPage.setDefaultTimeout(25000); rdPage.setDefaultTimeout(25000);
     await login(nrPage, nr); await login(rdPage, rd);
     const baseline = counts();
-    expect(baseline.incidentCount).toBe(2); expect(baseline.receiptCount).toBe(1);
+    const traceability = process.env.PAIRING_AUTOMATION_TRACEABILITY === '1';
+    expect(baseline.incidentCount).toBe(traceability ? 3 : 2); expect(baseline.receiptCount).toBe(traceability ? 2 : 1);
     // Existing three paths plus four rendered self-service parent/child pairs
     // and the timeout scenario's dependent manual task remain in history.
-    expect(baseline.jobRunCount).toBe(13); expect(baseline.taskCount).toBe(8);
+    expect(baseline.jobRunCount).toBe(traceability ? 15 : 13); expect(baseline.taskCount).toBe(traceability ? 9 : 8);
     const activeCredential = await control('cached-receiver-status');
     expect(activeCredential.status, 'The exact cached business credential must be accepted immediately before deletion').toBe(200);
     expect(counts(), 'Exact committed replay must preserve all business counts before deletion').toEqual(baseline);

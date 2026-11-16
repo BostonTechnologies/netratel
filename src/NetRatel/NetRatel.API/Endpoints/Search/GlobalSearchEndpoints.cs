@@ -22,6 +22,7 @@ public static partial class GlobalSearchEndpoints
 
     public static IEndpointRouteBuilder MapGlobalSearchEndpoints(this IEndpointRouteBuilder app)
     {
+        app.MapAutomationReferenceEndpoints();
         // Search is an interactive application feature. The individual
         // handlers resolve the caller's current tenant permission before
         // building their database query; an Operator claim is deliberately

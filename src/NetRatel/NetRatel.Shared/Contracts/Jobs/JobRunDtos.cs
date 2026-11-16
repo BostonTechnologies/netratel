@@ -29,8 +29,8 @@ public enum JobStepRunStatusDto
 public sealed record JobRunOptionDto(string Name, string Value, string? Source = null);
 
 public record JobRunDto(
-    ulong Id,
-    ulong JobId,
+    [property: System.Text.Json.Serialization.JsonNumberHandling(System.Text.Json.Serialization.JsonNumberHandling.WriteAsString | System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString)] ulong Id,
+    [property: System.Text.Json.Serialization.JsonNumberHandling(System.Text.Json.Serialization.JsonNumberHandling.WriteAsString | System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString)] ulong JobId,
     string JobName,
     int? TenantId,
     string ClientIdentity,
@@ -55,6 +55,7 @@ public record JobRunDto(
 )
 {
     public bool IsAggregate { get; init; }
+    [System.Text.Json.Serialization.JsonNumberHandling(System.Text.Json.Serialization.JsonNumberHandling.WriteAsString | System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString)]
     public ulong? ParentRunId { get; init; }
     public string? TargetPlanDigest { get; init; }
     public string? DefinitionDigest { get; init; }
@@ -69,9 +70,9 @@ public record JobRunDto(
 
 
 public record JobStepRunDto(
-    ulong Id,
-    ulong JobRunId,
-    ulong? JobStepId,
+    [property: System.Text.Json.Serialization.JsonNumberHandling(System.Text.Json.Serialization.JsonNumberHandling.WriteAsString | System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString)] ulong Id,
+    [property: System.Text.Json.Serialization.JsonNumberHandling(System.Text.Json.Serialization.JsonNumberHandling.WriteAsString | System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString)] ulong JobRunId,
+    [property: System.Text.Json.Serialization.JsonNumberHandling(System.Text.Json.Serialization.JsonNumberHandling.WriteAsString | System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString)] ulong? JobStepId,
     JobStepRunStatusDto Status,
     int Ordinal,
     string? TaskRequestId,

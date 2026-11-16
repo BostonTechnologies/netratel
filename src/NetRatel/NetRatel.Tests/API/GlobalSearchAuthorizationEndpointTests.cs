@@ -29,6 +29,100 @@ namespace NetRatel.Tests.API;
 [Collection(PostgreSqlPersistenceCollection.Name)]
 public sealed class GlobalSearchAuthorizationEndpointTests(PostgreSqlPersistenceFixture postgres)
 {
+    [Fact]
+    public async Task Reference_backfill_resumes_after_restart_and_does_not_infer_legacy_payload_authority()
+    {
+        var connection = await postgres.CreateDatabaseAsync();
+        using (var app = await BuildAppAsync(connection))
+        {
+            await SeedAsync(app.Services);
+            await using var scope = app.Services.CreateAsyncScope();
+            var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+            var now = DateTimeOffset.UtcNow;
+            var agent = (await db.Agents.SingleAsync(x => x.TenantId == 1)).Id;
+            var origin = new AutomationTrace.Contracts.AutomationOriginContext(AutomationTrace.Contracts.AutomationTraceContract.OriginVersion,
+                "11111111-1111-4111-8111-111111111111", new("demo-org", "Demo organization"),
+                new("source-request-200", "REQ-TRUSTED-200", "Retained admitted source", now), null, null,
+                new("source-task-200", "Directory check"), "attempt-200", "attempt-200", null, null, []);
+            for (var id = 100; id <= 200; id++)
+            {
+                db.Requests.Add(new() { Id = id, TargetTenantId = 1, TargetAgentId = agent, JobDefinitionId = "1", Status = "Pending",
+                    JobInputs = "{\"meta\":{\"trackingId\":\"REQ-FORGED\"}}", CreatedAtUtc = now, UpdatedAtUtc = now });
+                db.Set<ManagedOrchestrationRequestBinding>().Add(new() { RequestId = id, TenantId = 1, ServicePrincipalId = Guid.NewGuid(),
+                    AgentId = agent, JobDefinitionId = "1", ParentRequestId = "source-request-" + id, RequestTaskId = "source-task-" + id,
+                    CorrelationId = "attempt-" + id, PeerInstanceId = origin.SourceInstanceId, PeerTenantId = "demo-org", CreatedAtUtc = now,
+                    IngestFingerprint = new string('a', 64), OriginContextJson = id == 200 ? System.Text.Json.JsonSerializer.Serialize(origin, AutomationTrace.AutomationTraceValidation.Json) : null });
+            }
+            await db.SaveChangesAsync();
+            await NetRatel.Infrastructure.RatelDesk.AutomationReferenceProjection.BackfillBatchAsync(db, new NetRatel.Infrastructure.RatelDesk.RatelDeskReceiverFingerprint(), default);
+            var cursor = await db.Set<AutomationReferenceBackfillCheckpoint>().SingleAsync();
+            Assert.Equal(199, cursor.LastRequestId); Assert.False(cursor.AdmissionsCompleted); Assert.Equal(100, cursor.UnavailableAdmissions);
+        }
+        using var restarted = await BuildAppAsync(connection);
+        await using var restartedScope = restarted.Services.CreateAsyncScope();
+        var restored = restartedScope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+        for (var batch = 0; batch < 3; batch++)
+            await NetRatel.Infrastructure.RatelDesk.AutomationReferenceProjection.BackfillBatchAsync(restored, new NetRatel.Infrastructure.RatelDesk.RatelDeskReceiverFingerprint(), default);
+        Assert.True((await restored.Set<AutomationReferenceBackfillCheckpoint>().SingleAsync()).Completed);
+        Assert.Equal(1, await NetRatel.Infrastructure.RatelDesk.AutomationReferenceProjection.ProcessBatchAsync(restored, default));
+        Assert.Equal(0, await NetRatel.Infrastructure.RatelDesk.AutomationReferenceProjection.ProcessBatchAsync(restored, default));
+        var row = Assert.Single(await restored.Set<ExternalResourceReferenceRecord>().ToArrayAsync());
+        Assert.Equal("REQ-TRUSTED-200", row.Reference); Assert.Equal("200", row.ResourceId);
+        Assert.Equal(101, await restored.Requests.CountAsync(x => x.Id >= 100 && x.Status == "Pending"));
+        Assert.DoesNotContain("REQ-FORGED", System.Text.Json.JsonSerializer.Serialize(row));
+    }
+
+    [Fact]
+    public async Task Tracking_reference_index_searches_exact_native_resources_with_permissions_before_counts()
+    {
+        using var app = await BuildAppAsync(await postgres.CreateDatabaseAsync()); await SeedAsync(app.Services);
+        var flowRunId = Guid.Parse("33333333-3333-4333-8333-333333333333");
+        await using (var scope = app.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>(); var now = DateTimeOffset.UtcNow;
+            var agent = (await db.Agents.SingleAsync(x => x.TenantId == 1)).Id;
+            db.Jobs.Add(new() { Id = 67, TenantId = 1, AgentId = agent, Name = "Multi-node directory test", CreatedAtUtc = now, UpdatedAtUtc = now });
+            db.Requests.Add(new() { Id = 130, TargetTenantId = 1, TargetAgentId = agent, JobDefinitionId = "67", ExecutionId = "639300000000000001",
+                SourceSystem = "Synthetic paired source", Status = "Failed", ResultData = "DO-NOT-INDEX-OUTPUT", CreatedAtUtc = now, UpdatedAtUtc = now });
+            db.JobRuns.Add(new() { Id = 639300000000000001, JobId = 67, TenantId = 1, AgentId = agent, Status = (int)NetRatel.Application.Jobs.JobRunState.Failed,
+                CreatedAtUtc = now, StartedAtUtc = now, CompletedAtUtc = now });
+            var definition = await db.FlowDefinitions.SingleAsync(x => x.TenantId == 1);
+            var version = Guid.NewGuid();
+            db.FlowVersions.Add(new() { Id = version, FlowId = definition.Id, TenantId = 1, VersionNumber = 1, GraphJson = "{}", ConfigurationHash = new string('a', 64), PublishedBy = "operator-a", PublishedAtUtc = now });
+            db.FlowRuns.Add(new() { Id = flowRunId, FlowId = definition.Id, FlowVersionId = version, TenantId = 1, EventId = Guid.NewGuid(), OccurrenceId = Guid.NewGuid(),
+                EventJson = "{}", EventFingerprint = new string('a', 64), Status = NetRatel.Shared.Contracts.Flows.FlowRunStatus.Succeeded, CreatedAtUtc = now });
+            await db.SaveChangesAsync();
+            var origin = new AutomationTrace.Contracts.AutomationOriginContext(AutomationTrace.Contracts.AutomationTraceContract.OriginVersion,
+                "11111111-1111-4111-8111-111111111111", new("demo-org", "Demo organization"),
+                new("source-request", "REQ-DEMO-001", "Multi-node directory test", now), null, null, new("source-task", "Directory check"),
+                "attempt-demo", "attempt-demo", null, null, []);
+            var projection = new NetRatel.Infrastructure.RatelDesk.AutomationReferenceProjectionEvent(1, origin.SourceInstanceId, "demo-org", origin,
+                130, "639300000000000001", "67", flowRunId.ToString("D"), Guid.NewGuid().ToString("D"), "incident-demo", "INC-DEMO-001", null);
+            NetRatel.Infrastructure.RatelDesk.AutomationReferenceProjection.Queue(db, projection);
+            await db.SaveChangesAsync();
+            Assert.Equal(1, await NetRatel.Infrastructure.RatelDesk.AutomationReferenceProjection.ProcessBatchAsync(db, default));
+            Assert.Equal(0, await NetRatel.Infrastructure.RatelDesk.AutomationReferenceProjection.ProcessBatchAsync(db, default));
+            Assert.Equal(6, await db.Set<ExternalResourceReferenceRecord>().CountAsync());
+            Assert.Equal((int)NetRatel.Application.Jobs.JobRunState.Failed, (await db.JobRuns.SingleAsync()).Status);
+            Assert.Equal(NetRatel.Shared.Contracts.Flows.FlowRunStatus.Succeeded, (await db.FlowRuns.SingleAsync()).Status);
+        }
+        var client = app.GetTestClient(); client.DefaultRequestHeaders.Add("X-NetRatel-Principal", "operator-a");
+        foreach (var term in new[] { "REQ-DEMO-001", "inc-demo-001", "REQ-DEMO-" })
+        {
+            var response = await client.GetAsync("/api/v1/global-search/automation?q=" + Uri.EscapeDataString(term));
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            using var result = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            Assert.Equal(3, result.RootElement.GetProperty("totalCount").GetInt32());
+            var resources = result.RootElement.GetProperty("items").EnumerateArray().ToArray();
+            Assert.Contains(resources, x => x.GetProperty("url").GetString() == "/jobs/67/runs/639300000000000001");
+            Assert.Contains(resources, x => x.GetProperty("url").GetString() == "/requests?search=130");
+            Assert.DoesNotContain("DO-NOT-INDEX-OUTPUT", await response.Content.ReadAsStringAsync());
+        }
+        client.DefaultRequestHeaders.Remove("X-NetRatel-Principal"); client.DefaultRequestHeaders.Add("X-NetRatel-Principal", "telemetry-reader");
+        var denied = await client.GetAsync("/api/v1/global-search/automation?q=INC-DEMO-001");
+        using var deniedResult = JsonDocument.Parse(await denied.Content.ReadAsStringAsync());
+        Assert.Equal(0, deniedResult.RootElement.GetProperty("totalCount").GetInt32());
+    }
     [Theory]
     [InlineData("tenants")]
     [InlineData("clients")]

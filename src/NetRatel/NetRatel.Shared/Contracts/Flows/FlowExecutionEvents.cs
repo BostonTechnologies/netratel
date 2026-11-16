@@ -44,6 +44,10 @@ public sealed record FlowExecutionEventDto(Guid EventId, Guid OccurrenceId, int 
     DateTimeOffset OccurredAtUtc, DateTimeOffset ObservedAtUtc)
 {
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public AutomationTrace.Contracts.AutomationOriginContext? OriginContext { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? NativeRequestId { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public FlowExecutionAggregateDto? Aggregate { get; init; }
     public int SchemaVersion { get; init; } = FlowExecutionEventLimits.SchemaVersion;
     public DateTimeOffset? StartedAtUtc { get; init; }

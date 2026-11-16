@@ -48,8 +48,14 @@ public sealed class PairingLifecycleTests
         Assert.Equal(await GitIdentityAsync(source), sources.GetProperty("netratelSha").GetString());
         Assert.Equal(await GitIdentityAsync(companion), sources.GetProperty("rateldeskSha").GetString());
         var result = receipt.RootElement.GetProperty("result");
-        Assert.Equal(2, result.GetProperty("incidentCount").GetInt32());
-        Assert.Equal(1, result.GetProperty("receiptCount").GetInt32());
+        var traceability = Environment.GetEnvironmentVariable("PAIRING_AUTOMATION_TRACEABILITY") == "1";
+        Assert.Equal(traceability ? 3 : 2, result.GetProperty("incidentCount").GetInt32());
+        Assert.Equal(traceability ? 2 : 1, result.GetProperty("receiptCount").GetInt32());
+        if (traceability)
+        {
+            Assert.Equal("passed", stages.GetProperty("automationTraceability").GetString());
+            Assert.True(result.GetProperty("automationTraceability").GetProperty("replayStable").GetBoolean());
+        }
         Assert.False(string.IsNullOrWhiteSpace(result.GetProperty("executionId").GetString()));
         Assert.True(result.GetProperty("resultReceived").GetBoolean());
         Assert.True(result.GetProperty("historyPreserved").GetBoolean());

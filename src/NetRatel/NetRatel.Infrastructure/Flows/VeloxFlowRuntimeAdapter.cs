@@ -108,7 +108,7 @@ public sealed partial class VeloxFlowRuntimeAdapter : IFlowRuntimeAdapter, IFlow
                         definition.ConnectorId!.Value, definition.ConnectorRevision!.Value, state.Lease.SourceInstanceId,
                         FlowActionKeys.Create(state.Lease, definition.Id), state.Lease.Event, incidentFields)
                     { Kind = definition.Kind == FlowNodeKind.InvestigateWithAi ? FlowActionKind.NetclawInvestigation : FlowActionKind.RatelDeskIncident,
-                        AiSettings = definition.AiSettings,
+                        AiSettings = definition.AiSettings, IncidentPresentation = definition.IncidentPresentation,
                         AiDeadlineAtUtc = definition.Kind == FlowNodeKind.InvestigateWithAi
                             ? (state.Lease.CreatedAtUtc == default ? state.Lease.Event.OccurredAtUtc : state.Lease.CreatedAtUtc).AddMinutes(definition.AiSettings?.DeadlineMinutes ?? 15) : null };
                     var result = await state.Action(draft, ct).ConfigureAwait(false);
@@ -145,7 +145,7 @@ public sealed partial class VeloxFlowRuntimeAdapter : IFlowRuntimeAdapter, IFlow
         {
             var draft = new FlowIncidentActionDraft(state.Lease.Event.TenantId, state.Lease.RunId, target.Id,
                 target.ConnectorId!.Value, target.ConnectorRevision!.Value, state.Lease.SourceInstanceId,
-                FlowActionKeys.Create(state.Lease, target.Id), state.Lease.Event, state.Fields!) { Kind = target.Kind,
+                FlowActionKeys.Create(state.Lease, target.Id), state.Lease.Event, state.Fields!) { Kind = target.Kind, IncidentPresentation = target.IncidentPresentation,
                     AiDeadlineAtUtc = target.Kind == FlowActionKind.NetclawInvestigation
                         ? (state.Lease.CreatedAtUtc == default ? state.Lease.Event.OccurredAtUtc : state.Lease.CreatedAtUtc).AddMinutes(15) : null };
             try { return await state.Action(draft, ct).ConfigureAwait(false); }

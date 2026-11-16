@@ -10,6 +10,7 @@ public static class FlowServiceRegistration
     public static IServiceCollection AddNetRatelFlows(this IServiceCollection services)
     {
         services.AddHostedService<ExecutionLifecycleSubscriptionWorker>();
+        services.AddHostedService<NetRatel.Infrastructure.RatelDesk.AutomationReferenceProjectionWorker>();
         services.TryAddSingleton(TimeProvider.System); services.TryAddSingleton<FlowPersistenceService>();
         services.TryAddSingleton<IFlowTemplateService>(provider => provider.GetRequiredService<FlowPersistenceService>());
         services.TryAddSingleton<IFlowExecutionEventIngress>(provider => provider.GetRequiredService<FlowPersistenceService>());

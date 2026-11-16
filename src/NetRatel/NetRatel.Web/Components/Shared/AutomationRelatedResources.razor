@@ -1,0 +1,60 @@
+@using AutomationTrace.Contracts
+@using NetRatel.Shared.Contracts
+@inject IHttpClientFactory Clients
+
+<section aria-label="Related automation resources" class="pa-2">
+    <MudText Typo="Typo.subtitle2">Related resources</MudText>
+    @if (loading) { <MudText Typo="Typo.caption" role="status">Loading associations…</MudText> }
+    else if (error is not null) { <MudText Typo="Typo.caption" role="status">@error</MudText><MudButton Size="Size.Small" OnClick="LoadAsync">Retry</MudButton> }
+    else if (items.Count == 0) { <MudText Typo="Typo.caption">Verified associations are unavailable for this retained resource.</MudText> }
+    else
+    {
+        @foreach (var origin in origins)
+        {
+            <dl class="ma-0">
+                <dt>Source request</dt><dd>@origin.Request.Reference · @origin.Request.Title</dd>
+                @if (origin.Service?.Name is { } service) { <dt>Service</dt><dd>@service</dd> }
+                <dt>Submitted by</dt><dd>@(origin.SubmittedBy?.DisplayName ?? "Unavailable in retained evidence")</dd>
+                <dt>Requested for</dt><dd>@(origin.RequestedFor?.DisplayName ?? "Unavailable in retained evidence")</dd>
+                <dt>Task</dt><dd>@origin.Task.Name</dd>
+            </dl>
+        }
+        <ul>
+            @foreach (var item in items)
+            {
+                <li><a href="@item.Url">@item.Title</a> <span>@item.ReferenceKind · @item.Reference</span>
+                    @if (item.ExternalUrl is { } url && IsHttps(url)) { <a href="@url" target="_blank" rel="noopener noreferrer">Open @item.Reference</a> }
+                </li>
+            }
+        </ul>
+    }
+</section>
+@code {
+    [Parameter] public int TenantId { get; set; }
+    [Parameter] public string Kind { get; set; } = "request";
+    [Parameter] public string ResourceId { get; set; } = "";
+    private string? scope, error;
+    private IReadOnlyList<AutomationResourceSearchDto> items = [];
+    private IReadOnlyList<AutomationOriginContext> origins = [];
+    private bool loading;
+    protected override async Task OnParametersSetAsync()
+    {
+        var next = $"{TenantId}:{Kind}:{ResourceId}";
+        if (next == scope) return; scope = next; await LoadAsync();
+    }
+    private async Task LoadAsync()
+    {
+        var current = scope; loading = true; error = null; items = []; origins = [];
+        try
+        {
+            var page = await Clients.CreateClient("OrchestratorApi").GetFromJsonAsync<PagedResult<AutomationResourceSearchDto>>(
+                $"/api/v1/tenants/{TenantId}/automation-resources/{Uri.EscapeDataString(Kind)}/{Uri.EscapeDataString(ResourceId)}?pageSize=25");
+            var context = await Clients.CreateClient("OrchestratorApi").GetFromJsonAsync<List<AutomationOriginContext>>(
+                $"/api/v1/tenants/{TenantId}/automation-resources/{Uri.EscapeDataString(Kind)}/{Uri.EscapeDataString(ResourceId)}/origins");
+            if (current == scope) { items = page?.Items ?? []; origins = context ?? []; }
+        }
+        catch (HttpRequestException) { if (current == scope) error = "Associations could not be loaded for your current access."; }
+        finally { if (current == scope) loading = false; }
+    }
+    private static bool IsHttps(string url) => Uri.TryCreate(url, UriKind.Absolute, out var uri) && uri.Scheme == "https" && uri.UserInfo.Length == 0;
+}

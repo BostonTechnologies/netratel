@@ -29,6 +29,15 @@ public static class RatelDeskConnectorEndpoints
             ExecuteAsync(http, true, async () => Results.Ok(await service.TestAsync(tenantId, id, http.User, ct))));
         group.MapPost("/{id:guid}/dry-run", (int tenantId, Guid id, RatelDeskDryRunRequest request, HttpContext http, IRatelDeskConnectorService service, CancellationToken ct) =>
             ExecuteAsync(http, false, async () => Results.Ok(await service.DryRunAsync(tenantId, id, request, http.User, ct))));
+        group.MapGet("/{id:guid}/incident-templates", (int tenantId, Guid id, HttpContext http,
+            IRatelDeskConnectorAuthorization authorization, NetRatel.Infrastructure.RatelDesk.RatelDeskIncidentTemplateClient templates, CancellationToken ct) =>
+            ExecuteAsync(http, false, async () => !await authorization.CanManageAsync(http.User, tenantId, ct) ? Results.Forbid() :
+                Results.Ok(await templates.BrowseAsync(tenantId, id, ct))));
+        group.MapPost("/{id:guid}/incident-templates/preview", (int tenantId, Guid id, RatelDeskIncidentPreviewRequest request, HttpContext http,
+            IRatelDeskConnectorAuthorization authorization, NetRatel.Infrastructure.RatelDesk.RatelDeskIncidentTemplateClient templates, CancellationToken ct) =>
+            ExecuteAsync(http, false, async () => !await authorization.CanManageAsync(http.User, tenantId, ct) ? Results.Forbid() :
+                Results.Ok(await templates.PreviewAsync(tenantId, id, new(request.Presentation,
+                    NetRatel.Infrastructure.RatelDesk.RatelDeskIncidentTemplateClient.Sample(request.SourceKind)), ct))));
         return app;
     }
     private static async Task<IResult> ExecuteAsync(HttpContext http, bool mutation, Func<Task<IResult>> action)
@@ -39,6 +48,11 @@ public static class RatelDeskConnectorEndpoints
         catch (UnauthorizedAccessException) { return Results.Forbid(); }
         catch (PairingException error) { return Results.Json(new { code = error.Code, message = error.Message }, statusCode: error.StatusCode); }
         catch (KeyNotFoundException) { return Results.NotFound(); }
+        catch (NetRatel.Infrastructure.RatelDesk.RatelDeskReceiverReadException error)
+        { return Results.Json(new { code = "incident-template-lookup-unavailable" }, statusCode: error.HttpStatus is 401 or 403 ? 403 : 422); }
+        catch (InvalidDataException) { return Results.UnprocessableEntity(new { code = "incident-template-response-unverified" }); }
+        catch (InvalidOperationException error) when (error.Message.StartsWith("incident-presentation-", StringComparison.Ordinal))
+        { return Results.UnprocessableEntity(new { code = error.Message }); }
         catch (ArgumentException) { return Results.BadRequest(new { code = "invalid-connector-request" }); }
         catch (InvalidOperationException e) when (e.Message == "connector-conflict") { return Results.Conflict(new { code = "connector-conflict" }); }
         catch (InvalidOperationException e) when (e.Message == "connector-capacity-exhausted")

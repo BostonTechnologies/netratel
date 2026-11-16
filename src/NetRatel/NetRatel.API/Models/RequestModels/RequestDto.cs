@@ -16,12 +16,15 @@ public record RequestDto(
     IReadOnlyList<string> Logs,
     DateTimeOffset Created,
     DateTimeOffset Updated,
-    ulong? JobRunId,
-    ulong? JobId,
+    [property: System.Text.Json.Serialization.JsonNumberHandling(System.Text.Json.Serialization.JsonNumberHandling.WriteAsString | System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString)] ulong? JobRunId,
+    [property: System.Text.Json.Serialization.JsonNumberHandling(System.Text.Json.Serialization.JsonNumberHandling.WriteAsString | System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString)] ulong? JobId,
     string? JobName,
     int? TargetTenantId = null,
     Guid? TargetAgentId = null
-);
+)
+{
+    public IReadOnlyList<string> ExternalReferences { get; init; } = [];
+}
 
 public record UpdateRequestRequest(
     string? SourceSystem,

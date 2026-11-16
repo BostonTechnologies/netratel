@@ -65,6 +65,9 @@ public sealed partial class FlowPersistenceService
                 return new(FlowWriteDisposition.ConnectorDenied, Code: connector.UnavailableReason ?? "connector-unavailable");
             if (action.ConnectorRevision is { } selected && selected != connector.Revision)
                 return new(FlowWriteDisposition.Conflict, Code: "connector-revision-conflict");
+            if (!await ValidateIncidentPresentationAsync(services, row.TenantId, action,
+                    sources?.Select(source => source.ToString().ToLowerInvariant()).ToArray() ?? ["monitoring"], ct))
+                return new(FlowWriteDisposition.Invalid, Code: "incident-presentation-incompatible-or-unavailable");
             pinned.Add(action.Id, action with { ConnectorRevision = connector.Revision, Name = connector.Name });
         }
         graph = graph with { Nodes = graph.Nodes.Select(node => node.Kind switch

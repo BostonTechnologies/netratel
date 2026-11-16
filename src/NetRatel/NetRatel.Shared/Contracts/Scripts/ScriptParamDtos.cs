@@ -3,8 +3,8 @@ using System.Collections.Generic;
 namespace NetRatel.Shared.Contracts.Scripts
 {
     public sealed record ScriptParamDto(
-        ulong Id,
-        ulong ScriptId,
+        [property: System.Text.Json.Serialization.JsonNumberHandling(System.Text.Json.Serialization.JsonNumberHandling.WriteAsString | System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString)] ulong Id,
+        [property: System.Text.Json.Serialization.JsonNumberHandling(System.Text.Json.Serialization.JsonNumberHandling.WriteAsString | System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString)] ulong ScriptId,
         string Name,
         string Type,
         bool Required,
@@ -23,7 +23,7 @@ namespace NetRatel.Shared.Contracts.Scripts
     );
 
     public sealed record UpsertScriptRequest(
-        ulong? Id,
+        [property: System.Text.Json.Serialization.JsonNumberHandling(System.Text.Json.Serialization.JsonNumberHandling.WriteAsString | System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString)] ulong? Id,
         string Name,
         string FolderPath,
         string? Description,

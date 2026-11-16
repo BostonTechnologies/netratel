@@ -70,6 +70,7 @@ async function runProxy(productName = 'rateldesk') {
   const controlToken = crypto.randomBytes(32).toString('base64url');
   safeJson(path.join(fixture, productName === 'rateldesk' ? 'proxy-private.json' : 'netratel-proxy-private.json'), { controlToken });
   let armed = false, lost = false, original = null, callback = null;
+  let traceArmed = false, traceOriginal = null;
   let holdCallbacks = false, blockReads = false, blockedReads = 0;
   const heldCallbacks = new Map();
   const admissionCounts = new Map();
@@ -85,6 +86,13 @@ async function runProxy(productName = 'rateldesk') {
         const command = JSON.parse(body.toString('utf8') || '{}');
         let result;
         if (command.action === 'arm') { armed = true; result = { armed: true }; }
+        else if (command.action === 'arm-trace') { traceArmed = true; result = { armed: true }; }
+        else if (command.action === 'replay-trace') {
+          requireProof(traceOriginal !== null, 'An actual committed v2 response-loss request must exist before replay');
+          const reply = await upstream(traceOriginal.method, traceOriginal.route, traceOriginal.headers, traceOriginal.body);
+          requireProof(reply.status === 200, 'Identical v2 incident replay must return its original acceptance');
+          result = { status: reply.status, receipt: JSON.parse(reply.body.toString('utf8')) };
+        }
         else if (command.action === 'hold-terminal-callbacks') { holdCallbacks = true; result = { holding: true }; }
         else if (command.action === 'block-execution-reads') { blockReads = true; result = { blocked: true }; }
         else if (command.action === 'restore-execution-reads') { blockReads = false; result = { blocked: false, blockedReads }; }
@@ -140,6 +148,16 @@ async function runProxy(productName = 'rateldesk') {
         }
       }
       const reply = await upstream(incoming.method, incoming.url, incoming.headers, body, productName);
+      if (productName === 'rateldesk' && traceArmed && traceOriginal === null && incoming.method === 'POST' &&
+          incoming.url === '/api/v1/integrations/netratel/incidents' && reply.status === 201) {
+        const value = JSON.parse(reply.body.toString('utf8'));
+        const incidentId = value.integrationReceipt.incidentId;
+        const committed = sql('rateldesk', `SELECT json_build_object('receipts', (SELECT count(*) FROM "IncidentCreateReceipts" WHERE "IncidentId"=${literal(incidentId)}), 'reports', (SELECT count(*) FROM "AutomationIncidentReports" WHERE "IncidentId"=${literal(incidentId)}), 'relations', (SELECT count(*) FROM "TicketRelations" WHERE "Id"=${literal(value.integrationReceipt.originRelation.relationId)}::uuid))`);
+        requireProof(committed.receipts === 1 && committed.reports === 1 && committed.relations === 1,
+          'V2 response loss must follow one atomic committed incident/report/relation/receipt');
+        traceOriginal = { method: incoming.method, route: incoming.url, headers: { ...incoming.headers }, body };
+        outgoing.destroy(); return;
+      }
       if (incoming.method === 'POST' && incoming.url === '/api/v1/orchestration/provider/callback' && reply.status === 204) {
         const value = JSON.parse(body.toString('utf8'));
         if (value.status === 'succeeded') callback = { method: incoming.method, route: incoming.url, headers: { ...incoming.headers }, body };
@@ -193,7 +211,7 @@ async function apiJson(api, route, data, method = 'GET', allowed = null) {
   }
   return response.status() === 204 ? null : response.json();
 }
-function product(name) { const entry = state.products[name]; return { ...entry, name, api: `http://127.0.0.1:${entry.apiPort}`, web: `http://127.0.0.1:${entry.webPort}` }; }
+function product(name) { const entry = state.products[name]; return { ...entry, name, api: `http://127.0.0.1:${entry.apiPort}`, web: entry.publicWebOrigin || `http://127.0.0.1:${entry.webPort}` }; }
 async function startClient(nrApi, tenant) {
   const output = path.join(nrSource, 'src/NetRatel/NetRatel.Client/bin/Debug/net10.0');
   requireProof(fs.existsSync(path.join(output, 'NetRatel.Client')), 'Actual current Debug Client output is required');
@@ -463,6 +481,15 @@ async function runBusiness() {
     requireProof(originalIncident.count === 1, 'The original managed receiver incident remains unique and retained');
     receipt.incidentCount = durable.rateldesk.incidents;
     receipt.historyPreserved = true; record('historyPreserved');
+    if (process.env.PAIRING_AUTOMATION_TRACEABILITY === '1') {
+      receipt.automationTraceability = await require('./automation_traceability_pair')({ runtimeRoot, fixture, state, nrApi, rdApi,
+        connection: incident, sample, apiJson, sql, literal, until, requireProof, control, dockerCall, record, evidence, counts });
+      const extended = counts();
+      requireProof(extended.rateldesk.incidents === 3 && extended.rateldesk.receipts === 2 && extended.rateldesk.tasks === 9 &&
+        extended.netratel.jobs === 15, 'Extended proof must preserve original histories and add exactly one parent/child execution and incident/report/receipt');
+      receipt.incidentCount = 3; receipt.receiptCount = 2;
+      safeJson(path.join(evidence, 'receipt.json'), receipt);
+    }
   } catch (error) {
     await captureIncidentFailure(nrApi);
     fs.writeFileSync(path.join(evidence, 'private-failure.log'), String(error.stack || error).slice(0, 8192), { mode: 0o600 });

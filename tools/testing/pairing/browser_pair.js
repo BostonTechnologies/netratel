@@ -19,7 +19,7 @@ if (fs.existsSync(previousReceipt)) {
 
 function product(name) {
   const entry = state.products[name];
-  return { ...entry, name, web: `http://127.0.0.1:${entry.webPort}`, api: `http://127.0.0.1:${entry.apiPort}` };
+  return { ...entry, name, web: entry.publicWebOrigin || `http://127.0.0.1:${entry.webPort}`, api: `http://127.0.0.1:${entry.apiPort}` };
 }
 const identifiers = {
   netratel: { panel: 'system-connections', create: 'create-connection', pairForm: 'pairing-create-form',
@@ -230,7 +230,8 @@ async function visiblePair(page, consumer, generatorPage, generator, mappingName
   const finalDialog = page.getByRole('dialog').filter({ has: final });
   await expect(finalDialog).toHaveCount(1);
   await expect(finalDialog.getByRole('button', { name: 'Save', exact: true })).toHaveCount(1);
-  await expect(final.getByRole('checkbox')).toHaveCount(2);
+  await expect(final.getByRole('checkbox')).toHaveCount(3);
+  await expect(final.getByRole('checkbox', { name: /^Browse and preview internal incident templates/ })).not.toBeChecked();
   await expect(final.getByRole('checkbox', { name: /^Run automation/ })).not.toBeChecked();
   await visualMatrix(page, consumer.name + '-paired-finalization');
   const list = await jsonRequest(page.context(), consumer, '/api/v1/admin/system-connections');
@@ -338,7 +339,7 @@ async function main() {
   const browser = await chromium.launch({ headless: true });
   let activeContext = null;
   try {
-    const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, ignoreHTTPSErrors: !!state.products.netratel.publicWebOrigin });
     activeContext = context;
     const nr = product('netratel'), rd = product('rateldesk');
     const nrPage = await context.newPage(), rdPage = await context.newPage();
@@ -384,5 +385,5 @@ async function main() {
     throw error;
   } finally { await browser.close(); }
 }
-module.exports = { product, record, jsonRequest, login, account, visualMatrix, selectChoice, seedCustomer, identifiers, state, root, fixture, evidence };
+module.exports = { product, record, jsonRequest, login, account, visualMatrix, resizeForVisualCapture, selectChoice, seedCustomer, identifiers, state, root, fixture, evidence };
 if (require.main === module) main().catch(error => { record('actual-rendered-pair-acceptance', 'failed', { ...safeFailure(error) }); process.exitCode = 1; });

@@ -55,7 +55,7 @@ public sealed class RatelDeskReceiverTransport(RatelDeskReceiverHttpPipeline htt
         if (!RatelDeskReceiverKey.IsConforming(prepared.ReceiverIdempotencyKey))
             return new(RatelDeskReceiverObservationKind.Unavailable, "receiver-key-invalid");
         var bytes = Encoding.UTF8.GetBytes(prepared.ExactCreateBodyJson);
-        if (bytes.Length > RatelDeskConnectorLimits.MaximumRequestBytes)
+        if (bytes.Length > (prepared.PresentationContract is null ? RatelDeskConnectorLimits.MaximumRequestBytes : 131_072))
             return new(RatelDeskReceiverObservationKind.PayloadRejected, "incident-request-too-large");
         var mayHaveEnteredHttp = false;
         try
@@ -64,7 +64,9 @@ public sealed class RatelDeskReceiverTransport(RatelDeskReceiverHttpPipeline htt
             // Caller already committed MarkPostAttemptAsync. Conservatively preserve that uncertainty
             // even if a later admission/network/read error prevents knowing whether HttpClient sent.
             mayHaveEnteredHttp = true;
-            var reply = await Read(prepared.Peer, bearer, HttpMethod.Post, prepared.Capability.Endpoints.Create,
+            var createEndpoint = prepared.PresentationContract is null ? prepared.Capability.Endpoints.Create :
+                prepared.Capability.AutomationPresentation?.CreateEndpoint ?? throw new InvalidDataException("presentation-capability-unavailable");
+            var reply = await Read(prepared.Peer, bearer, HttpMethod.Post, createEndpoint,
                 bytes, ct, prepared.ReceiverIdempotencyKey);
             if (reply.Status is 200 or 201) return Committed(reply, prepared);
             return Classify(reply, true);
@@ -92,10 +94,16 @@ public sealed class RatelDeskReceiverTransport(RatelDeskReceiverHttpPipeline htt
         if (reply.Status == 429) return new(RatelDeskReceiverObservationKind.RateLimited, "receiver-rate-limited", RetryAfter: reply.RetryAfter);
         string? code = null;
         try { code = ReceiverWireValidation.ProblemCode(reply.Body); }
-        catch (Exception error) when (error is JsonException or InvalidDataException) { }
+        catch (Exception error) when (error is JsonException or InvalidDataException)
+        {
+            return new(sentWrite ? RatelDeskReceiverObservationKind.PossibleCommit : RatelDeskReceiverObservationKind.TransientReadFailure,
+                "receiver-response-invalid");
+        }
         if (reply.Status == 409 && code == "idempotency-payload-conflict")
             return new(RatelDeskReceiverObservationKind.FingerprintConflict, code);
-        if ((reply.Status is 400 or 422) && (code is "invalid-target-request" or "invalid-incident-target" or "invalid-incident-request" or "invalid-integration-headers"))
+        if (reply.Status == 409 && code == "origin-admission-pending")
+            return new(RatelDeskReceiverObservationKind.RateLimited, code, RetryAfter: TimeSpan.FromSeconds(5));
+        if ((reply.Status is 400 or 422) && (code is "invalid-target-request" or "invalid-incident-target" or "invalid-incident-request" or "invalid-integration-headers" or "invalid-incident-context" or "incident-presentation-rejected" or "origin-unavailable"))
             return new(RatelDeskReceiverObservationKind.PayloadRejected, code);
         return new(sentWrite ? RatelDeskReceiverObservationKind.PossibleCommit : RatelDeskReceiverObservationKind.TransientReadFailure,
             sentWrite ? "receiver-commit-unconfirmed" : "receiver-read-unavailable");

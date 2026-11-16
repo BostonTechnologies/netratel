@@ -18,6 +18,11 @@ namespace NetRatel.Web.ComponentTests;
 
 public sealed class FlowEditorTests : AsyncBunitContext
 {
+    private sealed class LegacyPresentationHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) =>
+            Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound)); // Older saved peer has no presentation extension.
+    }
     private readonly FakeFlowApi _api = new();
     private readonly FakePromptLibraryApi _prompts = new();
     private IRenderedComponent<MudDialogProvider> _dialogs = default!;
@@ -31,6 +36,8 @@ public sealed class FlowEditorTests : AsyncBunitContext
         editorModule.Setup<double[]>("geometry", _ => true).SetResult([0, 0, 1000, 800, 1200, 1000]);
         editorModule.Setup<double[]>("centerPosition", _ => true).SetResult([350, 240]);
         editorModule.Setup<double[]>("takeDropPosition", _ => true).SetResult([435, 270]);
+        Services.AddHttpClient("FlowsApi", client => client.BaseAddress = new Uri("https://net.example.test/"))
+            .ConfigurePrimaryHttpMessageHandler(() => new LegacyPresentationHandler());
         Services.AddSingleton<IFlowApiService>(_api);
         Services.AddSingleton<IPromptLibraryApiService>(_prompts);
         Services.AddMudServices(options => options.PopoverOptions.CheckForPopoverProvider = false);

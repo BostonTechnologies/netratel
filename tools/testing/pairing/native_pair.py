@@ -10,11 +10,13 @@ import argparse
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import secrets
 import signal
 import shutil
 import socket
+import ssl
 import subprocess
 import time
 import urllib.request
@@ -28,6 +30,7 @@ DOTNET = Path(os.environ.get('DOTNET_HOST_PATH') or shutil.which('dotnet') or st
 REPOS = {'netratel': Path(os.environ['NETRATEL_PAIRING_SOURCE_ROOT']),
          'rateldesk': Path(os.environ['RATELDESK_PAIRING_SOURCE_ROOT'])}
 DOCKER = ['docker', '--host=unix:///var/run/docker.sock']
+LAST_PROBE = 'not-probed'
 
 
 def private_json(path, value):
@@ -43,6 +46,9 @@ def free_port():
 
 def tool_env():
     environment = dict(os.environ)
+    # The parent workflow's selected product version must not override the
+    # companion root during Debug publication or normal bootstrap.
+    environment.pop('VERSION', None)
     environment.update(DOTNET_ROOT=str(DOTNET.parent),
         DOTNET_CLI_HOME=os.environ.get('DOTNET_CLI_HOME', str(ROOT / 'dotnet-cli')),
         NUGET_PACKAGES=os.environ.get('NUGET_PACKAGES', str(ROOT / 'nuget')),
@@ -61,9 +67,11 @@ def docker_env():
 
 
 def command(args, *, environment=None, cwd=None, log_name='command.log', timeout=120):
+    private_json(FIXTURE / 'launch-operation.json', {'operation': log_name, 'result': 'running'})
     with (FIXTURE / log_name).open('ab') as output:
         result = subprocess.run(args, env=environment or tool_env(), cwd=cwd,
             stdout=output, stderr=subprocess.STDOUT, timeout=timeout)
+    private_json(FIXTURE / 'launch-operation.json', {'operation': log_name, 'exitCode': result.returncode})
     if result.returncode:
         raise RuntimeError(f'{log_name} failed with exit {result.returncode}; inspect the private log')
 
@@ -120,6 +128,9 @@ def create_state():
             state['products'][product]['proxyPort'] = free_port()
             state['products'][product]['proxyApiOrigin'] = f"http://127.0.0.1:{state['products'][product]['proxyPort']}"
     prepare_gateway(state)
+    if os.environ.get('PAIRING_AUTOMATION_TRACEABILITY') == '1':
+        for entry in state['products'].values():
+            entry['publicWebOrigin'] = f"https://127.0.0.1:{free_port()}"
     private_json(STATE, state)
     return state
 
@@ -136,10 +147,15 @@ def prepare_gateway(state):
         pfx_password.chmod(0o600)
         extensions = directory / 'gateway-extensions.cnf'
         extensions.write_text('subjectAltName=DNS:localhost,IP:127.0.0.1\n'
-            'extendedKeyUsage=serverAuth\nbasicConstraints=CA:FALSE\n')
+            'extendedKeyUsage=serverAuth\nbasicConstraints=critical,CA:FALSE\n'
+            'keyUsage=critical,digitalSignature,keyEncipherment\n'
+            'subjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\n')
         command(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
             '-keyout', str(directory / 'ca-key.pem'), '-out', str(directory / 'ca.pem'),
-            '-days', '2', '-subj', '/CN=Disposable pairing acceptance CA'],
+            '-days', '2', '-subj', '/CN=Disposable pairing acceptance CA',
+            '-addext', 'basicConstraints=critical,CA:TRUE',
+            '-addext', 'keyUsage=critical,keyCertSign,cRLSign',
+            '-addext', 'subjectKeyIdentifier=hash'],
             log_name='gateway-certificates.log')
         command(['openssl', 'req', '-newkey', 'rsa:2048', '-nodes',
             '-keyout', str(directory / 'gateway-key.pem'), '-out', str(directory / 'gateway.csr'),
@@ -222,6 +238,18 @@ def environment_for(state, product, role):
             StorageOptions__PublicApiBaseUrl=canonical_api,
             EmailIngestion__Enabled='false')
     environment.update(entry.get('environment', {}))
+    if entry.get('publicWebOrigin'):
+        # The v2 contract deliberately requires real HTTPS navigation origins.
+        # Reuse this fixture's CA and certificate; leave production validation intact.
+        tls = FIXTURE / 'netratel' / 'keys'
+        environment.update(ServiceIdentity__WebBaseUrl=entry['publicWebOrigin'],
+            SSL_CERT_FILE=state['products']['netratel']['clientTrustBundle'])
+        if product == 'rateldesk':
+            environment['Bootstrap__Unattended__ApplicationUrl'] = entry['publicWebOrigin']
+        if role == 'web':
+            environment.update(ASPNETCORE_URLS=web + ';' + entry['publicWebOrigin'],
+                Kestrel__Certificates__Default__Path=str(tls / 'gateway.pfx'),
+                Kestrel__Certificates__Default__Password=(tls / 'gateway-pfx-password').read_text())
     return environment
 
 
@@ -234,23 +262,62 @@ def assembly(product, role):
 
 
 def request_ok(url):
+    global LAST_PROBE
     try:
         # Loopback fixture traffic is local, while normal external tools retain proxies.
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        handlers = [urllib.request.ProxyHandler({})]
+        if url.startswith('https://127.0.0.1:'):
+            state = json.loads(STATE.read_text())
+            context = ssl.create_default_context(cafile=state['products']['netratel']['clientTrustBundle'])
+            handlers.append(urllib.request.HTTPSHandler(context=context))
+        opener = urllib.request.build_opener(*handlers)
         with opener.open(url, timeout=2) as response:
+            LAST_PROBE = 'http-' + str(response.status)
             return response.status == 200
-    except (OSError, urllib.error.URLError):
+    except urllib.error.HTTPError as error:
+        LAST_PROBE = 'http-' + str(error.code)
+        return False
+    except urllib.error.URLError as error:
+        reason = error.reason
+        LAST_PROBE = ('tls-verification' if isinstance(reason, ssl.SSLCertVerificationError) else
+            'connection-refused' if isinstance(reason, ConnectionRefusedError) else
+            'connection-timeout' if isinstance(reason, TimeoutError) else 'network-error')
+        return False
+    except OSError:
+        LAST_PROBE = 'os-error'
         return False
 
 
 def wait_host(url, process, label):
+    global LAST_PROBE
+    LAST_PROBE = 'not-probed'
+    operation = {'operation': label.lower() + '-readiness', 'result': 'running'}
+    private_json(FIXTURE / 'launch-operation.json', operation)
+    def record_failure(code):
+        log = FIXTURE / (label.replace(' ', '-') + '.log')
+        text = log.read_text(errors='replace')[-65536:] if log.is_file() else ''
+        known_types = ('System.InvalidOperationException', 'System.IO.IOException',
+            'System.IO.FileNotFoundException', 'System.TypeLoadException',
+            'System.Security.Cryptography.CryptographicException',
+            'Microsoft.Extensions.Options.OptionsValidationException',
+            'Microsoft.AspNetCore.Connections.AddressInUseException',
+            'System.Net.Sockets.SocketException', 'System.Net.Http.HttpRequestException',
+            'System.Security.Authentication.AuthenticationException', 'System.UnauthorizedAccessException')
+        types = [item for item in known_types if item in text]
+        operation.update(result='failed', failureCode=code, lastProbe=LAST_PROBE,
+            exceptionTypes=sorted(set(item for item in types if len(item) <= 160))[:8])
+        if process.poll() is not None:
+            operation['exitCode'] = process.returncode
+        private_json(FIXTURE / 'launch-operation.json', operation)
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
         if process.poll() is not None:
+            record_failure('host-exited')
             raise RuntimeError(label + ' exited before health; inspect private logs')
         if request_ok(url):
             return
         time.sleep(.5)
+    record_failure('readiness-timeout')
     raise RuntimeError(label + ' did not become healthy within 60 seconds')
 
 
@@ -287,7 +354,8 @@ def start_product(state, product):
         private_json(STATE, state)
         route = ('/api/v2/setup/status' if product == 'netratel' else '/api/v1/setup/status') if role == 'api' else '/'
         listen_port = entry.get('internalApiPort', entry['apiPort']) if role == 'api' else entry['webPort']
-        wait_host(f"http://127.0.0.1:{listen_port}" + route, process,
+        readiness = entry['publicWebOrigin'] if role == 'web' and entry.get('publicWebOrigin') else f"http://127.0.0.1:{listen_port}"
+        wait_host(readiness + route, process,
             product + ' ' + role)
         print(product + ' ' + role + ' healthy', flush=True)
 
@@ -376,6 +444,12 @@ def cleanup(state, purge=False):
             destination = SAFE_EVIDENCE / state['fixtureId']
             destination.mkdir(parents=True, exist_ok=True)
             shutil.copy2(business_receipt, destination / 'business-receipt.json')
+            for screenshot in business_receipt.parent.glob('traceability-*.png'):
+                if re.fullmatch(r'traceability-[a-z0-9-]+\.png', screenshot.name) and screenshot.stat().st_size <= 2 * 1024 * 1024:
+                    shutil.copy2(screenshot, destination / screenshot.name)
+            traceability = business_receipt.parent / 'automation-traceability.json'
+            if traceability.is_file() and traceability.stat().st_size <= 8192:
+                shutil.copy2(traceability, destination / traceability.name)
             for name in ['self-success', 'self-failure', 'on-behalf', 'lost-callback']:
                 for suffix in ['-rendered-outcome.png', '-rendered-failure.png']:
                     screenshot = business_receipt.parent / (name + suffix)

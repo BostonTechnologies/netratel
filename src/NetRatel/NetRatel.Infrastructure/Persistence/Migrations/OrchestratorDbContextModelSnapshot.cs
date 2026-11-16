@@ -749,6 +749,37 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.ToTable("AgentTokenEvents", (string)null);
                 });
 
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.AutomationReferenceBackfillCheckpoint", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<bool>("AdmissionsCompleted")
+                        .HasColumnType("boolean");
+
+                    b.Property<bool>("Completed")
+                        .HasColumnType("boolean");
+
+                    b.Property<int>("LastRequestId")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("ReceiptOffset")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("UnavailableAdmissions")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("UnavailableReceipts")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("AutomationReferenceBackfill", (string)null);
+                });
+
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.BootstrapInitializationRecord", b =>
                 {
                     b.Property<int>("Id")
@@ -2868,6 +2899,96 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                         });
                 });
 
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.ExternalResourceReferenceRecord", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid?>("ActionId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("EvidenceKind")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("ExternalId")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<string>("ExternalUrl")
+                        .HasMaxLength(2048)
+                        .HasColumnType("character varying(2048)");
+
+                    b.Property<Guid?>("FlowRunId")
+                        .HasColumnType("uuid");
+
+                    b.Property<long?>("JobDefinitionId")
+                        .HasColumnType("bigint");
+
+                    b.Property<long?>("JobRunId")
+                        .HasColumnType("bigint");
+
+                    b.Property<int?>("NativeRequestId")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("NormalizedReference")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .UseCollation("C");
+
+                    b.Property<string>("PeerInstanceId")
+                        .IsRequired()
+                        .HasMaxLength(36)
+                        .HasColumnType("character varying(36)");
+
+                    b.Property<string>("PeerOrganizationId")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("Reference")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<string>("ReferenceKind")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("ResourceId")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<string>("ResourceKind")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.Property<string>("SafeTitle")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TenantId", "ResourceKind", "ResourceId");
+
+                    b.HasIndex("TenantId", "NormalizedReference", "ResourceKind", "ResourceId");
+
+                    b.HasIndex("TenantId", "PeerInstanceId", "PeerOrganizationId", "ReferenceKind", "ExternalId");
+
+                    b.ToTable("ExternalResourceReferences", (string)null);
+                });
+
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.FlowActionRecord", b =>
                 {
                     b.Property<Guid>("RunId")
@@ -4018,6 +4139,9 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
 
                     b.Property<long>("LinkRevision")
                         .HasColumnType("bigint");
+
+                    b.Property<string>("OriginContextJson")
+                        .HasColumnType("text");
 
                     b.Property<string>("ParentRequestId")
                         .IsRequired()

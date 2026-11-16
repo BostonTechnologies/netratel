@@ -11,6 +11,7 @@ public static class RatelDeskConnectorRegistration
         services.TryAddSingleton(TimeProvider.System); services.TryAddSingleton<RatelDeskTransportLimiter>();
         services.TryAddScoped<IRatelDeskConnectorStore, RatelDeskConnectorStore>(); services.TryAddScoped<IRatelDeskConnectorAuthorization, RatelDeskConnectorAuthorization>();
         services.TryAddScoped<IRatelDeskConnectorService, RatelDeskConnectorService>(); services.TryAddScoped<RatelDeskFlowConnector>();
+        services.TryAddScoped<RatelDeskIncidentTemplateClient>();
         services.AddScoped<IFlowConnectorCatalog>(p => p.GetRequiredService<RatelDeskFlowConnector>());
         services.AddScoped<IFlowIncidentActionDispatcher>(p => p.GetRequiredService<RatelDeskFlowConnector>()); return services;
     }

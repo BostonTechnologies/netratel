@@ -36,6 +36,9 @@ public static class FlowIncidentEnrichment
         }
         var fields = FlowExecutionEvidenceFormatter.Enrich(draft.Fields, source, draft.TenantId, draft.RunId,
             draft.Event.FlowVersionId, investigation, recovery);
+        if (draft.IncidentPresentation is not null)
+            fields = fields with { PresentationSupplement = FlowExecutionEvidenceFormatter.PresentationSupplement(source,
+                draft.TenantId, draft.RunId, draft.Event.FlowVersionId, investigation, recovery) };
         return draft with { Fields = fields };
     }
 }

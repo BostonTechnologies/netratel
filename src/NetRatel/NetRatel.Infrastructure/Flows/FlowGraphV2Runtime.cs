@@ -207,14 +207,16 @@ public sealed class FlowGraphV2Runtime(IFlowNodeExecutionStore checkpoints, IFlo
 
             var targets = node.Kind == FlowNodeKind.ActionGroup ? node.Actions! :
                 new[] { new FlowActionTargetDto(node.Id, node.Kind == FlowNodeKind.InvestigateWithAi
-                    ? FlowActionKind.NetclawInvestigation : FlowActionKind.RatelDeskIncident, node.ConnectorId, node.ConnectorRevision) };
+                    ? FlowActionKind.NetclawInvestigation : FlowActionKind.RatelDeskIncident, node.ConnectorId, node.ConnectorRevision)
+                    { IncidentPresentation = node.IncidentPresentation } };
             var results = new Dictionary<Guid, FlowIncidentActionResult>();
             FlowIncidentActionDraft Draft(FlowActionTargetDto target) =>
                 new(lease.Event.TenantId, lease.RunId, target.Id, target.ConnectorId!.Value,
                     target.ConnectorRevision!.Value, lease.SourceInstanceId, FlowActionKeys.Create(lease, target.Id), lease.Event,
                     target.Kind == FlowActionKind.NetclawInvestigation ? state.Fields ?? InitialFields(lease) :
                         current!.PreparedActionFields?.GetValueOrDefault(target.Id) ?? FieldsForAction(lease, current))
-                { Kind = target.Kind, AiSettings = target.Kind == FlowActionKind.NetclawInvestigation ? node.AiSettings : null,
+                { Kind = target.Kind, IncidentPresentation = target.IncidentPresentation,
+                    AiSettings = target.Kind == FlowActionKind.NetclawInvestigation ? node.AiSettings : null,
                     AiDeadlineAtUtc = target.Kind == FlowActionKind.NetclawInvestigation ? state.DeadlineAtUtc : null,
                     InvestigationInputs = target.Kind == FlowActionKind.NetclawInvestigation && state.Inputs.Count > 0 ? state.Inputs : null };
 

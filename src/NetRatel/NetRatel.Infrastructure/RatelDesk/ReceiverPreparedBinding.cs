@@ -32,7 +32,16 @@ public static class ReceiverPreparedBinding
         var body = new RatelDeskCreateIncidentDto(action.Fields.Title, action.Fields.Description,
             action.Fields.Priority!.Value, action.Target.CustomerId, action.Target.OrganizationId,
             action.Target.AssignedToId, action.Target.CategoryIds);
-        if (evidence.ExactCreateBodyJson != JsonSerializer.Serialize(body, Json) ||
+        if (action.PresentationPayload is { } presentation)
+        {
+            if (evidence.PresentationContract != AutomationTrace.Contracts.AutomationTraceContract.IncidentVersion ||
+                !AutomationTrace.AutomationTraceValidation.Create(presentation) ||
+                !ReceiverWireValidation.ValidPresentationCapability(evidence.Capability.AutomationPresentation, evidence.Peer) ||
+                evidence.ExactCreateBodyJson != JsonSerializer.Serialize(AutomationTrace.AutomationTraceValidation.Normalize(presentation), Json) ||
+                Encoding.UTF8.GetByteCount(evidence.ExactCreateBodyJson) > 131_072 ||
+                evidence.ReceiverFingerprint != AutomationTrace.AutomationTraceValidation.Fingerprint(presentation)) return false;
+        }
+        else if (evidence.PresentationContract is not null || evidence.ExactCreateBodyJson != JsonSerializer.Serialize(body, Json) ||
             Encoding.UTF8.GetByteCount(evidence.ExactCreateBodyJson) > RatelDeskConnectorLimits.MaximumRequestBytes ||
             evidence.ReceiverFingerprint != receiverHash.Compute(body)) return false;
         string expectedKey;

@@ -12,6 +12,9 @@ public static class ReceiverWireValidation
     public const string CreatePath = "/api/v1/incidents/";
     public const string ReceiptPath = "/api/v1/integrations/netratel/incident-receipts/{key}";
     public const string TargetsPath = "/api/v1/integrations/netratel/targets/validate";
+    public const string PresentationCreatePath = "/api/v1/integrations/netratel/incidents";
+    public const string TemplateCataloguePath = "/api/v1/integrations/netratel/incident-templates";
+    public const string TemplatePreviewPath = "/api/v1/integrations/netratel/incident-templates/preview";
     public const long MinimumRetention = 7_776_000;
     public const long MaximumReplay = 2_592_000;
     public const string KeyPattern = "^[A-Za-z0-9._~-]{1,256}$";
@@ -120,7 +123,23 @@ public static class ReceiverWireValidation
         return new(Contract, peer.ReceiverInstanceId, peer.SourceInstanceId, peer.SourceNamespaceId,
             endpoints, Integer(root, "minimumReceiptRetentionSeconds"),
             Integer(root, "maximumAutomaticReplaySeconds"), observedAtUtc)
-        { OrganizationName = DisplayName(root, "organizationName"), CustomerName = DisplayName(root, "customerName") };
+        { OrganizationName = DisplayName(root, "organizationName"), CustomerName = DisplayName(root, "customerName"),
+            AutomationPresentation = ReadPresentationCapability(root, peer) };
+    }
+
+    public static bool ValidPresentationCapability(RatelDeskIncidentPresentationCapability? value, RatelDeskSemanticPeer peer) =>
+        value is not null && value.ContractVersion == AutomationTrace.Contracts.AutomationTraceContract.IncidentVersion &&
+        value.SchemaVersion == AutomationTrace.Contracts.AutomationTraceContract.ContextVersion &&
+        AutomationTrace.AutomationTraceValidation.Presentation(value.Standard) && value.Standard.Mode == "standard" &&
+        value.CreateEndpoint == Endpoint(peer.ApiBaseUrl, PresentationCreatePath) &&
+        value.CatalogueEndpoint == Endpoint(peer.ApiBaseUrl, TemplateCataloguePath) &&
+        value.PreviewEndpoint == Endpoint(peer.ApiBaseUrl, TemplatePreviewPath) && value.TemplateScope == "rateldesk.incident-templates.read" &&
+        Uri.TryCreate(value.WebOrigin, UriKind.Absolute, out var web) && web.Scheme == "https" && web.UserInfo.Length == 0 && web.Query.Length == 0 && web.Fragment.Length == 0;
+    private static RatelDeskIncidentPresentationCapability? ReadPresentationCapability(JsonElement root, RatelDeskSemanticPeer peer)
+    {
+        if (!root.TryGetProperty("automationPresentation", out var value) || value.ValueKind == JsonValueKind.Null) return null;
+        var capability = value.Deserialize<RatelDeskIncidentPresentationCapability>(AutomationTrace.AutomationTraceValidation.Json);
+        return ValidPresentationCapability(capability, peer) ? capability : null;
     }
 
     private static string? DisplayName(JsonElement root, string property) =>
@@ -154,6 +173,8 @@ public static class ReceiverWireValidation
     public static RatelDeskVerifiedReceipt Receipt(byte[] body, string? locationHeader,
         RatelDeskReceiverPreparationV2 prepared)
     {
+        if (prepared.PresentationContract == AutomationTrace.Contracts.AutomationTraceContract.IncidentVersion)
+            return PresentationReceipt(body, locationHeader, prepared);
         RequirePeer(prepared.Peer);
         if (!RatelDeskReceiverKey.IsConforming(prepared.ReceiverIdempotencyKey) ||
             prepared.ReceiverFingerprint is not { Length: 64 } ||
@@ -193,6 +214,43 @@ public static class ReceiverWireValidation
             committed, location, System.Text.Encoding.UTF8.GetString(body));
     }
 
+    private static RatelDeskVerifiedReceipt PresentationReceipt(byte[] body, string? locationHeader, RatelDeskReceiverPreparationV2 prepared)
+    {
+        using var document = Parse(body); var root = document.RootElement;
+        var receipt = Required(root, "integrationReceipt", JsonValueKind.Object).Deserialize<AutomationTrace.Contracts.AutomationIncidentReceipt>(AutomationTrace.AutomationTraceValidation.Json)
+            ?? throw new InvalidDataException("presentation-receipt-unverified");
+        var payload = JsonSerializer.Deserialize<AutomationTrace.Contracts.AutomationIncidentCreate>(prepared.ExactCreateBodyJson, AutomationTrace.AutomationTraceValidation.Json)
+            ?? throw new InvalidDataException("presentation-payload-unverified");
+        var capability = prepared.Capability.AutomationPresentation;
+        if (!AutomationTrace.AutomationTraceValidation.Create(payload) || !ValidPresentationCapability(capability, prepared.Peer) ||
+            receipt.ContractVersion != prepared.PresentationContract || receipt.ReceiverInstanceId != prepared.Peer.ReceiverInstanceId ||
+            receipt.SourceNamespaceId != prepared.Peer.SourceNamespaceId.ToString("D") || receipt.SourceInstanceId != prepared.Peer.SourceInstanceId.ToString("D") ||
+            receipt.Key != prepared.ReceiverIdempotencyKey || receipt.Fingerprint != prepared.ReceiverFingerprint ||
+            receipt.Fingerprint != AutomationTrace.AutomationTraceValidation.Fingerprint(payload) || receipt.Outcome != "committed" ||
+            receipt.OrganizationId != prepared.Peer.OrganizationId || receipt.CustomerId != prepared.Peer.CustomerId ||
+            receipt.FlowRunId != payload.Context.FlowRunId || receipt.ActionId != payload.Context.ActionId || receipt.Presentation != payload.Presentation ||
+            receipt.CommittedAtUtc == default || receipt.CommittedAtUtc.Offset != TimeSpan.Zero)
+            throw new InvalidDataException("presentation-receipt-binding-unverified");
+        var incident = SafeId(receipt.IncidentId); var tracking = SafeId(receipt.TrackingId);
+        Equal(Text(root, "id"), incident); Equal(Text(root, "trackingId"), tracking);
+        Equal(Text(root, "organizationId"), prepared.Peer.OrganizationId); Equal(Text(root, "customerId"), prepared.Peer.CustomerId);
+        var location = new Uri(prepared.Peer.ApiBaseUrl).AbsolutePath.TrimEnd('/') + "/api/v1/incidents/" + incident;
+        Equal(receipt.Location, location); Equal(locationHeader, location);
+        if (receipt.PublicLink is not null) Equal(receipt.PublicLink, capability!.WebOrigin.TrimEnd('/') + "/incidents/" + incident);
+        var relation = receipt.OriginRelation ?? throw new InvalidDataException("presentation-relation-unverified");
+        if (payload.Context.Origin is { } origin)
+        {
+            if (relation.Status != "linked" || !AutomationTrace.AutomationTraceValidation.GuidId(relation.RelationId) ||
+                relation.SourceRequestId != origin.Request.Id || relation.SourceAttemptId != origin.AttemptId)
+                throw new InvalidDataException("presentation-origin-relation-unverified");
+        }
+        else if (relation.Status != "not-applicable" || relation.RelationId is not null || relation.SourceRequestId is not null || relation.SourceAttemptId is not null)
+            throw new InvalidDataException("presentation-origin-relation-unverified");
+        return new(receipt.ContractVersion, receipt.ReceiverInstanceId, prepared.Peer.SourceNamespaceId, prepared.Peer.SourceInstanceId,
+            receipt.Key, receipt.Fingerprint, receipt.Outcome, incident, tracking, receipt.OrganizationId, receipt.CustomerId,
+            receipt.CommittedAtUtc, receipt.Location, System.Text.Encoding.UTF8.GetString(body)) { PresentationReceipt = receipt };
+    }
+
     public static string? ProblemCode(byte[] body)
     {
         using var doc = Parse(body);
@@ -220,7 +278,7 @@ public static class ReceiverWireValidation
             throw new InvalidDataException("receiver-boolean-unverified");
         return value.GetBoolean();
     }
-    private static string SafeId(string value) => value.Length <= 128 &&
+    private static string SafeId(string? value) => value is { Length: > 0 and <= 128 } &&
         value.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_') ? value :
             throw new InvalidDataException("receiver-identity-unverified");
     private static void Equal(string? actual, string expected)

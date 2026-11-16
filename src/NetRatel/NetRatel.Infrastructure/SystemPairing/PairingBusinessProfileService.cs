@@ -21,7 +21,7 @@ public sealed class PairingBusinessProfileService(OrchestratorDbContext db, IDat
         if (pair is null) throw new PairingException(403, "pair-revoked", "This system pairing is no longer active.");
         var mapping = JsonSerializer.Deserialize<PairingMapping>(row.MappingJson, PairingTransport.Json)!;
         if (mapping.NetRatelTenantId != tenant.ToString(CultureInfo.InvariantCulture) ||
-            !PairingService.ExpectedRatelDeskScopes(mapping).Contains(scope, StringComparer.Ordinal) ||
+            !PairingTransport.ScopesAllowed(PairingService.ExpectedRatelDeskScopes(mapping), scope) ||
             !await authority.CanManageAsync(pair.AdministratorId, tenant, mapping.CreateIncidents, mapping.RunAutomation, ct) ||
             !await authority.CanManageAsync(row.AdministratorId, tenant, mapping.CreateIncidents, mapping.RunAutomation, ct))
             throw new PairingException(403, "connection-authority-removed", "Current tenant capability authority is required for this connection.");
@@ -29,7 +29,7 @@ public sealed class PairingBusinessProfileService(OrchestratorDbContext db, IDat
         var credential = JsonSerializer.Deserialize<PairingBusinessCredential>(value, PairingTransport.Json)!;
         var peer = JsonSerializer.Deserialize<PairingMetadata>(pair.PeerMetadataJson, PairingTransport.Json)!;
         var installed = await identities.GetAsync(ct);
-        if (!credential.Scopes.Contains(scope, StringComparer.Ordinal) || (mapping.CreateIncidents ? credential.SourceInstanceId != installed.SourceInstanceId!.Value.ToString("D") || credential.SourceNamespaceId != mappingId : credential.SourceInstanceId is not null || credential.SourceNamespaceId is not null) || credential.TokenEndpoint != peer.ApiOrigin + "/connect/token")
+        if (!PairingTransport.ScopesAllowed(credential.Scopes, scope) || (mapping.CreateIncidents ? credential.SourceInstanceId != installed.SourceInstanceId!.Value.ToString("D") || credential.SourceNamespaceId != mappingId : credential.SourceInstanceId is not null || credential.SourceNamespaceId is not null) || credential.TokenEndpoint != peer.ApiOrigin + "/connect/token")
             throw new PairingException(403, "connection-credential-mismatch", "The business credential differs from the saved mapping and producer identity.");
         return new(id, row.Revision, PairingService.Hash(row.MappingJson), mapping, peer, credential, row.AdministratorId, pair.Revision);
     }

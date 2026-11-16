@@ -33,6 +33,11 @@
             {
                 <p role="status">Configure and enable a @KindLabel(action.Kind) target to publish this action.</p>
             }
+            @if (action.Kind == FlowActionKind.RatelDeskIncident)
+            {
+                <FlowIncidentTemplateFields TenantId="TenantId" ConnectorId="action.ConnectorId" Presentation="action.IncidentPresentation"
+                    SourceKinds="IncidentSourceKinds" Disabled="Disabled" Changed="reference => UpdateAsync(action with { IncidentPresentation = reference })" />
+            }
             <button type="button" @onclick="() => RemoveAsync(action.Id)" data-testid="flow-action-remove">Remove action</button>
         </fieldset>
     }
@@ -46,6 +51,7 @@
     [Parameter, EditorRequired] public FlowNodeDto Node { get; set; } = default!;
     [Parameter] public IReadOnlyList<FlowConnectorReferenceDto> Targets { get; set; } = [];
     [Parameter] public int TenantId { get; set; }
+    [Parameter] public IReadOnlyList<string> IncidentSourceKinds { get; set; } = ["monitoring"];
     [Parameter] public bool Disabled { get; set; }
     [Parameter] public EventCallback<FlowNodeDto> Changed { get; set; }
     [Parameter] public EventCallback ManageTargetsRequested { get; set; }
@@ -58,7 +64,7 @@
 
     private Task ChangeKindAsync(FlowActionTargetDto action, ChangeEventArgs args) =>
         Enum.TryParse<FlowActionKind>(args.Value?.ToString(), out var kind) && Enum.IsDefined(kind)
-            ? UpdateAsync(action with { Kind = kind, ConnectorId = null, ConnectorRevision = null, Name = null }) : Task.CompletedTask;
+            ? UpdateAsync(action with { Kind = kind, ConnectorId = null, ConnectorRevision = null, Name = null, IncidentPresentation = null }) : Task.CompletedTask;
 
     private Task SelectTargetAsync(FlowActionTargetDto action, ChangeEventArgs args)
     {
@@ -68,7 +74,8 @@
     }
 
     private Task UpdateTargetAsync(FlowActionTargetDto action, FlowConnectorReferenceDto? target) =>
-        UpdateAsync(action with { ConnectorId = target?.Id, ConnectorRevision = target is { Revision: > 0 } ? target.Revision : null, Name = target?.Name });
+        UpdateAsync(action with { ConnectorId = target?.Id, ConnectorRevision = target is { Revision: > 0 } ? target.Revision : null, Name = target?.Name,
+            IncidentPresentation = action.ConnectorId == target?.Id ? action.IncidentPresentation : null });
 
     private Task UpdateAsync(FlowActionTargetDto action) => Disabled ? Task.CompletedTask :
         Changed.InvokeAsync(Node with { Actions = (Node.Actions ?? []).Select(current => current.Id == action.Id ? action : current).ToArray() });

@@ -52,6 +52,8 @@
                 @(_run.TenantDisplayName ?? "Tenant unknown") · @GetTargetSummary() · @GetEnvironmentSummary() · @GetRunWindowLabel()
             </MudText>
         </header>
+        @if (_run.TenantId is { } tenant)
+        { <NetRatel.Web.Components.Shared.AutomationRelatedResources TenantId="tenant" Kind="job-run" ResourceId="@(_run.Id.ToString(System.Globalization.CultureInfo.InvariantCulture))" /> }
 
         @if (!string.IsNullOrWhiteSpace(_loadError))
         {

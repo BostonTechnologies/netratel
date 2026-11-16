@@ -16,6 +16,7 @@ public sealed class ManagedOrchestrationRequestBinding
     public string RequestTaskId { get; set; } = "";
     public string CorrelationId { get; set; } = "";
     public string IngestFingerprint { get; set; } = "";
+    public string? OriginContextJson { get; set; }
     public string? LinkId { get; set; }
     public long LinkRevision { get; set; }
     public string? GrantHash { get; set; }

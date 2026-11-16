@@ -13,6 +13,7 @@ public static class FlowGraphV2Limits
     public const int MaximumGraphBytes = 131072;
     public const int MaximumEventBytes = 24576;
     public const int MaximumActionBytes = 49152;
+    public const int MaximumPresentationActionBytes = 131072;
     public const int MaximumValueDepth = 16;
     public const int MaximumInvestigationInputBytes = 4096;
     public const int MaximumRoutePoints = 8;

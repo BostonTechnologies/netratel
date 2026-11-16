@@ -1,0 +1,111 @@
+@using AutomationTrace.Contracts
+@using NetRatel.Shared.Contracts.RatelDesk
+@inject IHttpClientFactory HttpClientFactory
+
+<fieldset disabled="@Disabled" class="flow-incident-presentation" data-testid="flow-incident-presentation">
+    <legend>Incident presentation</legend>
+    @if (loading) { <p role="status">Loading the saved connector's presentation capabilities…</p> }
+    @if (error is not null) { <p role="alert">@error</p><button type="button" @onclick="ReloadAsync">Retry lookup</button> }
+    @if (catalogue is { } available)
+    {
+        <label><input type="checkbox" checked="@(Presentation is not null)" @onchange="ToggleHumanAsync" />Use human summary and source relations</label>
+        @if (Presentation is not null)
+        {
+            <label><input type="checkbox" checked="custom" @onchange="ToggleCustomAsync" disabled="@(available.CatalogueState != "available")" />Use RatelDesk incident template</label>
+            @if (available.CatalogueState != "available") { <p role="status">Approve Browse and preview internal incident templates on this saved system connection to select a custom template.</p> }
+            @if (custom)
+            {
+                <label>Find template<input type="search" @bind="filter" @bind:event="oninput" maxlength="128" /></label>
+                <label>Published template revision<select value="@SelectionKey" @onchange="SelectAsync">
+                    <option value="">Choose a compatible published revision</option>
+                    @foreach (var item in Eligible)
+                    { <option value="@Key(item.Presentation)">@item.Name · revision @item.Presentation.Revision</option> }
+                </select></label>
+                @if (Presentation.Mode == "template" && !Eligible.Any(x => x.Presentation == Presentation))
+                { <p role="alert">The selected revision is missing, retired, revoked or superseded in the current catalogue. Select an eligible revision before publication. Existing prepared deliveries keep their pinned revision.</p> }
+            }
+            <p class="flow-help">@(string.IsNullOrEmpty(Presentation.TemplateId) ? "Choose a published revision before validation." : $"Pinned: {Presentation.TemplateId} · revision {Presentation.Revision}.") RatelDesk controls the internal report and customer-safe subject; incident priority and assignment retain the connector mapping.</p>
+            <button type="button" disabled="@(previewing || string.IsNullOrEmpty(Presentation.TemplateId))" @onclick="PreviewAsync">Preview with synthetic failure</button>
+        }
+    }
+    else if (!loading && error is null && ConnectorId is null) { <p>Choose a saved RatelDesk connector.</p> }
+    @if (preview is not null)
+    {
+        <p>@preview.Subject</p>
+        <iframe title="Read-only internal incident report preview" sandbox="" srcdoc="@preview.Html" style="width:100%;min-height:18rem;border:1px solid var(--mud-palette-lines-default)"></iframe>
+    }
+</fieldset>
+
+@code {
+    [Parameter] public int TenantId { get; set; }
+    [Parameter] public Guid? ConnectorId { get; set; }
+    [Parameter] public IncidentPresentationReference? Presentation { get; set; }
+    [Parameter] public EventCallback<IncidentPresentationReference?> Changed { get; set; }
+    [Parameter] public IReadOnlyList<string> SourceKinds { get; set; } = ["monitoring"];
+    [Parameter] public bool Disabled { get; set; }
+    private HttpClient Api => HttpClientFactory.CreateClient("FlowsApi");
+    private RatelDeskIncidentPresentationCatalogue? catalogue;
+    private IncidentTemplatePreview? preview;
+    private string? error, scope;
+    private string filter = "";
+    private bool loading, custom, previewing;
+    private int generation;
+    private string SelectionKey => Presentation is { Mode: "template" } selected ? Key(selected) : "";
+    private IEnumerable<IncidentTemplateCatalogueItem> Eligible => (catalogue?.Templates ?? []).Where(x => x.Presentation.Mode == "template" &&
+        SourceKinds.All(source => x.SourceKinds.Contains(source)) && x.Name.Contains(filter, StringComparison.OrdinalIgnoreCase)).OrderBy(x => x.Name).ThenBy(x => x.Id);
+    private string Path => $"api/v2/tenants/{TenantId}/connectors/rateldesk/{ConnectorId:D}/incident-templates";
+    protected override async Task OnParametersSetAsync()
+    {
+        var next = $"{TenantId}:{ConnectorId}";
+        if (scope == next) return;
+        scope = next; generation++; loading = false; previewing = false; error = null; custom = Presentation?.Mode == "template"; preview = null; catalogue = null;
+        if (ConnectorId is not null) await ReloadAsync();
+    }
+    private async Task ReloadAsync()
+    {
+        var current = ++generation; var currentScope = scope;
+        loading = true; error = null;
+        try
+        {
+            var response = await Api.GetFromJsonAsync<RatelDeskIncidentPresentationCatalogue>(Path);
+            if (current != generation || currentScope != scope) return;
+            catalogue = response;
+        }
+        catch (HttpRequestException) { if (current == generation) error = "Presentation lookup is unavailable or denied. Check peer compatibility, the selected connector and its approval."; }
+        finally { if (current == generation) loading = false; }
+    }
+    private async Task ToggleHumanAsync(ChangeEventArgs args)
+    {
+        preview = null; custom = false;
+        await Changed.InvokeAsync(args.Value is true ? catalogue?.Capability.Standard : null);
+    }
+    private async Task ToggleCustomAsync(ChangeEventArgs args)
+    {
+        custom = args.Value is true; preview = null;
+        if (!custom) await Changed.InvokeAsync(catalogue?.Capability.Standard);
+        else if (catalogue is { } available)
+            await Changed.InvokeAsync(available.Capability.Standard with
+            { Mode = "template", TemplateId = "", Revision = "", ContentDigest = "", LayoutDigest = "" });
+    }
+    private Task SelectAsync(ChangeEventArgs args)
+    {
+        var item = Eligible.SingleOrDefault(x => Key(x.Presentation) == args.Value?.ToString());
+        preview = null;
+        return item is null ? Task.CompletedTask : Changed.InvokeAsync(item.Presentation);
+    }
+    private async Task PreviewAsync()
+    {
+        if (Presentation is null || ConnectorId is null) return;
+        var current = generation; var selected = Presentation; previewing = true;
+        try
+        {
+            using var response = await Api.PostAsJsonAsync(Path + "/preview", new RatelDeskIncidentPreviewRequest(selected, SourceKinds.FirstOrDefault() ?? "monitoring"));
+            if (current != generation || selected != Presentation) return;
+            if (!response.IsSuccessStatusCode) { error = "The pinned presentation could not be previewed. Check revision compatibility and current connector authority."; return; }
+            preview = await response.Content.ReadFromJsonAsync<IncidentTemplatePreview>();
+        }
+        catch (HttpRequestException) { if (current == generation && selected == Presentation) error = "Preview is unavailable. No incident or execution was created."; }
+        finally { if (current == generation) previewing = false; }
+    }
+    private static string Key(IncidentPresentationReference value) => value.TemplateId + ":" + value.Revision + ":" + value.ContentDigest;
+}

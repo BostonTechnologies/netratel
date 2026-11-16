@@ -78,7 +78,7 @@
                     <MudItem xs="12" md="7">
                         <MudTextField T="string"
                                       @bind-Value="_search"
-                                      Placeholder="Search request id, source, client, job, run, or log text"
+                                      Placeholder="Search request, source reference, incident reference, client, job or run"
                                       Adornment="Adornment.Start"
                                       AdornmentIcon="@Icons.Material.Filled.Search"
                                       Immediate="true"
@@ -170,6 +170,8 @@
                                     @if (_expandedRequests.Contains(request.Id))
                                     {
                                         <div class="request-details">
+                                            @if (request.TargetTenantId is { } tenant)
+                                            { <NetRatel.Web.Components.Shared.AutomationRelatedResources TenantId="tenant" Kind="request" ResourceId="@(request.Id.ToString(CultureInfo.InvariantCulture))" /> }
                                             <div class="request-details-heading">
                                                 <MudIcon Icon="@Icons.Material.Outlined.ReceiptLong" Color="Color.Primary" Size="Size.Small" />
                                                 <h2>Request details</h2>
@@ -372,7 +374,7 @@
             return;
         }
 
-        _requests[index] = incoming;
+        _requests[index] = incoming with { ExternalReferences = incoming.ExternalReferences.Count > 0 ? incoming.ExternalReferences : _requests[index].ExternalReferences };
     }
 
     private void StartReconcileLoop()
@@ -444,8 +446,7 @@
             request.JobRunId?.ToString(CultureInfo.InvariantCulture),
             request.JobName,
             request.Status,
-            request.ResultMessage,
-            string.Join(' ', request.Logs));
+            string.Join(' ', request.ExternalReferences));
 
         return haystack.Contains(_search, StringComparison.OrdinalIgnoreCase);
     }

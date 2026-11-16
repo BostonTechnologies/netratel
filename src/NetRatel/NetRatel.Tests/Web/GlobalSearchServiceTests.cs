@@ -20,7 +20,7 @@ public sealed class GlobalSearchServiceTests
 
         var groups = await service.SearchAsync("");
 
-        groups.Select(g => g.Key).Should().Equal("tenants", "clients", "scripts", "jobs", "requests", "tasks", "alerts", "flows", "investigations");
+        groups.Select(g => g.Key).Should().Equal("tenants", "clients", "scripts", "jobs", "requests", "automation", "tasks", "alerts", "flows", "investigations");
         groups.Should().OnlyContain(g => g.Results.Count == 0);
     }
 
@@ -203,7 +203,7 @@ public sealed class GlobalSearchServiceTests
         { ["/api/v1/global-search/alerts?q=Slow&pageSize=6"] = TimeSpan.FromSeconds(5) });
         var service = new GlobalSearchService(factory, NullLogger<GlobalSearchService>.Instance);
         var groups = await service.SearchAsync("Slow");
-        groups.Should().HaveCount(9);
+        groups.Should().HaveCount(10);
         groups.Single(group => group.Key == "alerts").TimedOut.Should().BeTrue();
         groups.Single(group => group.Key == "alerts").ContinueHref.Should().Be("/search?section=alerts&search=Slow");
         groups.Where(group => group.Key != "alerts").Should().OnlyContain(group => !group.TimedOut && !group.IsLoading);
