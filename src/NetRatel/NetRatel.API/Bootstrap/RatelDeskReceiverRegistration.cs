@@ -40,6 +40,7 @@ public static class RatelDeskReceiverRegistration
         services.TryAddScoped<IRatelDeskReceiverTransport, RatelDeskReceiverTransport>();
         services.TryAddScoped<IRatelDeskConnectorReadiness, RatelDeskConnectorReadiness>();
         services.TryAddScoped<RatelDeskConnectorReceiver>();
+        services.TryAddScoped<AutomationIncidentContextBuilder>();
         services.TryAddScoped<IFlowReceiverDispatcher, RatelDeskFlowReceiverAdapter>();
         return services;
     }

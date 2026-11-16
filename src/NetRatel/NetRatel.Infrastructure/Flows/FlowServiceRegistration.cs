@@ -27,7 +27,6 @@ public static class FlowServiceRegistration
         services.TryAddScoped<FlowExecutionEventAdmission>();
         services.TryAddScoped<IFlowExecutionEventAdmission>(provider => provider.GetRequiredService<FlowExecutionEventAdmission>());
         services.TryAddScoped<FlowIncidentEvidenceReader>();
-        services.TryAddScoped<NetRatel.Infrastructure.RatelDesk.AutomationIncidentContextBuilder>();
         services.TryAddScoped<IFlowTransactionAdmission, MonitoringFlowTransactionAdmission>();
         services.TryAddScoped<IFlowDispatchGuard, UnavailableMonitoringDispatchGuard>();
         services.TryAddScoped<IFlowConnectorCatalog, UnavailableFlowConnector>(); services.TryAddScoped<IFlowIncidentActionDispatcher, UnavailableFlowConnector>();

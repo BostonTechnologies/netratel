@@ -16,6 +16,7 @@ import secrets
 import signal
 import shutil
 import socket
+import ssl
 import subprocess
 import time
 import urllib.request
@@ -252,7 +253,12 @@ def assembly(product, role):
 def request_ok(url):
     try:
         # Loopback fixture traffic is local, while normal external tools retain proxies.
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        handlers = [urllib.request.ProxyHandler({})]
+        if url.startswith('https://127.0.0.1:'):
+            state = json.loads(STATE.read_text())
+            context = ssl.create_default_context(cafile=state['products']['netratel']['clientTrustBundle'])
+            handlers.append(urllib.request.HTTPSHandler(context=context))
+        opener = urllib.request.build_opener(*handlers)
         with opener.open(url, timeout=2) as response:
             return response.status == 200
     except (OSError, urllib.error.URLError):
@@ -303,7 +309,8 @@ def start_product(state, product):
         private_json(STATE, state)
         route = ('/api/v2/setup/status' if product == 'netratel' else '/api/v1/setup/status') if role == 'api' else '/'
         listen_port = entry.get('internalApiPort', entry['apiPort']) if role == 'api' else entry['webPort']
-        wait_host(f"http://127.0.0.1:{listen_port}" + route, process,
+        readiness = entry['publicWebOrigin'] if role == 'web' and entry.get('publicWebOrigin') else f"http://127.0.0.1:{listen_port}"
+        wait_host(readiness + route, process,
             product + ' ' + role)
         print(product + ' ' + role + ' healthy', flush=True)
 
