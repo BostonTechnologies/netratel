@@ -154,6 +154,7 @@ async function rendered(h, ids) {
         await login(job, nr); await job.goto(nr.web + `/jobs/${ids.jobId}/runs/${ids.runId}`);
         const incident = await context.newPage(); incident.setDefaultTimeout(30000);
         await login(incident, rd); await incident.goto(rd.web + `/incidents/${ids.incidentId}`);
+        await incident.getByRole('tab', { name: 'Automation', exact: true }).click();
         const editor = await context.newPage(); editor.setDefaultTimeout(30000);
         await editor.goto(nr.web + `/flows?tenantId=${ids.tenant}&draftId=${ids.flowId}&nodeId=${ids.actionId}`);
         await resizeForVisualCapture(editor, { width: 1440, height: 1000 });
