@@ -385,5 +385,5 @@ async function main() {
     throw error;
   } finally { await browser.close(); }
 }
-module.exports = { product, record, jsonRequest, login, account, visualMatrix, selectChoice, seedCustomer, identifiers, state, root, fixture, evidence };
+module.exports = { product, record, jsonRequest, login, account, visualMatrix, resizeForVisualCapture, selectChoice, seedCustomer, identifiers, state, root, fixture, evidence };
 if (require.main === module) main().catch(error => { record('actual-rendered-pair-acceptance', 'failed', { ...safeFailure(error) }); process.exitCode = 1; });

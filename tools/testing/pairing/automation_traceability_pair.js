@@ -131,58 +131,69 @@ module.exports = async function automationTraceabilityPair(h) {
 
 async function rendered(h, ids) {
   const { chromium, expect } = require(path.join(h.runtimeRoot, 'browser/node_modules/@playwright/test'));
-  const { product, login } = require('./browser_pair');
+  const { product, login, resizeForVisualCapture } = require('./browser_pair');
   const browser = await chromium.launch({ headless: true });
   const modes = ['light', 'dark'].flatMap(theme => [{ theme, width: 1440, height: 1000, custom: false, zoom: 1 },
     { theme, width: 390, height: 844, custom: false, zoom: 1 }, { theme, width: 1440, height: 1000, custom: true, zoom: 1 },
     { theme, width: 1440, height: 1000, custom: false, zoom: 2 }]);
+  const batches = [1, 2].map(zoom => ({ zoom, modes: modes.filter(mode => mode.zoom === zoom) }));
+  // The real issuer permits 20 requests per minute. Begin a fresh window after
+  // the HTTP journey, then reuse loaded pages: catalogue/preview only once per
+  // browser context (12 token requests across the complete eight-mode matrix).
+  await new Promise(resolve => setTimeout(resolve, 60_000));
   try {
-    for (const mode of modes) {
+    for (const batch of batches) {
       const profile = path.join(h.fixture, 'traceability-zoom-profile');
       const extension = path.join(process.env.RATELDESK_PAIRING_SOURCE_ROOT, 'tests/ux/native-zoom-extension');
-      const options = { viewport: { width: mode.width, height: mode.height }, colorScheme: mode.theme, ignoreHTTPSErrors: true };
-      const context = mode.zoom === 2 ? await chromium.launchPersistentContext(profile, { ...options, channel: 'chromium',
+      const options = { viewport: { width: 1440, height: 1000 }, colorScheme: 'light', ignoreHTTPSErrors: true };
+      const context = batch.zoom === 2 ? await chromium.launchPersistentContext(profile, { ...options, channel: 'chromium',
         headless: true, args: [`--disable-extensions-except=${extension}`, `--load-extension=${extension}`] }) : await browser.newContext(options);
       try {
-        const page = await context.newPage(); page.setDefaultTimeout(30000);
-        const setZoom = async () => {
-          if (mode.zoom !== 2) return;
-          await expect.poll(() => context.serviceWorkers().length).toBeGreaterThan(0);
-          await context.serviceWorkers()[0].evaluate(async () => {
-            const tab = (await chrome.tabs.query({})).find(x => /^https?:\/\/127\.0\.0\.1:/.test(x.url));
-            await chrome.tabs.setZoom(tab.id, 2);
-            if (await chrome.tabs.getZoom(tab.id) !== 2) throw new Error('Native browser zoom was not applied');
-          });
-          await expect.poll(() => page.evaluate(() => innerWidth)).toBe(mode.width / 2);
-        };
-        for (const name of ['netratel', 'rateldesk']) {
-          const entry = product(name); await login(page, entry);
-          const route = name === 'netratel' ? `/jobs/${ids.jobId}/runs/${ids.runId}` : `/incidents/${ids.incidentId}`;
-          await page.goto(entry.web + route);
-          await setZoom();
-          if (mode.custom) await page.addStyleTag({ content: ':root{--mud-palette-primary:#6868aa;--mud-palette-divider:#9381aa}' });
-          const region = page.getByRole('region', { name: name === 'netratel' ? 'Related automation resources' : 'Automation reports', exact: true });
-          await expect(region).toBeVisible(); await expect(region).toContainText(ids.sourceReference);
-          if (name === 'netratel') await expect(region).toContainText(ids.incidentReference);
-          else await expect(region).toContainText('1 of 1 targets failed');
-          const link = region.getByRole('link').first(); await link.focus(); await expect(link).toBeFocused();
-          await capture(page, path.join(h.evidence, `traceability-${name}-${mode.theme}-${mode.width}${mode.custom ? '-custom' : ''}-${mode.zoom}x.png`), mode.zoom);
-        }
-        const nr = product('netratel');
-        await page.goto(nr.web + `/flows?tenantId=${ids.tenant}&search=Synthetic%20directory%20incident`);
-        await setZoom();
-        if (mode.custom) await page.addStyleTag({ content: ':root{--mud-palette-primary:#6868aa;--mud-palette-divider:#9381aa}' });
-        await page.getByTestId('flow-edit').first().click();
-        if (!await page.getByTestId('flow-select-node').isVisible()) await page.getByTestId('flow-palette-toggle').click();
-        await page.getByTestId('flow-select-node').selectOption(ids.actionId);
-        if (await page.getByTestId('flow-properties-toggle').getAttribute('aria-expanded') !== 'true')
-          await page.getByTestId('flow-properties-toggle').click();
-        const fields = page.getByTestId('flow-incident-presentation');
+        const nr = product('netratel'), rd = product('rateldesk');
+        const job = await context.newPage(); job.setDefaultTimeout(30000);
+        await login(job, nr); await job.goto(nr.web + `/jobs/${ids.jobId}/runs/${ids.runId}`);
+        const incident = await context.newPage(); incident.setDefaultTimeout(30000);
+        await login(incident, rd); await incident.goto(rd.web + `/incidents/${ids.incidentId}`);
+        const editor = await context.newPage(); editor.setDefaultTimeout(30000);
+        await editor.goto(nr.web + `/flows?tenantId=${ids.tenant}&draftId=${ids.flowId}&nodeId=${ids.actionId}`);
+        await resizeForVisualCapture(editor, { width: 1440, height: 1000 });
+        const fields = editor.getByTestId('flow-incident-presentation');
+        await fields.waitFor({ state: 'visible' });
+        await fields.getByText("Loading the saved connector's presentation capabilities…", { exact: true }).waitFor({ state: 'hidden' });
         await expect(fields.getByLabel('Use RatelDesk incident template', { exact: true })).toBeChecked();
-        await fields.getByRole('button', { name: 'Preview with synthetic failure', exact: true }).click();
+        const preview = fields.getByRole('button', { name: 'Preview with synthetic failure', exact: true });
+        await preview.focus(); await expect(preview).toBeFocused(); await editor.keyboard.press('Enter');
         await expect(fields.frameLocator('iframe').getByText('5 of 5 targets failed', { exact: false }).first()).toBeVisible();
-        await capture(page, path.join(h.evidence, `traceability-template-${mode.theme}-${mode.width}${mode.custom ? '-custom' : ''}-${mode.zoom}x.png`), mode.zoom);
-      } finally { await context.close(); if (mode.zoom === 2) fs.rmSync(profile, { recursive: true, force: true }); }
+        const surfaces = [{ name: 'netratel', page: job }, { name: 'rateldesk', page: incident }, { name: 'template', page: editor }];
+        for (const mode of batch.modes) {
+          for (const surface of surfaces) {
+            const page = surface.page;
+            await page.bringToFront(); await page.emulateMedia({ colorScheme: mode.theme });
+            await resizeForVisualCapture(page, { width: mode.width, height: mode.height });
+            if (mode.zoom === 2) {
+              await expect.poll(() => context.serviceWorkers().length).toBeGreaterThan(0);
+              await context.serviceWorkers()[0].evaluate(async url => {
+                const tab = (await chrome.tabs.query({})).find(x => x.url === url);
+                await chrome.tabs.setZoom(tab.id, 2);
+                if (await chrome.tabs.getZoom(tab.id) !== 2) throw new Error('Native browser zoom was not applied');
+              }, page.url());
+              await expect.poll(() => page.evaluate(() => innerWidth)).toBe(mode.width / 2);
+            }
+            await expect(page.locator('html')).toHaveAttribute(surface.name === 'rateldesk' ? 'data-helpdesk-theme' : 'data-netratel-theme', mode.theme);
+            const palette = mode.custom ? await page.addStyleTag({ content: ':root{--mud-palette-primary:#6868aa;--mud-palette-divider:#9381aa}' }) : null;
+            if (surface.name === 'template') {
+              await expect(fields.frameLocator('iframe').getByText('5 of 5 targets failed', { exact: false }).first()).toBeVisible();
+            } else {
+              const region = page.getByRole('region', { name: surface.name === 'netratel' ? 'Related automation resources' : 'Automation reports', exact: true });
+              await expect(region).toBeVisible(); await expect(region).toContainText(ids.sourceReference);
+              await expect(region).toContainText(surface.name === 'netratel' ? ids.incidentReference : '1 of 1 targets failed');
+              const link = region.getByRole('link').first(); await link.focus(); await expect(link).toBeFocused();
+            }
+            await capture(page, path.join(h.evidence, `traceability-${surface.name}-${mode.theme}-${mode.width}${mode.custom ? '-custom' : ''}-${mode.zoom}x.png`), mode.zoom);
+            if (palette) await palette.evaluate(element => element.remove());
+          }
+        }
+      } finally { await context.close(); if (batch.zoom === 2) fs.rmSync(profile, { recursive: true, force: true }); }
     }
   } finally { await browser.close(); }
 }
