@@ -63,6 +63,13 @@ if log_name:
         codes = sorted(set(re.findall(r'\berror ((?:CS|MSB|NU|NETSDK)\d+)\b', log.read_text(errors='replace'))))
 receipt = {'outcome': 'failed', 'stage': os.environ['PAIRING_FAILURE_STAGE'],
            'exitCode': int(os.environ['PAIRING_FAILURE_EXIT']), 'compilerErrorCodes': codes}
+operation_path = root / 'actual-pair/launch-operation.json'
+if operation_path.is_file() and operation_path.stat().st_size <= 8192:
+    operation = json.loads(operation_path.read_text())
+    if re.fullmatch(r'[a-z0-9 .-]{1,100}', operation.get('operation', '')):
+        receipt['launcherOperation'] = operation['operation']
+        code = operation.get('exitCode')
+        receipt['launcherExitCode'] = code if isinstance(code, int) and -128 <= code <= 255 else None
 browser_receipt = root / 'actual-pair/browser-evidence/receipt.json'
 if browser_receipt.is_file():
     records = json.loads(browser_receipt.read_text()).get('results', [])

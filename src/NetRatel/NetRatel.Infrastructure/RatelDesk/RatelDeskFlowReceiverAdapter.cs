@@ -123,7 +123,8 @@ public sealed class RatelDeskFlowReceiverAdapter(IRatelDeskConnectorStore connec
         if (!gate.Allowed) return new(RatelDeskReceiverObservationKind.AuthenticationRejected, gate.Code);
         // Async target probes may have raced disable/rotation/mapping update.
         current = await CurrentConnector(prepared.Peer.LocalTenantId, prepared.ConnectorId, prepared.ConnectorRevision, ct);
-        var createBearer = await credentials.GetBearerAsync(current, prepared.Peer, "rateldesk.incidents.create", ct);
+        var createScope = CreateScope(prepared);
+        var createBearer = await credentials.GetBearerAsync(current, prepared.Peer, createScope, ct);
         gate = await recheckFlowGuard(ct);
         if (!gate.Allowed) return new(RatelDeskReceiverObservationKind.AuthenticationRejected, gate.Code);
         if (!await evidenceStore.MarkPostAttemptAsync(lease, nodeId, ct))
@@ -136,11 +137,22 @@ public sealed class RatelDeskFlowReceiverAdapter(IRatelDeskConnectorStore connec
         if (!await authorization.CanExecuteAsync(lease.Event.Authority.PrincipalId,
                 lease.Event.Authority.IntegrationCredentialId, lease.Event.TenantId, ct))
             return new(RatelDeskReceiverObservationKind.AuthenticationRejected, "connector-current-authority-denied");
-        createBearer = await credentials.GetBearerAsync(current, prepared.Peer, "rateldesk.incidents.create", ct);
+        createBearer = await credentials.GetBearerAsync(current, prepared.Peer, createScope, ct);
         gate = await recheckFlowGuard(ct);
         if (!gate.Allowed) return new(RatelDeskReceiverObservationKind.AuthenticationRejected, gate.Code);
         ct.ThrowIfCancellationRequested();
         return await receiver.CreateAsync(prepared, createBearer, ct);
+    }
+
+    private static string CreateScope(RatelDeskReceiverPreparationV2 prepared)
+    {
+        const string create = "rateldesk.incidents.create";
+        // Custom rendering consumes both explicitly approved capabilities. Read the
+        // frozen selection; credential acquisition still rechecks the current mapping.
+        return prepared.PresentationContract is not null && System.Text.Json.JsonSerializer.Deserialize<
+            AutomationTrace.Contracts.AutomationIncidentCreate>(prepared.ExactCreateBodyJson,
+                AutomationTrace.AutomationTraceValidation.Json)?.Presentation.Mode == "template"
+            ? create + " rateldesk.incident-templates.read" : create;
     }
 
     private async Task<RatelDeskConnectorState> CurrentConnector(int tenant, Guid id, long revision, CancellationToken ct)

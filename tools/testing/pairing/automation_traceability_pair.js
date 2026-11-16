@@ -59,7 +59,7 @@ module.exports = async function automationTraceabilityPair(h) {
   const form = await apiJson(rdApi, '/api/v1/request-forms/', { serviceId: service.id, title: name, description: 'Owned isolated failure',
     organizationId: mapping.ratelDeskOrganizationId, allowedOrganizationIds: [mapping.ratelDeskOrganizationId], releaseStatus: 1,
     jsonSchema: JSON.stringify({ fields: [], tasks: [{ id: templateId, name: 'Check requested directory', order: 1, type: 'automation',
-      autoStart: true, dependsOn: [], expectedRuntimeMinutes: 1, graceRuntimeMinutes: 0, isCritical: false, failurePolicy: 'BlockRequest', maxRetries: 0 }] }) }, 'POST');
+      autoStart: true, dependsOn: [], expectedRuntimeMinutes: 1, graceRuntimeMinutes: 0, isCritical: false, failurePolicy: 'Continue', maxRetries: 0 }] }) }, 'POST');
   await apiJson(rdApi, '/api/v1/admin/orchestration/bindings', { systemConnectionId: mappingId, requestFormId: form.id,
     taskTemplateId: templateId, orchestrationRequestDefinitionId: String(created.requestDefinitionId),
     orchestrationRequestDefinitionName: name, orchestrationJobDefinitionId: jobId, orchestrationJobDefinitionName: name }, 'POST');

@@ -147,7 +147,7 @@ public sealed class PairingTransport(HttpClient http, ICorrelationContext? corre
     }
     public async Task<string> TokenAsync(PairingMetadata peer, PairingBusinessCredential credential, string scope, CancellationToken ct)
     {
-        if (credential.TokenEndpoint != Origin(peer.ApiOrigin) + "/connect/token" || !credential.Scopes.Contains(scope, StringComparer.Ordinal))
+        if (credential.TokenEndpoint != Origin(peer.ApiOrigin) + "/connect/token" || !ScopesAllowed(credential.Scopes, scope))
             throw new PairingException(403, "business-credential-mismatch", "The selected connection does not authorize this operation.");
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct); deadline.CancelAfter(TimeSpan.FromSeconds(15));
         using var request = new HttpRequestMessage(HttpMethod.Post, credential.TokenEndpoint)
@@ -168,6 +168,12 @@ public sealed class PairingTransport(HttpClient http, ICorrelationContext? corre
         }
         catch (Exception error) when (error is JsonException or InvalidOperationException)
         { throw new PairingException(502, "token-response-invalid", "The peer did not return a usable scoped access token."); }
+    }
+    internal static bool ScopesAllowed(IReadOnlyCollection<string> granted, string requested)
+    {
+        var scopes = requested.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        return scopes.Length is > 0 and <= 5 && scopes.Distinct(StringComparer.Ordinal).Count() == scopes.Length &&
+            scopes.All(scope => granted.Contains(scope, StringComparer.Ordinal));
     }
     public async Task<int> PostBusinessStatusAsync(string apiOrigin, string path, object body, string bearer, string correlationId, CancellationToken ct)
     {

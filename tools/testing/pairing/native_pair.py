@@ -45,6 +45,9 @@ def free_port():
 
 def tool_env():
     environment = dict(os.environ)
+    # The parent workflow's selected product version must not override the
+    # companion root during Debug publication or normal bootstrap.
+    environment.pop('VERSION', None)
     environment.update(DOTNET_ROOT=str(DOTNET.parent),
         DOTNET_CLI_HOME=os.environ.get('DOTNET_CLI_HOME', str(ROOT / 'dotnet-cli')),
         NUGET_PACKAGES=os.environ.get('NUGET_PACKAGES', str(ROOT / 'nuget')),
@@ -63,9 +66,11 @@ def docker_env():
 
 
 def command(args, *, environment=None, cwd=None, log_name='command.log', timeout=120):
+    private_json(FIXTURE / 'launch-operation.json', {'operation': log_name, 'result': 'running'})
     with (FIXTURE / log_name).open('ab') as output:
         result = subprocess.run(args, env=environment or tool_env(), cwd=cwd,
             stdout=output, stderr=subprocess.STDOUT, timeout=timeout)
+    private_json(FIXTURE / 'launch-operation.json', {'operation': log_name, 'exitCode': result.returncode})
     if result.returncode:
         raise RuntimeError(f'{log_name} failed with exit {result.returncode}; inspect the private log')
 
@@ -266,6 +271,7 @@ def request_ok(url):
 
 
 def wait_host(url, process, label):
+    private_json(FIXTURE / 'launch-operation.json', {'operation': label.lower() + '-readiness', 'result': 'running'})
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
         if process.poll() is not None:
