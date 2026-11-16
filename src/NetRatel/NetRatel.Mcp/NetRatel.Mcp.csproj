@@ -8,7 +8,7 @@
   <ItemGroup>
     <InternalsVisibleTo Include="NetRatel.Tests" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.14" />
-    <PackageReference Include="ModelContextProtocol" Version="2.3.0" />
+    <PackageReference Include="ModelContextProtocol" Version="2.4.0" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\NetRatel.AgentClient\NetRatel.AgentClient.csproj" />
