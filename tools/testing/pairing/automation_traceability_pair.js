@@ -113,13 +113,14 @@ module.exports = async function automationTraceabilityPair(h) {
       found.items.some(x => x.url === `/requests?search=${context.nativeRequestId}`) &&
       found.items.some(x => x.url === `/flows?tenantId=${tenant}&run=${accepted.flowRunId}`), 'Both references must locate three distinct permitted native resources');
   }
-  await rendered(h, { tenant, jobId, runId, flowId: flow.id, actionId: action.id, flowRunId: accepted.flowRunId,
-    sourceRequestId: submitted.requestId, sourceReference: submitted.trackingId, incidentId: accepted.incidentId,
-    incidentReference: receipt.trackingId, nativeRequestId: context.nativeRequestId });
   const proof = { sourceRequestId: submitted.requestId, sourceReference: submitted.trackingId, nativeRequestId: context.nativeRequestId,
     jobId, runId, flowRunId: accepted.flowRunId, incidentId: accepted.incidentId, incidentReference: receipt.trackingId,
     sourceOutcome: 'Failed', deliveryOutcome: 'Succeeded', nativeTargets: 1, syntheticPreviewTargets: 5, failedOrdinal: 6, childExitCode: 2,
     presentation, fingerprint: receipt.fingerprint, replayStable: true, linked: true, resourcesPerReference: 3 };
+  record('automationTraceabilityHttp', proof);
+  await rendered(h, { tenant, jobId, runId, flowId: flow.id, actionId: action.id, flowRunId: accepted.flowRunId,
+    sourceRequestId: submitted.requestId, sourceReference: submitted.trackingId, incidentId: accepted.incidentId,
+    incidentReference: receipt.trackingId, nativeRequestId: context.nativeRequestId });
   fs.writeFileSync(path.join(evidence, 'automation-traceability.json'), JSON.stringify(proof, null, 2), { mode: 0o600 });
   record('automationTraceability', proof);
   return proof;
@@ -162,21 +163,34 @@ async function rendered(h, ids) {
           if (name === 'netratel') await expect(region).toContainText(ids.incidentReference);
           else await expect(region).toContainText('1 of 1 targets failed');
           const link = region.getByRole('link').first(); await link.focus(); await expect(link).toBeFocused();
-          await page.screenshot({ path: path.join(h.evidence, `traceability-${name}-${mode.theme}-${mode.width}${mode.custom ? '-custom' : ''}-${mode.zoom}x.png`),
-            fullPage: mode.zoom !== 2, animations: 'disabled', mask: [page.locator('input[type=password], [data-sensitive]')] });
+          await capture(page, path.join(h.evidence, `traceability-${name}-${mode.theme}-${mode.width}${mode.custom ? '-custom' : ''}-${mode.zoom}x.png`), mode.zoom);
         }
         const nr = product('netratel');
         await page.goto(nr.web + `/flows?tenantId=${ids.tenant}&search=Synthetic%20directory%20incident`);
         await setZoom();
         if (mode.custom) await page.addStyleTag({ content: ':root{--mud-palette-primary:#6868aa;--mud-palette-divider:#9381aa}' });
         await page.getByTestId('flow-edit').first().click();
+        if (!await page.getByTestId('flow-select-node').isVisible()) await page.getByTestId('flow-palette-toggle').click();
         await page.getByTestId('flow-select-node').selectOption(ids.actionId);
+        if (await page.getByTestId('flow-properties-toggle').getAttribute('aria-expanded') !== 'true')
+          await page.getByTestId('flow-properties-toggle').click();
         const fields = page.getByTestId('flow-incident-presentation');
         await expect(fields.getByLabel('Use RatelDesk incident template', { exact: true })).toBeChecked();
         await fields.getByRole('button', { name: 'Preview with synthetic failure', exact: true }).click();
         await expect(fields.frameLocator('iframe').getByText('5 of 5 targets failed', { exact: false }).first()).toBeVisible();
-        await page.screenshot({ path: path.join(h.evidence, `traceability-template-${mode.theme}-${mode.width}${mode.custom ? '-custom' : ''}-${mode.zoom}x.png`), fullPage: mode.zoom !== 2, animations: 'disabled' });
+        await capture(page, path.join(h.evidence, `traceability-template-${mode.theme}-${mode.width}${mode.custom ? '-custom' : ''}-${mode.zoom}x.png`), mode.zoom);
       } finally { await context.close(); if (mode.zoom === 2) fs.rmSync(profile, { recursive: true, force: true }); }
     }
   } finally { await browser.close(); }
+}
+
+async function capture(page, file, zoom) {
+  if (zoom !== 2) return page.screenshot({ path: file, fullPage: true, animations: 'disabled',
+    mask: [page.locator('input[type=password], [data-sensitive]')] });
+  const mask = await page.addStyleTag({ content: 'input[type=password], [data-sensitive] { visibility: hidden !important; }' });
+  const session = await page.context().newCDPSession(page);
+  try {
+    const surface = await session.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false });
+    fs.writeFileSync(file, Buffer.from(surface.data, 'base64'), { mode: 0o600 });
+  } finally { await session.detach(); await mask.evaluate(element => element.remove()); }
 }
