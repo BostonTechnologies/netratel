@@ -267,7 +267,7 @@ public sealed class McpOperatorCommandStore(OrchestratorDbContext db) : IMcpOper
             constraints is null || constraints.MaxCommandDurationSeconds is not > 0 || constraints.MaxConcurrentCommands is not > 0 ||
             constraints.MaxOutputBytes is not > 0 || constraints.MaxTaskTargetCount is not > 0 || constraints.MaxFanOut is not > 0 ||
             constraints.AllowedShells is not { Count: > 0 } || constraints.WorkingDirectories is not { Count: > 0 } ||
-            !IsSafeShell(request.ShellType) || !constraints.AllowedShells.Contains(request.ShellType, StringComparer.OrdinalIgnoreCase) ||
+            !IsSafeShell(request.ShellType) || !constraints.AllowedShells.AllowsShell(request.ShellType) ||
             !IsWorkingDirectoryAllowed(request.WorkingDirectory, constraints.WorkingDirectories) ||
             !IsSha256(request.CommandHash) || request.CommandLength is < 1 or > 32 * 1024 ||
             request.TimeoutSeconds is < 1 || request.TimeoutSeconds > constraints.MaxCommandDurationSeconds ||

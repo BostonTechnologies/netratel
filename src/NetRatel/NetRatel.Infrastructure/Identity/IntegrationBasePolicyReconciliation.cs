@@ -94,8 +94,8 @@ public sealed partial class IntegrationPairingService
             var families = supported.Aggregate(McpOperatorOperationFamily.None, (f, op) => f | op.OperationFamily);
             return existing is null ? new McpIntegrationPolicy(tenant, $"{credential.Name} · {(tenant == 0 ? "Server access" : names.GetValueOrDefault(tenant, "Unavailable tenant"))} · All access",
                     McpOperatorPolicyEffect.Allow, families, McpIntegrationPolicyCatalog.AllAccessLimits, credential.ExpiresAtUtc)
-                : new McpIntegrationPolicy(tenant, existing.Name, existing.Effect, existing.OperationFamily & families, existing.Constraints,
-                    existing.ExpiresAtUtc ?? credential.ExpiresAtUtc) { Operations = existing.Operation is { } exact ? [exact] : existing.Operations,
+                : new McpIntegrationPolicy(tenant, existing.Name, existing.Effect, existing.Constraints.AllOperations ? families : existing.OperationFamily & families, existing.Constraints,
+                    existing.ExpiresAtUtc ?? credential.ExpiresAtUtc) { Operations = existing.Constraints.AllOperations ? null : existing.Operation is { } exact ? [exact] : existing.Operations,
                         ExistingPolicyId = existing.PolicyId, ExpectedVersion = existing.Version, LifecycleState = existing.LifecycleState };
         }).ToArray();
     }
@@ -134,15 +134,18 @@ public sealed partial class IntegrationPairingService
             var draft = new McpOperatorPolicyDraft(policy.Name, metadata.Environment, policy.Effect, 0,
                 new(McpOperatorPrincipalSelectorKind.OAuthClientId, credentialId),
                 new(policy.TenantId == 0 ? McpOperatorTargetSelectorKind.ControlPlane : McpOperatorTargetSelectorKind.Tenant, policy.TenantId),
-                null, policy.Families, null, policy.Constraints, policy.ExpiresAtUtc, null, "pairing:" + request.Id + ":base:" + policy.TenantId)
-            { IntegrationCredentialId = credentialId, Resource = request.Resource, Operations = operations };
+                null, policy.Families, null, IntegrationAllAccessReconciliation.Stamp(policy.Constraints,
+                    policy.TenantId == 0 ? metadata.Proposal.InstancePermissions : metadata.Proposal.Grants.Where(g => g.TenantId == policy.TenantId).Select(g => g.Permission)),
+                policy.ExpiresAtUtc, null, "pairing:" + request.Id + ":base:" + policy.TenantId)
+            { IntegrationCredentialId = credentialId, Resource = request.Resource, Operations = operations, IntegrationReviewApproved = true };
             var existing = current.SingleOrDefault(p => p.TargetSelector.TenantId == policy.TenantId);
             if (policy.ExistingPolicyId is { } expectedId && (existing?.PolicyId != expectedId || existing.Version != policy.ExpectedVersion))
                 throw new DbUpdateConcurrencyException("The base policy changed after review.");
             if (existing is null) await policyAdministration.CreateAsync(draft, metadata.ApproverPrincipalId!, ct).ConfigureAwait(false);
             else await policyAdministration.ReplaceAsync(existing.PolicyId, existing.Version, existing.ToDraft() with {
                 Name = draft.Name, Effect = draft.Effect, OperationFamily = draft.OperationFamily, Operation = null,
-                Operations = draft.Operations, Constraints = draft.Constraints, ExpiresAtUtc = draft.ExpiresAtUtc, AuditReference = draft.AuditReference
+                Operations = draft.Operations, Constraints = draft.Constraints, ExpiresAtUtc = draft.ExpiresAtUtc, AuditReference = draft.AuditReference,
+                IntegrationReviewApproved = true
             }, metadata.ApproverPrincipalId!, ct).ConfigureAwait(false);
         }
         foreach (var removed in current.Where(p => !plan.Any(b => b.TenantId == p.TargetSelector.TenantId)))

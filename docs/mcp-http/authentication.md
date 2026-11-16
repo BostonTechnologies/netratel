@@ -69,7 +69,7 @@ near the end of the list. The dialog shows its exact principal and target
 selectors, classification filter, operation families, path grants, limits,
 expiry, version, lifecycle state and immutable change audit. Exact-client
 policies also show the server-owned target profile and its version.
-Working-directory grants are exact: `/tmp` does not grant `/tmp/example`.
+Custom working-directory grants are exact: `/tmp` does not grant `/tmp/example`. Explicit unrestricted policies accept any valid accessible directory and display **Unrestricted**. Their catalog and grant reconciliation is described in [All access](setup.md#all-access-and-current-clients).
 Inspection, editing, frozen preview, confirmation and readback remain inside the
 scrollable dialog with its footer actions available. Closing it preserves the
 list's search, filters, page and selected row; it does not undo an accepted

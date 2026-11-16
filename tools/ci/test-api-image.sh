@@ -47,7 +47,7 @@ if [[ "$comparison" != base ]]; then
   # compiler timestamps cannot masquerade as payload changes.
   python3 - "$temporary/source" "$results" "$comparison" <<'PY'
 from datetime import datetime, timezone
-import hashlib, json, shutil, subprocess, sys
+import hashlib, json, re, shutil, subprocess, sys
 from pathlib import Path
 import xml.etree.ElementTree as ET
 root, results = map(Path, sys.argv[1:3])
@@ -55,7 +55,7 @@ comparison = sys.argv[3]
 path = root / 'docker/api/Dockerfile'
 text = path.read_text()
 bases = {}
-for reference in ('mcr.microsoft.com/dotnet/aspnet:10.0-noble', 'mcr.microsoft.com/dotnet/sdk:10.0.403-noble'):
+for reference in sorted(set(re.findall(r'^FROM(?:\s+--platform=\S+)?\s+(mcr\.microsoft\.com/\S+)', text, re.MULTILINE))):
     subprocess.run(['docker', 'pull', reference], check=True)
     image = json.loads(subprocess.check_output(['docker', 'image', 'inspect', reference], text=True))[0]
     digest = next(item for item in image['RepoDigests'] if item.startswith(reference.split(':')[0] + '@sha256:'))

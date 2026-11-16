@@ -1,6 +1,8 @@
 @using AutomationTrace.Contracts
 @using NetRatel.Shared.Contracts.RatelDesk
 @inject IHttpClientFactory HttpClientFactory
+@inject IJSRuntime JS
+@implements IAsyncDisposable
 
 <fieldset disabled="@Disabled" class="flow-incident-presentation" data-testid="flow-incident-presentation" aria-busy="@(loading || previewing)">
     <legend>Incident presentation</legend>
@@ -49,7 +51,7 @@
         <section class="presentation-preview" aria-label="Synthetic report preview">
             <span class="presentation-preview-caption">Synthetic preview</span>
             <p class="presentation-preview-subject">@preview.Subject</p>
-            <iframe title="Read-only internal incident report preview" sandbox="" srcdoc="@preview.Html"></iframe>
+            <iframe title="Read-only internal incident report preview" sandbox="" srcdoc="@(previewHtml ?? preview.Html)"></iframe>
         </section>
     }
 </fieldset>
@@ -64,6 +66,8 @@
     private HttpClient Api => HttpClientFactory.CreateClient("FlowsApi");
     private RatelDeskIncidentPresentationCatalogue? catalogue;
     private IncidentTemplatePreview? preview;
+    private string? previewHtml;
+    private IJSObjectReference? previewModule;
     private string? error, scope;
     private string filter = "";
     private bool loading, custom, previewing;
@@ -120,10 +124,28 @@
             using var response = await Api.PostAsJsonAsync(Path + "/preview", new RatelDeskIncidentPreviewRequest(selected, SourceKinds.FirstOrDefault() ?? "monitoring"));
             if (current != generation || selected != Presentation) return;
             if (!response.IsSuccessStatusCode) { error = "The pinned presentation could not be previewed. Check revision compatibility and current connector authority."; return; }
-            preview = await response.Content.ReadFromJsonAsync<IncidentTemplatePreview>();
+            var candidate = await response.Content.ReadFromJsonAsync<IncidentTemplatePreview>();
+            if (current != generation || selected != Presentation) return;
+            preview = candidate;
+            previewHtml = preview?.Html;
+            if (preview is not null)
+            {
+                previewModule ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/automationPreview.js");
+                if (previewModule is not null)
+                {
+                    var formatted = await previewModule.InvokeAsync<string>("formatReport", candidate!.Html);
+                    if (current == generation && selected == Presentation) previewHtml = formatted;
+                }
+            }
         }
         catch (HttpRequestException) { if (current == generation && selected == Presentation) error = "Preview is unavailable. No incident or execution was created."; }
+        catch (JSException) { previewHtml = preview?.Html; }
         finally { if (current == generation) previewing = false; }
+    }
+    public async ValueTask DisposeAsync()
+    {
+        if (previewModule is null) return;
+        try { await previewModule.DisposeAsync(); } catch (JSDisconnectedException) { }
     }
     private static string Key(IncidentPresentationReference value) => value.TemplateId + ":" + value.Revision + ":" + value.ContentDigest;
 }

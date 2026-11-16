@@ -342,10 +342,11 @@ public static class McpOperatorTaskEndpoints
             string.IsNullOrWhiteSpace(request.Command) || Encoding.UTF8.GetByteCount(request.Command) > MaximumCommandBytes ||
             request.TimeoutSeconds is < 1 or > MaximumTimeoutSeconds || request.TimeoutSeconds > constraints.MaxCommandDurationSeconds ||
             request.MaximumOutputBytes is < 1 or > MaximumOutputBytes || request.MaximumOutputBytes > constraints.MaxOutputBytes ||
-            !IsShell(request.Shell) || !constraints.AllowedShells.Contains(request.Shell, StringComparer.OrdinalIgnoreCase) ||
-            !IsAllowedDirectory(request.WorkingDirectory, constraints.WorkingDirectories) || !EnvironmentReferencesAreValid(request.EnvironmentReferences))
+            !IsShell(request.Shell) || !EnvironmentReferencesAreValid(request.EnvironmentReferences))
             return false;
 
+        if (!constraints.AllowedShells.AllowsShell(request.Shell)) { failureCode = "task_shell_not_allowed"; return false; }
+        if (!IsAllowedDirectory(request.WorkingDirectory, constraints.WorkingDirectories)) { failureCode = "task_working_directory_not_allowed"; return false; }
         var shell = request.Shell.Trim().ToLowerInvariant();
         var command = request.Command.Trim();
         var outputPolicy = TaskOutputPolicy.Create([], environmentReferences: request.EnvironmentReferences);

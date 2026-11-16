@@ -83,7 +83,7 @@ public static partial class McpOperatorClientFileEndpoints
 
         var context = admitted.Context!;
         if (!TryCreateReadPolicy(context.Decision, path, out var accessPolicy))
-            return Failure("file_policy_roots_missing", context);
+            return Failure("file_path_not_allowed", context);
         var entryLimit = pageSize ?? MaximumPageSize;
         var binding = BrowseBinding(context, path, entryLimit);
         var policyFingerprint = BrowsePolicyFingerprint(context.Decision, path);
@@ -186,7 +186,7 @@ public static partial class McpOperatorClientFileEndpoints
 
         var context = admitted.Context!;
         if (!TryCreateReadPolicy(context.Decision, path, out var accessPolicy))
-            return Failure("file_policy_roots_missing", context);
+            return Failure("file_path_not_allowed", context);
         if (await RecordAcceptedAsync(admission, context, cancellationToken).ConfigureAwait(false) is { } rejected)
             return rejected;
         if (await RecheckAdmissionAsync(admission, presence, new ClientKey(tenantId, agentId), context, path, cancellationToken).ConfigureAwait(false) is { } beforeDispatch)
@@ -272,9 +272,9 @@ public static partial class McpOperatorClientFileEndpoints
 
         var context = admitted.Context!;
         if (!TryCreateReadPolicy(context.Decision, request.Path, out var accessPolicy))
-            return Failure("file_policy_roots_missing", context);
+            return Failure("file_path_not_allowed", context);
         if (!TryGetReadRootFingerprint(context.Decision, request.Path, out var readRootFingerprint))
-            return Failure("file_policy_roots_missing", context);
+            return Failure("file_path_not_allowed", context);
         var maximumBytes = ArtifactLimit(context.Decision);
         if (maximumBytes <= 0)
             return Failure("file_write_limit_exceeded", context);
@@ -325,9 +325,9 @@ public static partial class McpOperatorClientFileEndpoints
 
         var context = admitted.Context!;
         if (!TryCreateReadPolicy(context.Decision, request.Path, out var accessPolicy))
-            return Failure("file_policy_roots_missing", context);
+            return Failure("file_path_not_allowed", context);
         if (!TryGetReadRootFingerprint(context.Decision, request.Path, out var readRootFingerprint))
-            return Failure("file_policy_roots_missing", context);
+            return Failure("file_path_not_allowed", context);
         var maximumBytes = ArtifactLimit(context.Decision);
         if (maximumBytes <= 0)
             return Failure("file_write_limit_exceeded", context);
@@ -697,7 +697,7 @@ public static partial class McpOperatorClientFileEndpoints
 
         var context = admitted.Context!;
         if (!TryCreateReadPolicy(context.Decision, path, out var accessPolicy))
-            return Failure("file_policy_roots_missing", context);
+            return Failure("file_path_not_allowed", context);
         if (await RecordAcceptedAsync(admission, context, cancellationToken).ConfigureAwait(false) is { } rejected)
             return rejected;
         if (await RecheckAdmissionAsync(admission, presence, new ClientKey(tenantId, agentId), context, path, cancellationToken).ConfigureAwait(false) is { } beforeDispatch)
@@ -976,7 +976,7 @@ public static partial class McpOperatorClientFileEndpoints
 
         var context = admitted.Context!;
         if (!TryCreateFileWritePolicy(context.Decision, write, out _))
-            return Failure("file_policy_roots_missing", context);
+            return Failure("file_path_not_allowed", context);
         if (write.Bytes.Length > WriteLimit(context.Decision, write.MaximumBytes))
             return Failure("file_write_limit_exceeded", context);
 
@@ -1020,7 +1020,7 @@ public static partial class McpOperatorClientFileEndpoints
 
         var context = admitted.Context!;
         if (!TryCreateRelocationPolicy(context.Decision, relocation, out _))
-            return Failure("file_policy_roots_missing", context);
+            return Failure("file_path_not_allowed", context);
 
         try
         {
@@ -1065,7 +1065,7 @@ public static partial class McpOperatorClientFileEndpoints
 
         var context = admitted.Context!;
         if (!TryCreateFileWritePolicy(context.Decision, write, out var accessPolicy))
-            return Failure("file_policy_roots_missing", context);
+            return Failure("file_path_not_allowed", context);
         if (write.Bytes.Length > WriteLimit(context.Decision, write.MaximumBytes))
             return Failure("file_write_limit_exceeded", context);
 
@@ -1168,7 +1168,7 @@ public static partial class McpOperatorClientFileEndpoints
 
         var context = admitted.Context!;
         if (!TryCreateRelocationPolicy(context.Decision, relocation, out var accessPolicy))
-            return Failure("file_policy_roots_missing", context);
+            return Failure("file_path_not_allowed", context);
 
         var confirmation = await confirmations.ConfirmAsync(
             new McpOperatorConfirmationRequest(planToken, idempotencyKey, RelocationPayloadHash(relocation), context.Decision),
@@ -1318,7 +1318,7 @@ public static partial class McpOperatorClientFileEndpoints
         if (!TryCreateReadPolicy(evaluated.Decision, path, out var accessPolicy) ||
             !TryGetReadRootFingerprint(evaluated.Decision, path, out var readRootFingerprint))
         {
-            return new(null, null, 0, "file_policy_roots_missing");
+            return new(null, null, 0, "file_path_not_allowed");
         }
 
         var maximumBytes = ArtifactLimit(evaluated.Decision);
@@ -1402,6 +1402,7 @@ public static partial class McpOperatorClientFileEndpoints
     private static IReadOnlyList<string> NormalizeReadRoots(IReadOnlyList<string>? roots, McpOperatorFilePathKind expectedKind) =>
         roots is null
             ? []
+            : roots.Contains("*", StringComparer.Ordinal) ? ["*"]
             : roots.Select(root => TryNormalizePolicyRoot(root, out var normalized, out var kind) && kind == expectedKind && !IsSensitivePath(normalized, kind)
                     ? normalized
                     : null)
@@ -1600,7 +1601,7 @@ public static partial class McpOperatorClientFileEndpoints
                     : TryCreateWritePolicy(evaluated.Decision, path, out _)
                 : TryCreateReadPolicy(evaluated.Decision, path, out _))
                 ? null
-                : "file_policy_roots_missing";
+                : "file_path_not_allowed";
     }
 
     private static async Task<string?> RecheckRelocationAdmissionAsync(
@@ -1624,7 +1625,7 @@ public static partial class McpOperatorClientFileEndpoints
             ? evaluated.Decision.FailureCode ?? "target_policy_missing"
             : TryCreateRelocationPolicy(evaluated.Decision, relocation, out _)
                 ? null
-                : "file_policy_roots_missing";
+                : "file_path_not_allowed";
     }
 
     private static bool TryCreateReadPolicy(
@@ -1687,11 +1688,20 @@ public static partial class McpOperatorClientFileEndpoints
         bool allowRootTarget = true)
     {
         accessPolicy = default!;
-        if (!TryNormalizeCanonicalPath(path, out var candidate, out var pathKind) || IsSensitivePath(candidate, pathKind) ||
-            roots is not { Count: > 0 })
+        if (!TryNormalizeCanonicalPath(path, out var candidate, out var pathKind) || roots is not { Count: > 0 })
         {
             return false;
         }
+
+        // Wildcard is explicit unrestricted policy intent. Send a native concrete
+        // filesystem root to the client so canonicalization and OS access checks remain authoritative.
+        if (roots.Contains("*", StringComparer.Ordinal))
+        {
+            var root = pathKind == McpOperatorFilePathKind.Windows ? candidate[..3] : "/";
+            accessPolicy = new GatewayFileAccessPolicy([root]);
+            return true;
+        }
+        if (IsSensitivePath(candidate, pathKind)) return false;
 
         var normalizedRoots = roots
             .Select(root => TryNormalizePolicyRoot(root, out var normalized, out var rootKind) && rootKind == pathKind
@@ -2045,7 +2055,7 @@ public static partial class McpOperatorClientFileEndpoints
             "oauth_scope_missing" => "oauth_scope",
             "target_not_found" or "target_disabled" or "target_offline" => "target",
             "capability_unavailable" => "capability",
-            "file_policy_roots_missing" or "file_write_limit_exceeded" or "file_access_denied" or "artifact_policy_changed" => "constraint",
+            "file_path_not_allowed" or "file_write_limit_exceeded" or "file_access_denied" or "artifact_policy_changed" => "constraint",
             "confirmation_plan_invalid" or "confirmation_plan_stale" or "confirmation_plan_expired" => "confirmation",
             "idempotency_conflict" or "idempotency_pending" or "idempotency_replay_unavailable" => "idempotency",
             _ => "policy"

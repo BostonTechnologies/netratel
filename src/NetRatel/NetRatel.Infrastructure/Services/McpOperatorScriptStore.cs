@@ -314,7 +314,7 @@ public sealed class McpOperatorScriptStore(OrchestratorDbContext db) : IMcpOpera
         }
         if (ContainsSecretLiteral(content))
             throw new ArgumentException("Script content must use a named target-local secret reference instead of a secret literal.", nameof(draft));
-        if (constraints.AllowedShells is not { Count: > 0 } || !constraints.AllowedShells.Contains(shell, StringComparer.OrdinalIgnoreCase))
+        if (constraints.AllowedShells is not { Count: > 0 } || !constraints.AllowedShells.AllowsShell(shell))
             throw new ArgumentException("The script shell is not policy allowlisted.", nameof(draft));
 
         var timeout = draft.TimeoutSeconds;

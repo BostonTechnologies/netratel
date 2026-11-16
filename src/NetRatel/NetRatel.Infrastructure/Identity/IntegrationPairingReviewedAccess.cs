@@ -72,7 +72,7 @@ public sealed partial class IntegrationPairingService
             await PolicyRevisionHashAsync(proposal, environment, id, ct).ConfigureAwait(false), hash,
             ProtectedSetup: protection.CreateProtector("NetRatel.IntegrationPairing.Setup.v1", id).Protect(JsonSerializer.Serialize(new ProtectedSetupMaterial(code, capability))),
             CredentialRevisionHash: await CredentialRevisionHashAsync(proposal.CredentialId, owner, ct).ConfigureAwait(false));
-        metadata = metadata with { BasePolicies = basePolicies, TargetPolicyLimits = basePolicies is null && proposal.Targets.Count > 0 ? McpIntegrationPolicyCatalog.AllAccessLimits : null };
+        metadata = metadata with { BasePolicies = basePolicies, TargetPolicyLimits = basePolicies is null && proposal.Targets.Count > 0 ? McpIntegrationPolicyCatalog.AllAccessLimits with { AllOperations = false } : null };
         metadata = metadata with { ReviewBindingHash = ReviewHash(origin, resource!, metadata) };
         var request = new IntegrationPairingRequest
         {

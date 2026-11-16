@@ -1,3 +1,4 @@
+using NetRatel.Shared.Connectivity;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -277,7 +278,7 @@ public static class McpOperatorOnboardingEndpoints
     private static McpOperatorEnrollmentMetadata ToMetadata(EnrollmentCode code, DateTimeOffset now) => new(code.Id, code.TenantId, RuntimeFromMarker(code.Notes!), code.CreatedAtUtc, code.ValidFromUtc, code.ValidToUtc,
         code.MaxUses ?? 1, code.Uses, code.RevokedAtUtc, code.RevokedBy, code.RevokedAtUtc is null && code.ValidFromUtc <= now && code.ValidToUtc > now && (!code.MaxUses.HasValue || code.Uses < code.MaxUses.Value));
     private static McpOperatorOnboardingCollateral ToCollateral(ClientArtifactSummaryDto artifact) => new(artifact.Rid, artifact.Version, artifact.FileName, artifact.Size, artifact.Sha256, artifact.UploadedAt);
-    private static bool IsCreateValid(McpOperatorEnrollmentCreateRequest request, McpOperatorConstraints? constraints) => IsRuntime(request.Runtime) && request.ValidForMinutes is >= 5 and <= 10 && request.MaxUses is >= 1 and <= 10 &&
+    private static bool IsCreateValid(McpOperatorEnrollmentCreateRequest request, McpOperatorConstraints? constraints) => IsRuntime(request.Runtime) && request.ValidForMinutes is >= EnrollmentCodeLimits.MinimumValidityMinutes and <= EnrollmentCodeLimits.MaximumValidityMinutes && request.MaxUses is >= 1 &&
         (constraints?.MaxOnboardingCodeLifetimeSeconds is not { } maximumLifetime || request.ValidForMinutes.Value * 60 <= maximumLifetime) &&
         (constraints?.MaxOnboardingCodeUses is not { } maximumUses || request.MaxUses.Value <= maximumUses);
     private static bool IsRuntime(string? runtime) => runtime is "linux-x64" or "win-x64";

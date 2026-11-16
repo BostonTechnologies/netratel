@@ -6,7 +6,7 @@ using Xunit;
 
 namespace NetRatel.Tests.Infrastructure;
 
-public sealed class McpIntegrationPolicyHierarchyTests
+public sealed partial class McpIntegrationPolicyHierarchyTests
 {
     private const string Resource = "https://mcp.example.test/mcp";
     private const string Credential = "aabbccddeeff00112233445566778899";
@@ -23,7 +23,7 @@ public sealed class McpIntegrationPolicyHierarchyTests
         var draft = new McpOperatorPolicyDraft("Integration · Customer · All access", McpOperatorEnvironment.Production, McpOperatorPolicyEffect.Allow, 0,
             new(McpOperatorPrincipalSelectorKind.OAuthClientId, Credential), new(McpOperatorTargetSelectorKind.Tenant, 42), null,
             McpOperatorOperationFamily.TerminalExecute | McpOperatorOperationFamily.Observability, null,
-            McpIntegrationPolicyCatalog.AllAccessLimits, DateTimeOffset.UtcNow.AddDays(7), null)
+            McpIntegrationPolicyCatalog.BoundedDefaults, DateTimeOffset.UtcNow.AddDays(7), null)
         { IntegrationCredentialId = Credential, Resource = Resource, Operations = ["netratel_terminal/open", "netratel_clients/get"] };
         var root = await admin.CreateAsync(draft, "policy-admin", default);
         var deny = await admin.CreateAsync(draft with { Name = "Deny terminals on selected clients", Effect = McpOperatorPolicyEffect.Deny,
@@ -54,7 +54,7 @@ public sealed class McpIntegrationPolicyHierarchyTests
         var admin = new McpOperatorPolicyAdministration(db);
         var draft = new McpOperatorPolicyDraft("Base", McpOperatorEnvironment.Production, McpOperatorPolicyEffect.Allow, 0,
             new(McpOperatorPrincipalSelectorKind.OAuthClientId, Credential), new(McpOperatorTargetSelectorKind.Tenant, 42), null,
-            McpOperatorOperationFamily.TerminalExecute, null, McpIntegrationPolicyCatalog.AllAccessLimits, DateTimeOffset.UtcNow.AddHours(1), null)
+            McpOperatorOperationFamily.TerminalExecute, null, McpIntegrationPolicyCatalog.BoundedDefaults, DateTimeOffset.UtcNow.AddHours(1), null)
         { IntegrationCredentialId = Credential, Resource = Resource, Operations = ["netratel_terminal/open"] };
         var root = await admin.CreateAsync(draft, "admin", default);
         var child = await admin.CreateAsync(draft with { ParentPolicyId = root.PolicyId, Name = "Exception", Priority = 100 }, "admin", default);

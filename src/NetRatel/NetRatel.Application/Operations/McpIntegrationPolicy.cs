@@ -18,6 +18,7 @@ public static class McpIntegrationPolicyCatalog
     {
         if (policy.Effect != McpOperatorPolicyEffect.Allow) return;
         var f = policy.Families; var c = policy.Constraints;
+        if (c.Unrestricted) return;
         if (f.HasFlag(McpOperatorOperationFamily.FileRead) && c.ReadRoots is not { Count: > 0 } ||
             f.HasFlag(McpOperatorOperationFamily.FileWrite) && c.WriteRoots is not { Count: > 0 } ||
             (f.HasFlag(McpOperatorOperationFamily.TerminalExecute) || f.HasFlag(McpOperatorOperationFamily.TaskExecution)) &&
@@ -40,8 +41,10 @@ public static class McpIntegrationPolicyCatalog
         }).ToArray();
     }
 
-    // These are explicit, inspectable preset limits, never an implicit runtime capability grant.
-    public static McpOperatorConstraints AllAccessLimits => new(
+    public static McpOperatorConstraints AllAccessLimits => new() { Unrestricted = true, AllOperations = true };
+
+    // Retained for custom bounded policies and exact recognition of the original preset on upgrade.
+    public static McpOperatorConstraints BoundedDefaults => new(
         ReadRoots: ["/", "C:\\"], WriteRoots: ["/", "C:\\"],
         AllowedShells: ["bash", "sh", "pwsh", "powershell", "cmd"], WorkingDirectories: ["/tmp", "C:\\Windows\\Temp"],
         MaxCommandDurationSeconds: 300, MaxTerminalIdleSeconds: 300, MaxTerminalLifetimeSeconds: 3600,

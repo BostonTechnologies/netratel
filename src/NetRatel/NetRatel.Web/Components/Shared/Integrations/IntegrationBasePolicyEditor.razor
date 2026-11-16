@@ -23,14 +23,22 @@
             <MudStack Row="true" Wrap="Wrap.Wrap">@foreach(var operation in Supported.Where(op => Value.Families.HasFlag(op.OperationFamily) && (Value.Operations is null || Value.Operations.Contains(op.ToolName + "/" + op.OperationName)))) { <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">@operation.ToolName/@operation.OperationName</MudChip> }</MudStack>
         </MudExpansionPanel>
         <MudExpansionPanel Text="Paths, shells and limits">
-            <MudAlert Severity="Severity.Info" Class="mb-3">All access includes the displayed file roots and execution limits. Change these bounds to match the work you approve. The default working directories are /tmp and C:\Windows\Temp; active tenant deletion is disabled. Runtime capability and operation confirmations still apply.</MudAlert>
+            @if (Value.Constraints.Unrestricted)
+            {
+                <MudText Typo="Typo.body2" Class="mb-2">Any accessible path and working directory, all supported shells, and no discretionary policy limits. Selected scope, account authority, protocol limits and operation confirmations still apply.</MudText>
+                <MudButton Variant="Variant.Outlined" Size="Size.Small" OnClick="@(() => ChangeLimits(McpIntegrationPolicyCatalog.BoundedDefaults))" Disabled="Disabled">Customize limits</MudButton>
+            }
+            else
+            {
+            <MudText Typo="Typo.caption" Class="mb-3">These custom limits apply within the selected scope.</MudText>
             <MudGrid Spacing="2">
                 <MudItem xs="12" md="6"><MudTextField T="string" Label="Read roots (one per line)" Lines="2" Value="Lines(Value.Constraints.ReadRoots)" ValueChanged="@((string text) => ChangeLimits(Value.Constraints with { ReadRoots = Values(text) }))" Disabled="Disabled" /></MudItem>
                 <MudItem xs="12" md="6"><MudTextField T="string" Label="Write roots (one per line)" Lines="2" Value="Lines(Value.Constraints.WriteRoots)" ValueChanged="@((string text) => ChangeLimits(Value.Constraints with { WriteRoots = Values(text) }))" Disabled="Disabled" /></MudItem>
                 <MudItem xs="12" md="6"><MudTextField T="string" Label="Exact working directories (one per line)" Lines="2" Value="Lines(Value.Constraints.WorkingDirectories)" ValueChanged="@((string text) => ChangeLimits(Value.Constraints with { WorkingDirectories = Values(text) }))" Disabled="Disabled" /></MudItem>
-                <MudItem xs="12" md="6"><MudSelect T="string" Label="Allowed shells" MultiSelection="true" SelectedValues="@(Value.Constraints.AllowedShells ?? [])" SelectedValuesChanged="@(shells => ChangeLimits(Value.Constraints with { AllowedShells = shells.ToArray() }))" Disabled="Disabled">@foreach(var shell in McpIntegrationPolicyCatalog.AllAccessLimits.AllowedShells!) { <MudSelectItem Value="shell">@shell</MudSelectItem> }</MudSelect></MudItem>
+                <MudItem xs="12" md="6"><MudSelect T="string" Label="Allowed shells" MultiSelection="true" SelectedValues="@(Value.Constraints.AllowedShells ?? [])" SelectedValuesChanged="@(shells => ChangeLimits(Value.Constraints with { AllowedShells = shells.ToArray() }))" Disabled="Disabled">@foreach(var shell in McpIntegrationPolicyCatalog.BoundedDefaults.AllowedShells!) { <MudSelectItem Value="shell">@shell</MudSelectItem> }</MudSelect></MudItem>
             </MudGrid>
             <OperatorPolicyLimitsEditor Value="Value.Constraints" ValueChanged="ChangeLimits" Disabled="Disabled" />
+            }
         </MudExpansionPanel>
     </MudExpansionPanels>
 </MudPaper>
@@ -49,19 +57,19 @@
     private IEnumerable<McpOperatorOperationFamily> AvailableFamilies => Supported.Select(op => op.OperationFamily).Distinct();
     private IReadOnlyCollection<McpOperatorOperationFamily> SelectedFamilies => AvailableFamilies.Where(f => Value.Families.HasFlag(f)).ToArray();
     private Task Change(McpIntegrationPolicy policy) => ValueChanged.InvokeAsync(policy);
-    private Task ChangeLimits(McpOperatorConstraints limits) => Change(Value with { Constraints = limits });
+    private Task ChangeLimits(McpOperatorConstraints limits) => Change(Value with { Constraints = limits with { Unrestricted = false, AllOperations = false, FullPermissionCatalog = false, PermissionCatalogSnapshot = null } });
     private Task ChangeFamilies(IReadOnlyCollection<McpOperatorOperationFamily> families)
     {
         var selected = families.Aggregate(McpOperatorOperationFamily.None, (f, next) => f | next);
         var allowed = McpIntegrationPolicyCatalog.WithCanonicalPolicyOperations(Supported.Where(op => selected.HasFlag(op.OperationFamily)).Select(op => op.ToolName + "/" + op.OperationName));
-        return Change(Value with { Families = selected, Operations = Value.Operations?.Where(allowed.Contains).ToArray() });
+        return Change(Value with { Families = selected, Operations = Value.Operations?.Where(allowed.Contains).ToArray(), Constraints = Value.Constraints with { AllOperations = false, FullPermissionCatalog = false, PermissionCatalogSnapshot = null } });
     }
     private Task Preset(bool readOnly) => Change(Value with {
         Name = Value.Name[..(Value.Name.LastIndexOf(" · ", StringComparison.Ordinal) is var index && index >= 0 ? index : Value.Name.Length)] + (readOnly ? " · Read only" : " · All access"),
         Effect = McpOperatorPolicyEffect.Allow, Operations = null,
         Families = Supported.Where(op => !readOnly || op.ConfirmationClass == McpOperatorConfirmationClass.None && op.OperationFamily is
             McpOperatorOperationFamily.Observability or McpOperatorOperationFamily.FileRead or McpOperatorOperationFamily.ScriptsRead or McpOperatorOperationFamily.AutomationRead or McpOperatorOperationFamily.TerminalRead)
-            .Aggregate(McpOperatorOperationFamily.None, (f, op) => f | op.OperationFamily), Constraints = McpIntegrationPolicyCatalog.AllAccessLimits });
+            .Aggregate(McpOperatorOperationFamily.None, (f, op) => f | op.OperationFamily), Constraints = readOnly ? McpIntegrationPolicyCatalog.BoundedDefaults : McpIntegrationPolicyCatalog.AllAccessLimits });
     private async Task ChangeExpiry(string text) {
         _expiryText = text;
         if (IntegrationCredentialExpiry.ParseUtcInstant(text) is not { } expiry) { _expiryError = "Enter an exact UTC expiry ending in Z."; _lastExpiry = default; await Change(Value with { ExpiresAtUtc = default }); return; }

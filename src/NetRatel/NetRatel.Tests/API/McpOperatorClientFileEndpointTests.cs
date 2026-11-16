@@ -352,7 +352,7 @@ public sealed partial class McpOperatorClientFileEndpointTests
         var response = await client.GetAsync($"/api/v2/mcp/operator/agents/7/{agentId:D}/files/read?path=%2Fvar%2Flog%2Fagent.log");
 
         response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
-        (await response.Content.ReadAsStringAsync()).Should().Contain("file_policy_roots_missing");
+        (await response.Content.ReadAsStringAsync()).Should().Contain("file_path_not_allowed");
         app.Services.GetRequiredService<TestFileRegistry>().ReadPolicies.Should().BeEmpty();
         app.Services.GetRequiredService<TestAdmission>().Accepted.Should().BeEmpty();
     }
@@ -511,7 +511,7 @@ public sealed partial class McpOperatorClientFileEndpointTests
             new { path = "/var/lib/netratel/exports/marker.txt" });
 
         response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
-        (await response.Content.ReadAsStringAsync()).Should().Contain("file_policy_roots_missing");
+        (await response.Content.ReadAsStringAsync()).Should().Contain("file_path_not_allowed");
         app.Services.GetRequiredService<TestFileRegistry>().DeletePolicies.Should().BeEmpty();
         app.Services.GetRequiredService<TestAdmission>().Accepted.Should().BeEmpty();
     }
@@ -528,7 +528,7 @@ public sealed partial class McpOperatorClientFileEndpointTests
             new { path = "/var/lib/netratel" });
 
         response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
-        (await response.Content.ReadAsStringAsync()).Should().Contain("file_policy_roots_missing");
+        (await response.Content.ReadAsStringAsync()).Should().Contain("file_path_not_allowed");
         app.Services.GetRequiredService<TestFileRegistry>().DeletePolicies.Should().BeEmpty();
         app.Services.GetRequiredService<TestAdmission>().Accepted.Should().BeEmpty();
     }
@@ -547,7 +547,7 @@ public sealed partial class McpOperatorClientFileEndpointTests
             new { path = "/var/lib/netratel/exports" });
 
         response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
-        (await response.Content.ReadAsStringAsync()).Should().Contain("file_policy_roots_missing");
+        (await response.Content.ReadAsStringAsync()).Should().Contain("file_path_not_allowed");
         app.Services.GetRequiredService<TestFileRegistry>().DeletePolicies.Should().BeEmpty();
         app.Services.GetRequiredService<TestAdmission>().Accepted.Should().BeEmpty();
     }
@@ -652,7 +652,7 @@ public sealed partial class McpOperatorClientFileEndpointTests
             new { sourcePath = "/var/log/agent.log", destinationPath = "/var/lib/netratel/exports/agent-copy.log" });
 
         response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
-        (await response.Content.ReadAsStringAsync()).Should().Contain("file_policy_roots_missing");
+        (await response.Content.ReadAsStringAsync()).Should().Contain("file_path_not_allowed");
         app.Services.GetRequiredService<TestFileRegistry>().CopyPolicies.Should().BeEmpty();
         app.Services.GetRequiredService<TestAdmission>().Accepted.Should().BeEmpty();
     }
@@ -692,7 +692,7 @@ public sealed partial class McpOperatorClientFileEndpointTests
             new { path = "/var/lib/netratel/agent.txt", text = "healthy" });
 
         response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
-        (await response.Content.ReadAsStringAsync()).Should().Contain("file_policy_roots_missing");
+        (await response.Content.ReadAsStringAsync()).Should().Contain("file_path_not_allowed");
         app.Services.GetRequiredService<TestFileRegistry>().WritePolicies.Should().BeEmpty();
         app.Services.GetRequiredService<TestAdmission>().Accepted.Should().BeEmpty();
     }

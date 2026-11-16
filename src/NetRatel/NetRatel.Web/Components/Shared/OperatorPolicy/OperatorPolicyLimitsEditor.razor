@@ -1,4 +1,8 @@
 @using NetRatel.Application.Operations
+@if (Value.Unrestricted)
+{
+    <MudText Typo="Typo.caption">Limits are unrestricted. Entering a custom limit switches this policy to bounded access.</MudText>
+}
 <MudGrid Class="mt-2">
     <MudItem xs="12" md="4"><MudNumericField T="int?" Label="Command duration (seconds)" Value="Value.MaxCommandDurationSeconds" ValueChanged="@(value => ChangedAsync(Value with { MaxCommandDurationSeconds = value }))" Min="1" Disabled="Disabled" /></MudItem>
     <MudItem xs="12" md="4"><MudNumericField T="int?" Label="Terminal idle (seconds)" Value="Value.MaxTerminalIdleSeconds" ValueChanged="@(value => ChangedAsync(Value with { MaxTerminalIdleSeconds = value }))" Min="1" Disabled="Disabled" /></MudItem>
@@ -23,5 +27,5 @@
     [Parameter, EditorRequired] public McpOperatorConstraints Value { get; set; } = new();
     [Parameter] public EventCallback<McpOperatorConstraints> ValueChanged { get; set; }
     [Parameter] public bool Disabled { get; set; }
-    private Task ChangedAsync(McpOperatorConstraints value) => ValueChanged.InvokeAsync(value);
+    private Task ChangedAsync(McpOperatorConstraints value) => ValueChanged.InvokeAsync(value with { Unrestricted = false, AllOperations = false, FullPermissionCatalog = false, PermissionCatalogSnapshot = null });
 }

@@ -55,9 +55,12 @@ public sealed partial class McpOperatorPolicyAdministration
                 draft.Operations is null || draft.Operations.Any(o => !ceiling.Contains(o))))
             throw new InvalidOperationException("An exception must remain within its active base policy's identity, scope, operations and expiry.");
         if (draft.Effect == McpOperatorPolicyEffect.Allow && !parent.IsContainer &&
-            JsonSerializer.Serialize(draft.Constraints, McpOperatorJsonContext.Default.McpOperatorConstraints) != parent.ConstraintsJson)
+            PolicyLimits(draft.Constraints) != PolicyLimits(DeserializeConstraints(parent.ConstraintsJson)))
             throw new InvalidOperationException("Allow exceptions inherit the base policy limits.");
     }
+
+    private static string PolicyLimits(McpOperatorConstraints constraints) => JsonSerializer.Serialize(constraints with
+    { AllOperations = false, FullPermissionCatalog = false, PermissionCatalogSnapshot = null }, McpOperatorJsonContext.Default.McpOperatorConstraints);
 
     private async Task<McpOperatorPolicy?> ChangeLifecycleAsync(Guid id, long expectedVersion, string actor,
         McpOperatorPolicyLifecycleState state, CancellationToken ct)

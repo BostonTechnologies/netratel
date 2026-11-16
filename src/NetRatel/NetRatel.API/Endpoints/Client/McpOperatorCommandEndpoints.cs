@@ -417,17 +417,22 @@ public static class McpOperatorCommandEndpoints
         command = default!;
         failure = "command_invalid";
         var shell = request.Shell?.Trim().ToLowerInvariant();
-        var directory = request.WorkingDirectory?.Trim();
+        var directory = request.WorkingDirectory;
         var constraints = decision.EffectiveConstraints;
-        if (string.IsNullOrWhiteSpace(request.Command) || shell is null || directory is null || constraints is null ||
-            constraints.AllowedShells is not { Count: > 0 } shells || !shells.Contains(shell, StringComparer.OrdinalIgnoreCase) ||
-            constraints.WorkingDirectories is not { Count: > 0 } directories || !directories.AllowsWorkingDirectory(directory) ||
+        if (string.IsNullOrWhiteSpace(request.Command) || shell is null || directory is null) return false;
+        if (constraints is null || constraints.AllowedShells is not { Count: > 0 } shells ||
+            constraints.WorkingDirectories is not { Count: > 0 } directories ||
             constraints.MaxCommandDurationSeconds is not > 0 || constraints.MaxConcurrentCommands is not > 0 ||
             constraints.MaxOutputBytes is not > 0 || constraints.MaxTaskTargetCount is not > 0 || constraints.MaxFanOut is not > 0)
         {
             failure = "command_policy_constraints_missing";
             return false;
         }
+
+        if (!shells.AllowsShell(shell)) { failure = "command_shell_not_allowed"; return false; }
+        if (!directories.AllowsWorkingDirectory(directory)) { failure = "command_working_directory_not_allowed"; return false; }
+        if (request.TimeoutSeconds > constraints.MaxCommandDurationSeconds || request.MaximumOutputBytes > constraints.MaxOutputBytes)
+        { failure = "command_policy_limit_exceeded"; return false; }
 
         int commandBytes;
         try { commandBytes = new UTF8Encoding(false, true).GetByteCount(request.Command); }
@@ -552,7 +557,8 @@ public static class McpOperatorCommandEndpoints
             "tenant_not_authorized" => "tenant",
             "target_not_found" or "target_disabled" or "target_offline" => "target",
             "capability_unavailable" or "agent_command_session_unavailable" => "capability",
-            "command_invalid" or "command_policy_constraints_missing" or "command_concurrency_limit_reached" => "constraint",
+            "command_invalid" or "command_policy_constraints_missing" or "command_concurrency_limit_reached" or
+            "command_shell_not_allowed" or "command_working_directory_not_allowed" or "command_policy_limit_exceeded" => "constraint",
             "confirmation_plan_invalid" or "confirmation_plan_stale" or "confirmation_plan_expired" => "confirmation",
             "idempotency_conflict" or "idempotency_pending" or "idempotency_replay_unavailable" => "idempotency",
             _ => "policy"

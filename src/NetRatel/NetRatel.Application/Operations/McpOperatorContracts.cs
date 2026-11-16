@@ -180,6 +180,22 @@ public sealed record McpOperatorConstraints(
     bool? DestructiveOperationsAllowed = null,
     bool? AllowActiveTenantDeletion = null)
 {
+    /// <summary>Explicitly removes discretionary policy limits; protocol and platform validation still applies.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool Unrestricted { get; init; }
+
+    /// <summary>Keep this base policy aligned with the complete catalog within its approved permission scope.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool AllOperations { get; init; }
+
+    /// <summary>The owner approved the complete application-permission catalog for this scope.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool FullPermissionCatalog { get; init; }
+
+    /// <summary>Detects a later deliberate grant edit before catalog reconciliation adds permissions.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? PermissionCatalogSnapshot { get; init; }
+
     /// <summary>Optional shared quota for admitted targets across unfinished reviewed job plans.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public int? MaxConcurrentJobTargets { get; init; }
@@ -259,6 +275,9 @@ public sealed record McpOperatorPolicyDraft(
     DateTimeOffset? ReviewByUtc,
     string? AuditReference = null)
 {
+    /// <summary>Server-only evidence that credential grants were approved through integration setup/review.</summary>
+    [JsonIgnore]
+    public bool IntegrationReviewApproved { get; init; }
     public Guid? ParentPolicyId { get; init; }
     public string? IntegrationCredentialId { get; init; }
     public string? Resource { get; init; }

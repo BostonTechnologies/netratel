@@ -32,7 +32,7 @@ using Xunit;
 
 namespace NetRatel.Tests.API;
 
-public sealed class McpOperatorOnboardingEndpointTests
+public sealed partial class McpOperatorOnboardingEndpointTests
 {
     [Fact]
     public void Production_onboarding_routes_are_tenant_scoped_and_m2m_only()

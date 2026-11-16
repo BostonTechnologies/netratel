@@ -75,7 +75,7 @@ public sealed partial class ManagedOperationIngressTests
         using var denied = await scenario.FileAsync(route, "preview", path: path);
 
         denied.StatusCode.Should().Be(HttpStatusCode.Forbidden);
-        (await denied.Content.ReadAsStringAsync()).Should().Contain("file_policy_roots_missing");
+        (await denied.Content.ReadAsStringAsync()).Should().Contain("file_path_not_allowed");
         scenario.Files.Dispatched.Should().BeEmpty();
         await using var scope = scenario.App.Services.CreateAsyncScope();
         (await scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>().McpOperatorConfirmationPlans.CountAsync()).Should().Be(0);

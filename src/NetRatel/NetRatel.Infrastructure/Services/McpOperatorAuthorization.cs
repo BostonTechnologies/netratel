@@ -198,6 +198,8 @@ public sealed class McpOperatorAuthorization(OrchestratorDbContext db) : IMcpOpe
                 [selected.Id]);
         }
 
+        constraints = constraints.Effective();
+
         if (constraints.AllowedTargetClassifications is { Count: > 0 } allowedClassifications &&
             (request.TargetClassification is null || !allowedClassifications.Contains(request.TargetClassification.Value)))
         {
@@ -372,10 +374,19 @@ public sealed class McpOperatorAuthorization(OrchestratorDbContext db) : IMcpOpe
         request.TargetClassification is { } classification && allowed.Contains(classification) ||
         allowUnknown && request.TargetClassification is null;
 
-    private static bool OperationMatches(McpOperatorPolicyRecord policy, McpOperatorAccessRequest request) =>
-        (policy.OperationFamily & request.OperationFamily) == request.OperationFamily &&
-        (policy.Operations is null || policy.Operations.Contains(request.Operation, StringComparer.Ordinal)) &&
-        (policy.Operation is null || string.Equals(policy.Operation, request.Operation, StringComparison.Ordinal));
+    private static bool OperationMatches(McpOperatorPolicyRecord policy, McpOperatorAccessRequest request)
+    {
+        if (policy.Effect == McpOperatorPolicyEffect.Allow && policy.ParentPolicyId is null &&
+            ReadConstraints(policy.ConstraintsJson)?.AllOperations == true)
+        {
+            var operation = CanonicalPolicyMutationPhases(request.Operation)?.Confirm ?? request.Operation;
+            return McpOperatorOperationCatalog.Operations.Any(op => (request.Tool is null || op.ToolName == request.Tool) &&
+                op.ToolName + "/" + op.OperationName == operation && op.OperationFamily == request.OperationFamily);
+        }
+        return (policy.OperationFamily & request.OperationFamily) == request.OperationFamily &&
+            (policy.Operations is null || policy.Operations.Contains(request.Operation, StringComparer.Ordinal)) &&
+            (policy.Operation is null || string.Equals(policy.Operation, request.Operation, StringComparison.Ordinal));
+    }
 
     private static bool ParentAdmits(McpOperatorPolicyRecord policy, McpOperatorAccessRequest request,
         IReadOnlyDictionary<Guid, McpOperatorPolicyRecord> snapshot, DateTimeOffset now, bool allowUnknown = false)

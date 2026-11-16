@@ -147,6 +147,10 @@ public sealed partial class McpOperatorPolicyAdministration(OrchestratorDbContex
         McpOperatorAccountAuthority? accountAuthority)
     {
         await using var transaction = await BeginProfileTransactionAsync(cancellationToken).ConfigureAwait(false);
+        if (!draft.IntegrationReviewApproved && draft.ParentPolicyId is null && (draft.AuditReference?.StartsWith("integration-setup:", StringComparison.Ordinal) == true ||
+            draft.AuditReference?.StartsWith("pairing:", StringComparison.Ordinal) == true))
+            throw new ArgumentException("Integration review references are server-owned. Choose a separate audit reference for a custom policy.");
+        draft = PreserveReviewedCatalogIntent(draft, null);
         await LockParentAsync(draft.ParentPolicyId, cancellationToken).ConfigureAwait(false);
         await ValidateDraftAsync(draft, actorId, cancellationToken, accountAuthority).ConfigureAwait(false);
         var now = DateTimeOffset.UtcNow;
@@ -225,6 +229,7 @@ public sealed partial class McpOperatorPolicyAdministration(OrchestratorDbContex
             record.IsContainer != draft.IsContainer)
             throw new InvalidOperationException("Policy integration, parent and scope linkage are immutable.");
 
+        draft = PreserveReviewedCatalogIntent(draft, DeserializeConstraints(record.ConstraintsJson));
         Apply(record, draft);
         record.Version++;
         AddChangeAudit("policy_replaced", record.TenantId, record.Id, null, record.Version, actorId.Trim(), DateTimeOffset.UtcNow);
@@ -520,9 +525,23 @@ public sealed partial class McpOperatorPolicyAdministration(OrchestratorDbContex
         }
     }
 
+    private static McpOperatorPolicyDraft PreserveReviewedCatalogIntent(McpOperatorPolicyDraft draft, McpOperatorConstraints? existing)
+    {
+        ArgumentNullException.ThrowIfNull(draft.Constraints);
+        if (draft.IntegrationReviewApproved) return draft;
+        if (existing is { FullPermissionCatalog: true } && draft.Constraints is { AllOperations: true, Unrestricted: true } &&
+            (draft.Constraints.PermissionCatalogSnapshot is null || draft.Constraints.PermissionCatalogSnapshot == existing.PermissionCatalogSnapshot))
+            return draft with { Constraints = draft.Constraints with { FullPermissionCatalog = true, PermissionCatalogSnapshot = existing.PermissionCatalogSnapshot } };
+        return draft with { Constraints = draft.Constraints with { FullPermissionCatalog = false, PermissionCatalogSnapshot = null } };
+    }
+
     private static void ValidateConstraints(McpOperatorConstraints constraints)
     {
         ArgumentNullException.ThrowIfNull(constraints);
+        if (constraints.Unrestricted && JsonSerializer.Serialize(constraints with
+            { Unrestricted = false, AllOperations = false, FullPermissionCatalog = false, PermissionCatalogSnapshot = null },
+            McpOperatorJsonContext.Default.McpOperatorConstraints) != JsonSerializer.Serialize(new McpOperatorConstraints(), McpOperatorJsonContext.Default.McpOperatorConstraints))
+            throw new ArgumentException("Unrestricted policy intent cannot also specify custom limits. Disable unrestricted mode before customizing limits.");
         ValidatePaths(constraints.ReadRoots, nameof(constraints.ReadRoots));
         ValidatePaths(constraints.WriteRoots, nameof(constraints.WriteRoots));
         ValidateValues(constraints.AllowedShells, nameof(constraints.AllowedShells), 64);
