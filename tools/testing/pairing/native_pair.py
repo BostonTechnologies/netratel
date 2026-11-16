@@ -147,10 +147,15 @@ def prepare_gateway(state):
         pfx_password.chmod(0o600)
         extensions = directory / 'gateway-extensions.cnf'
         extensions.write_text('subjectAltName=DNS:localhost,IP:127.0.0.1\n'
-            'extendedKeyUsage=serverAuth\nbasicConstraints=CA:FALSE\n')
+            'extendedKeyUsage=serverAuth\nbasicConstraints=critical,CA:FALSE\n'
+            'keyUsage=critical,digitalSignature,keyEncipherment\n'
+            'subjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\n')
         command(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
             '-keyout', str(directory / 'ca-key.pem'), '-out', str(directory / 'ca.pem'),
-            '-days', '2', '-subj', '/CN=Disposable pairing acceptance CA'],
+            '-days', '2', '-subj', '/CN=Disposable pairing acceptance CA',
+            '-addext', 'basicConstraints=critical,CA:TRUE',
+            '-addext', 'keyUsage=critical,keyCertSign,cRLSign',
+            '-addext', 'subjectKeyIdentifier=hash'],
             log_name='gateway-certificates.log')
         command(['openssl', 'req', '-newkey', 'rsa:2048', '-nodes',
             '-keyout', str(directory / 'gateway-key.pem'), '-out', str(directory / 'gateway.csr'),
@@ -284,6 +289,8 @@ def request_ok(url):
 
 
 def wait_host(url, process, label):
+    global LAST_PROBE
+    LAST_PROBE = 'not-probed'
     operation = {'operation': label.lower() + '-readiness', 'result': 'running'}
     private_json(FIXTURE / 'launch-operation.json', operation)
     def record_failure(code):
