@@ -30,6 +30,7 @@ DOTNET = Path(os.environ.get('DOTNET_HOST_PATH') or shutil.which('dotnet') or st
 REPOS = {'netratel': Path(os.environ['NETRATEL_PAIRING_SOURCE_ROOT']),
          'rateldesk': Path(os.environ['RATELDESK_PAIRING_SOURCE_ROOT'])}
 DOCKER = ['docker', '--host=unix:///var/run/docker.sock']
+LAST_PROBE = 'not-probed'
 
 
 def private_json(path, value):
@@ -256,6 +257,7 @@ def assembly(product, role):
 
 
 def request_ok(url):
+    global LAST_PROBE
     try:
         # Loopback fixture traffic is local, while normal external tools retain proxies.
         handlers = [urllib.request.ProxyHandler({})]
@@ -265,20 +267,50 @@ def request_ok(url):
             handlers.append(urllib.request.HTTPSHandler(context=context))
         opener = urllib.request.build_opener(*handlers)
         with opener.open(url, timeout=2) as response:
+            LAST_PROBE = 'http-' + str(response.status)
             return response.status == 200
-    except (OSError, urllib.error.URLError):
+    except urllib.error.HTTPError as error:
+        LAST_PROBE = 'http-' + str(error.code)
+        return False
+    except urllib.error.URLError as error:
+        reason = error.reason
+        LAST_PROBE = ('tls-verification' if isinstance(reason, ssl.SSLCertVerificationError) else
+            'connection-refused' if isinstance(reason, ConnectionRefusedError) else
+            'connection-timeout' if isinstance(reason, TimeoutError) else 'network-error')
+        return False
+    except OSError:
+        LAST_PROBE = 'os-error'
         return False
 
 
 def wait_host(url, process, label):
-    private_json(FIXTURE / 'launch-operation.json', {'operation': label.lower() + '-readiness', 'result': 'running'})
+    operation = {'operation': label.lower() + '-readiness', 'result': 'running'}
+    private_json(FIXTURE / 'launch-operation.json', operation)
+    def record_failure(code):
+        log = FIXTURE / (label.replace(' ', '-') + '.log')
+        text = log.read_text(errors='replace')[-65536:] if log.is_file() else ''
+        known_types = ('System.InvalidOperationException', 'System.IO.IOException',
+            'System.IO.FileNotFoundException', 'System.TypeLoadException',
+            'System.Security.Cryptography.CryptographicException',
+            'Microsoft.Extensions.Options.OptionsValidationException',
+            'Microsoft.AspNetCore.Connections.AddressInUseException',
+            'System.Net.Sockets.SocketException', 'System.Net.Http.HttpRequestException',
+            'System.Security.Authentication.AuthenticationException', 'System.UnauthorizedAccessException')
+        types = [item for item in known_types if item in text]
+        operation.update(result='failed', failureCode=code, lastProbe=LAST_PROBE,
+            exceptionTypes=sorted(set(item for item in types if len(item) <= 160))[:8])
+        if process.poll() is not None:
+            operation['exitCode'] = process.returncode
+        private_json(FIXTURE / 'launch-operation.json', operation)
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
         if process.poll() is not None:
+            record_failure('host-exited')
             raise RuntimeError(label + ' exited before health; inspect private logs')
         if request_ok(url):
             return
         time.sleep(.5)
+    record_failure('readiness-timeout')
     raise RuntimeError(label + ' did not become healthy within 60 seconds')
 
 

@@ -70,6 +70,13 @@ if operation_path.is_file() and operation_path.stat().st_size <= 8192:
         receipt['launcherOperation'] = operation['operation']
         code = operation.get('exitCode')
         receipt['launcherExitCode'] = code if isinstance(code, int) and -128 <= code <= 255 else None
+        if operation.get('failureCode') in ('host-exited', 'readiness-timeout'):
+            receipt['launcherFailureCode'] = operation['failureCode']
+        probe = operation.get('lastProbe', '')
+        if probe in ('not-probed', 'tls-verification', 'connection-refused', 'connection-timeout', 'network-error', 'os-error') or re.fullmatch(r'http-[1-5][0-9]{2}', probe):
+            receipt['launcherLastProbe'] = probe
+        receipt['launcherExceptionTypes'] = [item for item in operation.get('exceptionTypes', [])[:8]
+            if isinstance(item, str) and len(item) <= 160 and re.fullmatch(r'(?:System|Microsoft)\.[A-Za-z0-9_.]+Exception', item)]
 browser_receipt = root / 'actual-pair/browser-evidence/receipt.json'
 if browser_receipt.is_file():
     records = json.loads(browser_receipt.read_text()).get('results', [])
