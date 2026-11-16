@@ -2,31 +2,60 @@
 @using NetRatel.Shared.Contracts
 @inject IHttpClientFactory Clients
 
-<section aria-label="Related automation resources" class="pa-2">
-    <MudText Typo="Typo.subtitle2">Related resources</MudText>
+<section aria-label="Related automation resources" class="automation-related" aria-busy="@loading">
+    <header class="related-header">
+        <div class="related-heading"><MudIcon Icon="@Icons.Material.Outlined.Link" Size="Size.Small" /><MudText Typo="Typo.subtitle2">Related resources</MudText></div>
+        @if (!loading && error is null)
+        {
+            <div class="related-tickets">
+                @foreach (var ticket in ExternalTickets)
+                {
+                    <div class="related-ticket">
+                        <span class="related-ticket-kind">@ReferenceLabel(ticket)</span>
+                        <MudLink Href="@ticket.ExternalUrl" Target="_blank" rel="noopener noreferrer" Underline="Underline.Always"
+                                 Class="related-ticket-link" aria-label="@($"Open {ReferenceLabel(ticket).ToLowerInvariant()} {ticket.Reference}")">
+                            @ticket.Reference <MudIcon Icon="@Icons.Material.Outlined.OpenInNew" Size="Size.Small" />
+                        </MudLink>
+                    </div>
+                }
+            </div>
+        }
+    </header>
     @if (loading) { <MudText Typo="Typo.caption" role="status">Loading associations…</MudText> }
-    else if (error is not null) { <MudText Typo="Typo.caption" role="status">@error</MudText><MudButton Size="Size.Small" OnClick="LoadAsync">Retry</MudButton> }
-    else if (items.Count == 0) { <MudText Typo="Typo.caption">Verified associations are unavailable for this retained resource.</MudText> }
+    else if (error is not null)
+    { <div class="related-status"><MudText Typo="Typo.caption" role="status">@error</MudText><MudButton Size="Size.Small" Variant="Variant.Outlined" OnClick="LoadAsync">Retry</MudButton></div> }
+    else if (items.Count == 0 && origins.Count == 0) { <MudText Typo="Typo.caption" Color="Color.Secondary">No retained automation links.</MudText> }
     else
     {
         @foreach (var origin in origins)
         {
-            <dl class="ma-0">
-                <dt>Source request</dt><dd>@origin.Request.Reference · @origin.Request.Title</dd>
-                @if (origin.Service?.Name is { } service) { <dt>Service</dt><dd>@service</dd> }
-                <dt>Submitted by</dt><dd>@(origin.SubmittedBy?.DisplayName ?? "Unavailable in retained evidence")</dd>
-                <dt>Requested for</dt><dd>@(origin.RequestedFor?.DisplayName ?? "Unavailable in retained evidence")</dd>
-                <dt>Task</dt><dd>@origin.Task.Name</dd>
-            </dl>
+            <div class="related-origin" @key="(origin.SourceInstanceId, origin.Task.Id, origin.AttemptId)">
+                <div class="related-source">
+                    <span class="related-label">Source request</span>
+                    @if (SourceRequestUrl(origin) is { } sourceUrl)
+                    { <MudLink Href="@sourceUrl" Target="_blank" rel="noopener noreferrer" Underline="Underline.Always">@origin.Request.Reference</MudLink> }
+                    else { <span class="related-source-reference">@origin.Request.Reference</span> }
+                    <span class="related-source-title">@origin.Request.Title</span>
+                </div>
+                <dl class="related-facts">
+                    @if (origin.Service?.Name is { } service) { <div><dt>Service</dt><dd>@service</dd></div> }
+                    <div><dt>Submitted by</dt><dd>@(origin.SubmittedBy?.DisplayName ?? "Unavailable in retained evidence")</dd></div>
+                    <div><dt>Requested for</dt><dd>@(origin.RequestedFor?.DisplayName ?? "Unavailable in retained evidence")</dd></div>
+                    <div><dt>Task</dt><dd>@origin.Task.Name</dd></div>
+                </dl>
+            </div>
         }
-        <ul>
+        <nav class="related-native-links" aria-label="Related native resources">
             @foreach (var item in items)
             {
-                <li><a href="@item.Url">@item.Title</a> <span>@item.ReferenceKind · @item.Reference</span>
-                    @if (item.ExternalUrl is { } url && IsHttps(url)) { <a href="@url" target="_blank" rel="noopener noreferrer">Open @item.Reference</a> }
-                </li>
+                <MudLink @key="(item.PeerInstanceId, item.PeerOrganizationId, item.ResourceKind, item.ResourceId)" Href="@item.Url"
+                         Class="related-native-link" Underline="Underline.Always" title="@item.Title">
+                    <MudIcon Icon="@ResourceIcon(item)" Size="Size.Small" />
+                    <span>@ResourceLabel(item)</span>
+                    <MudIcon Icon="@Icons.Material.Outlined.ArrowForward" Size="Size.Small" Class="related-link-arrow" />
+                </MudLink>
             }
-        </ul>
+        </nav>
     }
 </section>
 @code {
@@ -36,6 +65,9 @@
     private string? scope, error;
     private IReadOnlyList<AutomationResourceSearchDto> items = [];
     private IReadOnlyList<AutomationOriginContext> origins = [];
+    private IEnumerable<AutomationResourceSearchDto> ExternalTickets => items
+        .Where(item => item.ExternalUrl is { } url && IsHttps(url))
+        .DistinctBy(item => (item.PeerInstanceId, item.PeerOrganizationId, item.ReferenceKind, item.Reference, item.ExternalUrl));
     private bool loading;
     protected override async Task OnParametersSetAsync()
     {
@@ -57,4 +89,11 @@
         finally { if (current == scope) loading = false; }
     }
     private static bool IsHttps(string url) => Uri.TryCreate(url, UriKind.Absolute, out var uri) && uri.Scheme == "https" && uri.UserInfo.Length == 0;
+    private static string? SourceRequestUrl(AutomationOriginContext origin) => origin.Links
+        .FirstOrDefault(link => link.Kind == "source-request" && IsHttps(link.Url))?.Url;
+    private static string ReferenceLabel(AutomationResourceSearchDto item) => item.ReferenceKind == "incident" ? "Incident" : "Source request";
+    private static string ResourceLabel(AutomationResourceSearchDto item) => item.ResourceKind switch
+    { "request" => "Request " + item.ResourceId, "job-run" => "Job execution", "flow-run" => "Flow run", _ => item.Title };
+    private static string ResourceIcon(AutomationResourceSearchDto item) => item.ResourceKind switch
+    { "request" => Icons.Material.Outlined.Assignment, "job-run" => Icons.Material.Outlined.PlayCircle, _ => Icons.Material.Outlined.AccountTree };
 }

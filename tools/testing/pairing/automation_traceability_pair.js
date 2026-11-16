@@ -159,12 +159,16 @@ async function rendered(h, ids) {
         await resizeForVisualCapture(editor, { width: 1440, height: 1000 });
         const fields = editor.getByTestId('flow-incident-presentation');
         await fields.waitFor({ state: 'visible' });
-        await fields.getByText("Loading the saved connector's presentation capabilities…", { exact: true }).waitFor({ state: 'hidden' });
+        await fields.getByText("Loading report options…", { exact: true }).waitFor({ state: 'hidden' });
         await expect(fields.getByLabel('Use RatelDesk incident template', { exact: true })).toBeChecked();
-        const preview = fields.getByRole('button', { name: 'Preview with synthetic failure', exact: true });
+        const preview = fields.getByRole('button', { name: 'Preview report', exact: true });
         await preview.focus(); await expect(preview).toBeFocused(); await editor.keyboard.press('Enter');
         await expect(fields.frameLocator('iframe').getByText('5 of 5 targets failed', { exact: false }).first()).toBeVisible();
-        const surfaces = [{ name: 'netratel', page: job }, { name: 'rateldesk', page: incident }, { name: 'template', page: editor }];
+        const history = await context.newPage(); history.setDefaultTimeout(30000);
+        await history.goto(nr.web + `/flows?tenantId=${ids.tenant}&run=${ids.flowRunId}`);
+        await expect(history.getByTestId('flow-run-result')).toContainText('Succeeded');
+        const surfaces = [{ name: 'netratel', page: job }, { name: 'rateldesk', page: incident },
+          { name: 'template', page: editor }, { name: 'flow-history', page: history }];
         for (const mode of batch.modes) {
           for (const surface of surfaces) {
             const page = surface.page;
@@ -182,15 +186,19 @@ async function rendered(h, ids) {
             await expect(page.locator('html')).toHaveAttribute(surface.name === 'rateldesk' ? 'data-helpdesk-theme' : 'data-netratel-theme', mode.theme);
             const palette = mode.custom ? await page.addStyleTag({ content: ':root{--mud-palette-primary:#6868aa;--mud-palette-divider:#9381aa}' }) : null;
             if (surface.name === 'template') {
+              await expect(preview).toBeEnabled();
+              expect(await preview.evaluate(element => parseFloat(getComputedStyle(element).borderTopWidth))).toBeGreaterThan(0);
               await fields.locator('iframe').scrollIntoViewIfNeeded();
               const summary = fields.frameLocator('iframe').getByText('5 of 5 targets failed', { exact: false }).first();
               await summary.scrollIntoViewIfNeeded();
               await expect(summary).toBeInViewport();
             } else {
-              const region = page.getByRole('region', { name: surface.name === 'netratel' ? 'Related automation resources' : 'Automation reports', exact: true });
+              const native = surface.name !== 'rateldesk';
+              const region = page.getByRole('region', { name: native ? 'Related automation resources' : 'Automation reports', exact: true });
               await expect(region).toBeVisible(); await expect(region).toContainText(ids.sourceReference);
-              await expect(region).toContainText(surface.name === 'netratel' ? ids.incidentReference : '1 of 1 targets failed');
+              await expect(region).toContainText(native ? ids.incidentReference : '1 of 1 targets failed');
               const link = region.getByRole('link').first(); await link.focus(); await expect(link).toBeFocused();
+              expect(await link.evaluate(element => getComputedStyle(element).textDecorationLine)).toContain('underline');
             }
             await capture(page, path.join(h.evidence, `traceability-${surface.name}-${mode.theme}-${mode.width}${mode.custom ? '-custom' : ''}-${mode.zoom}x.png`), mode.zoom);
             if (palette) await palette.evaluate(element => element.remove());

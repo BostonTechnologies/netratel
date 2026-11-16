@@ -1,0 +1,40 @@
+.automation-related {
+    display: grid;
+    gap: .65rem;
+    min-width: 0;
+    margin: .5rem 0;
+    padding: .75rem;
+    border: 1px solid var(--mud-palette-divider);
+    border-radius: var(--mud-default-borderradius);
+    background: var(--mud-palette-surface);
+    color: var(--mud-palette-text-primary);
+    font-size: .8125rem;
+    line-height: 1.45;
+}
+
+.related-header, .related-heading, .related-tickets, .related-ticket, .related-status { display: flex; align-items: center; flex-wrap: wrap; gap: .4rem; min-width: 0; }
+.related-header { justify-content: space-between; gap: .5rem 1rem; }
+.related-heading { gap: .4rem; }
+.related-heading ::deep .mud-icon-root { color: var(--mud-palette-text-secondary); }
+.related-heading ::deep .mud-typography { font-size: .8125rem; font-weight: 600; }
+.related-tickets { column-gap: .4rem; }
+.related-label, .related-ticket-kind, .related-facts dt { font-size: .75rem; font-weight: 500; color: var(--mud-palette-text-secondary); }
+.related-origin { min-width: 0; }
+.related-origin + .related-origin { padding-top: .6rem; border-top: 1px solid var(--mud-palette-divider); }
+.related-source { display: flex; align-items: baseline; flex-wrap: wrap; gap: .25rem .5rem; min-width: 0; }
+.related-source-title { flex-basis: 100%; overflow-wrap: anywhere; }
+.related-source-reference { font-weight: 600; }
+.related-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 11rem), 1fr)); gap: .5rem 1rem; margin: .6rem 0 0; }
+.related-facts > div { min-width: 0; }
+.related-facts dt, .related-facts dd { margin: 0; overflow-wrap: anywhere; }
+.related-facts dd { margin-top: .1rem; }
+.related-native-links { display: flex; flex-wrap: wrap; gap: .5rem; min-width: 0; }
+.automation-related ::deep .mud-link { color: var(--mud-palette-primary); font-size: .8125rem; text-underline-offset: .18em; }
+.automation-related ::deep .related-ticket-link { display: inline-flex; align-items: center; gap: .25rem; min-height: 28px; overflow-wrap: anywhere; }
+.automation-related ::deep .related-ticket-link .mud-icon-root { font-size: .875rem; }
+.automation-related ::deep .related-native-link { display: inline-flex; align-items: center; flex: 1 1 9rem; gap: .4rem; min-width: 0; min-height: 36px; padding: .35rem .5rem; border: 1px solid var(--mud-palette-divider); border-radius: var(--mud-default-borderradius); }
+.automation-related ::deep .related-native-link span { flex: 1; overflow-wrap: anywhere; }
+.automation-related ::deep .related-native-link .mud-icon-root { color: var(--mud-palette-text-secondary); font-size: 1rem; }
+.automation-related ::deep .mud-link:hover { text-decoration-thickness: 2px; }
+.automation-related ::deep .mud-link:focus-visible { outline: 2px solid var(--mud-palette-primary); outline-offset: 3px; border-radius: 3px; }
+@media (max-width: 420px) { .automation-related { padding: .625rem; } .automation-related ::deep .related-native-link { flex-basis: 100%; } }

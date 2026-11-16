@@ -28,7 +28,6 @@
     else if (Detail is { } detail)
     {
         <div class="history-result" data-testid="flow-run-result">
-            <NetRatel.Web.Components.Shared.AutomationRelatedResources TenantId="TenantId" Kind="flow-run" ResourceId="@(detail.Run.Id.ToString("D"))" />
             <MudButton StartIcon="@Icons.Material.Filled.ArrowBack" OnClick="Back" data-testid="flow-history-back">Back to history</MudButton>
             <MudButton id="flow-run-replay" StartIcon="@Icons.Material.Outlined.PlayCircle" OnClick="() => ReplayRun.InvokeAsync(detail)" Disabled="Busy" data-testid="flow-run-replay">Replay recorded run</MudButton>
             @if (detail.DataUnavailableReason is { Length: > 0 } unavailableReason)
@@ -39,6 +38,7 @@
                 <div><span class="history-eyebrow">RUN RESULT</span><h3 id="flow-run-heading" tabindex="-1">@RunStatusLabel(detail.Run.Status)</h3><p>@detail.Run.Code · @(detail.Run.CompletedAtUtc?.ToUniversalTime().ToString("u") ?? "Not completed")</p></div>
                 <MudChip T="string" Color="@RunColor(detail.Run.Status)" Variant="Variant.Outlined" Icon="@RunIcon(detail.Run.Status)">@RunStatusLabel(detail.Run.Status)</MudChip>
             </div>
+            <NetRatel.Web.Components.Shared.AutomationRelatedResources TenantId="TenantId" Kind="flow-run" ResourceId="@(detail.Run.Id.ToString("D"))" />
             <section class="history-card" aria-label="Trigger details">
                 @if (detail.ExecutionEvent is { } execution)
                 {

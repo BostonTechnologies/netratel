@@ -1,0 +1,61 @@
+.flow-incident-presentation {
+    display: grid;
+    gap: .5rem;
+    min-width: 0;
+    margin: .5rem 0 0;
+    padding: .625rem;
+    border: 1px solid var(--mud-palette-divider);
+    border-radius: var(--mud-default-borderradius);
+    color: var(--mud-palette-text-primary);
+    background: var(--mud-palette-surface);
+    font-size: .8125rem;
+    line-height: 1.45;
+}
+
+.flow-incident-presentation legend {
+    padding: 0 .25rem;
+    font-size: .75rem;
+    font-weight: 600;
+}
+
+.flow-incident-presentation ::deep .presentation-toggle { margin: 0; }
+.flow-incident-presentation ::deep .presentation-toggle .mud-typography {
+    font-size: .8125rem;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+}
+
+.presentation-help, .presentation-selection, .presentation-preview-caption {
+    margin: 0;
+    font-size: .75rem;
+    color: var(--mud-palette-text-secondary);
+    overflow-wrap: anywhere;
+}
+
+.presentation-picker { display: grid; gap: .5rem; min-width: 0; }
+.presentation-picker label { display: grid; gap: .25rem; min-width: 0; }
+.presentation-picker input, .presentation-picker select {
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+    padding: .4rem .5rem;
+    border: 1px solid var(--mud-palette-divider);
+    border-radius: var(--mud-default-borderradius);
+    background: var(--mud-palette-surface);
+    color: inherit;
+    font: inherit;
+}
+
+.presentation-actions { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: .5rem; min-width: 0; }
+.flow-incident-presentation ::deep .presentation-preview-button {
+    min-height: 32px;
+    max-width: 100%;
+    font-size: .8125rem;
+    text-transform: none;
+}
+
+.presentation-error { margin: 0; color: var(--mud-palette-error); overflow-wrap: anywhere; }
+.presentation-picker :is(input, select):focus-visible { outline: 2px solid var(--mud-palette-primary); outline-offset: 2px; }
+.presentation-preview { min-width: 0; padding-top: .5rem; border-top: 1px solid var(--mud-palette-divider); }
+.presentation-preview-subject { margin: .25rem 0 .5rem; font-size: .8125rem; font-weight: 600; overflow-wrap: anywhere; }
+.presentation-preview iframe { display: block; width: 100%; min-height: 18rem; box-sizing: border-box; border: 1px solid var(--mud-palette-divider); border-radius: var(--mud-default-borderradius); }
