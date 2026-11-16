@@ -136,7 +136,7 @@ async function rendered(h, ids) {
     for (const mode of modes) {
       const profile = path.join(h.fixture, 'traceability-zoom-profile');
       const extension = path.join(process.env.RATELDESK_PAIRING_SOURCE_ROOT, 'tests/ux/native-zoom-extension');
-      const options = { viewport: { width: mode.width, height: mode.height }, colorScheme: mode.theme };
+      const options = { viewport: { width: mode.width, height: mode.height }, colorScheme: mode.theme, ignoreHTTPSErrors: true };
       const context = mode.zoom === 2 ? await chromium.launchPersistentContext(profile, { ...options, channel: 'chromium',
         headless: true, args: [`--disable-extensions-except=${extension}`, `--load-extension=${extension}`] }) : await browser.newContext(options);
       try {
@@ -145,7 +145,7 @@ async function rendered(h, ids) {
           if (mode.zoom !== 2) return;
           await expect.poll(() => context.serviceWorkers().length).toBeGreaterThan(0);
           await context.serviceWorkers()[0].evaluate(async () => {
-            const tab = (await chrome.tabs.query({})).find(x => x.url.startsWith('http://127.0.0.1:'));
+            const tab = (await chrome.tabs.query({})).find(x => /^https?:\/\/127\.0\.0\.1:/.test(x.url));
             await chrome.tabs.setZoom(tab.id, 2);
             if (await chrome.tabs.getZoom(tab.id) !== 2) throw new Error('Native browser zoom was not applied');
           });

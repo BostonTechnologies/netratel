@@ -19,7 +19,7 @@ if (fs.existsSync(previousReceipt)) {
 
 function product(name) {
   const entry = state.products[name];
-  return { ...entry, name, web: `http://127.0.0.1:${entry.webPort}`, api: `http://127.0.0.1:${entry.apiPort}` };
+  return { ...entry, name, web: entry.publicWebOrigin || `http://127.0.0.1:${entry.webPort}`, api: `http://127.0.0.1:${entry.apiPort}` };
 }
 const identifiers = {
   netratel: { panel: 'system-connections', create: 'create-connection', pairForm: 'pairing-create-form',
@@ -338,7 +338,7 @@ async function main() {
   const browser = await chromium.launch({ headless: true });
   let activeContext = null;
   try {
-    const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, ignoreHTTPSErrors: !!state.products.netratel.publicWebOrigin });
     activeContext = context;
     const nr = product('netratel'), rd = product('rateldesk');
     const nrPage = await context.newPage(), rdPage = await context.newPage();

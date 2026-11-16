@@ -48,7 +48,7 @@ async function deleteLocal(page, context, entry, expected) {
 async function main() {
   const browser = await chromium.launch({ headless: true });
   try {
-    const context = await browser.newContext();
+    const context = await browser.newContext({ ignoreHTTPSErrors: !!state.products.netratel.publicWebOrigin });
     const nr = product('netratel'), rd = product('rateldesk');
     const nrPage = await context.newPage(), rdPage = await context.newPage();
     nrPage.setDefaultTimeout(25000); rdPage.setDefaultTimeout(25000);

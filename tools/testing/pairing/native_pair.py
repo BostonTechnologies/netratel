@@ -121,6 +121,9 @@ def create_state():
             state['products'][product]['proxyPort'] = free_port()
             state['products'][product]['proxyApiOrigin'] = f"http://127.0.0.1:{state['products'][product]['proxyPort']}"
     prepare_gateway(state)
+    if os.environ.get('PAIRING_AUTOMATION_TRACEABILITY') == '1':
+        for entry in state['products'].values():
+            entry['publicWebOrigin'] = f"https://127.0.0.1:{free_port()}"
     private_json(STATE, state)
     return state
 
@@ -223,6 +226,18 @@ def environment_for(state, product, role):
             StorageOptions__PublicApiBaseUrl=canonical_api,
             EmailIngestion__Enabled='false')
     environment.update(entry.get('environment', {}))
+    if entry.get('publicWebOrigin'):
+        # The v2 contract deliberately requires real HTTPS navigation origins.
+        # Reuse this fixture's CA and certificate; leave production validation intact.
+        tls = FIXTURE / 'netratel' / 'keys'
+        environment.update(ServiceIdentity__WebBaseUrl=entry['publicWebOrigin'],
+            SSL_CERT_FILE=state['products']['netratel']['clientTrustBundle'])
+        if product == 'rateldesk':
+            environment['Bootstrap__Unattended__ApplicationUrl'] = entry['publicWebOrigin']
+        if role == 'web':
+            environment.update(ASPNETCORE_URLS=web + ';' + entry['publicWebOrigin'],
+                Kestrel__Certificates__Default__Path=str(tls / 'gateway.pfx'),
+                Kestrel__Certificates__Default__Password=(tls / 'gateway-pfx-password').read_text())
     return environment
 
 

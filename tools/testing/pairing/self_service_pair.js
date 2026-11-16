@@ -12,7 +12,7 @@ module.exports = async function selfServicePair(h) {
   const owner = sql('rateldesk', `SELECT json_build_object('id',u."Id",'name',u."Name",'organizationId',u."OrganizationId",'links',(SELECT count(*) FROM "CustomerAuthLinks" l WHERE l."LocalAccountId"=u."Id")) FROM "Users" u JOIN "AspNetUsers" a ON a."Id"=u."Id" WHERE a."Email"=${literal(state.products.rateldesk.email)}`);
   requireProof(owner && owner.organizationId === mapping.ratelDeskOrganizationId && owner.links === 0,
     'Rendered acceptance must begin with an enabled unlinked local owner already in the saved connection organization');
-  const web = `http://127.0.0.1:${state.products.rateldesk.webPort}`;
+  const web = state.products.rateldesk.publicWebOrigin || `http://127.0.0.1:${state.products.rateldesk.webPort}`;
   const ordinaryEmail = 'self-requester-' + state.fixtureId + '@example.test';
   const ordinaryPassword = 'Fixture.Aa1!' + state.adminPassword;
   // Technician creation deliberately leaves the supported local account unlinked.
@@ -36,7 +36,7 @@ module.exports = async function selfServicePair(h) {
       const requesterEmail = mode === 'self-success' ? ordinaryEmail : state.products.rateldesk.email;
       const requesterApi = mode === 'self-success' ? ordinaryApi : rdApi;
       if (context) await context.close();
-      context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+      context = await browser.newContext({ viewport: { width: 1440, height: 900 }, ignoreHTTPSErrors: !!state.products.rateldesk.publicWebOrigin });
       page = await context.newPage();
       await page.goto(web + '/login');
       await page.locator('[data-testid="local-login-form"][data-interactive="true"]').waitFor({ state: 'attached', timeout: 90000 });

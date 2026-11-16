@@ -211,7 +211,7 @@ async function apiJson(api, route, data, method = 'GET', allowed = null) {
   }
   return response.status() === 204 ? null : response.json();
 }
-function product(name) { const entry = state.products[name]; return { ...entry, name, api: `http://127.0.0.1:${entry.apiPort}`, web: `http://127.0.0.1:${entry.webPort}` }; }
+function product(name) { const entry = state.products[name]; return { ...entry, name, api: `http://127.0.0.1:${entry.apiPort}`, web: entry.publicWebOrigin || `http://127.0.0.1:${entry.webPort}` }; }
 async function startClient(nrApi, tenant) {
   const output = path.join(nrSource, 'src/NetRatel/NetRatel.Client/bin/Debug/net10.0');
   requireProof(fs.existsSync(path.join(output, 'NetRatel.Client')), 'Actual current Debug Client output is required');
