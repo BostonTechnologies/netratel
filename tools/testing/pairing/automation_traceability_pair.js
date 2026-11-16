@@ -192,6 +192,10 @@ async function rendered(h, ids) {
             if (surface.name === 'template') {
               await expect(preview).toBeEnabled();
               expect(await preview.evaluate(element => parseFloat(getComputedStyle(element).borderTopWidth))).toBeGreaterThan(0);
+              const surfaceColor = await fields.evaluate(element => getComputedStyle(element).backgroundColor);
+              await expect(fields.frameLocator('iframe').locator('body')).toHaveCSS('background-color', surfaceColor);
+              const dividerColor = await fields.evaluate(element => getComputedStyle(element).borderTopColor);
+              await expect(fields.frameLocator('iframe').locator('td').first()).toHaveCSS('border-top-color', dividerColor);
               await fields.locator('iframe').scrollIntoViewIfNeeded();
               const summary = fields.frameLocator('iframe').getByText('5 of 5 targets failed', { exact: false }).first();
               await summary.scrollIntoViewIfNeeded();

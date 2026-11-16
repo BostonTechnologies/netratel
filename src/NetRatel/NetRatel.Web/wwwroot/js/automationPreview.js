@@ -1,10 +1,8 @@
 // Presentation only: the report remains in its existing script-disabled sandbox.
-export function formatReport(html) {
+function reportStyles() {
     const theme = getComputedStyle(document.body);
     const css = (name, fallback) => (theme.getPropertyValue(name).trim() || fallback).replaceAll('<', '\\3c ');
-    const report = new DOMParser().parseFromString(html, 'text/html');
-    const style = report.createElement('style');
-    style.textContent = `
+    return `
         body { margin: 0; padding: 14px; font: 13px/1.5 ${css('--mud-typography-default-family', 'system-ui, sans-serif')};
             color: ${css('--mud-palette-text-primary', '#1b2635')}; background: ${css('--mud-palette-surface', '#fff')}; overflow-wrap: anywhere; }
         h1,h2,h3 { font-family: inherit; font-size: 15px; line-height: 1.4; margin: 0 0 10px; }
@@ -18,6 +16,29 @@ export function formatReport(html) {
         summary { cursor: pointer; margin: 10px 0 6px; }
         @media(max-width:480px) { dl { grid-template-columns: minmax(0,1fr); } dd { margin-bottom: 6px; } }
     `;
-    report.head.prepend(style);
-    return '<!doctype html>' + report.documentElement.outerHTML;
+}
+
+export function bindReport(frame, html) {
+    let scheduled = 0, previousStyles;
+    const dispose = () => { observer.disconnect(); cancelAnimationFrame(scheduled); };
+    const render = () => {
+        scheduled = 0;
+        if (!frame.isConnected) { dispose(); return; }
+        const styles = reportStyles();
+        if (styles === previousStyles) return;
+        previousStyles = styles;
+        const report = new DOMParser().parseFromString(html, 'text/html');
+        const style = report.createElement('style');
+        style.textContent = styles;
+        report.head.prepend(style);
+        frame.srcdoc = '<!doctype html>' + report.documentElement.outerHTML;
+    };
+    // MudBlazor replaces theme style text; custom palettes can also change root variables.
+    const observer = new MutationObserver(() => {
+        if (!scheduled) scheduled = requestAnimationFrame(render);
+    });
+    observer.observe(document.documentElement, { subtree: true, childList: true, characterData: true,
+        attributes: true, attributeFilter: ['class', 'style', 'data-netratel-theme'] });
+    render();
+    return { dispose };
 }
