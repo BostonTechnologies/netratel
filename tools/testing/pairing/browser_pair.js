@@ -230,7 +230,8 @@ async function visiblePair(page, consumer, generatorPage, generator, mappingName
   const finalDialog = page.getByRole('dialog').filter({ has: final });
   await expect(finalDialog).toHaveCount(1);
   await expect(finalDialog.getByRole('button', { name: 'Save', exact: true })).toHaveCount(1);
-  await expect(final.getByRole('checkbox')).toHaveCount(2);
+  await expect(final.getByRole('checkbox')).toHaveCount(3);
+  await expect(final.getByRole('checkbox', { name: /^Browse and preview internal incident templates/ })).not.toBeChecked();
   await expect(final.getByRole('checkbox', { name: /^Run automation/ })).not.toBeChecked();
   await visualMatrix(page, consumer.name + '-paired-finalization');
   const list = await jsonRequest(page.context(), consumer, '/api/v1/admin/system-connections');
