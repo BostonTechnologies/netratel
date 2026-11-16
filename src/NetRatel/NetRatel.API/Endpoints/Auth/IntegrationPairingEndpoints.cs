@@ -163,18 +163,25 @@ public sealed class IntegrationPairingCleanupWorker(IServiceScopeFactory scopes,
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        var catalogReconciled = false;
         using var timer = new PeriodicTimer(TimeSpan.FromMinutes(1), clock);
         do
         {
             try
             {
                 await using var scope = scopes.CreateAsyncScope();
+                if (!catalogReconciled)
+                {
+                    await scope.ServiceProvider.GetRequiredService<IntegrationAllAccessReconciliation>().ReconcileAsync(stoppingToken).ConfigureAwait(false);
+                    catalogReconciled = true;
+                    logger.LogInformation("Full-access MCP catalog reconciliation completed.");
+                }
                 await scope.ServiceProvider.GetRequiredService<IntegrationPairingService>().CleanupAsync(stoppingToken).ConfigureAwait(false);
                 await scope.ServiceProvider.GetRequiredService<IntegrationSetupService>().CleanupAsync(stoppingToken).ConfigureAwait(false);
                 await scope.ServiceProvider.GetRequiredService<HttpHostSetupService>().CleanupAsync(stoppingToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
-            catch (Exception) { logger.LogWarning("Integration pairing cleanup will resume on the next interval."); }
+            catch (Exception) { logger.LogWarning("Integration catalog reconciliation or pairing cleanup will resume on the next interval."); }
         } while (await timer.WaitForNextTickAsync(stoppingToken).ConfigureAwait(false));
     }
 }

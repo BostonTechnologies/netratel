@@ -8,10 +8,19 @@
         <dt>Target selector</dt><dd>@(Draft.TargetSelector.TenantId == 0 ? "Server / instance" : TenantName ?? $"Unavailable tenant (ID {Draft.TargetSelector.TenantId})") · @ClientNames</dd>
         <dt>Classification filter</dt><dd>@(Draft.TargetClassification?.ToString() ?? "Any persisted classification")</dd>
         <dt>Operation families</dt><dd>@Draft.OperationFamily</dd>
-        <dt>Exact operation</dt><dd>@(Draft.Operations is { } operations ? string.Join(", ", operations) : Draft.Operation ?? "All operations in the selected families")</dd>
+        <dt>Exact operation</dt><dd>@(Draft.Constraints.AllOperations ? "All supported operations within this credential scope; follows the current catalog" : Draft.Operations is { } operations ? string.Join(", ", operations) : Draft.Operation ?? "All operations in the selected families")</dd>
         <dt>Expiry</dt><dd>@Instant(Draft.ExpiresAtUtc)</dd>
         <dt>Review by</dt><dd>@Instant(Draft.ReviewByUtc)</dd>
         <dt>Audit reference</dt><dd>@(Draft.AuditReference ?? "None")</dd>
+        @if (Draft.Constraints.Unrestricted)
+        {
+            <dt>Policy limits</dt><dd>Unrestricted · any accessible path and working directory · all supported shells</dd>
+            <dt>Destructive operations</dt><dd>Allowed after the operation's required confirmation</dd>
+            <dt>Active tenant deletion</dt><dd>Allowed after confirmation</dd>
+            <dt>Credential permissions</dt><dd>@(Draft.Constraints.FullPermissionCatalog ? "Full permission catalog in the selected scope" : "Selected credential grants")</dd>
+        }
+        else
+        {
         <dt>Exact working directories</dt><dd>@List(Draft.Constraints.WorkingDirectories)</dd>
         <dt>Read roots</dt><dd>@List(Draft.Constraints.ReadRoots)</dd>
         <dt>Write roots</dt><dd>@List(Draft.Constraints.WriteRoots)</dd>
@@ -20,12 +29,20 @@
         <dt>Required confirmation</dt><dd>@(Draft.Constraints.RequiredConfirmationClass?.ToString() ?? "Operation default")</dd>
         <dt>Destructive operations</dt><dd>@Flag(Draft.Constraints.DestructiveOperationsAllowed)</dd>
         <dt>Active tenant deletion</dt><dd>@Flag(Draft.Constraints.AllowActiveTenantDeletion)</dd>
+        }
     </dl>
+    @if (!Draft.Constraints.Unrestricted)
+    {
     <MudSimpleTable Dense="true" Elevation="0">
         <thead><tr><th>Limit</th><th>Reviewed value</th></tr></thead>
         <tbody>@foreach (var bound in Limits) { <tr><td>@bound.Name</td><td>@(bound.Value?.ToString() ?? "Unspecified")</td></tr> }</tbody>
     </MudSimpleTable>
     <MudText Typo="Typo.caption">Working directories match exactly: /tmp does not grant /tmp/example. Other matching policies, current credential grants and server-owned target facts continue to apply.</MudText>
+    }
+    else
+    {
+        <MudText Typo="Typo.caption">Protocol and session limits still apply. Explicit denies, selected resources, current owner authority, expiry and revocation remain enforced.</MudText>
+    }
 </div>
 
 @code {

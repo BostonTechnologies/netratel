@@ -34,6 +34,8 @@ public sealed class OperatorPolicyDraftEditor
     public string ReviewBy { get; set; } = "";
     public string AuditReference { get; set; } = "";
     public McpOperatorConstraints Constraints { get; set; } = new();
+    private McpOperatorOperationFamily? originalFamilies;
+    private string? originalOperation;
 
     public static OperatorPolicyDraftEditor From(McpOperatorPolicy policy) => new()
     {
@@ -47,7 +49,7 @@ public sealed class OperatorPolicyDraftEditor
         ExpiresAt = Instant(policy.ExpiresAtUtc), ReviewBy = Instant(policy.ReviewByUtc), AuditReference = policy.AuditReference ?? "",
         Operations = policy.Operations, AgentIds = policy.TargetSelector.AgentIds, ClientTags = policy.TargetSelector.ClientTags,
         ParentPolicyId = policy.ParentPolicyId, IntegrationCredentialId = policy.IntegrationCredentialId, Resource = policy.Resource, IsContainer = policy.IsContainer,
-        Constraints = policy.Constraints
+        Constraints = policy.Constraints, originalFamilies = policy.OperationFamily, originalOperation = policy.Operation
     };
 
     public McpOperatorPolicyDraft Build()
@@ -56,12 +58,17 @@ public sealed class OperatorPolicyDraftEditor
             TargetKind is McpOperatorTargetSelectorKind.ControlPlane or McpOperatorTargetSelectorKind.DevelopmentEnvironment ? 0 : TenantId,
             TargetKind == McpOperatorTargetSelectorKind.ExactAgent ? Guid.Parse(AgentId) : null,
             TargetKind == McpOperatorTargetSelectorKind.ClientTag ? ClientTag.Trim() : null) { AgentIds = AgentIds, ClientTags = ClientTags };
+        var constraints = Constraints.Unrestricted && new[] { WorkingDirectories, ReadRoots, WriteRoots, Shells }.Any(value => !string.IsNullOrWhiteSpace(value))
+            ? Constraints with { Unrestricted = false, AllOperations = false, FullPermissionCatalog = false, PermissionCatalogSnapshot = null } : Constraints;
+        var selectedFamilies = Families.Aggregate(McpOperatorOperationFamily.None, (value, family) => value | family);
+        if (constraints.AllOperations && (originalFamilies is { } initial && initial != selectedFamilies || Optional(Operation) != originalOperation))
+            constraints = constraints with { AllOperations = false, FullPermissionCatalog = false, PermissionCatalogSnapshot = null };
         return new McpOperatorPolicyDraft(Name.Trim(), Environment, Effect, Priority,
             new(PrincipalKind, PrincipalValue.Trim()), selector, Classification,
-            Families.Aggregate(McpOperatorOperationFamily.None, (value, family) => value | family), Optional(Operation),
-            Constraints with { WorkingDirectories = Values(WorkingDirectories, Constraints.WorkingDirectories),
-                ReadRoots = Values(ReadRoots, Constraints.ReadRoots), WriteRoots = Values(WriteRoots, Constraints.WriteRoots),
-                AllowedShells = Values(Shells, Constraints.AllowedShells) },
+            selectedFamilies, Optional(Operation),
+            constraints with { WorkingDirectories = Values(WorkingDirectories, constraints.WorkingDirectories),
+                ReadRoots = Values(ReadRoots, constraints.ReadRoots), WriteRoots = Values(WriteRoots, constraints.WriteRoots),
+                AllowedShells = Values(Shells, constraints.AllowedShells) },
             ParseInstant(ExpiresAt), ParseInstant(ReviewBy), Optional(AuditReference)) {
                 ParentPolicyId = ParentPolicyId, IntegrationCredentialId = IntegrationCredentialId, Resource = Resource,
                 Operations = Operations, IsContainer = IsContainer

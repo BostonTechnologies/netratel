@@ -537,13 +537,13 @@ public static class McpOperatorTerminalSessionEndpoints
         open = default!;
         failure = "terminal_open_invalid";
         var shell = request.Shell?.Trim().ToLowerInvariant();
-        var directory = request.WorkingDirectory?.Trim();
+        var directory = request.WorkingDirectory;
         var columns = request.Columns ?? 120;
         var rows = request.Rows ?? 32;
         var constraints = decision.EffectiveConstraints;
-        if (shell is null || directory is null || columns is < 40 or > 300 || rows is < 10 or > 120 ||
-            constraints?.AllowedShells is not { Count: > 0 } shells || !shells.Contains(shell, StringComparer.OrdinalIgnoreCase) ||
-            constraints.WorkingDirectories is not { Count: > 0 } directories || !directories.AllowsWorkingDirectory(directory) ||
+        if (shell is null || directory is null || columns is < 40 or > 300 || rows is < 10 or > 120) return false;
+        if (constraints?.AllowedShells is not { Count: > 0 } shells ||
+            constraints.WorkingDirectories is not { Count: > 0 } directories ||
             constraints.MaxTerminalIdleSeconds is not > 0 and <= MaximumTerminalIdleSeconds ||
             constraints.MaxTerminalLifetimeSeconds is not > 0 and <= MaximumTerminalLifetimeSeconds ||
             constraints.MaxConcurrentTerminalSessions is not > 0 || constraints.MaxOutputBytes is not > 0)
@@ -551,6 +551,8 @@ public static class McpOperatorTerminalSessionEndpoints
             failure = "terminal_policy_constraints_missing";
             return false;
         }
+        if (!shells.AllowsShell(shell)) { failure = "terminal_shell_not_allowed"; return false; }
+        if (!directories.AllowsWorkingDirectory(directory)) { failure = "terminal_working_directory_not_allowed"; return false; }
         open = new(shell, directory, columns, rows);
         return true;
     }
@@ -642,7 +644,7 @@ public static class McpOperatorTerminalSessionEndpoints
             "oauth_scope_missing" => "oauth_scope",
             "target_not_found" or "target_disabled" or "target_offline" => "target",
             "capability_unavailable" or "terminal_gateway_unavailable" => "capability",
-            "terminal_policy_constraints_missing" or "terminal_session_limit_reached" or "terminal_input_invalid" or "terminal_resize_invalid" or "terminal_output_limit_exceeded" or "terminal_stream_invalid" => "constraint",
+            "terminal_shell_not_allowed" or "terminal_working_directory_not_allowed" or "terminal_policy_constraints_missing" or "terminal_session_limit_reached" or "terminal_input_invalid" or "terminal_resize_invalid" or "terminal_output_limit_exceeded" or "terminal_stream_invalid" => "constraint",
             "terminal_output_cursor_invalid" or "terminal_opening" => "terminal",
             "confirmation_plan_invalid" or "confirmation_plan_stale" or "confirmation_plan_expired" => "confirmation",
             "idempotency_conflict" or "idempotency_pending" or "idempotency_replay_unavailable" => "idempotency",

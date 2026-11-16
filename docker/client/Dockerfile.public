@@ -3,7 +3,7 @@
 # This file intentionally has no source, credential, or tooling dependency on
 # private repositories.
 ARG CLIENT_RUNTIME_IMAGE=mcr.microsoft.com/dotnet/runtime-deps:10.0-noble
-FROM mcr.microsoft.com/dotnet/sdk:10.0.403-noble AS build
+FROM mcr.microsoft.com/dotnet/sdk:10.0.404-noble AS build
 ARG PublicSourceRevision
 ARG BUILD_CONFIGURATION=Release
 ARG TARGETARCH

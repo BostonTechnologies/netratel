@@ -96,9 +96,25 @@ For a consumer that supports only stdio launch commands, obtain the versioned `N
 
 ### All access and current clients
 
-The five-step HTTP MCP wizard saves the credential and its reviewed server/tenant base policies atomically. **All access** covers the catalogued operations supported by the selected application grants and operation families. An unrestricted tenant policy covers eligible existing clients and clients enrolled later in that tenant. It does not require creating a target profile. An existing unrestricted credential gains the corrected behavior after upgrading; retain its secret, grants and exact expiry.
+The five-step HTTP MCP wizard saves the credential and its reviewed server/tenant base policies atomically. **All access** stores explicit unrestricted policy intent and follows the complete supported operation catalog within the selected credential scope. It permits any accessible working directory and canonical filesystem location, including Linux `/`, home/application directories and Windows system and non-system drives. Supported shells and destructive operations, including active-tenant deletion, retain their normal confirmations. Eligible current and newly enrolled tenant clients need no target profile.
 
-Review & create lists selected tenant names, server scope, permitted operations, exclusions and execution limits. The preset restricts working directories to `/tmp` and `C:\Windows\Temp`, permits the displayed shells and file roots, and disables active-tenant deletion. Review these settings in **Policies → Paths, shells and limits**; **Edit access** provides the same browser correction for an existing credential. Operation previews, confirmations, durable owner permissions and actual agent capabilities still apply.
+Original wizard presets are repaired during upgrade and API startup maintenance. Unchanged version-one policies must match frozen original operation/family/permission and limit fingerprints, the original preset label, and an acknowledged setup or pairing creation record. A label alone never authorizes repair. All selected server/tenant bases and stale full-catalog grants are updated while credential identity, secret, resource, exact expiry and history are preserved. Changed limits, custom operation selections, edited legacy versions and unrelated policies are retained. Later deliberate grant reductions stop full-catalog grant growth. Explicit Denies and the owner's current authority, account state, expiry and revocation remain effective on every request.
+
+**Policies → Paths, shells and limits**, Review & create and policy inspection display unrestricted intent separately from custom bounds. A complete reviewed permission catalog follows future additions; selected partial grants remain their own ceiling. Catalog grants do not create owner roles or add scopes. **Customize limits** switches to explicit bounded settings. The preset adds no discretionary duration, byte, concurrency, target-count, fan-out or onboarding quota. Endpoint contract ceilings and actual agent capabilities still apply.
+
+#### Endpoint contract ceilings
+
+These are current operation protocol and implementation limits, separate from policy limits. All access does not promise unbounded transfer or execution:
+
+| Contract | Ceiling |
+| --- | --- |
+| Command/task command | 32 KiB command text; 3,600 seconds; 48 KiB captured output |
+| Terminal | 3,600-second idle lease; eight-hour session; 16 KiB input/output record; 100 records per 15-second read window |
+| File operations | 100 entries per page; 64 KiB read/upload; 16 KiB text write; 512 KiB collected artifact |
+| Owned script | 64 KiB script content; 16 KiB manifest; 48 KiB captured output |
+| Production enrollment | Application issuer contract: 5–72,460 minutes; positive 32-bit use count |
+
+Policy counters use positive 32-bit integers. OS access, supported path syntax, executable availability, installed client capabilities, gateway frames and ordinary service capacity remain authoritative. Unrestricted policy intent never permits malformed input. The separate Development QA enrollment form retains its short-lived single-use contract.
 
 After creation, or under credential **Details**, expand **Check an exact operation and target**. Select the scope and catalogued operation; enter the Agent ID from **Clients** for a client operation. The server resolves current profile facts. This read-only check uses the dispatch policy evaluator and the selected operation's own scope and roles. It checks no business operation and never executes a command, file mutation, job or policy change. Runtime readiness and capabilities remain explicitly unchecked.
 
@@ -119,7 +135,7 @@ Web sign-in mode and HTTP MCP ingress authentication are independent. To use a N
 
 In **Integrations → API & MCP credentials → Create credential**, choose **HTTP MCP gateway** and follow **Connection → Server access → Tenant access → Policies → Review & create**. Enter the verified `/mcp` URL and exact UTC expiry. Select instance permissions under **Server access**, then add named tenants and select their permissions separately. Either scope may be empty; choose at least one permission overall. Back/Next retains the draft.
 
-On **Policies**, inspect one named base policy for each selected tenant and a separate **Server access** base. **All access** includes the supported operations within that scope's selected grants, with explicit file roots, shells, working directories and limits. Inspect those bounds before approval, or choose **Read only** or narrower operation families and limits. Policy expiry cannot exceed credential expiry. Creating policies also requires current policy-administration authority.
+On **Policies**, inspect one named base policy for each selected tenant and a separate **Server access** base. **All access** includes every supported operation within the selected grants and removes discretionary policy limits. Inspect its scope before approval, or choose **Read only** or custom operation families and limits. Policy expiry cannot exceed credential expiry. Creating policies also requires current policy-administration authority.
 
 The final review groups the connection, server scope, named tenants, selected grants and their policies in cards. Inspect the exact UTC expiry and use each card's edit action to return to the relevant step. Explicit approval commits the credential and approved policies together. Two tenants plus server access create exactly three base policies. A policy failure rolls back the whole setup. An interrupted response retains the approved draft and request identity for an explicit retry. Copy the one-time secret to protected client storage and choose **I stored the secret** within five minutes. A short encrypted handoff supports response recovery until acknowledgement; acknowledgement purges it, and an expired unacknowledged credential is revoked. Secrets never appear in the review or diagnostics.
 

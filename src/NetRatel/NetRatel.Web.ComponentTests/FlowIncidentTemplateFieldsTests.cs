@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using AutomationTrace.Contracts;
 using Bunit;
 using Microsoft.Extensions.DependencyInjection;
+using MudBlazor.Services;
 using NetRatel.Shared.Contracts.RatelDesk;
 using NetRatel.Web.Components.Pages.Flows;
 using Xunit;
@@ -11,6 +12,12 @@ namespace NetRatel.Web.ComponentTests;
 
 public sealed class FlowIncidentTemplateFieldsTests : AsyncBunitContext
 {
+    public FlowIncidentTemplateFieldsTests()
+    {
+        JSInterop.Mode = JSRuntimeMode.Loose;
+        Services.AddMudServices();
+    }
+
     [Fact]
     public async Task Custom_selection_requires_a_revision_and_preview_only_calls_the_read_only_route()
     {
@@ -34,7 +41,7 @@ public sealed class FlowIncidentTemplateFieldsTests : AsyncBunitContext
         cut.Find("select").Change(custom.TemplateId + ":" + custom.Revision + ":" + custom.ContentDigest);
         Assert.Equal(custom, selected);
         cut.Render(p => p.Add(x => x.Presentation, selected));
-        cut.Find("button").Click();
+        cut.Find("button[data-testid=incident-report-preview]").Click();
         await cut.WaitForAssertionAsync(() => Assert.Equal("<p>Read-only preview</p>", cut.Find("iframe").GetAttribute("srcdoc")));
         Assert.Equal(new[] { "GET", "POST" }, handler.Requests.Select(x => x.Method));
         Assert.EndsWith("/incident-templates/preview", handler.Requests[1].Path);

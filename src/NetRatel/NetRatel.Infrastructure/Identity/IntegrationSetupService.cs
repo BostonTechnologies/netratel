@@ -62,15 +62,16 @@ public sealed class IntegrationSetupService(NetRatelIdentityDbContext identity, 
                 throw new ArgumentException("Review policy scope, operations, limits and exact expiry.");
             var availableOperations = McpIntegrationPolicyCatalog.WithCanonicalPolicyOperations(supported.Where(op =>
                 policy.Families.HasFlag(op.OperationFamily)).Select(op => op.ToolName + "/" + op.OperationName));
-            if (policy.Operations is { } selected && (selected.Count is 0 or > 512 || selected.Distinct().Count() != selected.Count || selected.Any(op => !availableOperations.Contains(op))))
+            if (policy.Operations is { } selected && (selected.Count == 0 || selected.Count > availableOperations.Count || selected.Distinct().Count() != selected.Count || selected.Any(op => !availableOperations.Contains(op))))
                 throw new ArgumentException("Selected operations must remain within the approved grants and families.");
             ValidateUsableLimits(policy);
             await policies.CreateAsync(new(policy.Name, environment, policy.Effect, 0,
                 new(McpOperatorPrincipalSelectorKind.OAuthClientId, created.CredentialId),
                 new(policy.TenantId == 0 ? McpOperatorTargetSelectorKind.ControlPlane : McpOperatorTargetSelectorKind.Tenant, policy.TenantId),
-                null, policy.Families, null, policy.Constraints, policy.ExpiresAtUtc, null, "integration-setup:" + id.ToString("N"))
+                null, policy.Families, null, IntegrationAllAccessReconciliation.Stamp(policy.Constraints, permissions), policy.ExpiresAtUtc, null, "integration-setup:" + id.ToString("N"))
             {
                 IntegrationCredentialId = created.CredentialId, Resource = resource,
+                IntegrationReviewApproved = true,
                 Operations = policy.Operations ?? availableOperations
             }, owner, ct).ConfigureAwait(false);
         }

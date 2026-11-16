@@ -1,14 +1,15 @@
 using System.Security.Cryptography;
 using Microsoft.EntityFrameworkCore;
 using NetRatel.Application.Agents;
+using NetRatel.Shared.Connectivity;
 using NetRatel.Infrastructure.Persistence;
 
 namespace NetRatel.Infrastructure.Services;
 
 public sealed class EnrollmentCodeIssueService : IEnrollmentCodeIssueService
 {
-    internal const int MinValidityMinutes = 5;
-    internal const int MaxValidityMinutes = 72460;
+    internal const int MinValidityMinutes = EnrollmentCodeLimits.MinimumValidityMinutes;
+    internal const int MaxValidityMinutes = EnrollmentCodeLimits.MaximumValidityMinutes;
     private readonly OrchestratorDbContext _db;
 
     public EnrollmentCodeIssueService(OrchestratorDbContext db)

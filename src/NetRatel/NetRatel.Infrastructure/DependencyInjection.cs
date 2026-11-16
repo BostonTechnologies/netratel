@@ -48,6 +48,7 @@ public static class DependencyInjection
         services.AddScoped<IIntegrationCredentialService, IntegrationCredentialService>();
         services.AddScoped<IIntegrationCredentialGrantValidator, IntegrationCredentialGrantValidator>();
         services.AddScoped<IntegrationPairingService>();
+        services.AddScoped<IntegrationAllAccessReconciliation>();
         services.AddScoped<HttpHostSetupService>();
         services.AddScoped<IIntegrationCredentialCurrentVerifier, IntegrationCredentialService>();
         services.AddScoped<IMcpOperationObjectTargetResolver, McpOperationObjectTargetResolver>();
@@ -137,6 +138,8 @@ public static class DependencyInjection
         await identityDb.Database.MigrateAsync(ct);
         await scope.ServiceProvider.GetRequiredService<IEffectiveAccessService>()
             .ReconcileBuiltInRolesAsync(ct);
+
+        await scope.ServiceProvider.GetRequiredService<IntegrationAllAccessReconciliation>().ReconcileAsync(ct);
 
     }
 }

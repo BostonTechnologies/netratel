@@ -289,7 +289,7 @@ public sealed class McpOperatorTerminalSessionStore(OrchestratorDbContext db)
             access.AgentId is null || access.AgentId == Guid.Empty || decision.MatchingPolicyIds.Count != 1 || decision.SelectedPolicyVersion is null ||
             constraints is null || constraints.MaxConcurrentTerminalSessions is null || constraints.MaxTerminalIdleSeconds is null || constraints.MaxTerminalLifetimeSeconds is null ||
             constraints.AllowedShells is not { Count: > 0 } || constraints.WorkingDirectories is not { Count: > 0 } ||
-            !IsSafeShell(request.ShellType) || !constraints.AllowedShells.Contains(request.ShellType, StringComparer.OrdinalIgnoreCase) ||
+            !IsSafeShell(request.ShellType) || !constraints.AllowedShells.AllowsShell(request.ShellType) ||
             !IsWorkingDirectoryAllowed(request.WorkingDirectory, constraints.WorkingDirectories) ||
             request.Columns is < 40 or > 300 || request.Rows is < 10 or > 120 ||
             request.CreatedAtUtc >= request.IdleExpiresAtUtc || request.IdleExpiresAtUtc > request.ExpiresAtUtc ||

@@ -12,7 +12,7 @@ using Xunit;
 namespace NetRatel.Tests.Infrastructure;
 
 [Collection(PostgreSqlPersistenceCollection.Name)]
-public sealed class IntegrationSetupTransactionTests(PostgreSqlPersistenceFixture postgres)
+public sealed partial class IntegrationSetupTransactionTests(PostgreSqlPersistenceFixture postgres)
 {
     private const string Owner = "aabbccddeeff00112233445566778899";
     private const string Resource = "https://mcp.example.test/mcp";

@@ -1,5 +1,7 @@
 # Release history
 
+- [0.1.5-beta.7](0.1.5-beta.7.md) — themed automation navigation and previews, complete All access intent/upgrade repair, dependency updates.
+
 - [0.1.5-beta.5 — source-prepared candidate](0.1.5-beta.5.md) — exact execution receipts and committed admission replay recovery for planned RatelDesk 0.1.3-beta.10.
 - [0.1.5-beta.4](0.1.5-beta.4.md) — paired canonical job targets, durable aggregate admission and bounded callback results.
 - [0.1.5-beta.3](0.1.5-beta.3.md) — one-worker HA Groups with durable balancing, automatic compact chip targets, regex shorthand and dense run workspaces.

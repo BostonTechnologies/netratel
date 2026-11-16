@@ -1,3 +1,4 @@
+using NetRatel.Shared.Connectivity;
 using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -1007,8 +1008,8 @@ public static partial class NetRatelMcpToolDefinitions
         var production = RequiredRequest([
             PositiveIntIdentifier("tenantId", "Positive tenant identifier."),
             RequiredEnum("runtime", "installer platform runtime.", "linux-x64", "win-x64"),
-            RequiredInteger("validForMinutes", "enrollment-code lifetime from 5 through 10 minutes, further bounded by tenant policy.", 5, 10),
-            RequiredInteger("maxUses", "enrollment-code maximum uses from 1 through 10, further bounded by tenant policy.", 1, 10),
+            RequiredInteger("validForMinutes", "Application enrollment-code lifetime in minutes, further bounded by custom tenant policy.", EnrollmentCodeLimits.MinimumValidityMinutes, EnrollmentCodeLimits.MaximumValidityMinutes),
+            RequiredInteger("maxUses", "Enrollment-code maximum uses, further bounded by custom tenant policy.", 1, EnrollmentCodeLimits.MaximumUses),
             OpaquePlanToken("planToken", "Opaque credential returned by the preview."),
             OpaquePlanToken("idempotencyKey", "Opaque credential returned by the preview.")
         ]).Schema;
@@ -1208,6 +1209,8 @@ public static partial class NetRatelMcpToolDefinitions
         ["additionalProperties"] = false,
         ["properties"] = new JsonObject
         {
+            ["unrestricted"] = new JsonObject { ["type"] = "boolean", ["description"] = "Explicitly remove discretionary policy limits. Omit custom limit fields when true; protocol, target capability, account authority and required confirmations remain enforced." },
+            ["allOperations"] = new JsonObject { ["type"] = "boolean", ["description"] = "Follow the complete supported operation catalog within the existing credential and selected scope. Does not grant additional application permissions." },
             ["readRoots"] = BoundedStringArray(4_096),
             ["writeRoots"] = BoundedStringArray(4_096),
             ["allowedShells"] = BoundedStringArray(64),

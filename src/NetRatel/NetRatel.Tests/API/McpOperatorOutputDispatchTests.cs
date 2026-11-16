@@ -28,7 +28,7 @@ using Xunit;
 
 namespace NetRatel.Tests.API;
 
-public sealed class McpOperatorOutputDispatchTests
+public sealed partial class McpOperatorOutputDispatchTests
 {
     private const string Resource = "https://mcp.example.test/mcp";
     private const string Content = "printf 'fixture script'";
@@ -173,6 +173,7 @@ public sealed class McpOperatorOutputDispatchTests
 
     private sealed class Admission : IMcpOperatorRouteAdmission
     {
+        public McpOperatorConstraints? OverrideConstraints { get; set; }
         public Task<McpOperatorRouteAdmission> EvaluateAsync(McpOperatorRouteAccessRequest request, CancellationToken cancellationToken)
         {
             if (request.Tool == "netratel_scripts" && request.Operation == "get")
@@ -183,7 +184,7 @@ public sealed class McpOperatorOutputDispatchTests
                 request.RequiredScopes, operation.ConfirmationClass, request.CorrelationId, request.RequestId, new string('A', 64),
                 McpResource: request.McpResource, McpInstance: request.McpInstance, Tool: request.Tool,
                 TargetOnline: true, CapabilityAvailable: true);
-            var constraints = new McpOperatorConstraints(AllowedShells: ["bash"], WorkingDirectories: ["/tmp"],
+            var constraints = OverrideConstraints ?? new McpOperatorConstraints(AllowedShells: ["bash"], WorkingDirectories: ["/tmp"],
                 MaxCommandDurationSeconds: 60, MaxConcurrentCommands: 2, MaxOutputBytes: 4096, MaxTaskTargetCount: 1,
                 MaxFanOut: 1, DestructiveOperationsAllowed: true);
             return Task.FromResult(new McpOperatorRouteAdmission(new McpOperatorDecision(true, null, null,

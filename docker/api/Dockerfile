@@ -26,7 +26,7 @@ EXPOSE 9222 9223
 USER ${APP_USER}
 
 # --- Build/Publish unchanged ...
-FROM mcr.microsoft.com/dotnet/sdk:10.0.403-noble AS build
+FROM mcr.microsoft.com/dotnet/sdk:10.0.404-noble AS build
 ARG PublicSourceRevision
 ARG BUILD_CONFIGURATION=Release
 WORKDIR /src
@@ -53,7 +53,7 @@ RUN python3 /src/tools/ci/generate-runtime-sbom.py --project-assets obj/project.
 # the last stage and uses the existing noble base until acceptance is complete.
 # Follow the tool/checksum used by Microsoft's noble-chiseled-extra image;
 # Canonical's slice supplies the GSSAPI dependency and copyright closure.
-FROM mcr.microsoft.com/dotnet/sdk:10.0.403-noble AS chisel
+FROM mcr.microsoft.com/dotnet/sdk:10.0.404-noble AS chisel
 ARG TARGETARCH
 RUN test "$TARGETARCH" = amd64 \
  && curl --fail --show-error --location --output /tmp/chisel.tar.gz \

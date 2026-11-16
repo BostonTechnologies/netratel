@@ -150,7 +150,7 @@ public sealed class McpAggregateExecutionAuthority(IJobNodeDirectory directory, 
         {
             var shell = script.Script.ScriptType?.Trim().ToLowerInvariant() switch
             { "sh" or "bash" => "sh", "powershell" or "pwsh" => "powershell", _ => null };
-            if (shell is null || constraints.AllowedShells is { Count: > 0 } shells && !shells.Contains(shell, StringComparer.OrdinalIgnoreCase) ||
+            if (shell is null || constraints.AllowedShells is { Count: > 0 } shells && !shells.AllowsShell(shell) ||
                 constraints.MaxScriptBytes is { } bytes && System.Text.Encoding.UTF8.GetByteCount(script.Script.Content) > bytes ||
                 constraints.MaxCommandDurationSeconds is { } timeout && script.TimeoutSeconds > timeout ||
                 constraints.WorkingDirectories is { Count: > 0 } directories && !directories.AllowsWorkingDirectory(script.WorkingDirectory))
