@@ -34,7 +34,7 @@ public sealed partial class IntegrationPairingService
                     metadata.Environment, McpOperatorPolicyEffect.Allow, 0, new(McpOperatorPrincipalSelectorKind.OAuthClientId, credentialId),
                     new(scope.Key == 0 ? McpOperatorTargetSelectorKind.ControlPlane : McpOperatorTargetSelectorKind.Tenant, scope.Key),
                     null, families, null, metadata.TargetPolicyLimits ?? new(), metadata.Proposal.ExpiresAtUtc, null, $"pairing:{request.Id}:base:{scope.Key}")
-                { IntegrationCredentialId = credentialId, Resource = request.Resource, Operations = operations }, metadata.ApproverPrincipalId!, ct).ConfigureAwait(false);
+                { IntegrationCredentialId = credentialId, Resource = request.Resource, Operations = operations, IntegrationReviewApproved = true }, metadata.ApproverPrincipalId!, ct).ConfigureAwait(false);
                 continue;
             }
             if (root is null)
@@ -43,7 +43,7 @@ public sealed partial class IntegrationPairingService
                     metadata.Environment, McpOperatorPolicyEffect.Allow, 0, new(McpOperatorPrincipalSelectorKind.OAuthClientId, credentialId),
                     new(scope.Key == 0 ? McpOperatorTargetSelectorKind.ControlPlane : McpOperatorTargetSelectorKind.Tenant, scope.Key),
                     null, families, null, new(), metadata.Proposal.ExpiresAtUtc, null, $"pairing:{request.Id}:base:{scope.Key}")
-                { IntegrationCredentialId = credentialId, Resource = request.Resource, Operations = operations, IsContainer = true }, metadata.ApproverPrincipalId!, ct).ConfigureAwait(false);
+                { IntegrationCredentialId = credentialId, Resource = request.Resource, Operations = operations, IsContainer = true, IntegrationReviewApproved = true }, metadata.ApproverPrincipalId!, ct).ConfigureAwait(false);
             }
             else
             {

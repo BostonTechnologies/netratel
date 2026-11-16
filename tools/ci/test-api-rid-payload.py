@@ -337,7 +337,10 @@ class ApiIdentityWebPayloadTests(unittest.TestCase):
             return json.dumps([{"RepoDigests": [reference.split(":")[0] + "@sha256:" + "a" * 64]}])
         with patch("sys.argv", ["-", str(source), str(results), "identity-web"]), patch.object(subprocess, "run") as run, patch.object(subprocess, "check_output", side_effect=inspect):
             exec(compile(code, "API controlled source preparation", "exec"), {})
-        self.assertEqual(2, run.call_count)
+        dockerfile = (repository / paths[0]).read_text()
+        expected_bases = sorted(set(re.findall(r'^FROM(?:\s+--platform=\S+)?\s+(mcr\.microsoft\.com/\S+)', dockerfile, re.MULTILINE)))
+        self.assertEqual([unittest.mock.call(['docker', 'pull', reference], check=True)
+                          for reference in expected_bases], run.call_args_list)
         control = self.root / "control-source"
         project = Path(paths[2])
         restored = (control / project).read_text()

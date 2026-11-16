@@ -57,7 +57,7 @@ public partial class OperatorPolicies
         return tags.Length == 0 ? clients : clients + " · tags: " + string.Join(", ", tags);
     }
     private IReadOnlyCollection<string> EditorShells => _editor.Shells.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-    private IEnumerable<string> KnownShells => McpIntegrationPolicyCatalog.AllAccessLimits.AllowedShells!.Concat(EditorShells).Distinct();
+    private IEnumerable<string> KnownShells => McpIntegrationPolicyCatalog.BoundedDefaults.AllowedShells!.Concat(EditorShells).Distinct();
 
     private async Task LoadDirectoryAsync(string? search = null, int? tenant = null, CancellationToken ct = default)
     {

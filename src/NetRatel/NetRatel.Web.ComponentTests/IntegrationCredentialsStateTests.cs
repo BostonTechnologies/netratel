@@ -48,7 +48,7 @@ public sealed class IntegrationCredentialsStateTests : AsyncBunitContext
         review.Instance.Scopes.Select(scope => scope.Name).Should().Contain(["Tenant choice 17", "Tenant choice 18", "Server / instance"]);
         review.Instance.Policies.Should().HaveCount(3);
         review.Markup.Should().Contain("newly enrolled clients").And.Contain("no profile is required")
-            .And.Contain("/tmp").And.Contain("Active tenant deletion: Disabled");
+            .And.Contain("Any accessible path").And.Contain("retain their required confirmations");
         var steps = dialogs.Find(".mud-stepper-nav").TextContent;
         steps.IndexOf("Policies", StringComparison.Ordinal).Should().BeLessThan(steps.IndexOf("Review & create", StringComparison.Ordinal));
         review.FindAll("details").Should().BeEmpty();
