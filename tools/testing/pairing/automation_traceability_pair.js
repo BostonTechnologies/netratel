@@ -182,7 +182,9 @@ async function rendered(h, ids) {
             await expect(page.locator('html')).toHaveAttribute(surface.name === 'rateldesk' ? 'data-helpdesk-theme' : 'data-netratel-theme', mode.theme);
             const palette = mode.custom ? await page.addStyleTag({ content: ':root{--mud-palette-primary:#6868aa;--mud-palette-divider:#9381aa}' }) : null;
             if (surface.name === 'template') {
-              await expect(fields.frameLocator('iframe').getByText('5 of 5 targets failed', { exact: false }).first()).toBeVisible();
+              const summary = fields.frameLocator('iframe').getByText('5 of 5 targets failed', { exact: false }).first();
+              await summary.scrollIntoViewIfNeeded();
+              await expect(summary).toBeInViewport();
             } else {
               const region = page.getByRole('region', { name: surface.name === 'netratel' ? 'Related automation resources' : 'Automation reports', exact: true });
               await expect(region).toBeVisible(); await expect(region).toContainText(ids.sourceReference);
