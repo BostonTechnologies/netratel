@@ -100,6 +100,15 @@ jobs:
           ref: ${{ inputs.companion_ref }}
           path: work/rateldesk
           fetch-depth: 0
+          persist-credentials: false
+      - name: Keep the companion outside the product source tree
+        if: inputs.suite == 'pairing'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/pairing-sources"
+          test ! -e "$RUNNER_TEMP/pairing-sources/rateldesk"
+          mv "$GITHUB_WORKSPACE/work/rateldesk" "$RUNNER_TEMP/pairing-sources/rateldesk"
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
         with:
           global-json-file: global.json
@@ -158,10 +167,11 @@ jobs:
         env:
           NETRATEL_PAIRING_ACCEPTANCE: '1'
           NETRATEL_PAIRING_SOURCE_ROOT: ${{ github.workspace }}
-          RATELDESK_PAIRING_SOURCE_ROOT: ${{ github.workspace }}/work/rateldesk
+          RATELDESK_PAIRING_SOURCE_ROOT: ${{ runner.temp }}/pairing-sources/rateldesk
           NETRATEL_PAIRING_RUNTIME_ROOT: ${{ runner.temp }}/pairing-${{ github.run_id }}-${{ github.run_attempt }}
           PAIRING_BROWSER_WITH_DEPS: '1'
           PAIRING_AUTOMATION_TRACEABILITY: ${{ inputs.pairing_traceability && '1' || '0' }}
+          PAIRING_REQUIRE_CLEAN_SOURCE: '1'
         shell: bash
         run: |
           set -euo pipefail

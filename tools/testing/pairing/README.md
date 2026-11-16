@@ -27,6 +27,8 @@ Set `PAIRING_AUTOMATION_TRACEABILITY=1` (the optional workflow’s `pairing_trac
 
 The display matrix reuses loaded authenticated views within its normal and native-zoom browser contexts. It starts one issuer rate-limit window after the HTTP journey, then loads the catalogue and keyboard-activates the synthetic preview once per context. Production issuer and login limits remain enforced; appearance changes do not repeatedly mint credentials or repeat native work.
 
+The hosted lane stages the companion in the runner's temporary directory and requires unchanged clean source trees. The companion checkout is therefore recorded independently rather than appearing as an untracked directory inside the NetRatel source tree.
+
 The opt-in `PairingLifecycleTests` wrapper runs the same entry point when `NETRATEL_PAIRING_ACCEPTANCE=1` and verifies the safe receipt. It requires both source roots explicitly; there is no released-image fallback or mandatory companion fetch in regular unit tests.
 
 For the focused Final Save correction, `tools/ci/run-pairing-save-acceptance.sh` accepts the same explicit corrected source roots and a fresh runtime root, plus `NETRATEL_PAIRING_BASELINE_SOURCE_ROOT` pointing to a clean isolated checkout of the released NetRatel source. It builds only the baseline API and the corrected API/Web/migration graph. Its owned, certificate-validated RatelDesk front door uses default HTTPS port 443 with matching identity/storage API settings. Port 443 must be available.
