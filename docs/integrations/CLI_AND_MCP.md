@@ -159,6 +159,11 @@ single-agent `jobs`/`job-runs` commands retain their compatibility contract.
 Use each command's `--help` and the server's property catalogue for exact
 supported fields; arbitrary selector property paths are rejected.
 
+If a job-run read is denied for the current caller and target, open the
+authorized incident's retained automation report. Use its exact execution
+reference to check which attempt the report describes. Ask the execution owner
+for evidence that the report cannot supply.
+
 Group/target management routes are under
 `/api/v2/tenants/{tenantId}/execution-groups` and
 `/api/v2/tenants/{tenantId}/job-targets`. New job definitions contain one
