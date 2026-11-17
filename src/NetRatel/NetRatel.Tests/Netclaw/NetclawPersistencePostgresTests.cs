@@ -14,6 +14,7 @@ using NetRatel.Infrastructure.Netclaw;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Infrastructure.Identity;
 using NetRatel.Infrastructure.Identity.Authorization;
+using NetRatel.Shared.Contracts.Monitoring;
 using NetRatel.Shared.Contracts.Netclaw;
 using NetRatel.Tests.Infrastructure;
 using Xunit;
@@ -23,6 +24,47 @@ namespace NetRatel.Tests.Netclaw;
 [Collection(PostgreSqlPersistenceCollection.Name)]
 public sealed partial class NetclawPersistencePostgresTests(PostgreSqlPersistenceFixture fixture)
 {
+    [Fact]
+    public async Task Aggregate_availability_prepares_one_investigation_for_the_exact_tenant_occurrence()
+    {
+        await using var db = new OrchestratorDbContext(await DatabaseAsync());
+        var now = DateTimeOffset.UtcNow;
+        var rule = new MonitoringRuleDto(17, Guid.NewGuid(), 1, 1, "Availability", true, MonitoringSeverity.Warning,
+            new(MonitoringTargetMode.AllEligible, [], []),
+            new(MonitoringMetricKind.CpuUsagePercent, MonitoringNumericUnit.Percent, 90, 70, null, null, []),
+            TimeSpan.Zero, TimeSpan.Zero, TimeSpan.FromMinutes(2), AlertIfOffline: true);
+        var evidence = new MonitoringEvidenceDto(new(1, 1), Guid.NewGuid(), now, now, MonitoringEvidenceQuality.Fresh,
+            MonitoringClassification.Breach, 2, 0, null, OfflineSummary: new(2, 5, "", false));
+        var occurrence = new MonitoringOccurrenceDto(Guid.NewGuid(), Guid.NewGuid(), now, now, rule, evidence,
+            MonitoringFlowDispatchDisposition.NoFlowSelected);
+        db.Add(new MonitoringOccurrenceRecord
+        {
+            OccurrenceId = occurrence.OccurrenceId, TenantId = 17, RuleId = rule.RuleId,
+            ResourceKey = MonitoringOfflinePresentation.ResourceKey, RaisedEventId = occurrence.RaisedEventId,
+            RaisedAtUtc = now, OccurrenceJson = JsonSerializer.Serialize(occurrence, new JsonSerializerOptions(JsonSerializerDefaults.Web))
+        });
+        await db.SaveChangesAsync();
+        var request = new InvestigationCreateRequest(Guid.NewGuid(), "Availability", [], occurrence.OccurrenceId)
+        {
+            PreparedAlert = new(rule.RuleId, MonitoringOfflinePresentation.ResourceKey)
+        };
+        var store = new InvestigationStore(db, TimeProvider.System);
+        var prepared = await store.CreateAsync(17, request, "operator", default);
+        Assert.Equal(prepared.Id, (await store.CreateAsync(17, request, "operator", default)).Id);
+        var snapshot = await store.LoadAsync(17, prepared.Id, 0, default);
+        Assert.False(snapshot.Investigation.IsGeneralChat);
+        Assert.Equal(occurrence.OccurrenceId, snapshot.Investigation.OccurrenceId);
+        Assert.Empty(snapshot.Investigation.AgentIds);
+        Assert.Equal(request.PreparedAlert, snapshot.Prepared!.Alert);
+        Assert.Contains("2 offline of 5 monitored", snapshot.Prepared.Message, StringComparison.Ordinal);
+        Assert.Null(snapshot.ActiveMessageId);
+        Assert.Equal(InvestigationState.Idle, snapshot.Investigation.State);
+        Assert.Empty(await store.ListChatsAsync(17, 0, default));
+        await Assert.ThrowsAsync<KeyNotFoundException>(() => store.CreateAsync(18, request, "operator", default));
+        var wrongRule = request with { RequestId = Guid.NewGuid(), PreparedAlert = request.PreparedAlert! with { RuleId = Guid.NewGuid() } };
+        await Assert.ThrowsAsync<KeyNotFoundException>(() => store.CreateAsync(17, wrongRule, "operator", default));
+    }
+
     [Fact]
     public async Task General_chat_requires_a_saved_connection_and_preserves_identity_without_systems_or_prompt_context()
     {
