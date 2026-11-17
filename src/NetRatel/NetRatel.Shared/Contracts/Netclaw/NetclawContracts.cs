@@ -24,10 +24,7 @@ public sealed record InvestigationCreateRequest(Guid RequestId, string Title, IR
 {
     public MonitoringInvestigationReference? PreparedAlert { get; init; }
 }
-public sealed record MonitoringInvestigationReference(Guid RuleId, string ResourceKey)
-{
-    public bool IsAggregate { get; init; }
-}
+public sealed record MonitoringInvestigationReference(Guid RuleId, string ResourceKey);
 public sealed record PreparedInvestigationDto(MonitoringInvestigationReference Alert, string Message, Guid FirstMessageId, DateTimeOffset PreparedAtUtc, bool Started = false)
 {
     public string? Title { get; init; }

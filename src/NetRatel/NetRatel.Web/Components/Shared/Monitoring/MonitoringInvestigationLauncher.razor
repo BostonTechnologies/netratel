@@ -59,7 +59,7 @@
             var aggregate = MonitoringOfflinePresentation.IsSeries(row.Series);
             Guid[] selectedClients = aggregate ? [] : [row.Series.AgentId];
             var request = new InvestigationCreateRequest(requestId, title, selectedClients, row.Occurrence?.OccurrenceId)
-            { PreparedAlert = new(row.Series.RuleId, row.Series.ResourceKey) { IsAggregate = aggregate } };
+            { PreparedAlert = new(row.Series.RuleId, row.Series.ResourceKey) };
             var snapshot = await api.CreateAsync(row.Series.TenantId, request);
             if (snapshot.Investigation.TenantId != row.Series.TenantId || !snapshot.Investigation.AgentIds.SequenceEqual(selectedClients) || snapshot.Investigation.OccurrenceId != row.Occurrence?.OccurrenceId || snapshot.Prepared?.Alert != request.PreparedAlert)
                 throw new HttpRequestException("The saved investigation could not be verified. Retry this same alert to reconcile it.");

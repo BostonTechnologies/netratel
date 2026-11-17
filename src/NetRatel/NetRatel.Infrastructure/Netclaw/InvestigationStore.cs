@@ -21,9 +21,9 @@ public sealed partial class InvestigationStore(OrchestratorDbContext db, TimePro
     public async Task<AiInvestigationRecord> CreateAsync(int tenantId, InvestigationCreateRequest request, string actor,
         CancellationToken ct, string? sourceActionKey = null, Guid? flowRunId = null, IReadOnlyList<AiPromptSnapshot>? pinnedPrompts = null)
     {
-        var aggregate = request.PreparedAlert?.IsAggregate == true;
-        if (aggregate && (request.OccurrenceId is null || request.PreparedAlert!.ResourceKey != MonitoringOfflinePresentation.ResourceKey
-            || request.AgentIds is not { Count: 0 } || sourceActionKey is not null || flowRunId is not null))
+        var aggregate = request.AgentIds is { Count: 0 } &&
+            request.PreparedAlert?.ResourceKey == MonitoringOfflinePresentation.ResourceKey;
+        if (aggregate && (request.OccurrenceId is null || sourceActionKey is not null || flowRunId is not null))
             throw new ArgumentException("Aggregate alert investigations require the original offline occurrence and no device selection.");
 
         if (request.RequestId == Guid.Empty || string.IsNullOrWhiteSpace(request.Title) || request.Title.Length > 200 ||
@@ -67,7 +67,7 @@ public sealed partial class InvestigationStore(OrchestratorDbContext db, TimePro
             AgentIds = request.AgentIds.ToArray(), OccurrenceId = request.OccurrenceId, CreatedBy = actor,
             SourceActionKey = sourceActionKey, FlowRunId = flowRunId, LastActivityUtc = clock.GetUtcNow(),
             PromptSnapshotsJson = JsonSerializer.Serialize(snapshots), SelectedPromptReferencesJson = referencesJson };
-        var preparedContext = request.PreparedAlert is null ? null : await PrepareAlertAsync(tenantId, request, ct);
+        var preparedContext = request.PreparedAlert is null ? null : await PrepareAlertAsync(tenantId, request, aggregate, ct);
         await ComposeAsync(row, Guid.NewGuid(), "", new string('s', 256), ct);
         if (preparedContext?.Title is { } preparedTitle) row.Title = preparedTitle;
         db.Add(row); Append(db, row, "created", sourceActionKey is null ? "Investigation opened." : "Investigation opened by a published flow.", actor);
