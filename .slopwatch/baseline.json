@@ -1994,15 +1994,6 @@
       "baselinedAt": "2026-11-17T18:17:55.4870817+00:00"
     },
     {
-      "hash": "1e21291722043d6f",
-      "ruleId": "SW003",
-      "filePath": "src/NetRatel/NetRatel.Web/Components/Pages/AIOps/Tools.razor",
-      "lineNumber": 266,
-      "codeSnippet": "catch (OperationCanceledException) when (ct.IsCancellationRequested) { }",
-      "message": "Empty catch block swallows exceptions without handling",
-      "baselinedAt": "2026-11-17T18:17:55.4870914+00:00"
-    },
-    {
       "hash": "ec431508486c52fe",
       "ruleId": "SW003",
       "filePath": "src/NetRatel/NetRatel.Web/Components/Pages/Clients/ClientsMgmt/ClientsMgmt.ReleaseDeletion.cs",
@@ -2550,24 +2541,6 @@
       "codeSnippet": "catch (ObjectDisposedException) when (_disposed) { }",
       "message": "Empty catch block swallows exceptions without handling",
       "baselinedAt": "2026-11-17T18:17:55.4870261+00:00"
-    },
-    {
-      "hash": "190a5235a64fd31b",
-      "ruleId": "SW003",
-      "filePath": "src/NetRatel/NetRatel.Web/Components/Shared/Netclaw/NetclawConversation.razor",
-      "lineNumber": 212,
-      "codeSnippet": "catch (JSException) { /* The saved conversation remains usable when browser storage is unavailable. */ }",
-      "message": "Empty catch block swallows exceptions without handling",
-      "baselinedAt": "2026-11-17T18:17:55.4870297+00:00"
-    },
-    {
-      "hash": "66bea864433d71e0",
-      "ruleId": "SW003",
-      "filePath": "src/NetRatel/NetRatel.Web/Components/Shared/Netclaw/NetclawConversation.razor",
-      "lineNumber": 219,
-      "codeSnippet": "catch (JSDisconnectedException) { /* Browser already disconnected. */ }",
-      "message": "Empty catch block swallows exceptions without handling",
-      "baselinedAt": "2026-11-17T18:17:55.4870325+00:00"
     },
     {
       "hash": "a5039402b55862c5",

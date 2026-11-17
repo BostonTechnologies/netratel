@@ -149,15 +149,19 @@
     private string? _archiveError, _recoveryFeedback;
     private long _renderedSequence = -1;
     private string? _renderedDraft;
-    private bool _forceFollow;
-    private async Task SendMessage() { _forceFollow = true; await Send.InvokeAsync(); }
+    private long? _followAfterSend;
+    private async Task SendMessage()
+    {
+        _followAfterSend = Snapshot.LastSequence;
+        await Send.InvokeAsync();
+    }
     private bool HistoryRejected => Snapshot.Recovery?.FailureCode == "provider_history_invalid_name";
     private long Cursor => Events.LastOrDefault()?.Sequence ?? 0;
     private bool VisibleOptional(string type) => type switch { "usage" => _display.ShowUsage, "processing_state" => _display.ShowProcessing, "compaction" => _display.ShowCompaction, "subagent" => _display.ShowSubagents, _ => false };
     private static string StateLabel(InvestigationState state) => state switch { InvestigationState.Idle => "Ready", InvestigationState.WaitingForFollowUp => "Waiting for follow-up", InvestigationState.Processing => "Working", InvestigationState.AwaitingApproval => "Awaiting approval", InvestigationState.DeliveryUnknown => "Needs recovery", InvestigationState.Queued => "Queued", _ => "Archived" };
     private string FormatMessageTime(DateTimeOffset value) => MessageTimeFormatter?.Invoke(value) ?? value.UtcDateTime.ToString("HH:mm 'UTC'");
     private Task InputMessage(string value) { Message = value; return MessageChanged.InvokeAsync(value); }
-    private Task KeyDown(KeyboardEventArgs e) => !RequireStartClick && e.Key == "Enter" && !e.ShiftKey && !e.AltKey && !e.CtrlKey && !e.MetaKey && CanSend ? SendMessage() : Task.CompletedTask;
+    private Task KeyDown(KeyboardEventArgs e) => !RequireStartClick && e.Key == "Enter" && !e.ShiftKey && !e.AltKey && CanSend ? SendMessage() : Task.CompletedTask;
     private async Task OpenArchiveAsync()
     {
         if (Busy || _archive || !CanInvestigate || _disposed) return;
@@ -209,9 +213,16 @@
             }
             if (_scroll is not null)
             {
-                if (firstRender || _forceFollow || _renderedSequence != Snapshot.LastSequence || _renderedDraft != Snapshot.Draft)
-                    await _scroll.InvokeVoidAsync("followOutput", _transcript, firstRender || _forceFollow);
-                _renderedSequence = Snapshot.LastSequence; _renderedDraft = Snapshot.Draft; _forceFollow = false;
+                var sequence = Snapshot.LastSequence;
+                var draft = Snapshot.Draft;
+                var followSend = _followAfterSend is { } previous && sequence > previous;
+                if (firstRender || followSend || _renderedSequence != sequence || _renderedDraft != draft)
+                {
+                    if (followSend) _followAfterSend = null;
+                    _renderedSequence = sequence;
+                    _renderedDraft = draft;
+                    await _scroll.InvokeVoidAsync("followOutput", _transcript, firstRender || followSend);
+                }
                 if (Snapshot.Investigation.State != InvestigationState.Archived && ConnectionReady) await _scroll.InvokeVoidAsync("prepareComposer", _composer);
             }
         }

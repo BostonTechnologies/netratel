@@ -524,6 +524,7 @@ public sealed partial class NetclawInvestigationWorker(IServiceScopeFactory scop
                             : $"Netclaw reported {errorCategory}. Netclaw reference {correlation}.",
                             trace: NetclawTraceMapper.Map(output, owner.SessionId, row.ActiveMessageId, owner.Profile.DeviceToken));
                         ObserveLifecycle("native_error", id, owner, errorCategory, correlation);
+                        await InvestigationStore.StageTurnResultAsync(db, row, FlowAiResultStatus.DeliveryUnknown, clock.GetUtcNow(), ct);
                         break;
                     case "file":
                         InvestigationStore.Append(db, row, "artifact", "Netclaw produced an artifact. Review it through the configured tool permissions.",
