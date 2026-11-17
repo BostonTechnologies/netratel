@@ -58,6 +58,16 @@ jobs:
       - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6
         with:
           global-json-file: global.json
+      - name: Enforce full-tree Slopwatch source policy
+        run: python3 tools/ci/run-slopwatch.py --report-dir "$RUNNER_TEMP/slopwatch"
+      - name: Retain Slopwatch results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: slopwatch-results
+          path: ${{ runner.temp }}/slopwatch
+          if-no-files-found: warn
+          retention-days: 14
       - name: Require public main ancestry
         if: github.ref_type == 'tag'
         run: |

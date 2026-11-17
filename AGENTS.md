@@ -16,6 +16,11 @@ The repo-local [dotnet-skills installation](docs/integrations/dotnet-skills.md) 
 - Build / dependencies: `dotnet-project-structure`, `dotnet-local-tools`, `package-management`, `serialization`, `sdk-container-publishing`, `aot-trimming`, `opentelemetry-net-instrumentation`.
 - Quality: consult `dotnet-slopwatch` after substantial generated/refactored code and `crap-analysis` when changing tests for complex code. Use focused checks; do not add mandatory deep acceptance or new CI infrastructure merely to follow a generic example.
 
+Run `python3 tools/ci/run-slopwatch.py` with Slopwatch 0.5.0 for authored or
+refactored source and MSBuild changes before handoff. The same full-tree Info
+gate runs in PR and release validation. Document baseline and policy changes in
+the PR. See the [tooling guide](docs/integrations/dotnet-skills.md).
+
 The upstream specialist agents are assistant-specific and are not installed as part of this Codex skill copy.
 
 ## Product version

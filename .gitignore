@@ -425,3 +425,6 @@ FodyWeavers.xsd
 *.pem
 *.private-key.pem
 github-app/*.pem
+
+# Local Slopwatch reports
+/.slopwatch/reports/
