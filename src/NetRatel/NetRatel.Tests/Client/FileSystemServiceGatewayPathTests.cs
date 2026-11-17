@@ -152,6 +152,27 @@ public sealed class FileSystemServiceGatewayPathTests
     }
 
     [Fact]
+    public void Missing_paths_are_distinguished_only_after_root_admission()
+    {
+        var temporary = Directory.CreateTempSubdirectory();
+        try
+        {
+            var approved = temporary.CreateSubdirectory("approved");
+            var outside = temporary.CreateSubdirectory("outside");
+            var service = new FileSystemService();
+            var missing = Path.Combine(approved.FullName, "missing-parent", "optional.conf");
+            service.ResolveGatewayPath(missing, [approved.FullName], true, out var resolved)
+                .Should().Be(GatewayPathResolution.Missing);
+            resolved.Should().BeEmpty();
+            service.ResolveGatewayPath(Path.Combine(outside.FullName, "optional.conf"), [approved.FullName], true, out _)
+                .Should().Be(GatewayPathResolution.Denied);
+            service.ResolveGatewayPath(approved.FullName + "\0", [approved.FullName], true, out _)
+                .Should().Be(GatewayPathResolution.Denied);
+        }
+        finally { temporary.Delete(recursive: true); }
+    }
+
+    [Fact]
     public void TryResolveGatewayPath_RejectsASymbolicLinkThatEscapesTheApprovedRoot()
     {
         var temporaryRoot = Path.Combine(Path.GetTempPath(), $"netratel-file-policy-{Guid.NewGuid():N}");

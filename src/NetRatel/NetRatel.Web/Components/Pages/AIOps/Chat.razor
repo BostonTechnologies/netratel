@@ -1,12 +1,15 @@
 @page "/ai/chat"
 @rendermode InteractiveServer
 @attribute [Authorize]
+@using Microsoft.AspNetCore.Components.Authorization
 @using NetRatel.Shared.Contracts.Netclaw
 @using NetRatel.Web.Components.Shared.Netclaw
 @implements IAsyncDisposable
 @inject NetRatel.Web.Services.INetclawApiService Api
 @inject NavigationManager Navigation
 @inject IJSRuntime JS
+@inject AuthenticationStateProvider Authentication
+@inject ILogger<Chat> Logger
 
 <PageTitle>Chat · NetRatel</PageTitle>
 
@@ -72,7 +75,7 @@
             @if (_snapshot is not null)
             {
                 <NetclawConversation @key="_snapshot.Investigation.Id" Snapshot="_snapshot" Events="_events" TenantName="@(Access?.TenantName)"
-                    @bind-Message="_message" Busy="_busy" CanInvestigate="@(Access?.CanInvestigate == true)" ConnectionReady="ConnectionReady"
+                    @bind-Message="_message" DraftScope="@DraftScope" DiscardDraft="@DiscardDraftAsync" Busy="_busy" CanInvestigate="@(Access?.CanInvestigate == true)" ConnectionReady="ConnectionReady"
                     CanEditMessage="CanEditMessage" CanSend="CanSend" SendLabel="@(_pendingMessage is null ? "Send" : "Retry message")"
                     Error="@_error" Refresh="RefreshAsync" LiveError="@_liveError" MessageTimeFormatter="MessageTime" Send="SendAsync" Recover="RecoverAsync" LoadMore="LoadMoreAsync"
                     Archive="@(async (bool acknowledge) => { _acknowledgeRemote = acknowledge; await ArchiveAsync(); })"
@@ -114,10 +117,13 @@
                     <div class="chat-composer-area">
                         <div class="chat-composer">
                             <label class="chat-visually-hidden" for="netclaw-chat-message">Message Netclaw</label>
-                            <textarea id="netclaw-chat-message" @ref="_composer" @bind="_message" @bind:event="oninput" @onkeydown="ComposerKeyDownAsync" placeholder="Message Netclaw…" maxlength="16000" rows="3" disabled="@(!CanEditMessage)" data-testid="chat-message"></textarea>
-                            <div class="chat-composer-toolbar"><span class="chat-composer-tenant"><MudIcon Icon="@Icons.Material.Outlined.AutoAwesome" Size="Size.Small" />Netclaw<span>· @Access?.TenantName</span></span><button type="button" class="chat-send-button" @onclick="SendAsync" disabled="@(!CanSend)" data-testid="chat-send"><span>@(_pendingMessage is null ? "Send" : "Retry message")</span><MudIcon Icon="@Icons.Material.Outlined.ArrowUpward" Size="Size.Small" /></button></div>
+                            <textarea id="netclaw-chat-message" @ref="_composer" data-chat-draft-scope="@DraftScope" @bind="_message" @bind:event="oninput" @onkeydown="ComposerKeyDownAsync" placeholder="Message Netclaw…" maxlength="16000" rows="3" disabled="@(!CanEditMessage)" data-testid="chat-message"></textarea>
+                            <div class="chat-composer-toolbar"><span class="chat-composer-tenant"><MudIcon Icon="@Icons.Material.Outlined.AutoAwesome" Size="Size.Small" />Netclaw<span>· @Access?.TenantName</span></span>
+                                @if (CanEditMessage && !string.IsNullOrEmpty(_message))
+                                { <button type="button" class="chat-secondary-button" @onclick="DiscardDraftAsync">Discard draft</button> }
+                                <button type="button" class="chat-send-button" @onclick="SendAsync" disabled="@(!CanSend)" data-testid="chat-send"><span>@(_pendingMessage is null ? "Send" : "Retry message")</span><MudIcon Icon="@Icons.Material.Outlined.ArrowUpward" Size="Size.Small" /></button></div>
                         </div>
-                        <p class="chat-composer-hint">@(Access?.CanInvestigate == true ? "Enter to send · Shift + Enter for a new line" : "Your current access allows you to read saved conversations.")</p>
+                        <p class="chat-composer-hint">@(Access?.CanInvestigate == true ? "Enter to send · Alt+Enter for a new line" : "Your current access allows you to read saved conversations.")</p>
                     </div>
                     }
                 </section>

@@ -165,14 +165,18 @@ public sealed partial class MonitoringStore
         return new(MonitoringConfigurationWriteDisposition.Stored, after);
     }
 
-    private async Task<MonitoringConfigurationSnapshot> ReadConfigurationAsync(OrchestratorDbContext db, int tenant, ulong revision, CancellationToken ct)
+    private Task<MonitoringConfigurationSnapshot> ReadConfigurationAsync(OrchestratorDbContext db, int tenant, ulong revision, CancellationToken ct) =>
+        ReadConfigurationSnapshotAsync(db, tenant, revision, timeProvider.GetUtcNow(), ct);
+
+    private static async Task<MonitoringConfigurationSnapshot> ReadConfigurationSnapshotAsync(
+        OrchestratorDbContext db, int tenant, ulong revision, DateTimeOffset now, CancellationToken ct)
     {
         var rules = await db.MonitoringRules.AsNoTracking().Where(row => row.TenantId == tenant).OrderBy(row => row.RuleId).Take(MonitoringLimits.MaximumRulesPerTenant + 1).Select(row => row.DefinitionJson).ToListAsync(ct).ConfigureAwait(false);
         var groups = await db.MonitoringGroups.AsNoTracking().Where(row => row.TenantId == tenant).OrderBy(row => row.GroupId).Take(MonitoringLimits.MaximumGroupsPerTenant + 1).Select(row => row.DefinitionJson).ToListAsync(ct).ConfigureAwait(false);
         var bypasses = await db.MonitoringBypasses.AsNoTracking().Where(row => row.TenantId == tenant).OrderBy(row => row.BypassId).Take(MonitoringLimits.MaximumBypassesPerEvaluation + 1).Select(row => row.DefinitionJson).ToListAsync(ct).ConfigureAwait(false);
         if (rules.Count > MonitoringLimits.MaximumRulesPerTenant || groups.Count > MonitoringLimits.MaximumGroupsPerTenant || bypasses.Count > MonitoringLimits.MaximumBypassesPerEvaluation)
             throw new InvalidOperationException("configuration_capacity_exceeded");
-        var result = new MonitoringConfigurationSnapshot(tenant, revision, rules.Select(Deserialize<MonitoringRuleDto>).ToImmutableArray(), groups.Select(Deserialize<MonitoringGroupDto>).ToImmutableArray(), bypasses.Select(Deserialize<MonitoringBypassDto>).ToImmutableArray(), timeProvider.GetUtcNow());
+        var result = new MonitoringConfigurationSnapshot(tenant, revision, rules.Select(Deserialize<MonitoringRuleDto>).ToImmutableArray(), groups.Select(Deserialize<MonitoringGroupDto>).ToImmutableArray(), bypasses.Select(Deserialize<MonitoringBypassDto>).ToImmutableArray(), now);
         RequireConfigurationSize(result);
         return result;
     }

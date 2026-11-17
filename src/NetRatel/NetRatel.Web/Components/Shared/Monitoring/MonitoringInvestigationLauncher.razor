@@ -8,7 +8,7 @@
 @inject ILogger<MonitoringInvestigationLauncher> Logger
 
 <span class="monitoring-investigation-launcher" @onclick:stopPropagation>
-    <MudTooltip Text="AI investigation — opens in a new tab"><button @ref="_button" type="button" class="mud-button-root mud-icon-button mud-icon-button-size-small" disabled="@(_launching || !_ready || Row.Series.AgentId == Guid.Empty)" aria-label="@($"AI investigation for {ClientLabel} — opens in a new tab")" @onclick="Launch" data-testid="monitoring-ai-investigation"><MudIcon Icon="@Icons.Material.Outlined.Psychology" Size="Size.Small" /></button></MudTooltip>
+    <MudTooltip Text="AI investigation — opens in a new tab"><button @ref="_button" type="button" class="mud-button-root mud-icon-button mud-icon-button-size-small" disabled="@(_launching || !_ready || !HasTarget)" aria-label="@($"AI investigation for {ClientLabel} — opens in a new tab")" @onclick="Launch" data-testid="monitoring-ai-investigation"><MudIcon Icon="@Icons.Material.Outlined.Psychology" Size="Size.Small" /></button></MudTooltip>
     @if (_url is not null) { <a href="@_url" target="_blank" rel="noopener noreferrer" data-testid="monitoring-open-investigation">Open created investigation</a> }
     @if (_error is not null) { <span role="alert">@_error</span> }
 </span>
@@ -16,6 +16,8 @@
 @code {
     [Parameter, EditorRequired] public MonitoringSeriesState Row { get; set; } = default!;
     [Parameter] public string ClientLabel { get; set; } = "Client";
+    private bool IsAggregate => MonitoringOfflinePresentation.IsSeries(Row.Series);
+    private bool HasTarget => Row.Series.AgentId != Guid.Empty || IsAggregate && Row.Occurrence is not null;
     private ElementReference _button;
     private IJSObjectReference? _module, _listener;
     private bool _launching, _ready, _disposed;
@@ -42,7 +44,7 @@
     }
     private async Task Launch()
     {
-        if (_launching || !_ready || _disposed || Row.Series.AgentId == Guid.Empty || _module is null) return;
+        if (_launching || !_ready || _disposed || !HasTarget || _module is null) return;
         _launching = true; _error = null;
         var row = Row; var context = _context; var generation = _generation; var module = _module;
         try
@@ -54,11 +56,12 @@
             // Repeating this identical POST reconciles an uncertain create by its
             // persisted request ID. It never sends a message or invents a new ID.
             const string title = "Monitoring alert investigation";
-            var request = new InvestigationCreateRequest(requestId, title, [row.Series.AgentId], row.Occurrence?.OccurrenceId)
-            { PreparedAlert = new(row.Series.RuleId, row.Series.ResourceKey) };
+            var aggregate = MonitoringOfflinePresentation.IsSeries(row.Series);
+            Guid[] selectedClients = aggregate ? [] : [row.Series.AgentId];
+            var request = new InvestigationCreateRequest(requestId, title, selectedClients, row.Occurrence?.OccurrenceId)
+            { PreparedAlert = new(row.Series.RuleId, row.Series.ResourceKey) { IsAggregate = aggregate } };
             var snapshot = await api.CreateAsync(row.Series.TenantId, request);
-            if (snapshot.Investigation.TenantId != row.Series.TenantId || snapshot.Investigation.AgentIds.Count != 1 ||
-                snapshot.Investigation.AgentIds[0] != row.Series.AgentId || snapshot.Investigation.OccurrenceId != row.Occurrence?.OccurrenceId || snapshot.Prepared?.Alert != request.PreparedAlert)
+            if (snapshot.Investigation.TenantId != row.Series.TenantId || !snapshot.Investigation.AgentIds.SequenceEqual(selectedClients) || snapshot.Investigation.OccurrenceId != row.Occurrence?.OccurrenceId || snapshot.Prepared?.Alert != request.PreparedAlert)
                 throw new HttpRequestException("The saved investigation could not be verified. Retry this same alert to reconcile it.");
             var url = $"/ai/ops?tenantId={row.Series.TenantId}&investigation={snapshot.Investigation.Id:D}";
             await module.InvokeAsync<bool>("complete", context, url);

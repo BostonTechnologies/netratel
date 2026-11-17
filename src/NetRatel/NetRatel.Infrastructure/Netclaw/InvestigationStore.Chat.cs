@@ -6,12 +6,12 @@ namespace NetRatel.Infrastructure.Netclaw;
 
 public sealed partial class InvestigationStore
 {
-    // Investigations always have selected clients. An empty persisted selection identifies a general chat.
+    // Unscoped conversations do not contain a client selection or an alert occurrence.
     public async Task<IReadOnlyList<InvestigationSummaryDto>> ListChatsAsync(int tenantId, int skip, CancellationToken ct)
     {
         if (skip < 0 || skip > 100000) throw new ArgumentException("Invalid history offset.");
         var rows = await db.Set<AiInvestigationRecord>().AsNoTracking()
-            .Where(x => x.TenantId == tenantId && x.AgentIds.Length == 0)
+            .Where(x => x.TenantId == tenantId && x.AgentIds.Length == 0 && x.OccurrenceId == null)
             .OrderByDescending(x => x.LastActivityUtc).ThenBy(x => x.Id).Skip(skip).Take(100).ToListAsync(ct);
         return rows.Select(Summary).ToArray();
     }
@@ -26,7 +26,7 @@ public sealed partial class InvestigationStore
         var existing = await db.Set<AiInvestigationRecord>().SingleOrDefaultAsync(x => x.TenantId == tenantId && x.RequestId == request.RequestId, ct);
         if (existing is not null)
         {
-            if (existing.AgentIds.Length != 0 || existing.Title != request.Title.Trim() || existing.CreatedBy != actor)
+            if (existing.AgentIds.Length != 0 || existing.OccurrenceId is not null || existing.Title != request.Title.Trim() || existing.CreatedBy != actor)
                 throw new InvestigationConflictException("This request ID already belongs to another conversation request.");
             GeneralChatContextComposer.Validate(existing);
             return existing;
@@ -49,6 +49,8 @@ public sealed partial class InvestigationStore
     public Task ValidateContextAsync(AiInvestigationRecord row, CancellationToken ct)
     {
         if (row.AgentIds.Length != 0) return ValidateClientsAsync(row.TenantId, row.AgentIds, ct);
+        if (row.OccurrenceId is { } occurrence)
+            return ValidateAggregateAlertAsync(row.TenantId, occurrence, ct);
         GeneralChatContextComposer.Validate(row);
         return Task.CompletedTask;
     }

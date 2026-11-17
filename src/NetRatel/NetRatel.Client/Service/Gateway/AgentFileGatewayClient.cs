@@ -306,15 +306,23 @@ public sealed class AgentFileGatewayClient
                 return;
             }
         }
-        else if (dispatch.AllowedRoots.Count > 0 &&
-            !fileSystem.TryResolveGatewayPath(
-                dispatch.Path,
-                dispatch.AllowedRoots,
-                requireExisting: operationName is "list" or "read" or "stat" or "delete" or "delete_directory" or "delete_recursive",
-                out resolvedPath))
+        else if (dispatch.AllowedRoots.Count > 0)
         {
-            await WriteFailureAsync(dispatch.RequestId, dispatch.AttemptId, "access_denied", writer, stoppingToken).ConfigureAwait(false);
-            return;
+            var pathResolution = fileSystem.ResolveGatewayPath(dispatch.Path, dispatch.AllowedRoots,
+                requireExisting: operationName is "list" or "read" or "stat" or "delete" or "delete_directory" or "delete_recursive",
+                out resolvedPath);
+            if (pathResolution != GatewayPathResolution.Resolved)
+            {
+                var code = (pathResolution, operationName) switch
+                {
+                    (GatewayPathResolution.Missing, "list") => "directory_not_found",
+                    (GatewayPathResolution.Missing, "read") => "file_not_found",
+                    (GatewayPathResolution.Missing, "stat") => "path_not_found",
+                    _ => "access_denied"
+                };
+                await WriteFailureAsync(dispatch.RequestId, dispatch.AttemptId, code, writer, stoppingToken).ConfigureAwait(false);
+                return;
+            }
         }
 
         if (operationName is "create_file" or "create_directory" or "delete" or "delete_directory" or "delete_recursive" or "move_entry" &&

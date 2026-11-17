@@ -8,7 +8,9 @@ public sealed class RatelDeskConnectorReadiness(IRatelDeskConnectorAuthorization
     public static readonly TimeSpan MaximumObservationAge = TimeSpan.FromMinutes(2);
     public async Task<(bool Available, string Code)> CurrentAsync(RatelDeskConnectorState state, CancellationToken ct)
     {
-        if (!state.Configuration.Enabled || !await authorization.CanExecuteAsync(state.OwnerPrincipalId, null, state.TenantId, ct)) return (false, "connector-disabled-or-owner-denied");
+        if (!state.Configuration.Enabled) return (false, "connector-disabled");
+        if (!await authorization.CanExecuteAsync(state.OwnerPrincipalId, null, state.TenantId, ct))
+            return (false, "connector-owner-authority-denied");
         var observed = state.Readiness;
         if (observed?.Peer is null || observed.Capability is null || observed.Capability.Endpoints is null || observed.Peer.CategoryIds is null || observed.ConnectorRevision != state.Revision) return (false, "receiver-readiness-required");
         var now = clock.GetUtcNow();

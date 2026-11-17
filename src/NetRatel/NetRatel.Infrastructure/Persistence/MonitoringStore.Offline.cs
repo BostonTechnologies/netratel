@@ -56,6 +56,19 @@ public sealed partial class MonitoringStore
         return evaluated;
     }
 
+    internal static async Task<(MonitoringOfflineObservation? Observation, DateTimeOffset ObservedAtUtc)> ObserveCurrentOfflineAsync(
+        OrchestratorDbContext db, int tenantId, Guid ruleId, TimeProvider clock, CancellationToken ct)
+    {
+        var now = await EvidenceNowAsync(db, clock, ct).ConfigureAwait(false);
+        var revision = await db.MonitoringTenantConfigurations.AsNoTracking().Where(x => x.TenantId == tenantId)
+            .Select(x => x.Revision).SingleOrDefaultAsync(ct).ConfigureAwait(false);
+        var configuration = await ReadConfigurationSnapshotAsync(db, tenantId, revision, now, ct).ConfigureAwait(false);
+        var rule = configuration.Rules.SingleOrDefault(x => x.RuleId == ruleId);
+        if (rule is not { Enabled: true, AlertIfOffline: true }) return (null, now);
+        var clients = await ReadOfflineClientsAsync(db, rule, configuration.Groups, now, ct).ConfigureAwait(false);
+        return (MonitoringOfflineEvaluation.Observe(rule, configuration.Groups, clients, configuration.Bypasses, now), now);
+    }
+
     private static async Task<MonitoringOfflineClient[]> ReadOfflineClientsAsync(OrchestratorDbContext db, MonitoringRuleDto rule,
         IReadOnlyList<MonitoringGroupDto> groups, DateTimeOffset now, CancellationToken ct)
     {

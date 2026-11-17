@@ -94,7 +94,10 @@ public sealed class RatelDeskConnectorTests
         store.Value = store.Value with { Revision = 2, Configuration = Config with { CustomerId = "new-customer" } };
         Assert.Equal("connector-revision-unavailable", (await connector.DispatchAsync(action)).Code);
         store.Value = State("protected") with { Configuration = Config with { Enabled = false } };
-        Assert.Equal("connector-disabled-or-owner-denied", (await connector.DispatchAsync(action)).Code);
+        Assert.Equal("connector-disabled", (await connector.DispatchAsync(action)).Code);
+        var disabled = await connector.GetAsync(4, ConnectorId, new("owner"));
+        Assert.Equal("connector-disabled", disabled?.UnavailableReason);
+        Assert.Equal(Config.OrganizationId, disabled?.Receiver?.OrganizationId);
         auth.Allowed = false;
         Assert.Equal("connector-current-authority-denied", (await connector.DispatchAsync(action)).Code);
     }

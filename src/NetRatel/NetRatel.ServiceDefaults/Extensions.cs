@@ -158,7 +158,7 @@ public static class Extensions
             })
             .WithMetrics(metrics =>
             {
-                metrics.AddMeter(NetRatelMeterName)
+                metrics.AddMeter(NetRatelMeterName).AddMeter("NetRatel.Chat")
                     .AddMeter(NetRatelAkkaMeterName)
                     .AddMeter(NetRatelFileBrowserMeterName)
                     .AddAspNetCoreInstrumentation()

@@ -55,6 +55,8 @@ public sealed class RatelDeskFlowReceiverAdapter(IRatelDeskConnectorStore connec
         var evidence = builder.Build(draft, action, peer, capability, originalCreatedAtUtc, null);
         return new(FlowIncidentPreparationStatus.Ready, action, evidence, "receiver-idempotency-verified");
         }
+        catch (ConnectorAvailabilityException error)
+        { return new(FlowIncidentPreparationStatus.Unavailable, Code: error.Message); }
         catch (UnauthorizedAccessException)
         { return new(FlowIncidentPreparationStatus.Denied, Code: "connector-current-authority-denied"); }
         catch (RatelDeskReceiverReadException error)
@@ -155,12 +157,17 @@ public sealed class RatelDeskFlowReceiverAdapter(IRatelDeskConnectorStore connec
             ? create + " rateldesk.incident-templates.read" : create;
     }
 
+    private sealed class ConnectorAvailabilityException(string code) : UnauthorizedAccessException(code);
+
     private async Task<RatelDeskConnectorState> CurrentConnector(int tenant, Guid id, long revision, CancellationToken ct)
     {
         var connector = await connectors.GetAsync(tenant, id, ct);
-        if (connector is null || connector.Revision != revision || !connector.Configuration.Enabled ||
-            !await authorization.CanExecuteAsync(connector.OwnerPrincipalId, null, tenant, ct))
-            throw new UnauthorizedAccessException("connector-revision-or-owner-unavailable");
+        if (connector is null || connector.Revision != revision)
+            throw new ConnectorAvailabilityException("connector-revision-unavailable");
+        if (!connector.Configuration.Enabled)
+            throw new ConnectorAvailabilityException("connector-disabled");
+        if (!await authorization.CanExecuteAsync(connector.OwnerPrincipalId, null, tenant, ct))
+            throw new ConnectorAvailabilityException("connector-owner-authority-denied");
         return connector;
     }
 }

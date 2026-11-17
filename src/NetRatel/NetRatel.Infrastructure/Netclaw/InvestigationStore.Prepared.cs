@@ -22,6 +22,7 @@ public sealed partial class InvestigationStore
     private async Task<PreparedInvestigationDto> PrepareAlertAsync(int tenant, InvestigationCreateRequest request, CancellationToken ct)
     {
         var reference = request.PreparedAlert!;
+        if (reference.IsAggregate) return await PrepareAggregateAsync(tenant, request, ct);
         if (reference.RuleId == Guid.Empty || string.IsNullOrWhiteSpace(reference.ResourceKey) || reference.ResourceKey.Length > 2048 ||
             request.AgentIds.Count != 1 || request.AgentIds[0] == Guid.Empty)
             throw new ArgumentException("Prepared alert context requires an exact rule, resource and single client.");

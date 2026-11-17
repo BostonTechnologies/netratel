@@ -81,9 +81,11 @@ public sealed partial class NetclawPersistencePostgresTests(PostgreSqlPersistenc
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task Worker_sends_and_records_exact_canonical_context_on_first_and_later_turns(bool generalChat)
+    [InlineData(false, null)]
+    [InlineData(true, null)]
+    [InlineData(false, "child")]
+    [InlineData(true, "reminder")]
+    public async Task Worker_records_canonical_turns_and_retains_supported_follow_up(bool generalChat, string? continuation)
     {
         var options = await DatabaseAsync(); var daemon = new Daemon(); var services = new ServiceCollection();
         await using var connectionSource = new OrchestratorDbContext(options);
@@ -154,7 +156,39 @@ public sealed partial class NetclawPersistencePostgresTests(PostgreSqlPersistenc
                 }
             }
             await daemon.Output!(JsonSerializer.SerializeToElement(new { type = "text", sessionId = first.SessionId, turnNumber = (int?)null, text = "First answer" }));
-            await daemon.Output!(JsonSerializer.SerializeToElement(new { type = "turn_completed", sessionId = first.SessionId, turnNumber = 1, turnOutcome = "completed" }));
+            if (continuation == "reminder")
+                await daemon.Output!(JsonSerializer.SerializeToElement(new
+                {
+                    type = "tool_result", sessionId = first.SessionId, toolName = "set_reminder", callId = "native-call",
+                    result = "Reminder 'Fixture' scheduled. Runs once. Next execution: soon. Delivery: reply to this session. ID: fixture-watch"
+                }));
+            string[] children = continuation == "child" ? ["child-fixture"] : [];
+            var parentEnd = JsonSerializer.SerializeToElement(new
+            {
+                type = "turn_completed", sessionId = first.SessionId, turnNumber = 1, turnOutcome = "completed", openChildRunIds = children
+            });
+            await daemon.Output!(parentEnd);
+            if (continuation is not null)
+            {
+                await lifecycle.FollowUpWaiting.Task.WaitAsync(deadline.Token);
+                await using (var reading = new OrchestratorDbContext(options))
+                {
+                    var store = new InvestigationStore(reading, TimeProvider.System);
+                    var pending = await store.LoadAsync(17, id, 0, deadline.Token);
+                    Assert.Equal(InvestigationState.WaitingForFollowUp, pending.Investigation.State);
+                    var evidence = Assert.Single(pending.Events, x => x.Type == "turn_completed").Trace!.FollowUp;
+                    Assert.Equal(1, evidence!.LastTurnNumber);
+                    await Assert.ThrowsAsync<InvestigationConflictException>(() => store.AcceptMessageAsync(17, id,
+                        new(Guid.NewGuid(), "Do not admit another request"), "operator", null, false, deadline.Token));
+                }
+                await daemon.Output!(parentEnd);
+                await daemon.Output!(JsonSerializer.SerializeToElement(new { type = "text", sessionId = first.SessionId, text = "Substantive follow-up report" }));
+                await daemon.Output!(JsonSerializer.SerializeToElement(new
+                {
+                    type = "turn_completed", sessionId = first.SessionId, turnNumber = 2, turnOutcome = "completed",
+                    openChildRunIds = Array.Empty<string>(), sourceReminderId = continuation == "reminder" ? "fixture-watch" : null
+                }));
+            }
             await daemon.TurnClosed.Reader.ReadAsync(deadline.Token);
             // An initialized 0.28.2 session returns acknowledged admission without another joined event.
             daemon.AttachSnapshot = false; daemon.TextAdmissionVersion = 1;
@@ -182,16 +216,17 @@ public sealed partial class NetclawPersistencePostgresTests(PostgreSqlPersistenc
             await daemon.Output!(JsonSerializer.SerializeToElement(new { type = "turn_completed", sessionId = later.SessionId, turnNumber = 99, turnOutcome = "completed" }));
             await daemon.Output!(JsonSerializer.SerializeToElement(new { type = "text", sessionId = later.SessionId, turnNumber = 1, text = "Stale previous turn" }));
             await daemon.Output!(JsonSerializer.SerializeToElement(new { type = "text", sessionId = later.SessionId, turnNumber = (int?)null, text = "Second answer" }));
-            await daemon.Output!(JsonSerializer.SerializeToElement(new { type = "turn_completed", sessionId = later.SessionId, turnNumber = 2, turnOutcome = "completed" }));
+            await daemon.Output!(JsonSerializer.SerializeToElement(new { type = "turn_completed", sessionId = later.SessionId, turnNumber = continuation is null ? 2 : 3, turnOutcome = "completed" }));
             await daemon.TurnClosed.Reader.ReadAsync(deadline.Token);
             await using var check = new OrchestratorDbContext(options);
             var contexts = await check.Set<AiInvestigationContextRecord>().AsNoTracking().OrderBy(x => x.PreparedAtUtc).ToListAsync();
             Assert.Equal(2, contexts.Count); Assert.Equal(first.Text, contexts[0].Request); Assert.Equal(later.Text, contexts[1].Request);
             var completed = await check.AiInvestigations.AsNoTracking().SingleAsync(x => x.Id == id);
             Assert.Equal(InvestigationState.Idle, completed.State);
-            Assert.Equal(1, completed.RemoteTurnCountBeforeSend);
-            Assert.Equal(2, await check.AiInvestigationEvents.CountAsync(x => x.InvestigationId == id && x.Type == "turn_completed"));
-            Assert.Equal(new[] { "First answer", "Second answer" }, await check.AiInvestigationEvents
+            Assert.Equal(continuation is null ? 1 : 2, completed.RemoteTurnCountBeforeSend);
+            Assert.Equal(continuation is null ? 2 : 3, await check.AiInvestigationEvents.CountAsync(x => x.InvestigationId == id && x.Type == "turn_completed"));
+            var expected = continuation is null ? new[] { "First answer", "Second answer" } : ["First answer", "Substantive follow-up report", "Second answer"];
+            Assert.Equal(expected, await check.AiInvestigationEvents
                 .Where(x => x.InvestigationId == id && x.Type == "assistant").OrderBy(x => x.Sequence).Select(x => x.Text).ToArrayAsync());
             Assert.Equal(2, daemon.Sends);
         }
@@ -517,6 +552,7 @@ public sealed partial class NetclawPersistencePostgresTests(PostgreSqlPersistenc
     private sealed class WorkerLifecycle : ILogger<NetclawInvestigationWorker>
     {
         public TaskCompletionSource Ready { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource FollowUpWaiting { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource MissingOutput { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
         public bool IsEnabled(LogLevel logLevel) => true;
@@ -524,6 +560,7 @@ public sealed partial class NetclawPersistencePostgresTests(PostgreSqlPersistenc
         {
             if (eventId.Name == "TransportOwnershipAcquired") Ready.TrySetResult();
             else if (eventId.Name == "NetclawOutput" && formatter(state, exception).Contains("reason DeliveryUnknown", StringComparison.Ordinal)) MissingOutput.TrySetResult();
+            else if (eventId.Name == "NetclawOutput" && formatter(state, exception).Contains("reason WaitingForFollowUp", StringComparison.Ordinal)) FollowUpWaiting.TrySetResult();
             else if (logLevel >= LogLevel.Warning) Ready.TrySetException(new InvalidOperationException(formatter(state, exception)));
         }
     }

@@ -137,7 +137,10 @@ public sealed record FlowRunDetailDto(FlowRunSummaryDto Run,
 public sealed record FlowConnectorReferenceDto(Guid Id, int TenantId, string Name, bool Enabled, bool CanExecute, string? UnavailableReason = null, long Revision = 0)
 {
     public FlowActionKind Kind { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public FlowIncidentReceiverReferenceDto? Receiver { get; init; }
 }
+public sealed record FlowIncidentReceiverReferenceDto(string Origin, string OrganizationId, DateTimeOffset? LastVerifiedAtUtc);
 public sealed record FlowTenantAccessDto(int TenantId, string TenantName, bool CanEdit, bool CanPublish, bool CanExecute)
 {
     public bool CanDelete { get; init; }

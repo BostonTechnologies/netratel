@@ -261,8 +261,10 @@ public sealed class MonitoringPageTests : AsyncBunitContext
         Assert.Single(cut.FindAll("[data-testid='monitoring-series-row']"));
         Assert.Equal(11, cut.FindAll("[data-testid='monitoring-offline-members'] small").Count);
         Assert.Empty(cut.FindAll("[data-testid='client-tools-launcher']"));
-        Assert.Empty(cut.FindAll("[data-testid='monitoring-ai-investigation']"));
+        Assert.Single(cut.FindAll("[data-testid='monitoring-ai-investigation']"));
         Assert.Single(cut.FindAll("[data-testid='monitoring-ack']"));
+        cut.Find("[data-testid='monitoring-alert-details']").Click();
+        Assert.Single(cut.FindAll("[data-testid='monitoring-detail-row'] [data-testid='monitoring-ai-investigation']"));
     }
     [Theory]
     [InlineData("network", "Network unavailable")]

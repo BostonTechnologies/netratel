@@ -1,6 +1,8 @@
 using System.Net;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Web;
+using Microsoft.AspNetCore.Components.Authorization;
+using NetRatel.Web.Services;
 using Microsoft.JSInterop;
 using MudBlazor;
 using NetRatel.Shared.Contracts.Netclaw;
@@ -31,12 +33,19 @@ public partial class Chat
     private int _tenant, _generation;
     private bool _initialized, _loading = true, _busy, _disposed, _showArchived, _acknowledgeRemote;
     private bool _timeLoaded;
+    private ChatDraftStorage? _draftStorage;
+    private string? _draftActor;
+    private bool _draftRestored, _restoringDraft, _draftAcknowledged;
+    private sealed record PendingSubmission(InvestigationMessageRequest Message, GeneralChatCreateRequest? Create);
+
+    private string? DraftScope => Access?.CanInvestigate == true && (_snapshot is not null || RequestedChat is null)
+        ? ChatDraftStorage.Scope(_draftActor, $"general-chat/{_tenant}", _snapshot?.Investigation.Id) : null;
 
     private NetclawTenantDto? Access => _tenants.FirstOrDefault(x => x.TenantId == _tenant);
     private bool ConnectionReady => _connection is { Enabled: true, HasDeviceToken: true } && _connection.TenantId == _tenant;
     private bool CanStart => Access?.CanInvestigate == true && ConnectionReady;
-    private bool CanEditMessage => CanStart && !_busy && _pendingMessage is null && (_snapshot is null || _snapshot.Investigation.State == InvestigationState.Idle);
-    private bool CanSend => CanStart && !_busy && !string.IsNullOrWhiteSpace(_message) && (_snapshot is null || _snapshot.Investigation.State == InvestigationState.Idle);
+    private bool CanEditMessage => CanStart && _draftRestored && !_busy && _pendingMessage is null && (_snapshot is null || _snapshot.Investigation.State == InvestigationState.Idle);
+    private bool CanSend => CanStart && _draftRestored && !_busy && !string.IsNullOrWhiteSpace(_message) && (_snapshot is null || _snapshot.Investigation.State == InvestigationState.Idle);
     private long Cursor => _events.LastOrDefault()?.Sequence ?? 0;
     private string ConnectionUrl => $"/account/integration-credentials?tab=netclaw&tenantId={_tenant}";
     private IEnumerable<InvestigationSummaryDto> FilteredItems => _items
@@ -58,6 +67,10 @@ public partial class Chat
 
     protected override async Task OnInitializedAsync()
     {
+        var identity = (await Authentication.GetAuthenticationStateAsync()).User;
+        _draftActor = ChatDraftStorage.Actor(identity);
+        _draftStorage = new(JS, Logger);
+        Authentication.AuthenticationStateChanged += IdentityChanged;
         try { _tenants = await Api.TenantsAsync(_lifetime.Token); }
         catch (HttpRequestException exception) { _error = exception.Message; }
         catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { return; }
@@ -81,6 +94,7 @@ public partial class Chat
         var tenant = _tenant;
         _snapshot = null; _events.Clear(); _items = []; _connection = null;
         _message = _search = ""; _pendingMessage = null; _pendingCreate = null;
+        _draftRestored = _restoringDraft = _draftAcknowledged = false;
         _busy = _acknowledgeRemote = _showArchived = false;
         _liveError = null; _loading = true;
         if (_tenant == 0)
@@ -123,11 +137,7 @@ public partial class Chat
     private void NewChat()
     {
         if (_busy || !CanStart) return;
-        if (_snapshot is null && RequestedChat is null)
-        {
-            _message = ""; _pendingMessage = null; _pendingCreate = null; _error = null;
-            return;
-        }
+        if (_snapshot is null && RequestedChat is null) return;
         Navigation.NavigateTo(ChatUrl(_tenant));
     }
 
@@ -135,11 +145,12 @@ public partial class Chat
     {
         if (!CanEditMessage) return;
         _message = prompt;
+        await SaveDraftAsync(DraftScope);
         await _composer.FocusAsync();
     }
 
     private Task ComposerKeyDownAsync(KeyboardEventArgs args) =>
-        args.Key == "Enter" && !args.ShiftKey && !args.AltKey && CanSend ? SendAsync() : Task.CompletedTask;
+        args.Key == "Enter" && !args.ShiftKey && !args.AltKey && !args.CtrlKey && !args.MetaKey && CanSend ? SendAsync() : Task.CompletedTask;
 
     private async Task ExecuteAsync(Func<int, int, CancellationToken, Task> action)
     {
@@ -170,30 +181,42 @@ public partial class Chat
 
     private Task SendAsync() => ExecuteAsync(async (tenant, generation, ct) =>
     {
-        if (!CanStart || string.IsNullOrWhiteSpace(_message) || _snapshot is not null && _snapshot.Investigation.State != InvestigationState.Idle) return;
+        if (!CanStart || !_draftRestored || string.IsNullOrWhiteSpace(_message) || _snapshot is not null && _snapshot.Investigation.State != InvestigationState.Idle) return;
         var message = _pendingMessage ??= new(Guid.NewGuid(), _message.Trim());
         try
         {
-            if (_snapshot is null)
+            var initialScope = DraftScope;
+            if (_snapshot is null) _pendingCreate ??= new(Guid.NewGuid(), CreateTitle(message.Text));
+            await SaveDraftAsync(initialScope);
+            if (!Current(tenant, generation)) return;
+            if (_snapshot is null && _pendingCreate is { } create)
             {
-                _pendingCreate ??= new(Guid.NewGuid(), CreateTitle(message.Text));
-                var created = await Api.CreateChatAsync(tenant, _pendingCreate, ct);
+                var created = await Api.CreateChatAsync(tenant, create, ct);
                 if (!Current(tenant, generation)) return;
                 Apply(created);
                 if (_snapshot is null) return;
                 _pendingCreate = null;
+                if (await SaveDraftAsync(DraftScope) && _draftStorage is not null)
+                    await _draftStorage.WriteAsync<PendingSubmission>(initialScope, "", null);
+                if (!Current(tenant, generation)) return;
                 _loadedRoute = (tenant, created.Investigation.Id);
                 Navigation.NavigateTo(ChatUrl(tenant, created.Investigation.Id), replace: true);
                 if (_pendingMessage is null) return; // The idempotent create readback already confirmed this message.
             }
+            if (_snapshot is null) return;
             var accepted = await Api.SendAsync(tenant, _snapshot.Investigation.Id, message, ct);
             if (!Current(tenant, generation)) return;
             Apply(accepted);
             _pendingMessage = null; _message = "";
+            await SaveDraftAsync(DraftScope);
         }
         catch (HttpRequestException exception) when (exception.StatusCode == HttpStatusCode.BadRequest)
         {
-            if (Current(tenant, generation)) { _pendingMessage = null; _pendingCreate = null; }
+            if (Current(tenant, generation))
+            {
+                _pendingMessage = null; _pendingCreate = null;
+                await SaveDraftAsync(DraftScope);
+            }
             throw;
         }
     });
@@ -243,7 +266,7 @@ public partial class Chat
         _snapshot = snapshot;
         if (_pendingMessage is not null && _events.Any(x => x.Type == "operator" && x.MessageId == _pendingMessage.MessageId))
         {
-            _pendingMessage = null; _message = "";
+            _pendingMessage = null; _message = ""; _draftAcknowledged = true;
         }
         _items = _items.Where(x => x.Id != snapshot.Investigation.Id).Append(snapshot.Investigation).ToArray();
     }
@@ -285,6 +308,16 @@ public partial class Chat
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         if (_disposed || _loading || _tenant == 0) return;
+        if (!_draftRestored && !_restoringDraft)
+        {
+            await RestoreDraftAsync();
+            if (_disposed) return;
+        }
+        if (_draftAcknowledged)
+        {
+            _draftAcknowledged = false;
+            await SaveDraftAsync(DraftScope);
+        }
         try
         {
             if (!_timeLoaded)
@@ -309,6 +342,56 @@ public partial class Chat
         catch (JSDisconnectedException) { return; }
     }
 
+    private async Task RestoreDraftAsync()
+    {
+        var tenant = _tenant;
+        var generation = _generation;
+        _restoringDraft = true;
+        var saved = _draftStorage is null ? null : await _draftStorage.ReadAsync<PendingSubmission>(DraftScope);
+        if (!Current(tenant, generation)) return;
+        _restoringDraft = false; _draftRestored = true;
+        if (saved?.Text is { Length: <= 16000 } text)
+        {
+            _message = text;
+            if (saved.Pending is { Message: { Text.Length: > 0 and <= 16000 } pending } && pending.MessageId != Guid.Empty)
+            {
+                if (_events.Any(x => x.Type == "operator" && x.MessageId == pending.MessageId))
+                {
+                    _message = "";
+                    await SaveDraftAsync(DraftScope);
+                }
+                else
+                {
+                    _pendingMessage = pending;
+                    _pendingCreate = saved.Pending.Create;
+                }
+            }
+        }
+        if (Current(tenant, generation)) StateHasChanged();
+    }
+
+    private Task<bool> SaveDraftAsync(string? key) => _draftStorage?.WriteAsync(key, _message,
+        _pendingMessage is { } message ? new PendingSubmission(message, _pendingCreate) : null) ?? Task.FromResult(false);
+
+    private async Task DiscardDraftAsync()
+    {
+        if (!CanEditMessage) return;
+        _message = "";
+        await SaveDraftAsync(DraftScope);
+    }
+
+    private void IdentityChanged(Task<AuthenticationState> changed) => _ = InvokeAsync(async () =>
+    {
+        var actor = ChatDraftStorage.Actor((await changed).User);
+        if (_disposed || actor == _draftActor) return;
+        var previous = _draftActor;
+        _draftActor = actor;
+        _message = ""; _pendingMessage = null; _pendingCreate = null;
+        await _selectionScope.CancelAsync();
+        if (_draftStorage is not null) await _draftStorage.ClearActorAsync(previous);
+        if (!_disposed) Navigation.NavigateTo(Navigation.Uri, forceLoad: true);
+    });
+
     private static string CreateTitle(string question)
     {
         var line = question.Split('\n')
@@ -325,7 +408,7 @@ public partial class Chat
     private static string StateLabel(InvestigationState state) => state switch
     {
         InvestigationState.Idle => "Ready",
-        InvestigationState.Processing => "Working",
+        InvestigationState.WaitingForFollowUp => "Waiting for follow-up", InvestigationState.Processing => "Working",
         InvestigationState.AwaitingApproval => "Decision needed",
         InvestigationState.DeliveryUnknown => "Reconnect needed",
         InvestigationState.Queued => "Queued",
@@ -334,7 +417,7 @@ public partial class Chat
 
     private static string StateClass(InvestigationState state) => state switch
     {
-        InvestigationState.Processing or InvestigationState.Queued => "active",
+        InvestigationState.Processing or InvestigationState.Queued or InvestigationState.WaitingForFollowUp => "active",
         InvestigationState.AwaitingApproval or InvestigationState.DeliveryUnknown => "attention",
         _ => ""
     };
@@ -342,10 +425,12 @@ public partial class Chat
     public async ValueTask DisposeAsync()
     {
         _disposed = true; ++_generation;
+        Authentication.AuthenticationStateChanged -= IdentityChanged;
         await _lifetime.CancelAsync();
         await _selectionScope.CancelAsync();
         await _polling;
         _selectionScope.Dispose(); _lifetime.Dispose();
+        if (_draftStorage is not null) await _draftStorage.DisposeAsync();
         if (_scrollModule is not null)
         {
             try { await _scrollModule.DisposeAsync(); }

@@ -179,15 +179,25 @@
                                 <label>@(selected.Kind == FlowNodeKind.InvestigateWithAi ? "Netclaw connection" : "RatelDesk connector")<select value="@(selected.ConnectorId?.ToString() ?? "")" @onchange="e => SelectConnector(selected, e)" data-testid="flow-connector"><option value="">Choose an available reference</option>
                                     @foreach (var connector in Connectors.Where(c => c.TenantId == Definition.TenantId && c.Kind == TargetKind(selected))) { <option value="@connector.Id">@connector.Name @(connector.CanExecute && connector.Enabled ? "" : "(unavailable)")</option> }
                                 </select></label>
+                                @if (selected.ConnectorId is { } pinnedConnector)
+                                {
+                                    <p class="flow-help" data-testid="flow-connector-pin">Pinned connector <code>@pinnedConnector</code> · revision @(selected.ConnectorRevision?.ToString() ?? "unavailable")</p>
+                                }
                                 @if (SelectedConnector(selected) is { } reference)
                                 {
+                                    @if (reference.Receiver is { } receiver)
+                                    {
+                                        <p class="flow-help" data-testid="flow-connector-receiver">Receiver @receiver.Origin · organization @receiver.OrganizationId · current revision @reference.Revision</p>
+                                        @if (receiver.LastVerifiedAtUtc is { } checkedAt) { <p class="flow-help">Last verified @checkedAt.ToString("u")</p> }
+                                    }
                                     @if (reference.Enabled && reference.CanExecute && selected.ConnectorRevision is { } revision && revision != reference.Revision)
                                     {
                                         <p role="status" data-testid="flow-connector-status">Target configuration changed. Use the updated target before publishing.</p>
                                         <button type="button" @onclick="() => UpdateNode(selected with { ConnectorRevision = reference.Revision })" data-testid="flow-connector-use-updated-target">Use updated target</button>
                                     }
                                     else
-                                    { <p role="status" data-testid="flow-connector-status">@(reference.Enabled && reference.CanExecute ? "Available for authorized server execution" : $"Unavailable: {reference.UnavailableReason ?? (reference.Enabled ? "Receiver capability is not verified" : "Connector disabled")}")</p> }
+                                    { <p role="status" data-testid="flow-connector-status">@(reference.Enabled && reference.CanExecute ? "Available for authorized server execution" : !reference.Enabled ? "Connector disabled. Select the reviewed replacement for a future flow version." :
+                                        $"Unavailable: {reference.UnavailableReason ?? "Receiver capability is not verified"}")</p> }
                                 }
                                 else { <p role="status" data-testid="flow-connector-status">@(selected.Kind == FlowNodeKind.InvestigateWithAi ? "No owned Netclaw connection is available. Pair and verify one before publishing this action." : "No owned connector reference is available. Configure one in Flows connectors before publishing this action.")</p> }
                                 @if (selected.Kind == FlowNodeKind.InvestigateWithAi)

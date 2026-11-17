@@ -146,7 +146,7 @@ public static class NetclawEndpoints
         if (!await AllowedAsync(tenantId, NetRatelPermissions.TelemetryRead, http, access, ct)) return Results.Forbid();
         var snapshot = await store.LoadAsync(tenantId, investigationId, after ?? 0, ct);
         if (await store.HasAlertAsync(tenantId, investigationId, ct) && !await AllowedAsync(tenantId, NetRatelPermissions.MonitoringRead, http, access, ct)) return Results.Forbid();
-        return Results.Ok(snapshot with { Draft = snapshot.Investigation.State == InvestigationState.Processing ? worker.Draft(investigationId) : null });
+        return Results.Ok(snapshot with { Draft = snapshot.Investigation.State is InvestigationState.Processing or InvestigationState.WaitingForFollowUp ? worker.Draft(investigationId) : null });
     }
 
     internal static async Task<IResult> SendAsync(int tenantId, Guid investigationId, InvestigationMessageRequest request,

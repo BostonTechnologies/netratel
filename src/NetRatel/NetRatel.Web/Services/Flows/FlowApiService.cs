@@ -53,7 +53,11 @@ public sealed class FlowApiException(HttpStatusCode statusCode, string? code = n
     private static string MessageFor(HttpStatusCode status, string? code) => code switch
     {
         "receiver-idempotency-unverified" => "Publishing is unavailable until the RatelDesk receiver supports verified incident deduplication. Your draft is preserved; review Flows connectors.",
-        "connector-disabled-or-owner-denied" or "connector-authority" or "connector-current-authority-denied" => "The connector is disabled or its owner no longer has permission. Choose an authorized connector in this tenant. Your draft is preserved.",
+        "connector-disabled" => "The pinned connector is disabled. Select the verified receiver for a future flow version.",
+        "connector-owner-authority-denied" => "The connector owner no longer has execution authority in this tenant.",
+        "connector-pairing-required" => "This connector needs a current paired system connection.",
+        "connector-current-authority-denied" => "The saved execution authority no longer permits this connector in the selected tenant.",
+        "connector-disabled-or-owner-denied" or "connector-authority" => "The connector is disabled or its owner no longer has permission. Choose an authorized connector in this tenant. Your draft is preserved.",
         "connector-revision-unavailable" => "The connector changed. Select its current reference and save the draft again.",
         "connector-unavailable" => "The selected connector is unavailable. Review Flows connectors before publishing; your draft is preserved.",
         "execution-definition-source-unsupported" => "This lifecycle source has no runnable library definition. Choose a job or library script.",
