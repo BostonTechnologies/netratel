@@ -24,9 +24,9 @@ export function prepareComposer(element) {
     composers.add(element);
     element.addEventListener("input", () => saveText(element.dataset.chatDraftScope, element.value));
     element.addEventListener("keydown", event => {
-        if (event.key !== "Enter" || event.ctrlKey || event.metaKey) return;
+        if (event.key !== "Enter") return;
         if (event.isComposing || event.keyCode === 229) { event.stopPropagation(); return; }
-        if (event.altKey && element.dataset.chatDraftScope) {
+        if (event.altKey && !event.ctrlKey && !event.metaKey && element.dataset.chatDraftScope) {
             event.preventDefault();
             event.stopPropagation();
             if (event.repeat || element.disabled || element.readOnly ||
