@@ -57,6 +57,13 @@ The upstream specialist agents are assistant-specific and are not installed as p
 - For a version bump, verify that changing only `Directory.Build.props` updates every generated version output. Keep release notes and historical evidence separate from configuration.
 - Preserve partial-publication evidence and journals for recovery. Do not claim release completion from a passed rehearsal, a tag, or a published release page alone.
 
+## GitHub issues and release notes
+
+- Read the issue's acceptance criteria and latest evidence before starting work or changing its status. Reference the issue in the implementation PR and link the merged commit and relevant validation runs in the issue update.
+- Close issues as completed once their acceptance criteria are verified. Use `Fixes #123` when the merged change fulfills the issue. Use `Refs #123` for partial fixes, pending deployment checks, or external dependencies, and record the specific remaining work in the open issue.
+- Keep source, hosted test, distribution, and live acceptance evidence distinct in issue updates. Preserve earlier failure evidence and use synthetic data in public examples.
+- Write concise GitHub release notes for stable releases and betas. Summarize user-visible changes and upgrade steps, link the corresponding issues, and state any limitations that affect testing. Report the hosted build and publication links and keep functional acceptance pending until it has been exercised.
+
 ## Documentation placement and integrity
 
 - Before creating documentation, inspect `docs/README.md` and the existing category tree. Update the existing canonical guide first; otherwise put the new document inside the closest existing category.

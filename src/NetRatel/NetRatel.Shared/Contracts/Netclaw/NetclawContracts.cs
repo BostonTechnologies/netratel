@@ -51,10 +51,19 @@ public sealed record NetclawTraceDto(string? ToolName, string? Status, DateTimeO
     string? DetailsJson, bool Redacted, bool Truncated)
 {
     public NetclawFollowUpDto? FollowUp { get; init; }
+    public NetclawScheduledReportDto? ScheduledReport { get; init; }
 }
 public sealed record NetclawFollowUpDto(int LastTurnNumber, DateTimeOffset ObserveUntilUtc,
-    IReadOnlyList<string> ChildRunIds, IReadOnlyList<NetclawReminderReference> Reminders);
-public sealed record NetclawReminderReference(string Id, bool Recurring);
+    IReadOnlyList<string> ChildRunIds, IReadOnlyList<NetclawReminderReference> Reminders)
+{
+    public bool ParentCompleted { get; init; } = true;
+}
+public sealed record NetclawReminderReference(string Id, bool Recurring)
+{
+    public Guid? RegistrationId { get; init; }
+    public bool Unconfirmed { get; init; }
+}
+public sealed record NetclawScheduledReportDto(Guid RegistrationId, string OccurrenceId, int TurnNumber);
 public sealed record InvestigationOptionDto(string Key, string Label);
 public sealed record InvestigationSnapshotDto(InvestigationSummaryDto Investigation, long LastSequence, Guid? ActiveMessageId,
     IReadOnlyList<InvestigationEventDto> Events, IReadOnlyList<InvestigationClientDto> Clients,
@@ -62,6 +71,7 @@ public sealed record InvestigationSnapshotDto(InvestigationSummaryDto Investigat
     InvestigationSentContextDto? SentContext = null, InvestigationRecoveryDto? Recovery = null)
 {
     public PreparedInvestigationDto? Prepared { get; init; }
+    public NetclawFollowUpDto? FollowUp { get; init; }
 }
 public sealed record InvestigationRecoveryDto(DateTimeOffset? LastAttemptAtUtc, string? Summary, string? FailureCode = null);
 public sealed record InvestigationSentContextDto(Guid MessageId, string Request, string MetadataJson, int PayloadBytes,

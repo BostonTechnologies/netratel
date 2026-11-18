@@ -85,6 +85,27 @@ public sealed class AccessAdministrationSelectionTests : AsyncBunitContext
     }
 
     [Fact]
+    public void Oidc_principal_selection_uses_the_shared_scope_and_assignment_view()
+    {
+        JSInterop.Mode = JSRuntimeMode.Loose;
+        Services.AddMudServices(options => options.PopoverOptions.CheckForPopoverProvider = false);
+        var access = new DelayedAccessAdministrationApiService { ShowExternalPrincipal = true };
+        Services.AddSingleton<IAccessAdministrationApiService>(access);
+
+        var cut = Render<AccessAdministration>();
+        const string selector = "[data-testid='access-user-external-principal']";
+        cut.WaitForAssertion(() => cut.Find(selector).TextContent.Should().Contain("operator-a"));
+        cut.Find(selector).Click();
+        access.Complete("external-principal", "OIDC role assignment");
+
+        cut.WaitForAssertion(() =>
+        {
+            cut.Markup.Should().Contain("OIDC role assignment");
+            cut.Find("[data-testid='access-assignment-scope']").TextContent.Should().Be("Tenant Seven");
+        });
+    }
+
+    [Fact]
     public void Slow_previous_selection_cannot_replace_the_current_users_assignments()
     {
         JSInterop.Mode = JSRuntimeMode.Loose;
@@ -112,10 +133,12 @@ public sealed class AccessAdministrationSelectionTests : AsyncBunitContext
 
     private sealed class DelayedAccessAdministrationApiService : IAccessAdministrationApiService
     {
+        public bool ShowExternalPrincipal { get; init; }
         private readonly Dictionary<string, TaskCompletionSource<IReadOnlyList<RoleAssignmentDto>>> _assignments =
             new(StringComparer.Ordinal)
             {
                 ["principal-a"] = new(TaskCreationOptions.RunContinuationsAsynchronously),
+                ["external-principal"] = new(TaskCreationOptions.RunContinuationsAsynchronously),
                 ["principal-b"] = new(TaskCreationOptions.RunContinuationsAsynchronously)
             };
 
@@ -147,6 +170,10 @@ public sealed class AccessAdministrationSelectionTests : AsyncBunitContext
                 new("user-b", "principal-b", "b@example.test", "User B", true, false)
             ]);
         }
+
+        public Task<IReadOnlyList<ExternalPrincipalAccessDto>> GetExternalPrincipalsAsync(int? tenantId, CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<ExternalPrincipalAccessDto>>(ShowExternalPrincipal && tenantId == 7
+                ? [new("external-principal", "https://identity.example.test", "operator-a")] : []);
 
         public Task<LocalAccountActivationDto> CreateLocalUserAsync(string displayName, string email, CancellationToken cancellationToken = default)
         {

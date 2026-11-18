@@ -50,6 +50,8 @@ public sealed partial class NetclawInvestigationWorker
                 ?? throw new KeyNotFoundException("Investigation not found.");
             if (row.State != InvestigationState.DeliveryUnknown || row.RemoteSessionId is null)
                 throw new InvestigationConflictException("Only an unresolved turn with a saved remote session can be recovered.");
+            if (await InvestigationStore.ReadFollowUpAsync(db, row, ct) is { Reminders.Count: > 0 })
+                throw new InvestigationConflictException(InvestigationStore.ScheduledResultUnavailable);
             if (row.LastRecoveryAttemptAtUtc is { } last && clock.GetUtcNow() - last < TimeSpan.FromSeconds(30)) return;
             if (row.LastRecoveryAttemptAtUtc is null)
                 InvestigationStore.Append(db, row, "recovery_requested", "Operator requested session history without resending the message.", actor);

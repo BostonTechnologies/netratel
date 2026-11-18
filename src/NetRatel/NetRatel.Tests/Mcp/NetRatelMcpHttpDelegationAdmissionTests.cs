@@ -222,6 +222,16 @@ public sealed partial class NetRatelMcpHttpTests
         }));
         using var ownershipPayload = await ReadMcpPayloadAsync(wrongOwner);
         ownershipPayload.RootElement.GetProperty("result").GetProperty("structuredContent").GetProperty("failure").GetProperty("code").GetString().Should().Be("local_delegation_binding_mismatch");
+
+        using var unknownRun = await mcp.Application.GetTestClient().SendAsync(ContractCall("netratel_job_runs", new
+        {
+            operation = "get", request = new { tenantId = 17, agentId = ContractAgentId, jobRunId = "9007199254740994" }
+        }));
+        using var runPayload = await ReadMcpPayloadAsync(unknownRun);
+        var runFailure = runPayload.RootElement.GetProperty("result").GetProperty("structuredContent").GetProperty("failure");
+        runFailure.GetProperty("code").GetString().Should().Be("local_delegation_binding_mismatch");
+        runFailure.GetProperty("retryable").GetBoolean().Should().BeFalse();
+        runFailure.GetProperty("remediation").GetString().Should().Contain("authorized incident's retained automation report");
         business.Calls.Should().HaveCount(calls.Length + 1);
     }
 

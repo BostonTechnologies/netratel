@@ -18,13 +18,11 @@ public sealed class LocalPrincipalClaimsTransformation(IApplicationPrincipalReso
             return principal;
         }
 
+        // This identifier belongs to NetRatel, including when a validated token lacks a usable subject.
+        foreach (var incoming in identity.FindAll(PrincipalIdClaimType).ToArray()) identity.RemoveClaim(incoming);
         var principalId = await principals.ResolveExternalAsync(principal).ConfigureAwait(false);
         if (!string.IsNullOrWhiteSpace(principalId))
-        {
-            // This identifier belongs to NetRatel, never to provider-supplied claims.
-            foreach (var incoming in identity.FindAll(PrincipalIdClaimType).ToArray()) identity.RemoveClaim(incoming);
             identity.AddClaim(new Claim(PrincipalIdClaimType, principalId));
-        }
 
         return principal;
     }

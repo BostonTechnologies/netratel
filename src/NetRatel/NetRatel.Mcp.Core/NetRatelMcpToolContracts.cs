@@ -29,10 +29,10 @@ public record NetRatelToolFailure(
 {
     public NetRatel.Shared.Contracts.Monitoring.MonitoringValidationIssue? Validation { get; init; }
 
-    internal static NetRatelToolFailure From(string status, NetRatelToolError? error)
+    internal static NetRatelToolFailure From(string status, NetRatelToolError? error, string? tool = null, string? operation = null)
     {
         var code = error?.Code ?? status;
-        var delegation = McpDelegationFailure.ForCode(code);
+        var delegation = McpDelegationFailure.ForOperation(code, tool, operation);
         var review = IntegrationPairingFailure.IsKnownCode(code) ? IntegrationPairingFailure.ForCode(code, "review") : null;
         return new NetRatelToolFailure(
             code,
@@ -148,7 +148,7 @@ public record NetRatelToolResponse(
         }
 
         var access = McpOperationAccessCatalog.Find(tool, operation);
-        var failure = Failure ?? NetRatelToolFailure.From(Status, Error);
+        var failure = FailureContext ?? NetRatelToolFailure.From(Status, Error, tool, operation);
         return this with
         {
             CorrelationId = string.IsNullOrWhiteSpace(correlationId) ? CorrelationId : correlationId,

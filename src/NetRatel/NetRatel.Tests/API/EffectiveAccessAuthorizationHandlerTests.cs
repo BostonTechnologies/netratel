@@ -55,6 +55,30 @@ public sealed class EffectiveAccessAuthorizationHandlerTests
     }
 
     [Fact]
+    public async Task Configured_oidc_administrator_uses_its_bound_application_principal_for_mcp_policies()
+    {
+        await using var db = CreateDb();
+        const string issuer = "https://identity.example.test";
+        db.ApplicationPrincipals.Add(new() { Id = "principal-a", ExternalIssuer = issuer, ExternalSubject = "operator-a" });
+        await db.SaveChangesAsync();
+        var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+            { ["Authorization:Oidc:AdminGroupId"] = "browser-administrators" }).Build();
+        var access = new EffectiveAccessService(db, configuration);
+        var handler = new EffectiveAccessHandler(access);
+        var requirement = new EffectiveAccessRequirement(NetRatelPermissions.McpPolicyAdministration, legacyRequiredScope: "netratel.mcp.admin");
+        ClaimsPrincipal Browser(string subject) => new(new ClaimsIdentity([
+            new("iss", issuer), new("sub", subject), new("groups", "browser-administrators"), new("netratel_principal_id", "principal-a")], "Oidc"));
+
+        var admin = Browser("operator-a");
+        var snapshot = await access.GetSnapshotAsync(admin, tenantId: null);
+        snapshot.PrincipalId.Should().Be("principal-a");
+        snapshot.IsInstanceAdministrator.Should().BeTrue();
+        snapshot.IsLegacyOperator.Should().BeFalse();
+        (await EvaluateAsync(handler, requirement, admin, 10)).Should().BeTrue();
+        (await EvaluateAsync(handler, requirement, Browser("different-operator"), 10)).Should().BeFalse();
+    }
+
+    [Fact]
     public async Task Instance_artifact_administration_allows_local_admin_but_not_tenant_manager()
     {
         await using var db = CreateDb();

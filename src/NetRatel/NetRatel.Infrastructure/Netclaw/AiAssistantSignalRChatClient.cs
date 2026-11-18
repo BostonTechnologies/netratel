@@ -15,6 +15,8 @@ public sealed record SessionEnsureResult(string SessionId, bool Created)
     // NetClaw 0.28.2 advertises acknowledged text admission, but does not emit a
     // session_joined snapshot when attaching an already initialized session.
     public int TextAdmissionVersion { get; init; }
+    // 0.28.2 does not negotiate scheduled-result delivery.
+    public int ScheduledReportVersion { get; init; }
 }
 
 public interface IAiAssistantChatClient : IAsyncDisposable

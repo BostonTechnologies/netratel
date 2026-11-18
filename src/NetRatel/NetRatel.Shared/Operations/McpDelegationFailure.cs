@@ -3,6 +3,12 @@ namespace NetRatel.Shared.Operations;
 /// <summary>Closed, non-secret admission diagnostics shared by exchange and receiving authority.</summary>
 public sealed record McpDelegationFailure(string Code, string Layer, bool Retryable, string Remediation)
 {
+    public static McpDelegationFailure? ForOperation(string code, string? tool, string? operation) =>
+        code == "local_delegation_binding_mismatch" && tool == "netratel_job_runs" && operation is "get" or "steps" or "logs"
+            ? new(code, "target", false,
+                "For incident-origin work, open the authorized incident's retained automation report and verify its exact execution reference. Ask the execution owner for any additional evidence.")
+            : ForCode(code);
+
     public static McpDelegationFailure? ForCode(string code) => code switch
     {
         "local_credential_invalid" => new(code, "credential", false,

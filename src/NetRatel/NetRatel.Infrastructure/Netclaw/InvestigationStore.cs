@@ -89,6 +89,13 @@ public sealed partial class InvestigationStore(OrchestratorDbContext db, TimePro
         var prepared = await ReadPreparedAsync(id, ct);
         if (prepared is not null)
             prepared = prepared with { Started = await db.Set<AiInvestigationEventRecord>().AnyAsync(x => x.InvestigationId == id && x.Type == "operator" && x.MessageId == prepared.FirstMessageId, ct) };
+        var followUp = await ReadFollowUpAsync(db, row, ct);
+        var recovery = await RecoveryStatusAsync(row, ct);
+        if (row.State == InvestigationState.DeliveryUnknown && followUp is { } pending && pending.Reminders.Any(reminder => !reminder.Unconfirmed))
+        {
+            followUp = MarkScheduledResultsUnconfirmed(pending);
+            if (recovery?.FailureCode is null) recovery = new(row.LastRecoveryAttemptAtUtc, ScheduledResultUnavailable);
+        }
         return new(Summary(row), row.LastSequence, row.ActiveMessageId,
             events.Select(x => new InvestigationEventDto(x.Sequence, x.Type, x.Text, x.Actor, x.CallId,
                 x.OptionsJson is null ? null : Options(x.OptionsJson), x.CreatedAtUtc, x.MessageId,
@@ -96,7 +103,11 @@ public sealed partial class InvestigationStore(OrchestratorDbContext db, TimePro
             await ClientsAsync(tenantId, row.AgentIds, ct),
             approvals.Select(x => new InvestigationApprovalDto(x.CallId, Options(x.OptionsJson))).ToArray(),
             Prompts: InvestigationContextComposer.Prompts(row), SentContext: await LastContextAsync(id, row.ActiveMessageId, ct),
-            Recovery: await RecoveryStatusAsync(row, ct)) { Prepared = prepared };
+            Recovery: recovery)
+        {
+            Prepared = prepared,
+            FollowUp = followUp
+        };
     }
 
     public async Task<bool> AcceptMessageAsync(int tenantId, Guid id, InvestigationMessageRequest request, string actor,
