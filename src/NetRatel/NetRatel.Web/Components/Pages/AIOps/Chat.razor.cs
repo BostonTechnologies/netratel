@@ -410,7 +410,7 @@ public partial class Chat
         InvestigationState.Idle => "Ready",
         InvestigationState.WaitingForFollowUp => "Waiting for follow-up", InvestigationState.Processing => "Working",
         InvestigationState.AwaitingApproval => "Decision needed",
-        InvestigationState.DeliveryUnknown => "Reconnect needed",
+        InvestigationState.DeliveryUnknown => "Outcome unconfirmed",
         InvestigationState.Queued => "Queued",
         _ => "Archived"
     };

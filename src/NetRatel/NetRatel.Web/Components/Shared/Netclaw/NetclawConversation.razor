@@ -6,9 +6,10 @@
 @inject ILogger<NetclawConversation> Logger
 
 <section @ref="_surface" class="netclaw-conversation chat-canvas ai-conversation @(_fullscreen ? "netclaw-fullscreen" : "")"
-         role="@(_fullscreen ? "dialog" : "region")" aria-modal="@(_fullscreen ? "true" : null)" aria-label="Netclaw conversation" tabindex="-1" data-testid="netclaw-conversation" @onkeydown="SurfaceKeyDown">
+         role="@(_fullscreen ? "dialog" : "region")" aria-modal="@(_fullscreen ? "true" : null)" aria-label="Netclaw conversation" tabindex="-1" data-testid="netclaw-conversation"
+         data-pending-scheduled-reports="@(Snapshot.FollowUp?.Reminders.Count ?? 0)" @onkeydown="SurfaceKeyDown">
     <header class="chat-conversation-heading">
-        <div class="chat-assistant-identity"><span class="chat-avatar"><MudIcon Icon="@Icons.Material.Outlined.AutoAwesome" Size="Size.Small" /></span><div><h2>@Snapshot.Investigation.Title</h2><p>@TenantName · @(HistoryRejected ? "History rejected" : StateLabel(Snapshot.Investigation.State))</p></div></div>
+        <div class="chat-assistant-identity"><span class="chat-avatar"><MudIcon Icon="@Icons.Material.Outlined.AutoAwesome" Size="Size.Small" /></span><div><h2>@Snapshot.Investigation.Title</h2><p>@TenantName · @(HistoryRejected ? "History rejected" : ScheduledResultUnconfirmed && Snapshot.Investigation.State == InvestigationState.DeliveryUnknown ? "Scheduled result unconfirmed" : StateLabel(Snapshot.Investigation.State))</p></div></div>
         <div class="netclaw-header-actions">
             @if (Snapshot.Investigation.State != InvestigationState.Archived && CanInvestigate)
             {
@@ -49,13 +50,24 @@
         }
         @if (Error is null && _archiveError is null && Snapshot.Investigation.State == InvestigationState.DeliveryUnknown)
         {
-            <div class="chat-notice chat-recovery" role="status"><div><strong>@(HistoryRejected ? "Session history rejected" : "Conversation outcome unconfirmed")</strong><p>@(Snapshot.Recovery?.Summary ?? "Recover the saved session to check admission and completion evidence. A connected daemon does not establish completion of this conversation.")</p>
+            <div class="chat-notice chat-recovery" role="status"><div><strong>@(HistoryRejected ? "Session history rejected" : ScheduledResultUnconfirmed ? "Scheduled report delivery unconfirmed" : "Conversation outcome unconfirmed")</strong><p>@(Snapshot.Recovery?.Summary ?? "Recover the saved session to check admission and completion evidence. A connected daemon does not establish completion of this conversation.")</p>
                 @if (Snapshot.Recovery?.LastAttemptAtUtc is { } attempted) { <small>Last recovery attempt: @attempted.UtcDateTime.ToString("yyyy-MM-dd HH:mm:ss 'UTC'")</small> }
                 @if (_recoveryFeedback is not null && !Busy) { <p class="chat-action-feedback">@_recoveryFeedback</p> }
-                @if (!HistoryRejected) { <details><summary>Recovery limits</summary><p>Connection health does not confirm conversation attachment. Opening the same session in another console can divert replies. Nothing is resent. You can archive with the acknowledgement and start a new conversation after checking possible side effects.</p></details> }</div>
-                @if (!HistoryRejected) { <button type="button" class="chat-secondary-button" @onclick="RecoverSessionAsync" disabled="@(Busy || _recovering || !CanInvestigate)">@(Busy || _recovering ? "Recovering…" : "Recover session")</button> }
+                @if (!HistoryRejected && !ScheduledResultUnconfirmed) { <details><summary>Recovery limits</summary><p>Connection health does not confirm conversation attachment. Opening the same session in another console can divert replies. Nothing is resent. You can archive with the acknowledgement and start a new conversation after checking possible side effects.</p></details> }</div>
+                @if (!HistoryRejected && !ScheduledResultUnconfirmed) { <button type="button" class="chat-secondary-button" @onclick="RecoverSessionAsync" disabled="@(Busy || _recovering || !CanInvestigate)">@(Busy || _recovering ? "Recovering…" : "Recover session")</button> }
             </div>
         }
+    @if (Snapshot.FollowUp is { Reminders.Count: > 0 } work)
+    {
+        <div class="chat-notice" data-testid="scheduled-reminders"><div><strong>Scheduled reminders</strong>
+            <ul>
+                @foreach (var reminder in work.Reminders)
+                {
+                    <li @key="reminder.Id"><code>@reminder.Id</code> · @(reminder.Recurring ? "Recurring" : "One-shot") · @(reminder.Unconfirmed ? "Delivery unconfirmed" : "Pending")</li>
+                }
+            </ul>
+        </div></div>
+    }
     <div class="netclaw-scroll-area" @ref="_transcript" role="log" aria-label="Saved chat messages" aria-live="polite" aria-relevant="additions text">
         @if (Context is not null) { <div class="netclaw-context">@Context</div> }
         <div class="chat-transcript ai-transcript">
@@ -156,6 +168,7 @@
         await Send.InvokeAsync();
     }
     private bool HistoryRejected => Snapshot.Recovery?.FailureCode == "provider_history_invalid_name";
+    private bool ScheduledResultUnconfirmed => Snapshot.FollowUp?.Reminders.Any(reminder => reminder.Unconfirmed) == true;
     private long Cursor => Events.LastOrDefault()?.Sequence ?? 0;
     private bool VisibleOptional(string type) => type switch { "usage" => _display.ShowUsage, "processing_state" => _display.ShowProcessing, "compaction" => _display.ShowCompaction, "subagent" => _display.ShowSubagents, _ => false };
     private static string StateLabel(InvestigationState state) => state switch { InvestigationState.Idle => "Ready", InvestigationState.WaitingForFollowUp => "Waiting for follow-up", InvestigationState.Processing => "Working", InvestigationState.AwaitingApproval => "Awaiting approval", InvestigationState.DeliveryUnknown => "Needs recovery", InvestigationState.Queued => "Queued", _ => "Archived" };

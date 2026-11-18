@@ -30,18 +30,27 @@ public sealed partial class NetclawInvestigationWorker
     }
 
     private async Task CompleteTurnAsync(OrchestratorDbContext db, AiInvestigationRecord row, SessionOwner owner,
-        JsonElement output, CancellationToken ct, bool reconciled = false)
+        JsonElement output, CancellationToken ct, bool reconciled = false, ScheduledTerminal? report = null)
     {
-        PersistAssistant(db, row, owner, null);
         var outcome = Value(output, "turnOutcome");
         var failed = outcome is not null && !string.Equals(outcome, "completed", StringComparison.OrdinalIgnoreCase);
         var quiet = output.TryGetProperty("quietEnd", out var quietEnd) && quietEnd.ValueKind == JsonValueKind.True;
+        var terminalTrace = NetclawTraceMapper.Map(output, owner.SessionId, row.ActiveMessageId, owner.Profile.DeviceToken);
+        var reportSaved = report is not null && outcome is not null && !failed && !quiet && report.FinalText is not null;
+        if (report is null) PersistAssistant(db, row, owner, null);
+        else
+        {
+            owner.ClearDraft();
+            terminalTrace = terminalTrace with { ScheduledReport = report.Identity };
+            if (reportSaved)
+                InvestigationStore.Append(db, row, "assistant", report.FinalText!, trace: terminalTrace);
+        }
         var start = owner.FollowUp is not null
             ? await db.AiInvestigationEvents.Where(x => x.InvestigationId == row.Id && x.Type == "turn_completed")
                 .MaxAsync(x => x.Sequence, ct)
             : await db.AiInvestigationEvents.Where(x => x.InvestigationId == row.Id &&
                 x.MessageId == row.ActiveMessageId && x.Type == "operator").Select(x => x.Sequence).SingleAsync(ct);
-        var followUp = ObserveFollowUp(owner, output, failed || outcome is null);
+        var followUp = ObserveFollowUp(owner, output, failed || outcome is null, report, reportSaved);
         var hasOutput = db.ChangeTracker.Entries<AiInvestigationEventRecord>().Any(x => x.State == EntityState.Added &&
             x.Entity.InvestigationId == row.Id && x.Entity.Sequence > start && x.Entity.Type == "assistant" &&
             !string.IsNullOrWhiteSpace(x.Entity.Text)) ||
@@ -51,7 +60,7 @@ public sealed partial class NetclawInvestigationWorker
         if (!reconciled && owner.PendingCompletion is null)
             InvestigationStore.Append(db, row, "turn_completed", outcome is null ? "The remote turn ended; its success/failure outcome was not provided." :
                 failed ? "The remote turn ended with a non-success outcome." : "The remote turn reported completion.",
-                trace: NetclawTraceMapper.Map(output, owner.SessionId, row.ActiveMessageId, owner.Profile.DeviceToken) with { FollowUp = followUp });
+                callId: report?.EventKey, trace: terminalTrace with { FollowUp = followUp });
         owner.LastTerminalOrdinal = NativeTurnNumber(output) ?? owner.LastTerminalOrdinal;
         if (followUp is not null)
         {
@@ -59,8 +68,15 @@ public sealed partial class NetclawInvestigationWorker
             owner.FollowUp = followUp;
             owner.ScheduledReminders.Clear();
             owner.LastAssistantText = null;
-            row.State = await HasPendingApprovalAsync(db, row, ct) ? InvestigationState.AwaitingApproval : InvestigationState.WaitingForFollowUp;
-            SetRecoverySummary(db, row, "follow_up_waiting", FollowUpStatus(followUp));
+            if (CanObserveFollowUp(followUp))
+            {
+                row.State = await HasPendingApprovalAsync(db, row, ct) ? InvestigationState.AwaitingApproval : InvestigationState.WaitingForFollowUp;
+                SetRecoverySummary(db, row, "follow_up_waiting", FollowUpStatus(followUp));
+            }
+            else
+                await FinishUnconfirmedFollowUpAsync(db, row, followUp, owner.ScheduledReportVersion != 1
+                    ? "The parent turn ended. This daemon does not provide exact scheduled-result delivery through chat."
+                    : "The parent turn ended.", ct);
             return;
         }
         if (!hasOutput && !quiet && !failed)
@@ -94,10 +110,23 @@ public sealed partial class NetclawInvestigationWorker
             Value(output, "summary"), Value(output, "evidence"), Value(output, "recommendations"));
     }
 
+    private async Task FinishUnconfirmedFollowUpAsync(OrchestratorDbContext db, AiInvestigationRecord row,
+        NetclawFollowUpDto followUp, string reason, CancellationToken ct)
+    {
+        RecordUnconfirmedFollowUp(db, row, followUp, reason);
+        if (await HasPendingApprovalAsync(db, row, ct))
+        {
+            row.State = InvestigationState.AwaitingApproval;
+            return;
+        }
+        row.State = InvestigationState.DeliveryUnknown;
+        await InvestigationStore.StageTurnResultAsync(db, row, FlowAiResultStatus.DeliveryUnknown, clock.GetUtcNow(), ct);
+    }
+
     private static Task<bool> HasPendingApprovalAsync(OrchestratorDbContext db, AiInvestigationRecord row, CancellationToken ct) =>
         db.Set<AiInvestigationApprovalRecord>().AnyAsync(x => x.InvestigationId == row.Id && x.MessageId == row.ActiveMessageId && x.SelectedKey == null, ct);
 
-    private static async Task CloseApprovalAsync(OrchestratorDbContext db, AiInvestigationRecord row, SessionOwner owner,
+    private async Task CloseApprovalAsync(OrchestratorDbContext db, AiInvestigationRecord row, SessionOwner owner,
         JsonElement output, CancellationToken ct)
     {
         var callId = Value(output, "callId");
@@ -107,23 +136,35 @@ public sealed partial class NetclawInvestigationWorker
             x.MessageId == row.ActiveMessageId && x.CallId == callId, ct);
         if (approval is null || await db.AiInvestigationEvents.AnyAsync(x => x.InvestigationId == row.Id && x.Type == "approval_closed" && x.CallId == callId, ct)) return;
         approval.SelectedKey ??= "closed";
-        if (row.State == InvestigationState.AwaitingApproval && !await db.Set<AiInvestigationApprovalRecord>().AnyAsync(x =>
-            x.InvestigationId == row.Id && x.MessageId == row.ActiveMessageId && x.CallId != callId && x.SelectedKey == null, ct))
-            row.State = owner.FollowUp is null ? InvestigationState.Processing : InvestigationState.WaitingForFollowUp;
         InvestigationStore.Append(db, row, "approval_closed", reason == "answered" ? "Netclaw closed the original approval as answered."
             : "Netclaw withdrew the original approval.", callId: callId,
             trace: NetclawTraceMapper.Map(output, owner.SessionId, row.ActiveMessageId, owner.Profile.DeviceToken));
+        if (await db.Set<AiInvestigationApprovalRecord>().AnyAsync(x => x.InvestigationId == row.Id &&
+                x.MessageId == row.ActiveMessageId && x.CallId != callId && x.SelectedKey == null, ct)) return;
+        if (owner.FollowUp is { } followUp && !CanObserveFollowUp(followUp))
+        {
+            row.State = InvestigationState.DeliveryUnknown;
+            RecordUnconfirmedFollowUp(db, row, followUp, "The parent turn ended.");
+            await InvestigationStore.StageTurnResultAsync(db, row, FlowAiResultStatus.DeliveryUnknown, clock.GetUtcNow(), ct);
+        }
+        else if (row.State == InvestigationState.AwaitingApproval)
+            row.State = owner.FollowUp is null ? InvestigationState.Processing : InvestigationState.WaitingForFollowUp;
     }
 
     private void TraceOutput(Guid id, SessionOwner owner, JsonElement output, string disposition, string reason)
     {
-        // Cap each receiver's diagnostics, and never log content, tokens, raw IDs supplied
-        // by a foreign event, or unbounded event discriminators.
+        // Progress cannot exhaust terminal or rejection diagnostics. Bound repeated
+        // rejections by their safe type and reason. Never log raw foreign IDs or content.
         var type = Value(output, "type");
-        if (type == "text_delta" && owner.DeltaDiagnosticCount++ >= 16 || owner.DiagnosticCount++ >= 128) return;
         var safeType = type is "text" or "text_delta" or "session_joined" or "turn_completed" or "buffer_flush" or
             "tool_call" or "tool_result" or "tool_interaction" or "tool_interaction_closed" or "error" or "file" or "usage" or "compaction" or
             "subagent" or "processing_state" ? type : "unknown";
+        if (disposition == "rejected")
+        {
+            if (!owner.ReportedRejections.Add((safeType, reason))) return;
+        }
+        else if (type is not ("turn_completed" or "error") &&
+            (type == "text_delta" && owner.DeltaDiagnosticCount++ >= 16 || owner.DiagnosticCount++ >= 128)) return;
         logger.LogInformation(new EventId(2, "NetclawOutput"),
             "Netclaw output {Disposition}: investigation {InvestigationId}, tenant {TenantId}, session {SessionId}, message {MessageId}, type {OutputType}, turn {TurnNumber}, text length {TextLength}, reason {Reason}",
             disposition, id, owner.Profile.TenantId, owner.SessionId, owner.MessageId, safeType,

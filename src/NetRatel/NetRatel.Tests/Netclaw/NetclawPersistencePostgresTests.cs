@@ -126,7 +126,6 @@ public sealed partial class NetclawPersistencePostgresTests(PostgreSqlPersistenc
     [InlineData(false, null)]
     [InlineData(true, null)]
     [InlineData(false, "child")]
-    [InlineData(true, "reminder")]
     public async Task Worker_records_canonical_turns_and_retains_supported_follow_up(bool generalChat, string? continuation)
     {
         var options = await DatabaseAsync(); var daemon = new Daemon(); var services = new ServiceCollection();
@@ -198,12 +197,6 @@ public sealed partial class NetclawPersistencePostgresTests(PostgreSqlPersistenc
                 }
             }
             await daemon.Output!(JsonSerializer.SerializeToElement(new { type = "text", sessionId = first.SessionId, turnNumber = (int?)null, text = "First answer" }));
-            if (continuation == "reminder")
-                await daemon.Output!(JsonSerializer.SerializeToElement(new
-                {
-                    type = "tool_result", sessionId = first.SessionId, toolName = "set_reminder", callId = "native-call",
-                    result = "Reminder 'Fixture' scheduled. Runs once. Next execution: soon. Delivery: reply to this session. ID: fixture-watch"
-                }));
             string[] children = continuation == "child" ? ["child-fixture"] : [];
             var parentEnd = JsonSerializer.SerializeToElement(new
             {
@@ -228,7 +221,7 @@ public sealed partial class NetclawPersistencePostgresTests(PostgreSqlPersistenc
                 await daemon.Output!(JsonSerializer.SerializeToElement(new
                 {
                     type = "turn_completed", sessionId = first.SessionId, turnNumber = 2, turnOutcome = "completed",
-                    openChildRunIds = Array.Empty<string>(), sourceReminderId = continuation == "reminder" ? "fixture-watch" : null
+                    openChildRunIds = Array.Empty<string>()
                 }));
             }
             await daemon.TurnClosed.Reader.ReadAsync(deadline.Token);
@@ -596,13 +589,19 @@ public sealed partial class NetclawPersistencePostgresTests(PostgreSqlPersistenc
         public TaskCompletionSource Ready { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource FollowUpWaiting { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource MissingOutput { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public Channel<string> OutputDiagnostics { get; } = Channel.CreateUnbounded<string>();
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
         public bool IsEnabled(LogLevel logLevel) => true;
         public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
         {
             if (eventId.Name == "TransportOwnershipAcquired") Ready.TrySetResult();
-            else if (eventId.Name == "NetclawOutput" && formatter(state, exception).Contains("reason DeliveryUnknown", StringComparison.Ordinal)) MissingOutput.TrySetResult();
-            else if (eventId.Name == "NetclawOutput" && formatter(state, exception).Contains("reason WaitingForFollowUp", StringComparison.Ordinal)) FollowUpWaiting.TrySetResult();
+            else if (eventId.Name == "NetclawOutput")
+            {
+                var diagnostic = formatter(state, exception);
+                OutputDiagnostics.Writer.TryWrite(diagnostic);
+                if (diagnostic.EndsWith("reason DeliveryUnknown", StringComparison.Ordinal)) MissingOutput.TrySetResult();
+                if (diagnostic.EndsWith("reason WaitingForFollowUp", StringComparison.Ordinal)) FollowUpWaiting.TrySetResult();
+            }
             else if (logLevel >= LogLevel.Warning) Ready.TrySetException(new InvalidOperationException(formatter(state, exception)));
         }
     }
@@ -616,7 +615,7 @@ public sealed partial class NetclawPersistencePostgresTests(PostgreSqlPersistenc
     {
         public bool FailConnection; public int Sends; public string Marker = "";
         public int? RemoteTurnCount; public string? RecoveredReply;
-        public bool AttachSnapshot = true; public int TextAdmissionVersion; public bool BlockAttachment;
+        public bool AttachSnapshot = true; public int TextAdmissionVersion; public int ScheduledReportVersion; public bool BlockAttachment;
         public TaskCompletionSource AttachmentStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource BlockedAttachment { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public Channel<(string SessionId, string Text)> Sent { get; } = Channel.CreateUnbounded<(string SessionId, string Text)>();
@@ -638,7 +637,11 @@ public sealed partial class NetclawPersistencePostgresTests(PostgreSqlPersistenc
                     await daemon.BlockedAttachment.Task.WaitAsync(ct);
                 }
                 if (sessionId is null || daemon.AttachSnapshot) await output(JsonSerializer.SerializeToElement(new { type = "session_joined", sessionId = sessionId ?? "probe-session", turnCount = daemon.RemoteTurnCount, recentMessages = daemon.RecoveredReply is null ? new[] { new { role = "user", content = daemon.Marker + "Investigate" } } : new[] { new { role = "user", content = daemon.Marker + "Investigate" }, new { role = "assistant", content = daemon.RecoveredReply } } }));
-                return new(sessionId ?? "probe-session", sessionId is null) { TextAdmissionVersion = daemon.TextAdmissionVersion };
+                return new(sessionId ?? "probe-session", sessionId is null)
+                {
+                    TextAdmissionVersion = daemon.TextAdmissionVersion,
+                    ScheduledReportVersion = daemon.ScheduledReportVersion
+                };
             }
             public Task SendAsync(string sessionId, string text, CancellationToken ct) { daemon.Sends++; daemon.Sent.Writer.TryWrite((sessionId, text)); return Task.CompletedTask; }
             public Task RespondAsync(string sessionId, string callId, string key, CancellationToken ct) => throw new InvalidOperationException("Recovery must not submit an approval.");

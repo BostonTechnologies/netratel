@@ -83,7 +83,47 @@ Late output is accepted only for the saved tenant, daemon fingerprint, session a
 
 A completion without nonblank assistant output stays **Outcome unconfirmed**, with an explicit missing-answer notice. The healthy receiver stays attached: delayed full text, or a delta draft followed by a buffer flush or terminal event, can restore the answer without replaying the request. **Recover session** checks available history without sending a new message. Explicit `quietEnd: true` completions are labelled as intentionally quiet rather than presented as answered. An automated Flow already given an unknown disposition is never released again by delayed text. Bounded `NetclawOutput` API logs record event type, trusted session/message correlation, numeric turn identity, text length and admission/persistence reason; message contents and secrets are excluded.
 
-The previously saved unresolved conversation remains preserved. Use **Recover session** only with valid evidence; missing historical correlation can still prevent reconciliation. Long provider calls and malformed `load_tool` arguments remain separately tracked in [#475](https://github.com/BostonTechnologies/netratel/issues/475); the authorization and receiver fixes do not establish their cause or resolution.
+The previously saved unresolved conversation remains preserved. Use **Recover session** only with valid evidence. Missing historical correlation can still prevent reconciliation. The observed 642–644 second model phases and rejected calls with a missing `_rationale` remain a native/provider tool-loop dependency. Review the saved tool outcome and correlated daemon logs before taking further action. [NetRatel #754](https://github.com/BostonTechnologies/netratel/issues/754), [NetClaw #2791](https://github.com/netclaw-dev/netclaw/issues/2791)
+
+### Scheduled reports
+
+NetRatel saves bounded current-session reminder references under the original message as soon as registration is observed. The parent terminal records which work remains pending. A saved report and its matching terminal must commit together before NetRatel removes that one-shot reference. Other reminders and delegated work stay pending. An open approval keeps its existing decision controls. Assistant text and a successful terminal describe the report, while operational success requires its own evidence.
+
+**NetClaw 0.28.2 leaves scheduled delivery unconfirmed in NetRatel.** The daemon tells the scheduler it accepted a fire, potentially while the parent is busy. The dispatch acknowledgement can mark the reminder delivered before the report runs. A connected SignalR session can receive a reminder's text and terminal, while routing depends on the current recipient. The pinned source and isolated wire check show that registration returns a reusable definition slug and a next-fire time at second precision. The terminal carries `sourceReminderId` as `<slug>:<scheduled-time-in-ms>`. The text frame has no turn or occurrence identifier. A child delivery can also inherit a reminder link. The existing `EnsureSession` advertises text admission and offers no exact scheduled-result cursor or authoritative pending-reminder snapshot. [0.28.2 release source](https://github.com/netclaw-dev/netclaw/tree/7419d84f7317dae42783d8a9ed6e353f78f961a8), [registration](https://github.com/netclaw-dev/netclaw/blob/7419d84f7317dae42783d8a9ed6e353f78f961a8/src/Netclaw.Actors/Reminders/SetReminderTool.cs), [dispatch](https://github.com/netclaw-dev/netclaw/blob/7419d84f7317dae42783d8a9ed6e353f78f961a8/src/Netclaw.Actors/Reminders/ReminderExecutionActor.cs), [wire DTO](https://github.com/netclaw-dev/netclaw/blob/7419d84f7317dae42783d8a9ed6e353f78f961a8/src/Netclaw.Actors/Protocol/SessionOutputDto.cs), [SignalR hub](https://github.com/netclaw-dev/netclaw/blob/7419d84f7317dae42783d8a9ed6e353f78f961a8/src/Netclaw.Daemon/Gateway/SessionHub.cs)
+
+With this daemon, Chat and AI Ops show **Scheduled report delivery unconfirmed** after the parent ends, with the saved reminder references and an archive action. A separately observable child or approval may still be active. Ask the daemon administrator to verify the matching reports and any operations in the original session. A disconnect, restart or observation cutoff can also leave a saved report unconfirmed. The current recovery action cannot retrieve an exact scheduled report, so the app preserves the references and the unconfirmed state on reload. [NetRatel #757](https://github.com/BostonTechnologies/netratel/issues/757), [NetRatel #475](https://github.com/BostonTechnologies/netratel/issues/475)
+
+#### Native contract required for delivery
+
+A future daemon must preserve the authenticated SignalR recipient and bind each occurrence to the immutable registration, original operator admission and native session. This applies both to buffered fires and to fires dispatched after the parent turn ends. The app implements the following proposed live format. NetClaw 0.28.2 does not advertise it.
+
+- `EnsureSession` advertises `scheduledReportVersion: 1` alongside `textAdmissionVersion: 1` when the daemon can honor the live contract for that attached session.
+- A successful `set_reminder` tool result carries the native registration turn number and a `scheduledReminder` object with `id`, `recurring`, `registrationId` and `messageId`. The daemon assigns a new registration UUID on replacement, preserves it across each occurrence of that generation, and binds the application message UUID to the actual admitted operator turn. The daemon supplies these identities from its own saved state.
+- The routed `turn_completed` carries the exact ordered turn number, outcome and `sourceReminderId` occurrence key, plus a `scheduledReport` object containing the original `registrationId`, `messageId` and complete `finalText` for a successful report. Other reminder-originated frames carry the same source key so they cannot be interpreted as another turn's output. The exact terminal payload binds the final text to the occurrence even if progress was interrupted. A failed or quiet terminal leaves that one-shot report unconfirmed.
+- The daemon also needs an authorized pending-work and exact-result reconciliation interface for lost recipients or interrupted observation. It must distinguish queued, dispatched, running, terminal, cancelled and replaced work, and replay the same identified result and terminal without executing the occurrence again. Client-side tests of the proposed live format leave this native requirement open. [NetRatel #475](https://github.com/BostonTechnologies/netratel/issues/475), [NetClaw #2791](https://github.com/netclaw-dev/netclaw/issues/2791)
+
+#### Opt-in native browser acceptance
+
+Start a disposable NetRatel installation with PostgreSQL, complete local setup, and pair it to an isolated daemon using a fresh device credential. Use the official supported NetClaw 0.28.2 image with digest `sha256:59bb46d084e440793bf0f382de8be772ae063c18a7941cb89f74c970a634093d` when reproducing the dependency. Its binary reports source revision `7419d84f7317dae42783d8a9ed6e353f78f961a8`.
+
+In a disposable operator terminal, run `python3 tools/testing/netclaw-scheduled-report-provider.py --bind 127.0.0.1 --port 15205`. Select `scheduled-report-fixture` as the isolated daemon's main model using an `openai-compatible` provider pointed at the fixture's `/v1` endpoint. For containers, bind the fixture to the private test-network interface the daemon can reach. Use a fixture posture that permits the native scheduler and keeps shell execution off. The provider only supplies scripted model responses. The official image runs turn admission, the scheduler, buffering, report generation and the SignalR gateway.
+
+From the NetRatel repository, install Playwright for Node in a temporary directory and run the browser check against the disposable Web URL. Point the password variable at the local fixture administrator's password file.
+
+```bash
+scratch_dir=$(mktemp -d)
+npm install --prefix "$scratch_dir" --no-audit --no-fund playwright@1.63.0
+"$scratch_dir/node_modules/.bin/playwright" install chromium
+NODE_PATH="$scratch_dir/node_modules" \
+NETRATEL_RUN_NATIVE_SCHEDULED_REPORTS=1 \
+NETRATEL_SCHEDULED_REPORT_WEB_URL=http://127.0.0.1:8080 \
+NETRATEL_SCHEDULED_REPORT_EMAIL=fixture@example.test \
+NETRATEL_SCHEDULED_REPORT_PASSWORD_FILE=/path/to/fixture-password \
+NETRATEL_SCHEDULED_REPORT_EVIDENCE="$scratch_dir/evidence" \
+node tools/testing/netclaw-scheduled-reports.cjs
+```
+
+The check sends once from the UI in each of two conversations, captures parent and reload screenshots, and saves the ordered API evidence. Use the recorded session and reminder IDs to correlate native dispatch, native final generation and terminal timestamps. The buffered case holds the parent for 35 seconds after registering the 30-second reminder. A passing run requires both exact finals, exactly one matching terminal each, zero pending reminders, Idle and an enabled composer after reload. **0.28.2 remains a failing delivery gate**, including when both native reports ran and the unconfirmed notice was shown.
 
 ### Recovery and approvals
 
