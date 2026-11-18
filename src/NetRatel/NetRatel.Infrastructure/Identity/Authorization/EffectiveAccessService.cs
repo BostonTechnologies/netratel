@@ -57,7 +57,12 @@ public sealed class EffectiveAccessService(NetRatelIdentityDbContext db, IConfig
     {
         if (principal.HasClaim("token_use", "netratel_service") || principal.HasClaim("auth_mode", "service"))
             return new(null, false, false, new HashSet<string>(StringComparer.Ordinal));
-        if (!principal.HasClaim(x => x.Type == IntegrationCredentialIdClaimType) && IsLegacyOperator(principal))
+        var hasCredential = principal.HasClaim(x => x.Type == IntegrationCredentialIdClaimType);
+        var oidc = principal.Identities.FirstOrDefault(identity => identity.IsAuthenticated && identity.AuthenticationType == "Oidc");
+        var adminGroup = ConfiguredAdminGroup();
+        var configuredOidcAdministrator = !hasCredential && oidc is not null && !string.IsNullOrWhiteSpace(adminGroup) &&
+            oidc.HasClaim(claim => claim.Type == "groups" && string.Equals(claim.Value, adminGroup, StringComparison.Ordinal));
+        if (!configuredOidcAdministrator && !hasCredential && IsLegacyOperator(principal))
         {
             return new(null, true, true, NetRatelPermissions.All);
         }
@@ -87,6 +92,17 @@ public sealed class EffectiveAccessService(NetRatelIdentityDbContext db, IConfig
                 user.PrincipalId == principalId && !user.IsEnabled, cancellationToken).ConfigureAwait(false))
         {
             return new(principalId, false, false, new HashSet<string>(StringComparer.Ordinal));
+        }
+
+        if (configuredOidcAdministrator && oidc is not null)
+        {
+            // An explicit browser administrator mapping uses the same instance authority as a local administrator.
+            var issuer = oidc.FindFirst("iss")?.Value.Trim();
+            var subject = oidc.FindFirst("sub")?.Value.Trim();
+            var bound = !string.IsNullOrWhiteSpace(issuer) && !string.IsNullOrWhiteSpace(subject) &&
+                await db.ApplicationPrincipals.AsNoTracking().AnyAsync(candidate => candidate.Id == principalId &&
+                    candidate.ExternalIssuer == issuer && candidate.ExternalSubject == subject, cancellationToken).ConfigureAwait(false);
+            return new(principalId, false, bound, bound ? NetRatelPermissions.All : new HashSet<string>(StringComparer.Ordinal));
         }
 
         var localInstanceAdministrator = await db.Users
@@ -234,10 +250,7 @@ public sealed class EffectiveAccessService(NetRatelIdentityDbContext db, IConfig
 
     private bool IsLegacyOperator(ClaimsPrincipal principal)
     {
-        var configuredGroup = configuration["Authorization:Oidc:AdminGroupId"]
-                              ?? configuration["Authorization:Azure:AdminGroupId"]
-                              ?? configuration["AzureAd:AdminGroupId"]
-                              ?? configuration["Jwt:AdminGroupId"];
+        var configuredGroup = ConfiguredAdminGroup();
         return principal.Claims.Any(claim =>
                    (claim.Type is "roles" or ClaimTypes.Role) &&
                    string.Equals(claim.Value, "Operator", StringComparison.OrdinalIgnoreCase)) ||
@@ -245,4 +258,9 @@ public sealed class EffectiveAccessService(NetRatelIdentityDbContext db, IConfig
                    (string.Equals(claim.Value, "Operator", StringComparison.OrdinalIgnoreCase) ||
                     (!string.IsNullOrWhiteSpace(configuredGroup) && string.Equals(claim.Value, configuredGroup, StringComparison.OrdinalIgnoreCase))));
     }
+
+    private string? ConfiguredAdminGroup() => configuration["Authorization:Oidc:AdminGroupId"]
+        ?? configuration["Authorization:Azure:AdminGroupId"]
+        ?? configuration["AzureAd:AdminGroupId"]
+        ?? configuration["Jwt:AdminGroupId"];
 }

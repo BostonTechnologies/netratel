@@ -279,6 +279,22 @@ public static class AccessAdministrationEndpoints
             return Results.Ok(result);
         });
 
+        group.MapGet("/external-principals", async (int? tenantId, ClaimsPrincipal actor, NetRatelIdentityDbContext db, IEffectiveAccessService access, CancellationToken ct) =>
+        {
+            if (!await CanManageAssignmentsAsync(actor, role: null, tenantId, db, access, ct).ConfigureAwait(false))
+                return Results.Forbid();
+
+            var principals = db.ApplicationPrincipals.AsNoTracking().Where(principal =>
+                principal.ExternalIssuer != null && principal.ExternalSubject != null);
+            if (tenantId is not null && !await IsInstanceAdministratorAsync(actor, access, ct).ConfigureAwait(false))
+                principals = principals.Where(principal => db.PrincipalRoleAssignments.Any(assignment =>
+                    assignment.PrincipalId == principal.Id && assignment.TenantId == tenantId));
+
+            return Results.Ok(await principals.OrderBy(principal => principal.ExternalIssuer).ThenBy(principal => principal.ExternalSubject)
+                .Select(principal => new ExternalPrincipalAccessResponse(principal.Id, principal.ExternalIssuer!, principal.ExternalSubject!))
+                .ToListAsync(ct).ConfigureAwait(false));
+        });
+
         return app;
     }
 
@@ -338,4 +354,5 @@ public static class AccessAdministrationEndpoints
     public sealed record AccessRoleResponse(string Id, string Name, string? Description, bool IsBuiltIn, bool IsInstanceAdministratorRole, int DelegationRank, IReadOnlyList<string> Permissions);
     public sealed record RoleAssignmentResponse(string Id, string PrincipalId, string RoleId, string RoleName, int? TenantId, DateTimeOffset CreatedAtUtc);
     public sealed record LocalUserAccessResponse(string UserId, string PrincipalId, string Email, string DisplayName, bool IsEnabled, bool IsInstanceAdministrator);
+    public sealed record ExternalPrincipalAccessResponse(string PrincipalId, string Issuer, string Subject);
 }

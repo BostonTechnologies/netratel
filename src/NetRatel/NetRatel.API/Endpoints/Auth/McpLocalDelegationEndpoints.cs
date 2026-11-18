@@ -153,7 +153,7 @@ public static class McpLocalDelegationEndpoints
             success = false,
             summary = "Local HTTP MCP delegation was not admitted.",
             code,
-            failure = McpDelegationFailure.ForCode(code),
+            failure = McpDelegationFailure.ForOperation(code, pairing?.Tool, pairing?.Operation),
             requiredPermission = pairing is null ? null : McpLocalDelegationPermissionMapper.RequiredPermission(pairing.Tool, pairing.Operation),
             correlationId = pairing?.CorrelationId ?? http.TraceIdentifier
         }, statusCode: status);

@@ -70,6 +70,19 @@
                                 </MudListItem>
                             }
                         </MudList>
+                        @if (_externalPrincipals.Count > 0)
+                        {
+                            <MudText Typo="Typo.h6">OIDC users</MudText>
+                            <MudList T="ExternalPrincipalAccessDto" Dense="true">
+                                @foreach (var principal in _externalPrincipals)
+                                {
+                                    <MudListItem Value="principal" OnClick="@(() => SelectUserAsync(principal.PrincipalId))" data-testid="@($"access-user-{principal.PrincipalId}")">
+                                        <MudText>@principal.Subject</MudText>
+                                        <MudText Typo="Typo.caption" Color="Color.Secondary">@principal.Issuer</MudText>
+                                    </MudListItem>
+                                }
+                            </MudList>
+                        }
                     </MudPaper>
                 </MudItem>
                 <MudItem xs="12" md="7">
@@ -123,6 +136,7 @@
         StateHasChanged();
     }
     private IReadOnlyList<LocalUserAccessDto> _users = [];
+    private IReadOnlyList<ExternalPrincipalAccessDto> _externalPrincipals = [];
     private IReadOnlyList<AccessRoleDto> _roles = [];
     private IReadOnlyList<AccessTenantDto> _tenants = [];
     private IReadOnlyList<RoleAssignmentDto> _assignments = [];
@@ -245,15 +259,22 @@
 
     private async Task LoadScopeAsync()
     {
-        if (!_isInstanceAdministrator && _scopeTenantId is null)
-        {
-            _users = [];
-            _roles = [];
-            return;
-        }
+        var tenantId = _scopeTenantId;
+        _users = [];
+        _externalPrincipals = [];
+        _roles = [];
+        if (!_isInstanceAdministrator && tenantId is null) return;
 
-        _users = await AccessApi.GetUsersAsync(_scopeTenantId);
-        _roles = await AccessApi.GetRolesAsync(_scopeTenantId);
+        var users = AccessApi.GetUsersAsync(tenantId);
+        var externalPrincipals = AccessApi.GetExternalPrincipalsAsync(tenantId);
+        var roles = AccessApi.GetRolesAsync(tenantId);
+        await Task.WhenAll(users, externalPrincipals, roles);
+        if (_scopeTenantId == tenantId)
+        {
+            _users = await users;
+            _externalPrincipals = await externalPrincipals;
+            _roles = await roles;
+        }
     }
 
     private string ScopeName(int? tenantId) => tenantId switch

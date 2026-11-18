@@ -329,12 +329,14 @@ anonymous production mode.
 
 The API independently validates browser access tokens from
 `Authentication:Oidc`. Set its HTTPS `Authority`, API `Audience`, optional
-`Audiences`/`ValidIssuers`, and the operator group under
+`Audiences`/`ValidIssuers`, and the dedicated browser administrator group under
 `Authorization:Oidc:AdminGroupId`. `NameClaimType` and `RoleClaimType` default
 to `preferred_username` and `roles`. Provide `OIDC_CLIENT_SECRET` through your
 secret mechanism; never place it in an appsettings file. `TokenEndpoint` is
 required when your provider does not publish its refresh-token endpoint at the
 usual Azure-compatible authority path.
+
+An OIDC browser administrator with that exact `groups` claim uses their NetRatel application principal to open MCP Policies. The MCP consumer scope is separate from this browser authority. In **Admin → Access**, select an OIDC user by validated issuer and subject to manage their NetRatel assignments alongside local accounts. Tenant administrators can see OIDC principals already assigned to their tenant. The broader browser role-mapping cutover is tracked separately. [NetRatel #478](https://github.com/BostonTechnologies/netratel/issues/478)
 
 An interactive circuit renews its OIDC session through a same-origin
 `POST /auth/session/renew` before sending an API operation when its access token

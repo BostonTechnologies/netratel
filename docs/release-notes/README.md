@@ -1,5 +1,7 @@
 # Release history
 
+- [0.1.6-beta.1](0.1.6-beta.1.md) — durable scheduled-report references, OIDC access administration, and incident-origin MCP diagnostics.
+
 - [0.1.5 — stable candidate](0.1.5.md) — upgrade summary and testing scope.
 
 - [0.1.5-beta.7](0.1.5-beta.7.md) — themed automation navigation and previews, complete All access intent/upgrade repair, dependency updates.

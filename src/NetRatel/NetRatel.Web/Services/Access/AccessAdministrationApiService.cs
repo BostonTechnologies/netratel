@@ -8,6 +8,8 @@ public interface IAccessAdministrationApiService
     Task<IReadOnlyList<AccessRoleDto>> GetRolesAsync(int? tenantId, CancellationToken cancellationToken = default);
     Task<EffectiveAccessSummaryDto> GetSelfAsync(CancellationToken cancellationToken = default);
     Task<IReadOnlyList<LocalUserAccessDto>> GetUsersAsync(int? tenantId, CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<ExternalPrincipalAccessDto>> GetExternalPrincipalsAsync(int? tenantId, CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<ExternalPrincipalAccessDto>>([]);
     Task<LocalAccountActivationDto> CreateLocalUserAsync(string displayName, string email, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<RoleAssignmentDto>> GetAssignmentsAsync(string principalId, int? tenantId, CancellationToken cancellationToken = default);
     Task AssignAsync(string principalId, string roleId, int? tenantId, CancellationToken cancellationToken = default);
@@ -30,6 +32,9 @@ public sealed class AccessAdministrationApiService(IHttpClientFactory clients) :
 
     public async Task<IReadOnlyList<LocalUserAccessDto>> GetUsersAsync(int? tenantId, CancellationToken cancellationToken = default) =>
         await Client.GetFromJsonAsync<List<LocalUserAccessDto>>($"/api/v2/access/users{Query(tenantId)}", cancellationToken).ConfigureAwait(false) ?? [];
+
+    public async Task<IReadOnlyList<ExternalPrincipalAccessDto>> GetExternalPrincipalsAsync(int? tenantId, CancellationToken cancellationToken = default) =>
+        await Client.GetFromJsonAsync<List<ExternalPrincipalAccessDto>>($"/api/v2/access/external-principals{Query(tenantId)}", cancellationToken).ConfigureAwait(false) ?? [];
 
     public async Task<LocalAccountActivationDto> CreateLocalUserAsync(string displayName, string email, CancellationToken cancellationToken = default)
     {
@@ -62,4 +67,5 @@ public sealed record AccessRoleDto(string Id, string Name, string? Description, 
 public sealed record EffectiveAccessSummaryDto(string? PrincipalId, bool IsInstanceAdministrator, IReadOnlyList<string> Permissions);
 public sealed record RoleAssignmentDto(string Id, string PrincipalId, string RoleId, string RoleName, int? TenantId, DateTimeOffset CreatedAtUtc);
 public sealed record LocalUserAccessDto(string UserId, string PrincipalId, string Email, string DisplayName, bool IsEnabled, bool IsInstanceAdministrator);
+public sealed record ExternalPrincipalAccessDto(string PrincipalId, string Issuer, string Subject);
 public sealed record LocalAccountActivationDto(string UserId, string Email, string ActivationToken);
