@@ -33,7 +33,8 @@ public sealed class RatelDeskFlowConnector(IRatelDeskConnectorStore store, IRate
             return new(FlowIncidentPreparationStatus.Denied, Code: "connector-current-authority-denied");
         var state = await store.GetAsync(draft.TenantId, draft.ConnectorId, cancellationToken).ConfigureAwait(false);
         if (state is null || state.Revision != draft.ConnectorRevision) return new(FlowIncidentPreparationStatus.Unavailable, Code: "connector-revision-unavailable");
-        if (!await IsUsableAsync(state, cancellationToken).ConfigureAwait(false)) return new(FlowIncidentPreparationStatus.Unavailable, Code: "connector-disabled-or-owner-denied");
+        if (await UnavailableCodeAsync(state, cancellationToken).ConfigureAwait(false) is { } unavailable)
+            return new(FlowIncidentPreparationStatus.Unavailable, Code: unavailable);
         try
         {
             var priority = FlowIncidentSourcePresentation.Priority(draft, state.Configuration.Priorities);
@@ -55,7 +56,8 @@ public sealed class RatelDeskFlowConnector(IRatelDeskConnectorStore store, IRate
             return new(FlowIncidentActionResultKind.Failed, "connector-current-authority-denied");
         var current = await store.GetAsync(action.TenantId, action.ConnectorId, cancellationToken).ConfigureAwait(false);
         if (current is null || current.Revision != action.ConnectorRevision) return new(FlowIncidentActionResultKind.Unavailable, "connector-revision-unavailable");
-        if (!await IsUsableAsync(current, cancellationToken).ConfigureAwait(false)) return new(FlowIncidentActionResultKind.Unavailable, "connector-disabled-or-owner-denied");
+        if (await UnavailableCodeAsync(current, cancellationToken).ConfigureAwait(false) is { } unavailable)
+            return new(FlowIncidentActionResultKind.Unavailable, unavailable);
         var payload = new RatelDeskCreateIncidentDto(action.Fields.Title, action.Fields.Description, action.Fields.Priority ?? -1,
             action.Target.CustomerId, action.Target.OrganizationId, action.Target.AssignedToId, action.Target.CategoryIds);
         if (payload.Priority is < 0 or > 3 || payload.OrganizationId != current.Configuration.OrganizationId || payload.CustomerId != current.Configuration.CustomerId ||
@@ -68,14 +70,24 @@ public sealed class RatelDeskFlowConnector(IRatelDeskConnectorStore store, IRate
 
     private async Task<FlowConnectorReferenceDto> ReferenceAsync(RatelDeskConnectorState state, CancellationToken cancellationToken)
     {
-        var usable = await IsUsableAsync(state, cancellationToken).ConfigureAwait(false);
-        var current = readiness is null ? (Available: false, Code: usable ? RatelDeskConnectorLimits.ReceiverUnavailableCode : "connector-disabled-or-owner-denied") :
-            await readiness.CurrentAsync(state, cancellationToken).ConfigureAwait(false);
-        return new(state.Id, state.TenantId, state.Configuration.Name, state.Configuration.Enabled, current.Available, current.Code, state.Revision);
+        var unavailable = await UnavailableCodeAsync(state, cancellationToken).ConfigureAwait(false);
+        var current = readiness is null || unavailable is not null
+            ? (Available: false, Code: unavailable ?? RatelDeskConnectorLimits.ReceiverUnavailableCode)
+            : await readiness.CurrentAsync(state, cancellationToken).ConfigureAwait(false);
+        var receiver = Uri.TryCreate(state.Configuration.Origin, UriKind.Absolute, out var origin) && origin.Scheme is "http" or "https"
+            ? new FlowIncidentReceiverReferenceDto(origin.GetComponents(UriComponents.SchemeAndServer, UriFormat.SafeUnescaped),
+                state.Configuration.OrganizationId, state.Readiness?.TargetValidatedAtUtc)
+            : null;
+        return new(state.Id, state.TenantId, state.Configuration.Name, state.Configuration.Enabled, current.Available, current.Code, state.Revision)
+        { Receiver = receiver };
     }
     private Task<bool> AllowedAsync(FlowExecutionAuthorityDto authority, int tenantId, CancellationToken cancellationToken) =>
         authorization.CanExecuteAsync(authority.PrincipalId, authority.IntegrationCredentialId, tenantId, cancellationToken);
-    private async Task<bool> IsUsableAsync(RatelDeskConnectorState state, CancellationToken cancellationToken) =>
-        state.Configuration.Enabled && state.Authentication?.Mode == RatelDeskAuthenticationMode.PairedSystem &&
-        await authorization.CanExecuteAsync(state.OwnerPrincipalId, null, state.TenantId, cancellationToken).ConfigureAwait(false);
+    private async Task<string?> UnavailableCodeAsync(RatelDeskConnectorState state, CancellationToken ct)
+    {
+        if (!state.Configuration.Enabled) return "connector-disabled";
+        if (state.Authentication?.Mode != RatelDeskAuthenticationMode.PairedSystem) return "connector-pairing-required";
+        return await authorization.CanExecuteAsync(state.OwnerPrincipalId, null, state.TenantId, ct).ConfigureAwait(false)
+            ? null : "connector-owner-authority-denied";
+    }
 }

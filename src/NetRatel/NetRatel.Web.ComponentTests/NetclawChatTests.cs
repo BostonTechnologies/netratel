@@ -17,6 +17,7 @@ public sealed class NetclawChatTests : AsyncBunitContext
 
     public NetclawChatTests()
     {
+        AddAuthorization().SetAuthorized("synthetic-operator");
         Services.AddMudServices(options => options.PopoverOptions.CheckForPopoverProvider = false);
         Services.AddSingleton<INetclawApiService>(api);
         JSInterop.Mode = JSRuntimeMode.Loose;

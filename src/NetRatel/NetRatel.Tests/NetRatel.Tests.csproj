@@ -3,7 +3,7 @@
     <TargetFramework>net10.0</TargetFramework>
     <OutputType>Exe</OutputType>
     <SelfContained>false</SelfContained>
-    <!-- slopwatch-ignore: SW005 xUnit v3 advisory rules would require unrelated changes to thousands of stable test calls. -->
+    <!-- xUnit v3 advisory rules would require unrelated changes to thousands of stable test calls. -->
     <NoWarn>$(NoWarn);xUnit1051;xUnit1069</NoWarn>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>

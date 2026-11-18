@@ -13,7 +13,7 @@ public sealed partial class InvestigationStore(OrchestratorDbContext db, TimePro
     public async Task<IReadOnlyList<InvestigationSummaryDto>> ListAsync(int tenantId, int skip, CancellationToken ct, bool includeAlerts = true)
     {
         if (skip < 0 || skip > 100000) throw new ArgumentException("Invalid history offset.");
-        var rows = await db.Set<AiInvestigationRecord>().AsNoTracking().Where(x => x.TenantId == tenantId && x.AgentIds.Length > 0 && (includeAlerts || x.OccurrenceId == null && !db.AiInvestigationEvents.Any(item => item.InvestigationId == x.Id && item.Type == "prepared_alert")))
+        var rows = await db.Set<AiInvestigationRecord>().AsNoTracking().Where(x => x.TenantId == tenantId && (x.AgentIds.Length > 0 || x.OccurrenceId != null) && (includeAlerts || x.OccurrenceId == null && !db.AiInvestigationEvents.Any(item => item.InvestigationId == x.Id && item.Type == "prepared_alert")))
             .OrderByDescending(x => x.LastActivityUtc).ThenBy(x => x.Id).Skip(skip).Take(100).ToListAsync(ct);
         return rows.Select(Summary).ToArray();
     }
@@ -21,9 +21,14 @@ public sealed partial class InvestigationStore(OrchestratorDbContext db, TimePro
     public async Task<AiInvestigationRecord> CreateAsync(int tenantId, InvestigationCreateRequest request, string actor,
         CancellationToken ct, string? sourceActionKey = null, Guid? flowRunId = null, IReadOnlyList<AiPromptSnapshot>? pinnedPrompts = null)
     {
+        var aggregate = request.AgentIds is { Count: 0 } &&
+            request.PreparedAlert?.ResourceKey == MonitoringOfflinePresentation.ResourceKey;
+        if (aggregate && (request.OccurrenceId is null || sourceActionKey is not null || flowRunId is not null))
+            throw new ArgumentException("Aggregate alert investigations require the original offline occurrence and no device selection.");
+
         if (request.RequestId == Guid.Empty || string.IsNullOrWhiteSpace(request.Title) || request.Title.Length > 200 ||
-            request.Title.Any(char.IsControl) || request.AgentIds is not { Count: > 0 and <= 20 } ||
-            request.AgentIds.Any(x => x == Guid.Empty) || request.AgentIds.Distinct().Count() != request.AgentIds.Count)
+            request.Title.Any(char.IsControl) || !aggregate && (request.AgentIds is not { Count: > 0 and <= 20 } ||
+            request.AgentIds.Any(x => x == Guid.Empty) || request.AgentIds.Distinct().Count() != request.AgentIds.Count))
             throw new ArgumentException("Provide a request ID, a title of up to 200 characters and 1–20 unique client IDs.");
         var references = NormalizePrompts(request.SelectedPrompts);
         var referencesJson = JsonSerializer.Serialize(references);
@@ -43,9 +48,9 @@ public sealed partial class InvestigationStore(OrchestratorDbContext db, TimePro
         }
         if (await db.Set<AiInvestigationRecord>().CountAsync(x => x.TenantId == tenantId && x.State != InvestigationState.Archived, ct) >= 256)
             throw new InvestigationConflictException("Archive completed investigations before opening more.");
-        await ValidateClientsAsync(tenantId, request.AgentIds, ct);
+        if (!aggregate) await ValidateClientsAsync(tenantId, request.AgentIds, ct);
         if (request.OccurrenceId is { } occurrence &&
-            !await db.MonitoringOccurrences.AnyAsync(x => x.TenantId == tenantId && x.OccurrenceId == occurrence && (request.AgentIds.Contains(x.AgentId) || sourceActionKey != null && x.AgentId == Guid.Empty), ct))
+            !await db.MonitoringOccurrences.AnyAsync(x => x.TenantId == tenantId && x.OccurrenceId == occurrence && (request.AgentIds.Contains(x.AgentId) || (aggregate || sourceActionKey != null) && x.AgentId == Guid.Empty), ct))
             throw new KeyNotFoundException("The alert does not belong to the selected tenant and clients.");
         var library = promptLibrary ?? new PromptLibraryService(db, clock);
         var snapshots = new List<AiPromptSnapshot>();
@@ -62,8 +67,8 @@ public sealed partial class InvestigationStore(OrchestratorDbContext db, TimePro
             AgentIds = request.AgentIds.ToArray(), OccurrenceId = request.OccurrenceId, CreatedBy = actor,
             SourceActionKey = sourceActionKey, FlowRunId = flowRunId, LastActivityUtc = clock.GetUtcNow(),
             PromptSnapshotsJson = JsonSerializer.Serialize(snapshots), SelectedPromptReferencesJson = referencesJson };
+        var preparedContext = request.PreparedAlert is null ? null : await PrepareAlertAsync(tenantId, request, aggregate, ct);
         await ComposeAsync(row, Guid.NewGuid(), "", new string('s', 256), ct);
-        var preparedContext = request.PreparedAlert is null ? null : await PrepareAlertAsync(tenantId, request, ct);
         if (preparedContext?.Title is { } preparedTitle) row.Title = preparedTitle;
         db.Add(row); Append(db, row, "created", sourceActionKey is null ? "Investigation opened." : "Investigation opened by a published flow.", actor);
         if (preparedContext is not null) Append(db, row, "prepared_alert", JsonSerializer.Serialize(preparedContext), actor);
@@ -102,7 +107,7 @@ public sealed partial class InvestigationStore(OrchestratorDbContext db, TimePro
         await using var tx = await db.Database.BeginTransactionAsync(ct);
         var row = await LockAsync(tenantId, id, ct);
         if (row.AgentIds.Length == 0 && automated)
-            throw new ArgumentException("General chats require an explicit operator message.");
+            throw new ArgumentException("General chat and aggregate investigations require an explicit operator message.");
         var existing = await db.Set<AiInvestigationEventRecord>().SingleOrDefaultAsync(x => x.InvestigationId == id && x.MessageId == request.MessageId, ct);
         if (existing is not null)
         {
@@ -110,6 +115,9 @@ public sealed partial class InvestigationStore(OrchestratorDbContext db, TimePro
                 throw new InvestigationConflictException("Message ID already used.");
             return false;
         }
+        if (row.ActiveMessageId is null && row.AgentIds.Length == 0 && row.OccurrenceId is not null
+            && (await ReadPreparedAsync(id, ct))?.FirstMessageId != request.MessageId)
+            throw new InvestigationConflictException("Start the prepared aggregate investigation with its saved request ID.");
         if (row.State != InvestigationState.Idle) throw new InvestigationConflictException("The investigation already has an active or unresolved turn.");
         if (row.LastSequence >= 10000) throw new InvestigationConflictException("This transcript is full. Start a new investigation.");
         await ValidateContextAsync(row, ct);
@@ -121,7 +129,9 @@ public sealed partial class InvestigationStore(OrchestratorDbContext db, TimePro
         row.RemoteTurnCountBeforeSend = baseline; row.LastRecoveryAttemptAtUtc = null; row.RecoverySummary = null;
         row.ActiveCredentialId = credential; row.LastTransportActivityAtUtc = clock.GetUtcNow();
         Append(db, row, "operator", request.Text, actor, request.MessageId);
-        await db.SaveChangesAsync(ct); await tx.CommitAsync(ct); return true;
+        await db.SaveChangesAsync(ct); await tx.CommitAsync(ct);
+        NetclawChatTelemetry.Record("app_message_accepted");
+        return true;
     }
 
     private async Task<int?> ContinuationTurnCountAsync(AiInvestigationRecord row, CancellationToken ct)
@@ -168,7 +178,7 @@ public sealed partial class InvestigationStore(OrchestratorDbContext db, TimePro
             throw new InvestigationConflictException("Acknowledge possible remote activity for the current turn before archiving it.");
         await StageTurnResultAsync(db, row, Shared.Contracts.Flows.FlowAiResultStatus.Cancelled, clock.GetUtcNow(), ct);
         row.State = InvestigationState.Archived;
-        Append(db, row, "archived", (row.AgentIds.Length == 0 ? "Chat" : "Investigation") + " archived. The remote conversation and its previous actions are preserved.", actor);
+        Append(db, row, "archived", (Summary(row).IsGeneralChat ? "Chat" : "Investigation") + " archived. The remote conversation and its previous actions are preserved.", actor);
         await db.SaveChangesAsync(ct); await tx.CommitAsync(ct);
     }
 
@@ -239,6 +249,12 @@ public sealed partial class InvestigationStore(OrchestratorDbContext db, TimePro
     {
         await ValidateContextAsync(row, ct);
         var tenantName = await TenantNameAsync(row.TenantId, ct);
+        if (row.AgentIds.Length == 0 && row.OccurrenceId is { } aggregate)
+        {
+            var context = await ReadAggregateAlertAsync(row.TenantId, aggregate, ct);
+            return InvestigationContextComposer.Compose(row, tenantName, [], context.Alert,
+                messageId, question, sessionId, clock.GetUtcNow(), aggregate: context.Presence);
+        }
         if (row.AgentIds.Length == 0)
             return GeneralChatContextComposer.Compose(row, tenantName, messageId, question, sessionId, clock.GetUtcNow());
         var clients = await ClientsAsync(row.TenantId, row.AgentIds, ct);

@@ -70,7 +70,11 @@ public sealed class McpOperatorDelegationMiddleware(
                 };
                 await context.Response.WriteAsJsonAsync(new
                 {
-                    success = false, summary = "Local HTTP MCP execution was not admitted.",
+                    success = false,
+                    summary = failureCode == "local_delegation_binding_mismatch" &&
+                        delegation.Tool == "netratel_job_runs" && delegation.Operation is "get" or "steps" or "logs"
+                        ? "This job-run reference could not be verified for the current caller and target. For incident-origin work, use the authorized incident's retained automation report or ask its execution owner for the exact evidence."
+                        : "Local HTTP MCP execution was not admitted.",
                     code = failure.Code, layer = failure.Layer, failure,
                     correlationId = delegation.CorrelationId ?? context.TraceIdentifier
                 }, context.RequestAborted);

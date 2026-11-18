@@ -44,6 +44,16 @@ uploaded release artifact; verify it with `gh attestation verify` after it is
 publicly released. A public GitHub release, OCI publication, or recording
 immutable artifact digests requires an explicit authorized promotion decision;
 it is never performed by a PR or non-publishing build workflow.
+
+For isolated release-candidate testing, run **Optional integration validation**
+with the `candidate-images` suite and the full commit SHA from **Release build**.
+The workflow exports the five Linux x64 images with checksums and source
+identity. Verify the checksums and load the archives with `docker load --input
+<archive>` in a disposable Docker context. Use the loaded candidate tags for
+the image variables in the Compose bundle. Start with new database and
+application volumes. The public release continues to use verified registry
+digests.
+
 Every final image is built with public OCI source, revision, and product-version
 labels, then its saved layers are scanned for generic credential material before
 publication. The scanner resolves the saved manifest's legacy `layer.tar` or OCI

@@ -27,7 +27,7 @@
     else
     {
         <div class="ai-metrics" aria-label="Recent investigation status">
-            <div title="Active in recent history"><span>Active</span><strong>@_items.Count(x => x.State is InvestigationState.Processing or InvestigationState.Queued)</strong></div>
+            <div title="Active in recent history"><span>Active</span><strong>@_items.Count(x => x.State is InvestigationState.Processing or InvestigationState.Queued or InvestigationState.WaitingForFollowUp)</strong></div>
             <div><span>Waiting for your decision</span><strong>@_items.Count(x => x.State == InvestigationState.AwaitingApproval)</strong></div>
             <div><span>Needs recovery</span><strong>@_items.Count(x => x.State == InvestigationState.DeliveryUnknown)</strong></div>
         </div>
@@ -175,7 +175,7 @@
     private long Cursor => _events.LastOrDefault()?.Sequence ?? 0;
     private IEnumerable<InvestigationClientDto> FilteredClients => _clients;
     private IEnumerable<InvestigationSummaryDto> FilteredItems => _items.Where(x => (_search.Length == 0 || x.Title.Contains(_search, StringComparison.OrdinalIgnoreCase) || x.AgentIds.Any(id => _clients.Any(c => c.AgentId == id && c.HostName.Contains(_search, StringComparison.OrdinalIgnoreCase)))) && (_filter switch
-    { "active" => x.State is InvestigationState.Processing or InvestigationState.Queued, "approval" => x.State == InvestigationState.AwaitingApproval, "recovery" => x.State == InvestigationState.DeliveryUnknown, "archived" => x.State == InvestigationState.Archived, _ => true }));
+    { "active" => x.State is InvestigationState.Processing or InvestigationState.Queued or InvestigationState.WaitingForFollowUp, "approval" => x.State == InvestigationState.AwaitingApproval, "recovery" => x.State == InvestigationState.DeliveryUnknown, "archived" => x.State == InvestigationState.Archived, _ => true }));
     protected override async Task OnInitializedAsync()
     {
         try
@@ -263,7 +263,7 @@
             _clients = page.Items; _clientNextOffset = page.NextOffset;
             foreach (var client in page.Items) _knownClients[client.AgentId] = client;
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
         catch (HttpRequestException exception) { if (Current(tenant, generation) && revision == _clientSearchRevision) _error = exception.Message; }
     }
     private Task LoadMoreSystemsAsync() => CommandAsync(async () =>
@@ -332,6 +332,6 @@
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
     }
     private static string StateLabel(InvestigationState state) => state switch
-    { InvestigationState.Idle => "Ready", InvestigationState.Processing => "Investigating", InvestigationState.AwaitingApproval => "Approval needed", InvestigationState.DeliveryUnknown => "Outcome unconfirmed", InvestigationState.Queued => "Queued", _ => "Archived" };
+    { InvestigationState.Idle => "Ready", InvestigationState.Processing => "Investigating", InvestigationState.WaitingForFollowUp => "Waiting for follow-up", InvestigationState.AwaitingApproval => "Approval needed", InvestigationState.DeliveryUnknown => "Outcome unconfirmed", InvestigationState.Queued => "Queued", _ => "Archived" };
     public async ValueTask DisposeAsync() { _clientSearchScope?.Cancel(); _clientSearchScope?.Dispose(); _disposed = true; ++_generation; await _scope.CancelAsync(); await _polling; _scope.Dispose(); await NetRatel.Web.Services.BrowserInteropCleanup.ReleaseAsync(Logger, null, _composerModule); }
 }

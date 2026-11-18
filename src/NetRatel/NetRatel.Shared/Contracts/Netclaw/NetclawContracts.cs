@@ -1,6 +1,6 @@
 namespace NetRatel.Shared.Contracts.Netclaw;
 
-public enum InvestigationState { Idle, Processing, AwaitingApproval, DeliveryUnknown, Archived, Queued }
+public enum InvestigationState { Idle, Processing, AwaitingApproval, DeliveryUnknown, Archived, Queued, WaitingForFollowUp }
 
 public sealed record NetclawTenantDto(int TenantId, string TenantName, bool CanInvestigate, bool CanConfigure);
 public sealed record NetclawConnectionDto(Guid Id, int TenantId, long Revision, bool Enabled, string? DaemonAddress,
@@ -42,13 +42,19 @@ public sealed record InvestigationClientPageDto(IReadOnlyList<InvestigationClien
 public sealed record InvestigationSummaryDto(Guid Id, int TenantId, string Title, InvestigationState State,
     IReadOnlyList<Guid> AgentIds, Guid? OccurrenceId, Guid? FlowRunId, DateTimeOffset LastActivityUtc, string CreatedBy)
 {
-    public bool IsGeneralChat => AgentIds.Count == 0;
+    public bool IsGeneralChat => AgentIds.Count == 0 && OccurrenceId is null;
 }
 public sealed record InvestigationEventDto(long Sequence, string Type, string Text, string? Actor, string? CallId,
     IReadOnlyList<InvestigationOptionDto>? Options, DateTimeOffset CreatedAtUtc, Guid? MessageId = null, NetclawTraceDto? Trace = null);
 public sealed record NetclawTraceDto(string? ToolName, string? Status, DateTimeOffset? SourceTimestampUtc,
     string SessionId, Guid? TurnMessageId, string? ArgumentsJson, string? Result, string? FailureCode,
-    string? DetailsJson, bool Redacted, bool Truncated);
+    string? DetailsJson, bool Redacted, bool Truncated)
+{
+    public NetclawFollowUpDto? FollowUp { get; init; }
+}
+public sealed record NetclawFollowUpDto(int LastTurnNumber, DateTimeOffset ObserveUntilUtc,
+    IReadOnlyList<string> ChildRunIds, IReadOnlyList<NetclawReminderReference> Reminders);
+public sealed record NetclawReminderReference(string Id, bool Recurring);
 public sealed record InvestigationOptionDto(string Key, string Label);
 public sealed record InvestigationSnapshotDto(InvestigationSummaryDto Investigation, long LastSequence, Guid? ActiveMessageId,
     IReadOnlyList<InvestigationEventDto> Events, IReadOnlyList<InvestigationClientDto> Clients,

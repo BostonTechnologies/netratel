@@ -9,6 +9,13 @@ using System.Threading.Tasks;
 
 namespace NetRatel.Client.Services
 {
+    internal enum GatewayPathResolution
+    {
+        Denied,
+        Missing,
+        Resolved
+    }
+
     public class FileSystemService
     {
         public sealed record BrowseEntry(
@@ -159,27 +166,26 @@ namespace NetRatel.Client.Services
         /// behalf of a remote agent.
         /// </summary>
         public bool TryResolveGatewayPath(
-            string path,
-            IReadOnlyList<string> allowedRoots,
-            bool requireExisting,
-            out string resolvedPath)
+            string path, IReadOnlyList<string> allowedRoots, bool requireExisting, out string resolvedPath) =>
+            ResolveGatewayPath(path, allowedRoots, requireExisting, out resolvedPath) == GatewayPathResolution.Resolved;
+
+        internal GatewayPathResolution ResolveGatewayPath(
+            string path, IReadOnlyList<string> allowedRoots, bool requireExisting, out string resolvedPath)
         {
             resolvedPath = string.Empty;
             if (string.IsNullOrWhiteSpace(path) || allowedRoots is null || allowedRoots.Count is 0 or > 64)
-            {
-                return false;
-            }
+                return GatewayPathResolution.Denied;
 
+            var failure = GatewayPathResolution.Denied;
             foreach (var root in allowedRoots)
             {
-                if (TryResolveGatewayPathUnderRoot(path, root, requireExisting, out resolvedPath))
-                {
-                    return true;
-                }
+                var result = ResolveGatewayPathUnderRoot(path, root, requireExisting, out resolvedPath);
+                if (result == GatewayPathResolution.Resolved) return result;
+                if (result == GatewayPathResolution.Missing) failure = result;
             }
 
             resolvedPath = string.Empty;
-            return false;
+            return failure;
         }
 
         /// <summary>
@@ -218,90 +224,64 @@ namespace NetRatel.Client.Services
             }
         }
 
-        private static bool TryResolveGatewayPathUnderRoot(
-            string path,
-            string root,
-            bool requireExisting,
-            out string resolvedPath)
+        private static GatewayPathResolution ResolveGatewayPathUnderRoot(
+            string path, string root, bool requireExisting, out string resolvedPath)
         {
             resolvedPath = string.Empty;
             if (string.IsNullOrWhiteSpace(root) || root.Length > 4096 || path.Length > 4096)
-            {
-                return false;
-            }
+                return GatewayPathResolution.Denied;
 
-            string requestedPath;
-            string configuredRoot;
             try
             {
-                requestedPath = Path.GetFullPath(path);
-                configuredRoot = Path.GetFullPath(root);
-            }
-            catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
-            {
-                return false;
-            }
+                var requestedPath = Path.GetFullPath(path);
+                var configuredRoot = Path.GetFullPath(root);
+                if (!IsPathWithin(requestedPath, configuredRoot) ||
+                    !TryResolveExistingPath(configuredRoot, out var physicalRoot) ||
+                    !Directory.Exists(physicalRoot))
+                    return GatewayPathResolution.Denied;
 
-            if (!IsPathWithin(requestedPath, configuredRoot) ||
-                !TryResolveExistingPath(configuredRoot, out var resolvedRoot) ||
-                !Directory.Exists(resolvedRoot))
-            {
-                return false;
-            }
-
-            var relative = Path.GetRelativePath(configuredRoot, requestedPath);
-            if (relative == ".")
-            {
-                resolvedPath = resolvedRoot;
-                return true;
-            }
-
-            var components = relative.Split([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar], StringSplitOptions.RemoveEmptyEntries);
-            var current = resolvedRoot;
-            for (var index = 0; index < components.Length; index++)
-            {
-                var component = components[index];
-                if (component is "." or ".." || component.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+                var relative = Path.GetRelativePath(configuredRoot, requestedPath);
+                if (relative == ".")
                 {
-                    return false;
+                    resolvedPath = physicalRoot;
+                    return GatewayPathResolution.Resolved;
                 }
 
-                var candidate = Path.Combine(current, component);
-                var exists = Directory.Exists(candidate) || File.Exists(candidate);
-                if (!exists)
+                var components = relative.Split([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar], StringSplitOptions.RemoveEmptyEntries);
+                if (components.Any(component => component is "." or ".." || component.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0))
+                    return GatewayPathResolution.Denied;
+
+                var current = physicalRoot;
+                for (var index = 0; index < components.Length; index++)
                 {
-                    if (requireExisting)
+                    var candidate = Path.Combine(current, components[index]);
+                    try
                     {
-                        return false;
+                        // Exists() also returns false for permission and IO failures.
+                        _ = File.GetAttributes(candidate);
+                    }
+                    catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
+                    {
+                        // A dangling link can still point outside the allowed root.
+                        if (new FileInfo(candidate).LinkTarget is not null)
+                            return GatewayPathResolution.Denied;
+                        if (requireExisting) return GatewayPathResolution.Missing;
+                        resolvedPath = Path.Combine(current, Path.Combine(components[index..]));
+                        return GatewayPathResolution.Resolved;
                     }
 
-                    for (var remaining = index + 1; remaining < components.Length; remaining++)
-                    {
-                        if (components[remaining] is "." or ".." || components[remaining].IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
-                        {
-                            return false;
-                        }
-
-                        candidate = Path.Combine(candidate, components[remaining]);
-                    }
-
-                    resolvedPath = candidate;
-                    return IsPathWithin(resolvedPath, resolvedRoot);
+                    if (!TryResolveExistingPath(candidate, out current) || !IsPathWithin(current, physicalRoot) ||
+                        index < components.Length - 1 && !Directory.Exists(current))
+                        return GatewayPathResolution.Denied;
                 }
 
-                if (!TryResolveExistingPath(candidate, out current) || !IsPathWithin(current, resolvedRoot))
-                {
-                    return false;
-                }
-
-                if (index < components.Length - 1 && !Directory.Exists(current))
-                {
-                    return false;
-                }
+                resolvedPath = current;
+                return GatewayPathResolution.Resolved;
             }
-
-            resolvedPath = current;
-            return !requireExisting || File.Exists(resolvedPath) || Directory.Exists(resolvedPath);
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+            {
+                return GatewayPathResolution.Denied;
+            }
         }
 
         private static bool TryResolveExistingPath(string path, out string resolvedPath)

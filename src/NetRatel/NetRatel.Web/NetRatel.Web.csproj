@@ -8,7 +8,7 @@
     <DockerDefaultTargetOS>Linux</DockerDefaultTargetOS>
     <CompressDiscoveredAssetsDuringBuild>false</CompressDiscoveredAssetsDuringBuild>
     <EnableDefaultCompressedItems>false</EnableDefaultCompressedItems>
-    <!-- slopwatch-ignore: SW005 Existing MudBlazor extension package emits EXTEXP0001; this inherited suppression is unrelated to QRCoder. -->
+    <!-- Existing MudBlazor extension package emits EXTEXP0001; this inherited suppression is unrelated to QRCoder. -->
     <NoWarn>$(NoWarn);EXTEXP0001</NoWarn>
   </PropertyGroup>
 

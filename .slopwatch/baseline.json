@@ -1,0 +1,2906 @@
+{
+  "version": 2,
+  "createdAt": "2026-11-17T18:17:55.4849476+00:00",
+  "updatedAt": "2026-11-17T18:17:55.487581+00:00",
+  "description": "Reviewed legacy findings on main at c7cb57a574649bf9fc8d43ed7ced6c03fb3d6b44 with Slopwatch 0.5.0, including the five exact existing NoWarn lists.",
+  "entries": [
+    {
+      "hash": "be53dcdf2e7eceef",
+      "ruleId": "SW005",
+      "filePath": "src/NetRatel/NetRatel.API.IntegrationTests/NetRatel.API.IntegrationTests.csproj",
+      "lineNumber": 6,
+      "codeSnippet": "<NoWarn>$(NoWarn);xUnit1051;xUnit1069</NoWarn>",
+      "message": "Adding warnings to NoWarn: xUnit1051;xUnit1069",
+      "baselinedAt": "2026-11-17T18:17:55.4864498+00:00"
+    },
+    {
+      "hash": "bdefc0942be73d9d",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.API.IntegrationTests/PhysicalDiskFixtureProcess.cs",
+      "lineNumber": 129,
+      "codeSnippet": "catch (OperationCanceledException) when (teardown.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4864529+00:00"
+    },
+    {
+      "hash": "b694a7bccb58f645",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.API.IntegrationTests/PhysicalDiskIncidentAcceptance.cs",
+      "lineNumber": 13,
+      "codeSnippet": "catch { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4864568+00:00"
+    },
+    {
+      "hash": "2b5ad0987db2afec",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.API/Endpoints/Client/ClientServicesEndpoints.cs",
+      "lineNumber": 105,
+      "codeSnippet": "catch (OperationCanceledException) when (http.RequestAborted.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4874948+00:00"
+    },
+    {
+      "hash": "645c027106636d52",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.API/Endpoints/Client/ClientUpdateActivityEndpoints.cs",
+      "lineNumber": 69,
+      "codeSnippet": "catch (OperationCanceledException) when (ct.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4874669+00:00"
+    },
+    {
+      "hash": "f9feb4064004d7be",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.API/Endpoints/Client/ClientUpdateActivityEndpoints.cs",
+      "lineNumber": 70,
+      "codeSnippet": "catch (IOException) when (ct.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4874694+00:00"
+    },
+    {
+      "hash": "810854d3e464011a",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.API/Endpoints/Client/ClientUpdatesEndpoints.cs",
+      "lineNumber": 500,
+      "codeSnippet": "catch (JsonException) { /* Legacy metadata is not proof of a running version. */ }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4874731+00:00"
+    },
+    {
+      "hash": "c86fe2053ccb0c3b",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.API/Endpoints/Client/TaskExecutionStreamEndpoints.cs",
+      "lineNumber": 66,
+      "codeSnippet": "catch (OperationCanceledException) when (ct.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4874761+00:00"
+    },
+    {
+      "hash": "1043faa7b36b55e2",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.API/Endpoints/Client/TaskExecutionStreamEndpoints.cs",
+      "lineNumber": 67,
+      "codeSnippet": "catch (IOException) when (ct.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4874797+00:00"
+    },
+    {
+      "hash": "c9e78a826ebe1942",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.API/Endpoints/Client/TelemetryEndpoints.cs",
+      "lineNumber": 144,
+      "codeSnippet": "catch (OperationCanceledException) when (ct.IsCancellationRequested)\n        {\n        }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4874828+00:00"
+    },
+    {
+      "hash": "8cfd6d7f8234b48d",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.API/Endpoints/Client/TelemetryEndpoints.cs",
+      "lineNumber": 153,
+      "codeSnippet": "catch { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4874861+00:00"
+    },
+    {
+      "hash": "a9f6d4b1078fdd2c",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.API/Endpoints/Client/TelemetryEndpoints.cs",
+      "lineNumber": 158,
+      "codeSnippet": "catch { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4874888+00:00"
+    },
+    {
+      "hash": "500dfd56ad24551f",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.API/Endpoints/Client/TelemetryEndpoints.cs",
+      "lineNumber": 163,
+      "codeSnippet": "catch\n            {\n            }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4874918+00:00"
+    },
+    {
+      "hash": "5d12f489962dd5e1",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.API/Endpoints/SystemPairing/PairingEndpoints.cs",
+      "lineNumber": 94,
+      "codeSnippet": "catch (Exception) when (!http.RequestAborted.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.487498+00:00"
+    },
+    {
+      "hash": "0830572d64e4999e",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.API/Gateway/AgentGatewayAuthenticationLifetime.cs",
+      "lineNumber": 113,
+      "codeSnippet": "catch (OperationCanceledException) when (stopping.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.487581+00:00"
+    },
+    {
+      "hash": "7dcc03ad7c29295a",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.API/Realtime/ClientLogBroadcaster.cs",
+      "lineNumber": 24,
+      "codeSnippet": "catch (SemaphoreFullException) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4875325+00:00"
+    },
+    {
+      "hash": "0916a10db01f2cc2",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.API/Realtime/ClientLogBroadcaster.cs",
+      "lineNumber": 30,
+      "codeSnippet": "catch { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4875357+00:00"
+    },
+    {
+      "hash": "c04b3f54a63c668d",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.API/Realtime/ClientUpdateBroadcaster.cs",
+      "lineNumber": 19,
+      "codeSnippet": "catch (SemaphoreFullException) { /* benign */ }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4875269+00:00"
+    },
+    {
+      "hash": "b24d99c3cf9cc00f",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.API/Realtime/ClientUpdateBroadcaster.cs",
+      "lineNumber": 25,
+      "codeSnippet": "catch { /* benign */ }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4875296+00:00"
+    },
+    {
+      "hash": "033353fe702272c6",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.API/Services/ClientArtifactLeaseStream.cs",
+      "lineNumber": 43,
+      "codeSnippet": "catch { /* The bounded lease expires even if cleanup cannot contact the database. */ }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4875432+00:00"
+    },
+    {
+      "hash": "781c692db787ed14",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.API/Services/ClientArtifactLeaseStream.cs",
+      "lineNumber": 58,
+      "codeSnippet": "catch { /* Recoverable expiry is authoritative when disposal cleanup fails. */ }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4875455+00:00"
+    },
+    {
+      "hash": "e0978410663f4e28",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.API/Services/ClientReleaseDeletionService.cs",
+      "lineNumber": 357,
+      "codeSnippet": "catch (JsonException) { /* Unproven staging is never offered as purgeable owned data. */ }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4875491+00:00"
+    },
+    {
+      "hash": "5fcee3b3c2447adb",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.API/Services/ClientUpdateActivityBroker.cs",
+      "lineNumber": 103,
+      "codeSnippet": "catch (JsonException) { /* Unrecognized notification is not a history row. */ }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4875522+00:00"
+    },
+    {
+      "hash": "6202ddf0d8e8d042",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.API/Services/ExecutionActivityBroker.cs",
+      "lineNumber": 92,
+      "codeSnippet": "catch (JsonException) { /* Unrecognized notification is not a history row. */ }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4875391+00:00"
+    },
+    {
+      "hash": "529a2d244bef46e9",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.API/Services/Jobs/JobRunReconciliationService.cs",
+      "lineNumber": 179,
+      "codeSnippet": "catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)\n        {\n        }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4875552+00:00"
+    },
+    {
+      "hash": "4e977eae64a445d4",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.API/Services/Jobs/JobTemplateHelper.cs",
+      "lineNumber": 52,
+      "codeSnippet": "catch\n        {\n            // Ignore malformed inputs and return whatever has been parsed.\n        }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4875618+00:00"
+    },
+    {
+      "hash": "f977df349346a7c3",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.API/Services/Jobs/JobTemplateHelper.cs",
+      "lineNumber": 158,
+      "codeSnippet": "catch\n        {\n            // ignore malformed options\n        }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4875647+00:00"
+    },
+    {
+      "hash": "9d927a4bb15cd85d",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.API/Services/Jobs/TaskLifecycleOutput.cs",
+      "lineNumber": 43,
+      "codeSnippet": "catch (JsonException) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.487559+00:00"
+    },
+    {
+      "hash": "305bcf110f261b00",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.API/Services/Monitoring/MonitoringFlowOutboxWorker.cs",
+      "lineNumber": 34,
+      "codeSnippet": "catch (OperationCanceledException) when (!batch.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4875721+00:00"
+    },
+    {
+      "hash": "8b0ef0fe40aca230",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.API/Services/Monitoring/MonitoringFlowOutboxWorker.cs",
+      "lineNumber": 40,
+      "codeSnippet": "catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4875744+00:00"
+    },
+    {
+      "hash": "34bac6a09de72211",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.API/Services/Monitoring/MonitoringFlowOutboxWorker.cs",
+      "lineNumber": 94,
+      "codeSnippet": "catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4875767+00:00"
+    },
+    {
+      "hash": "7f724679048c3fb2",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.API/Services/Monitoring/MonitoringServiceWatchPolicySource.cs",
+      "lineNumber": 184,
+      "codeSnippet": "catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.487568+00:00"
+    },
+    {
+      "hash": "d26f42823ce0250a",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.AgentClient/AgentClient.cs",
+      "lineNumber": 168,
+      "codeSnippet": "catch (OperationCanceledException) when (!ct.IsCancellationRequested)\n        {\n            // A bounded stream read completes normally when its requested window elapses.\n        }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4864099+00:00"
+    },
+    {
+      "hash": "6c17040019021763",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Akka/Jobs/JobAggregateCoordinatorActor.cs",
+      "lineNumber": 51,
+      "codeSnippet": "catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4874322+00:00"
+    },
+    {
+      "hash": "26a69940fd369184",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Application/Flows/FlowRecoveryEvidence.cs",
+      "lineNumber": 36,
+      "codeSnippet": "catch (JsonException) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4864052+00:00"
+    },
+    {
+      "hash": "3179fa6ef88b0883",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Cli/CliConfigStore.cs",
+      "lineNumber": 69,
+      "codeSnippet": "catch\n            {\n                // Best effort only; container filesystems may not support chmod.\n            }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4863905+00:00"
+    },
+    {
+      "hash": "369a3682e500a92f",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/Gateway/AgentFileGatewayClient.cs",
+      "lineNumber": 1121,
+      "codeSnippet": "catch (OperationCanceledException) when (streamCancellation.IsCancellationRequested)\n            {\n                // Owned shutdown; the operation's finally has run.\n            }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4867553+00:00"
+    },
+    {
+      "hash": "915bfeef8a5c3f2a",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/Gateway/AgentFileGatewayClient.cs",
+      "lineNumber": 1125,
+      "codeSnippet": "catch (RpcException exception) when (streamCancellation.IsCancellationRequested && exception.StatusCode == StatusCode.Cancelled)\n            {\n                // The physical call was aborted during owned shutdown.\n            }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4867589+00:00"
+    },
+    {
+      "hash": "be50604d346d33de",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/Gateway/AgentJobGatewayClient.cs",
+      "lineNumber": 114,
+      "codeSnippet": "catch (OperationCanceledException) when (streamLifetime.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.486762+00:00"
+    },
+    {
+      "hash": "da2590274cb12747",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/Gateway/AgentJobGatewayClient.cs",
+      "lineNumber": 137,
+      "codeSnippet": "catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4867652+00:00"
+    },
+    {
+      "hash": "58c355e52dbb31cd",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/NativeServiceRecoveryPolicy.cs",
+      "lineNumber": 192,
+      "codeSnippet": "catch (OperationCanceledException) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4864598+00:00"
+    },
+    {
+      "hash": "612ee94bb451aa15",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/RemoteDesktop/RemoteDesktopInteractiveHelper.cs",
+      "lineNumber": 114,
+      "codeSnippet": "catch\n                    {\n                    }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4865013+00:00"
+    },
+    {
+      "hash": "e43b8097b634543f",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/RemoteDesktop/RemoteDesktopInteractiveHelper.cs",
+      "lineNumber": 302,
+      "codeSnippet": "catch\n                {\n                }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4865037+00:00"
+    },
+    {
+      "hash": "87436cc3432f3fe4",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/RemoteDesktop/RemoteDesktopInteractiveHelper.cs",
+      "lineNumber": 365,
+      "codeSnippet": "catch\n            {\n            }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4865067+00:00"
+    },
+    {
+      "hash": "109bb09ea8860d57",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/RemoteDesktop/RemoteDesktopUserHelperPipeHost.cs",
+      "lineNumber": 427,
+      "codeSnippet": "catch\n        {\n        }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4865093+00:00"
+    },
+    {
+      "hash": "10a0faefa12ec9ab",
+      "ruleId": "SW021",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/RemoteDesktop/RemoteDesktopUserHelperTask.cs",
+      "lineNumber": 108,
+      "codeSnippet": "20:CompilationUnit#1of1/86:FileScopedNamespaceDeclaration namespace NetRatel . Client . Service . RemoteDesktop ;/70:ClassDeclaration internal sealed class RemoteDesktopUserHelperTask { }/62:MethodDeclaration private static void UnregisterLegacyTask ( )/10:Block#1of1/17:TryStatement#1of1/10:Block#1of1/95:LocalDeclarationStatement#2of5@07927EE72894DE6B8D978B82B7DB3975CA8687FCB7B8FADF5A2026805E5E2B79/24:VariableDeclaration#1of1/19:IdentifierName#1of1: dynamic service = serviceObject;",
+      "message": "Use of 'dynamic' bypasses compile-time type checking",
+      "baselinedAt": "2026-11-17T18:17:55.4864631+00:00"
+    },
+    {
+      "hash": "eb3bb792c54f2a1e",
+      "ruleId": "SW021",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/RemoteDesktop/RemoteDesktopUserHelperTask.cs",
+      "lineNumber": 111,
+      "codeSnippet": "20:CompilationUnit#1of1/86:FileScopedNamespaceDeclaration namespace NetRatel . Client . Service . RemoteDesktop ;/70:ClassDeclaration internal sealed class RemoteDesktopUserHelperTask { }/62:MethodDeclaration private static void UnregisterLegacyTask ( )/10:Block#1of1/17:TryStatement#1of1/10:Block#1of1/95:LocalDeclarationStatement#3of5@07927EE72894DE6B8D978B82B7DB3975CA8687FCB7B8FADF5A2026805E5E2B79/24:VariableDeclaration#1of1/19:IdentifierName#1of1: dynamic folder = folderObject;",
+      "message": "Use of 'dynamic' bypasses compile-time type checking",
+      "baselinedAt": "2026-11-17T18:17:55.4864666+00:00"
+    },
+    {
+      "hash": "8dd079fb56751646",
+      "ruleId": "SW021",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/RemoteDesktop/RemoteDesktopUserHelperTask.cs",
+      "lineNumber": 115,
+      "codeSnippet": "20:CompilationUnit#1of1/86:FileScopedNamespaceDeclaration namespace NetRatel . Client . Service . RemoteDesktop ;/70:ClassDeclaration internal sealed class RemoteDesktopUserHelperTask { }/62:MethodDeclaration private static void UnregisterLegacyTask ( )/10:Block#1of1/17:TryStatement#1of1/10:Block#1of1/95:LocalDeclarationStatement#4of5@07927EE72894DE6B8D978B82B7DB3975CA8687FCB7B8FADF5A2026805E5E2B79/24:VariableDeclaration#1of1/19:IdentifierName#1of1: dynamic task = taskObject!;",
+      "message": "Use of 'dynamic' bypasses compile-time type checking",
+      "baselinedAt": "2026-11-17T18:17:55.486471+00:00"
+    },
+    {
+      "hash": "714c8c61d0ca8f80",
+      "ruleId": "SW021",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/RemoteDesktop/RemoteDesktopUserHelperTask.cs",
+      "lineNumber": 117,
+      "codeSnippet": "20:CompilationUnit#1of1/86:FileScopedNamespaceDeclaration namespace NetRatel . Client . Service . RemoteDesktop ;/70:ClassDeclaration internal sealed class RemoteDesktopUserHelperTask { }/62:MethodDeclaration private static void UnregisterLegacyTask ( )/10:Block#1of1/17:TryStatement#1of1/10:Block#1of1/95:LocalDeclarationStatement#5of5@07927EE72894DE6B8D978B82B7DB3975CA8687FCB7B8FADF5A2026805E5E2B79/24:VariableDeclaration#1of1/19:IdentifierName#1of1: dynamic instances = instancesObject;",
+      "message": "Use of 'dynamic' bypasses compile-time type checking",
+      "baselinedAt": "2026-11-17T18:17:55.4864801+00:00"
+    },
+    {
+      "hash": "d7c0c384a7deab31",
+      "ruleId": "SW021",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/RemoteDesktop/RemoteDesktopUserHelperTask.cs",
+      "lineNumber": 124,
+      "codeSnippet": "20:CompilationUnit#1of1/86:FileScopedNamespaceDeclaration namespace NetRatel . Client . Service . RemoteDesktop ;/70:ClassDeclaration internal sealed class RemoteDesktopUserHelperTask { }/62:MethodDeclaration private static void UnregisterLegacyTask ( )/10:Block#1of1/17:TryStatement#1of1/10:Block#1of1/17:ForStatement#1of1/10:Block#1of1/17:TryStatement#1of1/10:Block#1of1/30:LocalDeclarationStatement#1of1/24:VariableDeclaration#1of1/19:IdentifierName#1of1: dynamic instance = instanceObject;",
+      "message": "Use of 'dynamic' bypasses compile-time type checking",
+      "baselinedAt": "2026-11-17T18:17:55.4864825+00:00"
+    },
+    {
+      "hash": "eef614b157a69d94",
+      "ruleId": "SW021",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/RemoteDesktop/RemoteDesktopUserHelperTask.cs",
+      "lineNumber": 330,
+      "codeSnippet": "20:CompilationUnit#1of1/86:FileScopedNamespaceDeclaration namespace NetRatel . Client . Service . RemoteDesktop ;/70:ClassDeclaration internal sealed class RemoteDesktopUserHelperTask { }/107:MethodDeclaration public async Task < bool > StartForSessionAsync ( uint sessionId , CancellationToken ct )/10:Block#1of1/17:TryStatement#1of1/10:Block#1of1/95:LocalDeclarationStatement#2of4@6ED8D88B99E961565C0C3B09089E8C7C0DCD77E6FC1D8D2AC1504DD3665C46FA/24:VariableDeclaration#1of1/19:IdentifierName#1of1: dynamic service = serviceObject;",
+      "message": "Use of 'dynamic' bypasses compile-time type checking",
+      "baselinedAt": "2026-11-17T18:17:55.4864862+00:00"
+    },
+    {
+      "hash": "61552d0c3a8a70f3",
+      "ruleId": "SW021",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/RemoteDesktop/RemoteDesktopUserHelperTask.cs",
+      "lineNumber": 333,
+      "codeSnippet": "20:CompilationUnit#1of1/86:FileScopedNamespaceDeclaration namespace NetRatel . Client . Service . RemoteDesktop ;/70:ClassDeclaration internal sealed class RemoteDesktopUserHelperTask { }/107:MethodDeclaration public async Task < bool > StartForSessionAsync ( uint sessionId , CancellationToken ct )/10:Block#1of1/17:TryStatement#1of1/10:Block#1of1/95:LocalDeclarationStatement#3of4@6ED8D88B99E961565C0C3B09089E8C7C0DCD77E6FC1D8D2AC1504DD3665C46FA/24:VariableDeclaration#1of1/19:IdentifierName#1of1: dynamic rootFolder = folderObject;",
+      "message": "Use of 'dynamic' bypasses compile-time type checking",
+      "baselinedAt": "2026-11-17T18:17:55.4864892+00:00"
+    },
+    {
+      "hash": "85ccb69c96e14482",
+      "ruleId": "SW021",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/RemoteDesktop/RemoteDesktopUserHelperTask.cs",
+      "lineNumber": 344,
+      "codeSnippet": "20:CompilationUnit#1of1/86:FileScopedNamespaceDeclaration namespace NetRatel . Client . Service . RemoteDesktop ;/70:ClassDeclaration internal sealed class RemoteDesktopUserHelperTask { }/107:MethodDeclaration public async Task < bool > StartForSessionAsync ( uint sessionId , CancellationToken ct )/10:Block#1of1/17:TryStatement#1of1/10:Block#1of1/95:LocalDeclarationStatement#4of4@6ED8D88B99E961565C0C3B09089E8C7C0DCD77E6FC1D8D2AC1504DD3665C46FA/24:VariableDeclaration#1of1/19:IdentifierName#1of1: dynamic task = taskObject;",
+      "message": "Use of 'dynamic' bypasses compile-time type checking",
+      "baselinedAt": "2026-11-17T18:17:55.486492+00:00"
+    },
+    {
+      "hash": "e9d2e37ed316d485",
+      "ruleId": "SW021",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/RemoteDesktop/RemoteDesktopUserHelperTask.cs",
+      "lineNumber": 486,
+      "codeSnippet": "20:CompilationUnit#1of1/86:FileScopedNamespaceDeclaration namespace NetRatel . Client . Service . RemoteDesktop ;/70:ClassDeclaration internal sealed class RemoteDesktopUserHelperTask { }/89:MethodDeclaration internal static void RegisterTaskXml ( string xml , bool validateOnly )/10:Block#1of1/17:TryStatement#1of1/10:Block#1of1/95:LocalDeclarationStatement#2of3@1BF5CEB08C10C3D7F13EE993F0D66B57DC30DA56B1134B0BB2ABDC4389A7DFB0/24:VariableDeclaration#1of1/19:IdentifierName#1of1: dynamic service = serviceObject;",
+      "message": "Use of 'dynamic' bypasses compile-time type checking",
+      "baselinedAt": "2026-11-17T18:17:55.4864951+00:00"
+    },
+    {
+      "hash": "94102119373c33f6",
+      "ruleId": "SW021",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/RemoteDesktop/RemoteDesktopUserHelperTask.cs",
+      "lineNumber": 489,
+      "codeSnippet": "20:CompilationUnit#1of1/86:FileScopedNamespaceDeclaration namespace NetRatel . Client . Service . RemoteDesktop ;/70:ClassDeclaration internal sealed class RemoteDesktopUserHelperTask { }/89:MethodDeclaration internal static void RegisterTaskXml ( string xml , bool validateOnly )/10:Block#1of1/17:TryStatement#1of1/10:Block#1of1/95:LocalDeclarationStatement#3of3@1BF5CEB08C10C3D7F13EE993F0D66B57DC30DA56B1134B0BB2ABDC4389A7DFB0/24:VariableDeclaration#1of1/19:IdentifierName#1of1: dynamic folder = folderObject;",
+      "message": "Use of 'dynamic' bypasses compile-time type checking",
+      "baselinedAt": "2026-11-17T18:17:55.4864976+00:00"
+    },
+    {
+      "hash": "870bc8b9245c1fce",
+      "ruleId": "SW021",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/RemoteSupport/RemoteSupportConsoleActiveSessionLauncher.cs",
+      "lineNumber": 170,
+      "codeSnippet": "20:CompilationUnit#1of1/86:FileScopedNamespaceDeclaration namespace NetRatel . Client . Service . RemoteSupport ;/84:ClassDeclaration internal sealed class RemoteSupportConsoleActiveSessionLauncher { }/138:MethodDeclaration private RemoteSupportConsoleLaunchBackendResult TryLaunchWithTaskScheduler ( string commandLine , uint activeSessionId )/10:Block#1of1/17:TryStatement#1of1/10:Block#1of1/95:LocalDeclarationStatement#2of8@8216309851C1D7BB6BBAD7F8BA0F1B663E99765139646521EBAA408932D23D49/24:VariableDeclaration#1of1/19:IdentifierName#1of1: dynamic service = Activator.CreateInstance(serviceType)\n                ?? throw new InvalidOperationException(\"Unable to create Task Scheduler COM service.\");",
+      "message": "Use of 'dynamic' bypasses compile-time type checking",
+      "baselinedAt": "2026-11-17T18:17:55.4867244+00:00"
+    },
+    {
+      "hash": "2b461ba5a5d4785b",
+      "ruleId": "SW021",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/RemoteSupport/RemoteSupportConsoleActiveSessionLauncher.cs",
+      "lineNumber": 173,
+      "codeSnippet": "20:CompilationUnit#1of1/86:FileScopedNamespaceDeclaration namespace NetRatel . Client . Service . RemoteSupport ;/84:ClassDeclaration internal sealed class RemoteSupportConsoleActiveSessionLauncher { }/138:MethodDeclaration private RemoteSupportConsoleLaunchBackendResult TryLaunchWithTaskScheduler ( string commandLine , uint activeSessionId )/10:Block#1of1/17:TryStatement#1of1/10:Block#1of1/95:LocalDeclarationStatement#3of8@8216309851C1D7BB6BBAD7F8BA0F1B663E99765139646521EBAA408932D23D49/24:VariableDeclaration#1of1/19:IdentifierName#1of1: dynamic rootFolder = service.GetFolder(\"\\\\\");",
+      "message": "Use of 'dynamic' bypasses compile-time type checking",
+      "baselinedAt": "2026-11-17T18:17:55.4867279+00:00"
+    },
+    {
+      "hash": "b99e690e0254141c",
+      "ruleId": "SW021",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/RemoteSupport/RemoteSupportConsoleActiveSessionLauncher.cs",
+      "lineNumber": 174,
+      "codeSnippet": "20:CompilationUnit#1of1/86:FileScopedNamespaceDeclaration namespace NetRatel . Client . Service . RemoteSupport ;/84:ClassDeclaration internal sealed class RemoteSupportConsoleActiveSessionLauncher { }/138:MethodDeclaration private RemoteSupportConsoleLaunchBackendResult TryLaunchWithTaskScheduler ( string commandLine , uint activeSessionId )/10:Block#1of1/17:TryStatement#1of1/10:Block#1of1/95:LocalDeclarationStatement#4of8@8216309851C1D7BB6BBAD7F8BA0F1B663E99765139646521EBAA408932D23D49/24:VariableDeclaration#1of1/19:IdentifierName#1of1: dynamic taskDefinition = service.NewTask(0);",
+      "message": "Use of 'dynamic' bypasses compile-time type checking",
+      "baselinedAt": "2026-11-17T18:17:55.4867301+00:00"
+    },
+    {
+      "hash": "204d98483d0ab0ca",
+      "ruleId": "SW021",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/RemoteSupport/RemoteSupportConsoleActiveSessionLauncher.cs",
+      "lineNumber": 180,
+      "codeSnippet": "20:CompilationUnit#1of1/86:FileScopedNamespaceDeclaration namespace NetRatel . Client . Service . RemoteSupport ;/84:ClassDeclaration internal sealed class RemoteSupportConsoleActiveSessionLauncher { }/138:MethodDeclaration private RemoteSupportConsoleLaunchBackendResult TryLaunchWithTaskScheduler ( string commandLine , uint activeSessionId )/10:Block#1of1/17:TryStatement#1of1/10:Block#1of1/95:LocalDeclarationStatement#5of8@8216309851C1D7BB6BBAD7F8BA0F1B663E99765139646521EBAA408932D23D49/24:VariableDeclaration#1of1/19:IdentifierName#1of1: dynamic principal = taskDefinition.Principal;",
+      "message": "Use of 'dynamic' bypasses compile-time type checking",
+      "baselinedAt": "2026-11-17T18:17:55.4867333+00:00"
+    },
+    {
+      "hash": "0d612bc89e5271c5",
+      "ruleId": "SW021",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/RemoteSupport/RemoteSupportConsoleActiveSessionLauncher.cs",
+      "lineNumber": 184,
+      "codeSnippet": "20:CompilationUnit#1of1/86:FileScopedNamespaceDeclaration namespace NetRatel . Client . Service . RemoteSupport ;/84:ClassDeclaration internal sealed class RemoteSupportConsoleActiveSessionLauncher { }/138:MethodDeclaration private RemoteSupportConsoleLaunchBackendResult TryLaunchWithTaskScheduler ( string commandLine , uint activeSessionId )/10:Block#1of1/17:TryStatement#1of1/10:Block#1of1/95:LocalDeclarationStatement#6of8@8216309851C1D7BB6BBAD7F8BA0F1B663E99765139646521EBAA408932D23D49/24:VariableDeclaration#1of1/19:IdentifierName#1of1: dynamic action = taskDefinition.Actions.Create(0);",
+      "message": "Use of 'dynamic' bypasses compile-time type checking",
+      "baselinedAt": "2026-11-17T18:17:55.4867357+00:00"
+    },
+    {
+      "hash": "e9b2ed920998e09c",
+      "ruleId": "SW021",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/RemoteSupport/RemoteSupportConsoleActiveSessionLauncher.cs",
+      "lineNumber": 190,
+      "codeSnippet": "20:CompilationUnit#1of1/86:FileScopedNamespaceDeclaration namespace NetRatel . Client . Service . RemoteSupport ;/84:ClassDeclaration internal sealed class RemoteSupportConsoleActiveSessionLauncher { }/138:MethodDeclaration private RemoteSupportConsoleLaunchBackendResult TryLaunchWithTaskScheduler ( string commandLine , uint activeSessionId )/10:Block#1of1/17:TryStatement#1of1/10:Block#1of1/95:LocalDeclarationStatement#8of8@8216309851C1D7BB6BBAD7F8BA0F1B663E99765139646521EBAA408932D23D49/24:VariableDeclaration#1of1/19:IdentifierName#1of1: dynamic task = rootFolder.RegisterTaskDefinition(taskName, taskDefinition, 6, null, null, 5);",
+      "message": "Use of 'dynamic' bypasses compile-time type checking",
+      "baselinedAt": "2026-11-17T18:17:55.486739+00:00"
+    },
+    {
+      "hash": "a0ef1ed086ae6645",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/RemoteSupport/RemoteSupportConsoleHelper.cs",
+      "lineNumber": 208,
+      "codeSnippet": "catch\n            {\n            }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4867166+00:00"
+    },
+    {
+      "hash": "aa30b05588e2d6a5",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/RemoteSupport/RemoteSupportConsoleHelper.cs",
+      "lineNumber": 736,
+      "codeSnippet": "catch\n        {\n        }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4867207+00:00"
+    },
+    {
+      "hash": "03e1f3ec4464fc79",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/RemoteSupport/RemoteSupportConsoleProviderPipeHost.cs",
+      "lineNumber": 82,
+      "codeSnippet": "catch\n            {\n            }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4866697+00:00"
+    },
+    {
+      "hash": "81f402fac3f47f98",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/RemoteSupport/RemoteSupportConsoleProviderPipeHost.cs",
+      "lineNumber": 531,
+      "codeSnippet": "catch\n        {\n        }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4866729+00:00"
+    },
+    {
+      "hash": "450eeb8ce5d5d335",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/RemoteSupport/RemoteSupportConsoleProviderPipeHost.cs",
+      "lineNumber": 627,
+      "codeSnippet": "catch\n        {\n        }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4866755+00:00"
+    },
+    {
+      "hash": "5ec095d86bc1cb64",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/RemoteSupport/RemoteSupportInteractiveWebRtcManager.cs",
+      "lineNumber": 109,
+      "codeSnippet": "catch\n        {\n        }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4866502+00:00"
+    },
+    {
+      "hash": "a5aac47aab4931f7",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/RemoteSupport/RemoteSupportInteractiveWebRtcManager.cs",
+      "lineNumber": 623,
+      "codeSnippet": "catch\n        {\n        }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4866536+00:00"
+    },
+    {
+      "hash": "9fcb4610d20b6d2a",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/RemoteSupport/RemoteSupportInteractiveWebRtcManager.cs",
+      "lineNumber": 906,
+      "codeSnippet": "catch\n        {\n        }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4866561+00:00"
+    },
+    {
+      "hash": "9a063a6395028672",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/RemoteSupport/RemoteSupportInteractiveWebRtcManager.cs",
+      "lineNumber": 1172,
+      "codeSnippet": "catch (OperationCanceledException)\n        {\n        }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.486659+00:00"
+    },
+    {
+      "hash": "a6e227ccc9ce8c4a",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/RemoteSupport/RemoteSupportInteractiveWebRtcManager.cs",
+      "lineNumber": 1608,
+      "codeSnippet": "catch\n            {\n            }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4866614+00:00"
+    },
+    {
+      "hash": "0f9281b4f7d0dfc5",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/RemoteSupport/RemoteSupportInteractiveWebRtcManager.cs",
+      "lineNumber": 2601,
+      "codeSnippet": "catch\n        {\n        }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4866644+00:00"
+    },
+    {
+      "hash": "93d062305c47ca54",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/RemoteSupport/RemoteSupportInteractiveWebRtcManager.cs",
+      "lineNumber": 2612,
+      "codeSnippet": "catch\n        {\n        }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4866667+00:00"
+    },
+    {
+      "hash": "4a3b71cb3973a386",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/RemoteSupport/WindowsRemoteSupportFirewall.cs",
+      "lineNumber": 177,
+      "codeSnippet": "catch\n            {\n                // Best effort only; firewall setup must never block client startup.\n            }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4867089+00:00"
+    },
+    {
+      "hash": "8dd215b6d0db3d5b",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/RemoteSupport/WindowsRemoteSupportFirewall.cs",
+      "lineNumber": 235,
+      "codeSnippet": "catch\n            {\n            }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4867128+00:00"
+    },
+    {
+      "hash": "3151649805b78d3c",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/Services/LinuxSystemdServiceInventoryCollector.cs",
+      "lineNumber": 260,
+      "codeSnippet": "catch (InvalidOperationException) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4867486+00:00"
+    },
+    {
+      "hash": "4673bd3f2ecff1cd",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/Services/LinuxSystemdServiceInventoryCollector.cs",
+      "lineNumber": 261,
+      "codeSnippet": "catch (System.ComponentModel.Win32Exception) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4867519+00:00"
+    },
+    {
+      "hash": "c8967acab789787a",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/Shells/ExternalShellRunner.cs",
+      "lineNumber": 792,
+      "codeSnippet": "catch\n            {\n                // ignore cleanup failures\n            }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4865545+00:00"
+    },
+    {
+      "hash": "3a79fa88fc99a010",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/Shells/ExternalShellRunner.cs",
+      "lineNumber": 815,
+      "codeSnippet": "catch\n            {\n                // ignore\n            }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4865566+00:00"
+    },
+    {
+      "hash": "c204fa3421563266",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/Shells/ExternalShellRunner.cs",
+      "lineNumber": 834,
+      "codeSnippet": "catch\n            {\n                // ignore\n            }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4865595+00:00"
+    },
+    {
+      "hash": "3cb6b48090169eac",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/SoftwareInventory/SoftwareInventoryCollectors.cs",
+      "lineNumber": 51,
+      "codeSnippet": "catch (InvalidOperationException) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4867423+00:00"
+    },
+    {
+      "hash": "b7065d27d4a33e7a",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/SoftwareInventory/SoftwareInventoryCollectors.cs",
+      "lineNumber": 51,
+      "codeSnippet": "catch (Win32Exception) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4867456+00:00"
+    },
+    {
+      "hash": "67a150665743ae69",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/Tasks/ClientTaskManager.cs",
+      "lineNumber": 131,
+      "codeSnippet": "catch { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4865126+00:00"
+    },
+    {
+      "hash": "8c177d70cc90cc94",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/Tasks/ClientTaskManager.cs",
+      "lineNumber": 132,
+      "codeSnippet": "catch { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4865163+00:00"
+    },
+    {
+      "hash": "a03947864642d40c",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/Tasks/ClientTaskManager.cs",
+      "lineNumber": 139,
+      "codeSnippet": "catch (AggregateException ex) when (ex.InnerExceptions.All(e => e is OperationCanceledException))\n        {\n            // Expected during shutdown.\n        }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4865193+00:00"
+    },
+    {
+      "hash": "bb82b79e57013c22",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/Tasks/ClientTaskManager.cs",
+      "lineNumber": 253,
+      "codeSnippet": "catch (OperationCanceledException)\n        {\n            // expected during shutdown\n        }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.486523+00:00"
+    },
+    {
+      "hash": "72de583bafdf6107",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/Tasks/ClientTaskManager.cs",
+      "lineNumber": 418,
+      "codeSnippet": "catch (JsonException)\n        {\n            // handled below\n        }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4865252+00:00"
+    },
+    {
+      "hash": "1a5eaeee0108a59e",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/Tasks/ClientTaskManager.cs",
+      "lineNumber": 473,
+      "codeSnippet": "catch (JsonException)\n        {\n            // fallback handled below\n        }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4865278+00:00"
+    },
+    {
+      "hash": "5679c98ca2a7abb3",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/Tasks/ClientTaskManager.cs",
+      "lineNumber": 793,
+      "codeSnippet": "catch { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4865312+00:00"
+    },
+    {
+      "hash": "1c0294519b53d427",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/Tasks/ClientTaskManager.cs",
+      "lineNumber": 805,
+      "codeSnippet": "catch { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4865335+00:00"
+    },
+    {
+      "hash": "282937a027f7fe8e",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/Tasks/ClientTaskManager.cs",
+      "lineNumber": 808,
+      "codeSnippet": "catch { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4865369+00:00"
+    },
+    {
+      "hash": "14e5f996a8649735",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/Tasks/ClientTaskManager.cs",
+      "lineNumber": 832,
+      "codeSnippet": "catch { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4865391+00:00"
+    },
+    {
+      "hash": "c7093f9e579b6add",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/Tasks/ClientTaskManager.cs",
+      "lineNumber": 835,
+      "codeSnippet": "catch { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4865411+00:00"
+    },
+    {
+      "hash": "34dc7ac965eac5a8",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/Tasks/ClientTaskManager.cs",
+      "lineNumber": 860,
+      "codeSnippet": "catch { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4865443+00:00"
+    },
+    {
+      "hash": "ef5385e953896ec7",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/Tasks/ClientTaskManager.cs",
+      "lineNumber": 874,
+      "codeSnippet": "catch { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4865464+00:00"
+    },
+    {
+      "hash": "6e3db06e7fd29ca6",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/Tasks/ClientTaskManager.cs",
+      "lineNumber": 893,
+      "codeSnippet": "catch { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4865487+00:00"
+    },
+    {
+      "hash": "09e43176b32f2017",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/Tasks/ClientTaskManager.cs",
+      "lineNumber": 915,
+      "codeSnippet": "catch (JsonException) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4865517+00:00"
+    },
+    {
+      "hash": "43864ba32d0ba1e2",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/Terminal/Terminal.cs",
+      "lineNumber": 81,
+      "codeSnippet": "catch { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.486562+00:00"
+    },
+    {
+      "hash": "66d92788746ce5db",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/Terminal/TerminalHost.cs",
+      "lineNumber": 508,
+      "codeSnippet": "catch (OperationCanceledException) when (ct.IsCancellationRequested)\n        {\n        }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4865745+00:00"
+    },
+    {
+      "hash": "c1d4d3971901dcdd",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/Terminal/TerminalHost.cs",
+      "lineNumber": 511,
+      "codeSnippet": "catch (ObjectDisposedException)\n        {\n        }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4865766+00:00"
+    },
+    {
+      "hash": "c031e8c625758bfb",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/Terminal/TerminalHost.cs",
+      "lineNumber": 532,
+      "codeSnippet": "catch (OperationCanceledException) when (ct.IsCancellationRequested)\n        {\n        }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4865796+00:00"
+    },
+    {
+      "hash": "171fdf5defd169ed",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/Terminal/TerminalHost.cs",
+      "lineNumber": 554,
+      "codeSnippet": "catch\n        {\n        }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4865819+00:00"
+    },
+    {
+      "hash": "2282498fb2c2c490",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/Terminal/TerminalHost.cs",
+      "lineNumber": 603,
+      "codeSnippet": "catch { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.486584+00:00"
+    },
+    {
+      "hash": "d4e4b63d20408361",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/Terminal/TerminalHost.cs",
+      "lineNumber": 605,
+      "codeSnippet": "catch { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.486587+00:00"
+    },
+    {
+      "hash": "d271a22160b66897",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/Terminal/TerminalHost.cs",
+      "lineNumber": 606,
+      "codeSnippet": "catch { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.486589+00:00"
+    },
+    {
+      "hash": "299ef12ebd7892dc",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/Terminal/TerminalHost.cs",
+      "lineNumber": 607,
+      "codeSnippet": "catch { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4865913+00:00"
+    },
+    {
+      "hash": "062d88fad99c6cf2",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/Terminal/TerminalHost.cs",
+      "lineNumber": 741,
+      "codeSnippet": "catch (OperationCanceledException)\n        {\n        }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4865945+00:00"
+    },
+    {
+      "hash": "12d253305f334e46",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/Terminal/TerminalHost.cs",
+      "lineNumber": 800,
+      "codeSnippet": "catch (ObjectDisposedException)\n        {\n        }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4865967+00:00"
+    },
+    {
+      "hash": "f0d86bf2820801cf",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/Terminal/TerminalHost.cs",
+      "lineNumber": 803,
+      "codeSnippet": "catch (OperationCanceledException)\n        {\n        }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4865997+00:00"
+    },
+    {
+      "hash": "3c5982dd292ec67a",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/Terminal/TerminalHost.cs",
+      "lineNumber": 843,
+      "codeSnippet": "catch { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4866019+00:00"
+    },
+    {
+      "hash": "3b556be6aa92b7e3",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/Terminal/TerminalHost.cs",
+      "lineNumber": 859,
+      "codeSnippet": "catch { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4866039+00:00"
+    },
+    {
+      "hash": "16912ac4f83f4e3b",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/Terminal/TerminalHost.cs",
+      "lineNumber": 1170,
+      "codeSnippet": "catch (OperationCanceledException)\n        {\n        }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4866069+00:00"
+    },
+    {
+      "hash": "41e3cb43c76c7b53",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/Terminal/TerminalHost.cs",
+      "lineNumber": 1202,
+      "codeSnippet": "catch\n        {\n        }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4866089+00:00"
+    },
+    {
+      "hash": "1a00f234a1c68b9c",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/Terminal/TerminalHost.cs",
+      "lineNumber": 1209,
+      "codeSnippet": "catch { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4866112+00:00"
+    },
+    {
+      "hash": "b5917bf3c1101bce",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/Terminal/TerminalHost.cs",
+      "lineNumber": 1210,
+      "codeSnippet": "catch { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4866142+00:00"
+    },
+    {
+      "hash": "3a8892951207f211",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/Terminal/TerminalHost.cs",
+      "lineNumber": 1213,
+      "codeSnippet": "catch { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4866163+00:00"
+    },
+    {
+      "hash": "881f1abca0e1d1c8",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/Terminal/TerminalHost.cs",
+      "lineNumber": 1249,
+      "codeSnippet": "catch (ObjectDisposedException)\n        {\n        }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4866184+00:00"
+    },
+    {
+      "hash": "97bc1d5940a0089a",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/Terminal/TerminalHost.cs",
+      "lineNumber": 1252,
+      "codeSnippet": "catch (OperationCanceledException)\n        {\n        }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4866214+00:00"
+    },
+    {
+      "hash": "2e7186474349f039",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/Terminal/TerminalHost.cs",
+      "lineNumber": 1255,
+      "codeSnippet": "catch (IOException ex) when (ex.Message.Contains(\"Input/output error\", StringComparison.OrdinalIgnoreCase))\n        {\n        }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4866237+00:00"
+    },
+    {
+      "hash": "4d7519e2f6012e2f",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/Terminal/TerminalHost.cs",
+      "lineNumber": 1276,
+      "codeSnippet": "catch (OperationCanceledException)\n        {\n        }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4866264+00:00"
+    },
+    {
+      "hash": "cd9443af609bdf4b",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/Terminal/TerminalHost.cs",
+      "lineNumber": 1462,
+      "codeSnippet": "catch { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4866285+00:00"
+    },
+    {
+      "hash": "a11dc20e4a78abf2",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/Terminal/TerminalHost.cs",
+      "lineNumber": 1593,
+      "codeSnippet": "catch (OperationCanceledException)\n        {\n        }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4866306+00:00"
+    },
+    {
+      "hash": "d5da3784d03e4b23",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/Terminal/TerminalHost.cs",
+      "lineNumber": 1630,
+      "codeSnippet": "catch (ObjectDisposedException)\n        {\n        }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4866334+00:00"
+    },
+    {
+      "hash": "30a424a7dd666475",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/Terminal/TerminalHost.cs",
+      "lineNumber": 1633,
+      "codeSnippet": "catch (OperationCanceledException)\n        {\n        }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4866359+00:00"
+    },
+    {
+      "hash": "25ec2f1c628a637f",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/Terminal/TerminalHost.cs",
+      "lineNumber": 1653,
+      "codeSnippet": "catch (OperationCanceledException)\n        {\n        }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.486638+00:00"
+    },
+    {
+      "hash": "89babbaddcdff317",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/Terminal/TerminalHost.cs",
+      "lineNumber": 1730,
+      "codeSnippet": "catch { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4866408+00:00"
+    },
+    {
+      "hash": "b15cb6d265ae96e1",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/Terminal/TerminalHost.cs",
+      "lineNumber": 1731,
+      "codeSnippet": "catch { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4866429+00:00"
+    },
+    {
+      "hash": "7ce0887689cdc909",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/Terminal/TerminalHost.cs",
+      "lineNumber": 1732,
+      "codeSnippet": "catch { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4866449+00:00"
+    },
+    {
+      "hash": "63720ac35b5182c3",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/Terminal/TerminalHost.cs",
+      "lineNumber": 1733,
+      "codeSnippet": "catch { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4866477+00:00"
+    },
+    {
+      "hash": "a613a1a7d806e0bb",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/Terminal/TerminalPtySelfTest.cs",
+      "lineNumber": 128,
+      "codeSnippet": "catch { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4865657+00:00"
+    },
+    {
+      "hash": "e66c3aef45206ddd",
+      "ruleId": "SW004",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/Terminal/TerminalPtySelfTest.cs",
+      "lineNumber": 154,
+      "codeSnippet": "Task.Delay(50, ct).ConfigureAwait(false)",
+      "message": "Test uses Task.Delay(false) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-11-17T18:17:55.486568+00:00"
+    },
+    {
+      "hash": "aa64ecdfefabda90",
+      "ruleId": "SW004",
+      "filePath": "src/NetRatel/NetRatel.Client/Service/Terminal/TerminalPtySelfTest.cs",
+      "lineNumber": 154,
+      "codeSnippet": "Task.Delay(50, ct)",
+      "message": "Test uses Task.Delay(50) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-11-17T18:17:55.4865708+00:00"
+    },
+    {
+      "hash": "eaf29e7ec4ea58f1",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Infrastructure/Flows/FlowRunProcessor.cs",
+      "lineNumber": 175,
+      "codeSnippet": "catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4874639+00:00"
+    },
+    {
+      "hash": "6c0b09ef4f8a67b7",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Infrastructure/Netclaw/InvestigationClientProjection.cs",
+      "lineNumber": 23,
+      "codeSnippet": "catch (JsonException) { /* Missing cached version remains unknown. */ }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4874535+00:00"
+    },
+    {
+      "hash": "7bf4555ac607eb81",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Infrastructure/Netclaw/NetclawTraceMapper.cs",
+      "lineNumber": 21,
+      "codeSnippet": "catch (ArgumentOutOfRangeException) { /* Invalid source times remain unavailable. */ }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4874575+00:00"
+    },
+    {
+      "hash": "c37953c4ddda6351",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Infrastructure/Netclaw/NetclawTraceMapper.cs",
+      "lineNumber": 65,
+      "codeSnippet": "catch (JsonException) { /* Plain text result. */ }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4874598+00:00"
+    },
+    {
+      "hash": "30c38fcb6d8e1075",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Infrastructure/RatelDesk/RatelDeskConnectorReceiver.cs",
+      "lineNumber": 48,
+      "codeSnippet": "catch (OperationCanceledException) when (!ct.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4874433+00:00"
+    },
+    {
+      "hash": "65376397b45515fd",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Infrastructure/SystemPairing/PairingTransport.cs",
+      "lineNumber": 105,
+      "codeSnippet": "catch (JsonException) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4874471+00:00"
+    },
+    {
+      "hash": "4d66627671c189ae",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Infrastructure/SystemPairing/PairingTransport.cs",
+      "lineNumber": 109,
+      "codeSnippet": "catch (Exception error) when (error is JsonException or InvalidOperationException) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4874504+00:00"
+    },
+    {
+      "hash": "cae4653dc538d850",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Mcp/HttpMcpBridge.cs",
+      "lineNumber": 114,
+      "codeSnippet": "catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4867685+00:00"
+    },
+    {
+      "hash": "1b67a13ddd01412b",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Mcp/HttpMcpBridge.cs",
+      "lineNumber": 120,
+      "codeSnippet": "catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4867709+00:00"
+    },
+    {
+      "hash": "1431bbeff2e080bf",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Pairing.NativeRunner/Program.cs",
+      "lineNumber": 96,
+      "codeSnippet": "catch (Exception error) when (error is OperationCanceledException or TimeoutException) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4874362+00:00"
+    },
+    {
+      "hash": "3bf377716575824b",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Pairing.NativeRunner/Program.cs",
+      "lineNumber": 150,
+      "codeSnippet": "catch (OperationCanceledException) when (stopping.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4874388+00:00"
+    },
+    {
+      "hash": "1cac7d964d0d4383",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Setup/HostingSetupTerminal.cs",
+      "lineNumber": 277,
+      "codeSnippet": "catch (OperationCanceledException) when (ct.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4864192+00:00"
+    },
+    {
+      "hash": "5e1339bc98be2f9b",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Setup/HostingSetupTerminal.cs",
+      "lineNumber": 363,
+      "codeSnippet": "catch (System.Text.Json.JsonException) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4864219+00:00"
+    },
+    {
+      "hash": "7032aff625390954",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Setup/HostingSetupTerminal.cs",
+      "lineNumber": 547,
+      "codeSnippet": "catch (Exception exception) when (exception is HttpRequestException or OperationCanceledException or ObjectDisposedException) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4864257+00:00"
+    },
+    {
+      "hash": "ec46cefe0c33942f",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Setup/SetupSession.cs",
+      "lineNumber": 605,
+      "codeSnippet": "catch (HttpRequestException) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4864129+00:00"
+    },
+    {
+      "hash": "571caa51ac721c75",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Setup/SetupSession.cs",
+      "lineNumber": 605,
+      "codeSnippet": "catch (TaskCanceledException) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.486415+00:00"
+    },
+    {
+      "hash": "3d858fc857d06079",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Setup/SetupViewModel.cs",
+      "lineNumber": 46,
+      "codeSnippet": "catch (AgentClientValidationException) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4864354+00:00"
+    },
+    {
+      "hash": "e32b907cbe951c1c",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Setup/SetupViewModel.cs",
+      "lineNumber": 48,
+      "codeSnippet": "catch (AgentClientValidationException) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4864376+00:00"
+    },
+    {
+      "hash": "5dcba0cdf7416a89",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Setup/SetupViewModel.cs",
+      "lineNumber": 161,
+      "codeSnippet": "catch (OperationCanceledException) when (ct.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4864408+00:00"
+    },
+    {
+      "hash": "8e8f21d4c88026f1",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Setup/SetupViewModel.cs",
+      "lineNumber": 181,
+      "codeSnippet": "catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.486443+00:00"
+    },
+    {
+      "hash": "1950c8908ce0f7b8",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Setup/SetupViewModel.cs",
+      "lineNumber": 205,
+      "codeSnippet": "catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4864454+00:00"
+    },
+    {
+      "hash": "1d951ed269e78e19",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Setup/StdioMcpDoctor.cs",
+      "lineNumber": 133,
+      "codeSnippet": "catch (Exception exception) when (exception is OperationCanceledException or IOException or ObjectDisposedException) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4864289+00:00"
+    },
+    {
+      "hash": "bb3450470f7b6e48",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Setup/StdioMcpDoctor.cs",
+      "lineNumber": 200,
+      "codeSnippet": "catch (Exception exception) when (exception is InvalidOperationException or Win32Exception) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4864323+00:00"
+    },
+    {
+      "hash": "48f174958987f4b2",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Shared/Service/Shells/ShellExecutableResolver.cs",
+      "lineNumber": 54,
+      "codeSnippet": "catch (ArgumentException)\n                {\n                    // An invalid PATH entry must not hide an installed interpreter.\n                }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4863416+00:00"
+    },
+    {
+      "hash": "0fc71de6cc308cba",
+      "ruleId": "SW004",
+      "filePath": "src/NetRatel/NetRatel.Tests/API/AgentGatewayLifetimeTests.cs",
+      "lineNumber": 230,
+      "codeSnippet": "Task.Delay(TimeSpan.FromMilliseconds(20), cancellationBudget.Token)",
+      "message": "Test uses Task.Delay(TimeSpan.FromMilliseconds(20)) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-11-17T18:17:55.4868807+00:00"
+    },
+    {
+      "hash": "1a84de91b2896136",
+      "ruleId": "SW004",
+      "filePath": "src/NetRatel/NetRatel.Tests/API/AgentGatewayLifetimeTests.cs",
+      "lineNumber": 408,
+      "codeSnippet": "Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken)",
+      "message": "Test uses Task.Delay(Timeout.InfiniteTimeSpan) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-11-17T18:17:55.4868842+00:00"
+    },
+    {
+      "hash": "f520ecff5d0e4cbf",
+      "ruleId": "SW004",
+      "filePath": "src/NetRatel/NetRatel.Tests/API/AgentGatewayRenewalTerminalTests.cs",
+      "lineNumber": 107,
+      "codeSnippet": "Task.Delay(TimeSpan.FromMilliseconds(20), cancellationToken)",
+      "message": "Test uses Task.Delay(TimeSpan.FromMilliseconds(20)) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-11-17T18:17:55.4868706+00:00"
+    },
+    {
+      "hash": "17c8e17b9ad48f6d",
+      "ruleId": "SW004",
+      "filePath": "src/NetRatel/NetRatel.Tests/API/AgentGatewayRenewalTerminalTests.cs",
+      "lineNumber": 123,
+      "codeSnippet": "Task.Delay(TimeSpan.FromSeconds(2), cancellationToken)",
+      "message": "Test uses Task.Delay(TimeSpan.FromSeconds(2)) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-11-17T18:17:55.4868745+00:00"
+    },
+    {
+      "hash": "bd18c9c7e9ccabc9",
+      "ruleId": "SW004",
+      "filePath": "src/NetRatel/NetRatel.Tests/API/ClientReleaseDeletionTests.cs",
+      "lineNumber": 413,
+      "codeSnippet": "Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken)",
+      "message": "Test uses Task.Delay(Timeout.InfiniteTimeSpan) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-11-17T18:17:55.4868876+00:00"
+    },
+    {
+      "hash": "6a9081a1e9ed5a4e",
+      "ruleId": "SW004",
+      "filePath": "src/NetRatel/NetRatel.Tests/API/JobRunOwnedBoundaryPostgresTests.cs",
+      "lineNumber": 676,
+      "codeSnippet": "Task.Delay(Timeout.InfiniteTimeSpan, ownedCt)",
+      "message": "Test uses Task.Delay(Timeout.InfiniteTimeSpan) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-11-17T18:17:55.4868945+00:00"
+    },
+    {
+      "hash": "cf639dd6ff405ae1",
+      "ruleId": "SW001",
+      "filePath": "src/NetRatel/NetRatel.Tests/API/M2MDeploymentEnvironmentPrecedenceTests.cs",
+      "lineNumber": 16,
+      "codeSnippet": "Fact(Skip = \"The shipped API container entrypoint requires Linux tools.\", SkipUnless = nameof(IsLinux))",
+      "message": "Test method 'Api_shell_entrypoint_preserves_file_backed_underscore_registration_and_canonical_outbound_identity' is disabled: The shipped API container entrypoint requires Linux tools.",
+      "baselinedAt": "2026-11-17T18:17:55.4868914+00:00"
+    },
+    {
+      "hash": "eb8c0e69a1e504a1",
+      "ruleId": "SW004",
+      "filePath": "src/NetRatel/NetRatel.Tests/API/RealtimeFanoutBridgeAndHealthTests.cs",
+      "lineNumber": 67,
+      "codeSnippet": "Task.Delay(10)",
+      "message": "Test uses Task.Delay(10) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-11-17T18:17:55.4868775+00:00"
+    },
+    {
+      "hash": "e47d471e3135c8cd",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Tests/Client/AgentFileGatewayClientTests.cs",
+      "lineNumber": 183,
+      "codeSnippet": "catch (OperationCanceledException) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4868034+00:00"
+    },
+    {
+      "hash": "a379fdd1d6ac020e",
+      "ruleId": "SW004",
+      "filePath": "src/NetRatel/NetRatel.Tests/Client/AgentFileGatewayClientTests.cs",
+      "lineNumber": 723,
+      "codeSnippet": "Task.Delay(Timeout.Infinite, context.CancellationToken)",
+      "message": "Test uses Task.Delay(Timeout.Infinite) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-11-17T18:17:55.4868123+00:00"
+    },
+    {
+      "hash": "81fb212279b60ed0",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Tests/Client/AgentFileGatewayClientTests.cs",
+      "lineNumber": 724,
+      "codeSnippet": "catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4868061+00:00"
+    },
+    {
+      "hash": "56cc412c991602f5",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Tests/Client/AgentFileGatewayClientTests.cs",
+      "lineNumber": 769,
+      "codeSnippet": "catch (OperationCanceledException) when (drainCancellation.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4868099+00:00"
+    },
+    {
+      "hash": "737fd31107668f50",
+      "ruleId": "SW004",
+      "filePath": "src/NetRatel/NetRatel.Tests/Client/AgentGatewayPresenceClientTests.cs",
+      "lineNumber": 485,
+      "codeSnippet": "Task.Delay(1, timeout.Token)",
+      "message": "Test uses Task.Delay(1) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-11-17T18:17:55.4867883+00:00"
+    },
+    {
+      "hash": "6826a0b8b71d33c3",
+      "ruleId": "SW004",
+      "filePath": "src/NetRatel/NetRatel.Tests/Client/AgentGatewayPresenceClientTests.cs",
+      "lineNumber": 634,
+      "codeSnippet": "Task.Delay(Timeout.InfiniteTimeSpan, context.CancellationToken).ConfigureAwait(false)",
+      "message": "Test uses Task.Delay(false) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-11-17T18:17:55.4867909+00:00"
+    },
+    {
+      "hash": "247a7768bf5589c3",
+      "ruleId": "SW004",
+      "filePath": "src/NetRatel/NetRatel.Tests/Client/AgentGatewayPresenceClientTests.cs",
+      "lineNumber": 634,
+      "codeSnippet": "Task.Delay(Timeout.InfiniteTimeSpan, context.CancellationToken)",
+      "message": "Test uses Task.Delay(Timeout.InfiniteTimeSpan) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-11-17T18:17:55.4867945+00:00"
+    },
+    {
+      "hash": "092eb2d889fca142",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Tests/Client/AgentGatewayServicesPublisherTests.cs",
+      "lineNumber": 335,
+      "codeSnippet": "catch (OperationCanceledException) when (stopping.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4867771+00:00"
+    },
+    {
+      "hash": "ad52ac0674098532",
+      "ruleId": "SW004",
+      "filePath": "src/NetRatel/NetRatel.Tests/Client/AgentGatewayServicesPublisherTests.cs",
+      "lineNumber": 371,
+      "codeSnippet": "Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken)",
+      "message": "Test uses Task.Delay(Timeout.InfiniteTimeSpan) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-11-17T18:17:55.4867845+00:00"
+    },
+    {
+      "hash": "1d5761b1d9c47c17",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Tests/Client/AgentGatewayServicesPublisherTests.cs",
+      "lineNumber": 499,
+      "codeSnippet": "catch (OperationCanceledException) when (context.CancellationToken.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4867819+00:00"
+    },
+    {
+      "hash": "13c263bf7c49e708",
+      "ruleId": "SW004",
+      "filePath": "src/NetRatel/NetRatel.Tests/Client/ClientAutoUpdateManagerTests.cs",
+      "lineNumber": 81,
+      "codeSnippet": "Task.Delay(Timeout.InfiniteTimeSpan, token)",
+      "message": "Test uses Task.Delay(Timeout.InfiniteTimeSpan) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-11-17T18:17:55.4867982+00:00"
+    },
+    {
+      "hash": "7e8765eeb1a1092b",
+      "ruleId": "SW004",
+      "filePath": "src/NetRatel/NetRatel.Tests/Client/GatewayPresenceExtensionSupervisorTests.cs",
+      "lineNumber": 47,
+      "codeSnippet": "Task.Delay(Timeout.InfiniteTimeSpan, token)",
+      "message": "Test uses Task.Delay(Timeout.InfiniteTimeSpan) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-11-17T18:17:55.4868231+00:00"
+    },
+    {
+      "hash": "0ce868dc4cfa56a6",
+      "ruleId": "SW004",
+      "filePath": "src/NetRatel/NetRatel.Tests/Client/GatewayPresenceReconnectResourceTests.cs",
+      "lineNumber": 114,
+      "codeSnippet": "Task.Delay(1, timeout.Token)",
+      "message": "Test uses Task.Delay(1) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-11-17T18:17:55.4868298+00:00"
+    },
+    {
+      "hash": "7cfe55db62d2ee94",
+      "ruleId": "SW004",
+      "filePath": "src/NetRatel/NetRatel.Tests/Client/GatewayPresenceReconnectResourceTests.cs",
+      "lineNumber": 197,
+      "codeSnippet": "Task.Delay(Timeout.InfiniteTimeSpan, token)",
+      "message": "Test uses Task.Delay(Timeout.InfiniteTimeSpan) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-11-17T18:17:55.4868322+00:00"
+    },
+    {
+      "hash": "80936c5546d2ab25",
+      "ruleId": "SW004",
+      "filePath": "src/NetRatel/NetRatel.Tests/Client/LinuxSystemdServiceInventoryCollectorTests.cs",
+      "lineNumber": 204,
+      "codeSnippet": "Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken)",
+      "message": "Test uses Task.Delay(Timeout.InfiniteTimeSpan) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-11-17T18:17:55.4868259+00:00"
+    },
+    {
+      "hash": "bf8ade90a6bbcc90",
+      "ruleId": "SW004",
+      "filePath": "src/NetRatel/NetRatel.Tests/Client/NativeServiceRecoveryPolicyTests.cs",
+      "lineNumber": 233,
+      "codeSnippet": "Task.Delay(Timeout.InfiniteTimeSpan, stopping)",
+      "message": "Test uses Task.Delay(Timeout.InfiniteTimeSpan) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-11-17T18:17:55.486816+00:00"
+    },
+    {
+      "hash": "f365c8eae5772134",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Tests/Client/SoftwareInventoryWorkerTests.cs",
+      "lineNumber": 77,
+      "codeSnippet": "catch (OperationCanceledException) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4868187+00:00"
+    },
+    {
+      "hash": "22dc5481579e785e",
+      "ruleId": "SW004",
+      "filePath": "src/NetRatel/NetRatel.Tests/Flows/FlowLifecycleSelectionBoundaryPostgresTests.cs",
+      "lineNumber": 287,
+      "codeSnippet": "Task.Delay(TimeSpan.FromMilliseconds(10), ct)",
+      "message": "Test uses Task.Delay(TimeSpan.FromMilliseconds(10)) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-11-17T18:17:55.4869235+00:00"
+    },
+    {
+      "hash": "9af88891d9982375",
+      "ruleId": "SW004",
+      "filePath": "src/NetRatel/NetRatel.Tests/Infrastructure/MonitoringFlowBridgePostgresTests.cs",
+      "lineNumber": 169,
+      "codeSnippet": "Task.Delay(10, deadline.Token)",
+      "message": "Test uses Task.Delay(10) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-11-17T18:17:55.4868607+00:00"
+    },
+    {
+      "hash": "d074bd1d0364ca75",
+      "ruleId": "SW004",
+      "filePath": "src/NetRatel/NetRatel.Tests/Infrastructure/MonitoringFlowBridgePostgresTests.cs",
+      "lineNumber": 783,
+      "codeSnippet": "Task.Delay(TimeSpan.FromMilliseconds(25), pollBudget.Token)",
+      "message": "Test uses Task.Delay(TimeSpan.FromMilliseconds(25)) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-11-17T18:17:55.4868632+00:00"
+    },
+    {
+      "hash": "82591d78e70e8ea5",
+      "ruleId": "SW004",
+      "filePath": "src/NetRatel/NetRatel.Tests/Infrastructure/MonitoringOutboxOwnerDeadlinePostgresTests.cs",
+      "lineNumber": 214,
+      "codeSnippet": "Task.Delay(TimeSpan.FromMilliseconds(20), ct)",
+      "message": "Test uses Task.Delay(TimeSpan.FromMilliseconds(20)) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-11-17T18:17:55.4868532+00:00"
+    },
+    {
+      "hash": "41d7f47c553335cd",
+      "ruleId": "SW004",
+      "filePath": "src/NetRatel/NetRatel.Tests/Infrastructure/RatelDeskConnectorStorePostgresTests.cs",
+      "lineNumber": 89,
+      "codeSnippet": "Task.Delay(TimeSpan.FromMilliseconds(20), deadline.Token)",
+      "message": "Test uses Task.Delay(TimeSpan.FromMilliseconds(20)) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-11-17T18:17:55.4868564+00:00"
+    },
+    {
+      "hash": "fd9719e974ca0314",
+      "ruleId": "SW004",
+      "filePath": "src/NetRatel/NetRatel.Tests/Infrastructure/RatelDeskReceiverHttpPipelineTests.cs",
+      "lineNumber": 263,
+      "codeSnippet": "Task.Delay(Timeout.InfiniteTimeSpan, token)",
+      "message": "Test uses Task.Delay(Timeout.InfiniteTimeSpan) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-11-17T18:17:55.4868468+00:00"
+    },
+    {
+      "hash": "5599d00cd4e6503f",
+      "ruleId": "SW004",
+      "filePath": "src/NetRatel/NetRatel.Tests/Infrastructure/RatelDeskReceiverHttpPipelineTests.cs",
+      "lineNumber": 467,
+      "codeSnippet": "Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken)",
+      "message": "Test uses Task.Delay(Timeout.InfiniteTimeSpan) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-11-17T18:17:55.4868491+00:00"
+    },
+    {
+      "hash": "4a7bf48b3a469a19",
+      "ruleId": "SW004",
+      "filePath": "src/NetRatel/NetRatel.Tests/Mcp/HttpMcpBridgeTests.cs",
+      "lineNumber": 68,
+      "codeSnippet": "Task.Delay(Timeout.Infinite, context.RequestAborted)",
+      "message": "Test uses Task.Delay(Timeout.Infinite) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-11-17T18:17:55.4869053+00:00"
+    },
+    {
+      "hash": "7f9d94a0db1f95c0",
+      "ruleId": "SW004",
+      "filePath": "src/NetRatel/NetRatel.Tests/Mcp/HttpMcpBridgeTests.cs",
+      "lineNumber": 106,
+      "codeSnippet": "Task.Delay(Timeout.Infinite, context.RequestAborted)",
+      "message": "Test uses Task.Delay(Timeout.Infinite) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-11-17T18:17:55.4869081+00:00"
+    },
+    {
+      "hash": "33169461f8587b70",
+      "ruleId": "SW004",
+      "filePath": "src/NetRatel/NetRatel.Tests/Mcp/HttpMcpBridgeTests.cs",
+      "lineNumber": 188,
+      "codeSnippet": "Task.Delay(Timeout.Infinite, context.RequestAborted)",
+      "message": "Test uses Task.Delay(Timeout.Infinite) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-11-17T18:17:55.4869116+00:00"
+    },
+    {
+      "hash": "c259205db8e52ecb",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Tests/Mcp/HttpMcpBridgeTests.cs",
+      "lineNumber": 189,
+      "codeSnippet": "catch (OperationCanceledException) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4868988+00:00"
+    },
+    {
+      "hash": "f09efaad16731587",
+      "ruleId": "SW004",
+      "filePath": "src/NetRatel/NetRatel.Tests/Mcp/HttpMcpBridgeTests.cs",
+      "lineNumber": 265,
+      "codeSnippet": "Task.Delay(Timeout.Infinite, context.RequestAborted)",
+      "message": "Test uses Task.Delay(Timeout.Infinite) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-11-17T18:17:55.4869142+00:00"
+    },
+    {
+      "hash": "55dff5a267271eb0",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Tests/Mcp/HttpMcpBridgeTests.cs",
+      "lineNumber": 266,
+      "codeSnippet": "catch (OperationCanceledException) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4869014+00:00"
+    },
+    {
+      "hash": "0edafb9a73947034",
+      "ruleId": "SW004",
+      "filePath": "src/NetRatel/NetRatel.Tests/Mcp/HttpMcpBridgeTests.cs",
+      "lineNumber": 302,
+      "codeSnippet": "Task.Delay(Timeout.Infinite, context.RequestAborted)",
+      "message": "Test uses Task.Delay(Timeout.Infinite) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-11-17T18:17:55.4869173+00:00"
+    },
+    {
+      "hash": "40c343def075ed9c",
+      "ruleId": "SW001",
+      "filePath": "src/NetRatel/NetRatel.Tests/Mcp/NetRatelMcpHttpDockerfileTests.cs",
+      "lineNumber": 41,
+      "codeSnippet": "Theory(Skip = \"The shipped Docker entrypoint requires POSIX sh.\", SkipUnless = nameof(IsPosix))",
+      "message": "Test method 'Real_shell_dispatch_preserves_arguments_and_initializes_only_setup_storage' is disabled: The shipped Docker entrypoint requires POSIX sh.",
+      "baselinedAt": "2026-11-17T18:17:55.4869201+00:00"
+    },
+    {
+      "hash": "36de14e18b3c2736",
+      "ruleId": "SW005",
+      "filePath": "src/NetRatel/NetRatel.Tests/NetRatel.Tests.csproj",
+      "lineNumber": 7,
+      "codeSnippet": "<NoWarn>$(NoWarn);xUnit1051;xUnit1069</NoWarn>",
+      "message": "Adding warnings to NoWarn: xUnit1051;xUnit1069",
+      "baselinedAt": "2026-11-17T18:17:55.4867745+00:00"
+    },
+    {
+      "hash": "29cfbb74c7c730b4",
+      "ruleId": "SW004",
+      "filePath": "src/NetRatel/NetRatel.Tests/Setup/StdioMcpDoctorTests.cs",
+      "lineNumber": 147,
+      "codeSnippet": "Task.Delay(Timeout.InfiniteTimeSpan, ct)",
+      "message": "Test uses Task.Delay(Timeout.InfiniteTimeSpan) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-11-17T18:17:55.4868676+00:00"
+    },
+    {
+      "hash": "e5d36be8ff5952dc",
+      "ruleId": "SW004",
+      "filePath": "src/NetRatel/NetRatel.Tests/Web/GlobalSearchServiceTests.cs",
+      "lineNumber": 268,
+      "codeSnippet": "Task.Delay(delay, cancellationToken)",
+      "message": "Test uses Task.Delay(delay) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-11-17T18:17:55.4868389+00:00"
+    },
+    {
+      "hash": "4127fa089cb52b4b",
+      "ruleId": "SW004",
+      "filePath": "src/NetRatel/NetRatel.Tests/Web/WebApiRouteVersioningTests.cs",
+      "lineNumber": 205,
+      "codeSnippet": "Task.Delay(25, cts.Token)",
+      "message": "Test uses Task.Delay(25) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-11-17T18:17:55.486836+00:00"
+    },
+    {
+      "hash": "0dfcc37b2a34ac0a",
+      "ruleId": "SW001",
+      "filePath": "src/NetRatel/NetRatel.Tests/Web/WebGatewayConfigurationTests.cs",
+      "lineNumber": 110,
+      "codeSnippet": "Fact(Skip = \"The shipped Docker entrypoint requires POSIX sh.\", SkipUnless = nameof(IsPosix))",
+      "message": "Test method 'Shell_entrypoint_preserves_new_environment_override_IDs' is disabled: The shipped Docker entrypoint requires POSIX sh.",
+      "baselinedAt": "2026-11-17T18:17:55.4868424+00:00"
+    },
+    {
+      "hash": "f1c1f4d88b94fab3",
+      "ruleId": "SW005",
+      "filePath": "src/NetRatel/NetRatel.Web.ComponentTests/NetRatel.Web.ComponentTests.csproj",
+      "lineNumber": 6,
+      "codeSnippet": "<NoWarn>$(NoWarn);xUnit1051;xUnit1069</NoWarn>",
+      "message": "Adding warnings to NoWarn: xUnit1051;xUnit1069",
+      "baselinedAt": "2026-11-17T18:17:55.4874291+00:00"
+    },
+    {
+      "hash": "7b694a66b54b6614",
+      "ruleId": "SW004",
+      "filePath": "src/NetRatel/NetRatel.Web.ComponentTests/NotificationsPageTests.cs",
+      "lineNumber": 218,
+      "codeSnippet": "Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken)",
+      "message": "Test uses Task.Delay(Timeout.InfiniteTimeSpan) which may indicate a timing-dependent test",
+      "baselinedAt": "2026-11-17T18:17:55.4874262+00:00"
+    },
+    {
+      "hash": "06418d0f31a2f68f",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web.PlaywrightTests/LocalFirstComposeBrowserSmokeTests.cs",
+      "lineNumber": 214,
+      "codeSnippet": "catch\n            {\n                // A failed observation or output cannot replace the original wait failure.\n            }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4864011+00:00"
+    },
+    {
+      "hash": "670aa3ef87b46244",
+      "ruleId": "SW005",
+      "filePath": "src/NetRatel/NetRatel.Web.PlaywrightTests/NetRatel.Web.PlaywrightTests.csproj",
+      "lineNumber": 7,
+      "codeSnippet": "<NoWarn>$(NoWarn);xUnit1051;xUnit1069</NoWarn>",
+      "message": "Adding warnings to NoWarn: xUnit1051;xUnit1069",
+      "baselinedAt": "2026-11-17T18:17:55.486397+00:00"
+    },
+    {
+      "hash": "24f3859fb1a24684",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Dialogs/ClientFileSystemViewer.razor",
+      "lineNumber": 249,
+      "codeSnippet": "catch (OperationCanceledException) when (_directoryLifecycle.IsCancellationRequested)\n        {\n        }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.486968+00:00"
+    },
+    {
+      "hash": "66ba55943b6c03ee",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Dialogs/ClientLogDialog.razor",
+      "lineNumber": 201,
+      "codeSnippet": "catch { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.486958+00:00"
+    },
+    {
+      "hash": "15b24957d194e536",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Dialogs/ClientLogDialog.razor",
+      "lineNumber": 214,
+      "codeSnippet": "catch\n            {\n            }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4869607+00:00"
+    },
+    {
+      "hash": "a39a1ecc53892a07",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Dialogs/ClientServicesDialog.razor",
+      "lineNumber": 218,
+      "codeSnippet": "catch (OperationCanceledException) when (token.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4869348+00:00"
+    },
+    {
+      "hash": "1b9169724f10028a",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Dialogs/ClientServicesDialog.razor",
+      "lineNumber": 252,
+      "codeSnippet": "catch (OperationCanceledException) when (token.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4869377+00:00"
+    },
+    {
+      "hash": "caeda7b476163c98",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Dialogs/ClientServicesDialog.razor",
+      "lineNumber": 309,
+      "codeSnippet": "catch (OperationCanceledException) when (token.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.486941+00:00"
+    },
+    {
+      "hash": "e838c7bb8f6c4c07",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Dialogs/ClientServicesDialog.razor",
+      "lineNumber": 369,
+      "codeSnippet": "catch (OperationCanceledException) when (token.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4869447+00:00"
+    },
+    {
+      "hash": "a92733b4cdfff851",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Dialogs/ClientServicesDialog.razor",
+      "lineNumber": 410,
+      "codeSnippet": "catch (OperationCanceledException) when (token.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4869475+00:00"
+    },
+    {
+      "hash": "af5473728f2b40e3",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Dialogs/ClientServicesDialog.razor",
+      "lineNumber": 447,
+      "codeSnippet": "catch (OperationCanceledException) when (token.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4869509+00:00"
+    },
+    {
+      "hash": "7632262a0864a3d1",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Dialogs/ClientServicesLauncher.razor",
+      "lineNumber": 58,
+      "codeSnippet": "catch (JSDisconnectedException) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4869922+00:00"
+    },
+    {
+      "hash": "d8973312be022020",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Dialogs/ClientTelemetryDialog.razor",
+      "lineNumber": 231,
+      "codeSnippet": "catch { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4869306+00:00"
+    },
+    {
+      "hash": "1080ea4aa7e52ac9",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Dialogs/ClientTerminalSessionDialog.razor",
+      "lineNumber": 744,
+      "codeSnippet": "catch (OperationCanceledException) when (ct.IsCancellationRequested)\n    {\n    }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4869648+00:00"
+    },
+    {
+      "hash": "ca0b6f4fa8ec77c2",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Dialogs/GatewayFileSystemViewer.razor",
+      "lineNumber": 110,
+      "codeSnippet": "catch (OperationCanceledException) when (_directoryLifecycle.IsCancellationRequested)\n        {\n        }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4869541+00:00"
+    },
+    {
+      "hash": "ccb403b6389c791d",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Pages/AIOps/PromptPicker.razor",
+      "lineNumber": 122,
+      "codeSnippet": "catch (OperationCanceledException) when (token.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4870851+00:00"
+    },
+    {
+      "hash": "f5b04458d3d4317d",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Pages/AIOps/PromptPicker.razor",
+      "lineNumber": 143,
+      "codeSnippet": "catch (OperationCanceledException) when (token.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4870884+00:00"
+    },
+    {
+      "hash": "7c455de98b7bf236",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Pages/AIOps/Prompts.razor",
+      "lineNumber": 224,
+      "codeSnippet": "catch (OperationCanceledException) when (ct.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4870817+00:00"
+    },
+    {
+      "hash": "ec431508486c52fe",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Pages/Clients/ClientsMgmt/ClientsMgmt.ReleaseDeletion.cs",
+      "lineNumber": 15,
+      "codeSnippet": "catch (OperationCanceledException) when (_importPolling.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4873174+00:00"
+    },
+    {
+      "hash": "1d9fc6a0d3a2c526",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Pages/Clients/ClientsMgmt/ClientsMgmt.Workspace.cs",
+      "lineNumber": 64,
+      "codeSnippet": "catch (OperationCanceledException) when (_importPolling.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4872264+00:00"
+    },
+    {
+      "hash": "fa1c4b1248fb59aa",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Pages/Clients/ClientsMgmt/ClientsMgmt.Workspace.cs",
+      "lineNumber": 98,
+      "codeSnippet": "catch (OperationCanceledException) when (_importPolling.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4872303+00:00"
+    },
+    {
+      "hash": "d562f29e27b74226",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Pages/Clients/ClientsMgmt/ClientsMgmt.Workspace.cs",
+      "lineNumber": 121,
+      "codeSnippet": "catch (OperationCanceledException) when (_importPolling.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4872929+00:00"
+    },
+    {
+      "hash": "7ca91024e8afe763",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Pages/Clients/ClientsMgmt/ClientsMgmt.razor",
+      "lineNumber": 670,
+      "codeSnippet": "catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4872983+00:00"
+    },
+    {
+      "hash": "f1164d783eaf42bf",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Pages/Clients/ClientsMgmt/ClientsMgmt.razor",
+      "lineNumber": 959,
+      "codeSnippet": "catch (OperationCanceledException) when (_importPolling.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4873025+00:00"
+    },
+    {
+      "hash": "dd631843d5b19477",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Pages/Clients/ClientsMgmt/ClientsMgmt.razor",
+      "lineNumber": 969,
+      "codeSnippet": "catch (OperationCanceledException) when (_importPolling.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4873063+00:00"
+    },
+    {
+      "hash": "596e8ec484e736dd",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Pages/Clients/ClientsMgmt/ClientsMgmt.razor",
+      "lineNumber": 979,
+      "codeSnippet": "catch (OperationCanceledException) when (_importPolling.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4873106+00:00"
+    },
+    {
+      "hash": "8c20b82f964f064c",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Pages/Clients/ClientsMgmt/ClientsMgmt.razor",
+      "lineNumber": 1001,
+      "codeSnippet": "catch (OperationCanceledException) when (_importPolling.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4873149+00:00"
+    },
+    {
+      "hash": "c963dc81c970b926",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Pages/Clients/ClientsMgmt/ClientsMgmt.razor.cs",
+      "lineNumber": 120,
+      "codeSnippet": "catch (OperationCanceledException) when (cancellation.IsCancellationRequested || generation != _activityGeneration)\n        {\n            // A later scope can cancel this start while it waits for the previous\n            // transport to drain. Superseded UI input is a normal cancellation.\n        }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4872145+00:00"
+    },
+    {
+      "hash": "30dcb2c8bbaf0151",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Pages/Clients/ClientsMgmt/ClientsMgmt.razor.cs",
+      "lineNumber": 186,
+      "codeSnippet": "catch (OperationCanceledException) when (ct.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4872216+00:00"
+    },
+    {
+      "hash": "a16998306d98cd34",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Pages/Clients/SoftwareInventoryPage.razor",
+      "lineNumber": 65,
+      "codeSnippet": "catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4872106+00:00"
+    },
+    {
+      "hash": "f1bdc1b7769ced66",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Pages/Flows/FlowExecutionTriggerFields.razor",
+      "lineNumber": 140,
+      "codeSnippet": "catch (OperationCanceledException) when (token.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4873206+00:00"
+    },
+    {
+      "hash": "099f9291dbeae991",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Pages/Flows/FlowTemplatePicker.razor",
+      "lineNumber": 52,
+      "codeSnippet": "catch (OperationCanceledException) when (token.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4873248+00:00"
+    },
+    {
+      "hash": "cd42a95da059fa2a",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Pages/Jobs/StepEditDialog.razor",
+      "lineNumber": 266,
+      "codeSnippet": "catch\n        {\n            // Ignore lookup failures.\n        }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4870777+00:00"
+    },
+    {
+      "hash": "2e9269d3846719e4",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Pages/Monitoring/MonitoringPage.razor.cs",
+      "lineNumber": 243,
+      "codeSnippet": "catch (OperationCanceledException) when (token.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4870949+00:00"
+    },
+    {
+      "hash": "09e13d55b83d756b",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Pages/Notifications.razor",
+      "lineNumber": 644,
+      "codeSnippet": "catch (TaskCanceledException)\n        {\n            // no-op\n        }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4870681+00:00"
+    },
+    {
+      "hash": "0f9b52a48e49e5e9",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Pages/Notifications.razor",
+      "lineNumber": 898,
+      "codeSnippet": "catch\n            {\n                // Ignore lifecycle races.\n            }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4870711+00:00"
+    },
+    {
+      "hash": "789f5c805bd04f30",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Pages/Notifications.razor",
+      "lineNumber": 1016,
+      "codeSnippet": "catch\n            {\n                // ignored\n            }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4870742+00:00"
+    },
+    {
+      "hash": "8db2460b48128f09",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Pages/Requests.razor",
+      "lineNumber": 400,
+      "codeSnippet": "catch (OperationCanceledException) when (ct.IsCancellationRequested)\n        {\n        }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4870586+00:00"
+    },
+    {
+      "hash": "3795baa3de07a341",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Pages/Requests.razor",
+      "lineNumber": 577,
+      "codeSnippet": "catch (OperationCanceledException) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4870635+00:00"
+    },
+    {
+      "hash": "6e9d93b40f74755d",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Pages/Tasks/NewTask.razor",
+      "lineNumber": 480,
+      "codeSnippet": "catch (OperationCanceledException) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4870981+00:00"
+    },
+    {
+      "hash": "3e061493bce0a2cc",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Pages/Tasks/NewTask.razor",
+      "lineNumber": 612,
+      "codeSnippet": "catch (OperationCanceledException) when (ct.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4871018+00:00"
+    },
+    {
+      "hash": "79747793087bd1d4",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Pages/Tasks/NewTask.razor",
+      "lineNumber": 661,
+      "codeSnippet": "catch (OperationCanceledException) when (ct.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4871047+00:00"
+    },
+    {
+      "hash": "ecd14d785a268e63",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Pages/Tasks/NewTask.razor",
+      "lineNumber": 889,
+      "codeSnippet": "catch (OperationCanceledException) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4871082+00:00"
+    },
+    {
+      "hash": "14fc9bb01ef7e61e",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Pages/Tasks/NewTask.razor",
+      "lineNumber": 986,
+      "codeSnippet": "catch (OperationCanceledException) when (ct.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4871266+00:00"
+    },
+    {
+      "hash": "c37f31f6d33d3914",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Pages/Tasks/NewTask.razor",
+      "lineNumber": 1014,
+      "codeSnippet": "catch (OperationCanceledException) when (ct.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.48713+00:00"
+    },
+    {
+      "hash": "89c20b77f5ba665a",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Pages/Terminal/Terminal.razor",
+      "lineNumber": 196,
+      "codeSnippet": "catch (OperationCanceledException) when (ct.IsCancellationRequested)\n    {\n    }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4871333+00:00"
+    },
+    {
+      "hash": "b6fa5163f796a89a",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Pages/Terminal/Terminal.razor",
+      "lineNumber": 220,
+      "codeSnippet": "catch (OperationCanceledException)\n    {\n    }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4871368+00:00"
+    },
+    {
+      "hash": "7a8ec8a403d8be12",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Pages/Terminal/TerminalConsole.razor",
+      "lineNumber": 464,
+      "codeSnippet": "catch (OperationCanceledException) when (ct.IsCancellationRequested)\n    {\n    }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4871398+00:00"
+    },
+    {
+      "hash": "3198a98a6e8ce065",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Pages/Terminal/TerminalConsole.razor",
+      "lineNumber": 518,
+      "codeSnippet": "catch { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4871435+00:00"
+    },
+    {
+      "hash": "7818dc55b7a1965c",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Pages/Terminal/TerminalConsole.razor",
+      "lineNumber": 546,
+      "codeSnippet": "catch (ObjectDisposedException) when (_disposed)\n    {\n    }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4871462+00:00"
+    },
+    {
+      "hash": "060d3ebf448e2783",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Pages/Terminal/TerminalConsole.razor",
+      "lineNumber": 637,
+      "codeSnippet": "catch (OperationCanceledException) when (ct.IsCancellationRequested)\n    {\n    }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4871498+00:00"
+    },
+    {
+      "hash": "0b16ed001593659e",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Pages/Terminal/TerminalConsole.razor",
+      "lineNumber": 693,
+      "codeSnippet": "catch (JSException ex) when (IsDisposedTerminalException(ex))\n    {\n    }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4871525+00:00"
+    },
+    {
+      "hash": "084226b7bafd9f63",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Pages/Terminal/TerminalConsole.razor",
+      "lineNumber": 726,
+      "codeSnippet": "catch (JSException ex) when (IsDisposedTerminalException(ex))\n    {\n    }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4871555+00:00"
+    },
+    {
+      "hash": "c3ee973a55820840",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Pages/Terminal/TerminalConsole.razor",
+      "lineNumber": 739,
+      "codeSnippet": "catch (JSException ex) when (IsDisposedTerminalException(ex))\n      {\n      }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4871584+00:00"
+    },
+    {
+      "hash": "0404ca8a51bd98ac",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Pages/Terminal/TerminalConsole.razor",
+      "lineNumber": 788,
+      "codeSnippet": "catch (JSException ex) when (IsDisposedTerminalException(ex))\n    {\n    }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4871611+00:00"
+    },
+    {
+      "hash": "1adb9496e1abe5da",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Pages/Terminal/TerminalConsole.razor",
+      "lineNumber": 816,
+      "codeSnippet": "catch { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4871646+00:00"
+    },
+    {
+      "hash": "d94b9fa1b1198f95",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Pages/Terminal/TerminalConsole.razor",
+      "lineNumber": 834,
+      "codeSnippet": "catch { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4871671+00:00"
+    },
+    {
+      "hash": "51b70ee6bce6fc32",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Pages/Terminal/TerminalConsole.razor",
+      "lineNumber": 848,
+      "codeSnippet": "catch (OperationCanceledException) when (ct.IsCancellationRequested)\n    {\n    }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4871706+00:00"
+    },
+    {
+      "hash": "358759b27c55453b",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Pages/Terminal/TerminalConsole.razor",
+      "lineNumber": 851,
+      "codeSnippet": "catch (ObjectDisposedException) when (_disposed)\n    {\n    }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4871729+00:00"
+    },
+    {
+      "hash": "965fe8dcf4c2f507",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Pages/Terminal/TerminalConsole.razor",
+      "lineNumber": 867,
+      "codeSnippet": "catch (JSException ex) when (IsDisposedTerminalException(ex))\n    {\n    }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4871764+00:00"
+    },
+    {
+      "hash": "5f0635ffcbe85e21",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Pages/Terminal/TerminalConsole.razor",
+      "lineNumber": 894,
+      "codeSnippet": "catch { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4871789+00:00"
+    },
+    {
+      "hash": "04cbf6f174949612",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Pages/Terminal/TerminalConsole.razor",
+      "lineNumber": 902,
+      "codeSnippet": "catch { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4871824+00:00"
+    },
+    {
+      "hash": "a57c2a2480246856",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Pages/Terminal/TerminalConsole.razor",
+      "lineNumber": 905,
+      "codeSnippet": "catch { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4871852+00:00"
+    },
+    {
+      "hash": "516093015f4f0459",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Pages/Terminal/TerminalConsole.razor",
+      "lineNumber": 911,
+      "codeSnippet": "catch { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.487188+00:00"
+    },
+    {
+      "hash": "c827e50ff74f39e4",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Pages/Terminal/TerminalConsole.razor",
+      "lineNumber": 914,
+      "codeSnippet": "catch { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4871915+00:00"
+    },
+    {
+      "hash": "f6f82bb6c3f828ff",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Pages/Terminal/TerminalConsole.razor",
+      "lineNumber": 918,
+      "codeSnippet": "catch { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4871941+00:00"
+    },
+    {
+      "hash": "06524b7b5f5ceef0",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Pages/Terminal/TerminalConsole.razor",
+      "lineNumber": 924,
+      "codeSnippet": "catch { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4871975+00:00"
+    },
+    {
+      "hash": "e978460726cedb93",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Pages/Terminal/TerminalConsole.razor",
+      "lineNumber": 925,
+      "codeSnippet": "catch { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4872001+00:00"
+    },
+    {
+      "hash": "e0d4b6fe8e4f4c60",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Pages/Terminal/TerminalConsole.razor",
+      "lineNumber": 962,
+      "codeSnippet": "catch (JSException ex) when (IsDisposedTerminalException(ex))\n      {\n      }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4872039+00:00"
+    },
+    {
+      "hash": "88f8900efe13da3b",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Pages/Terminal/TerminalConsole.razor",
+      "lineNumber": 977,
+      "codeSnippet": "catch\n    {\n    }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4872067+00:00"
+    },
+    {
+      "hash": "f9400c708051f564",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/ScriptLibrary/ScriptLibraryView.razor",
+      "lineNumber": 201,
+      "codeSnippet": "catch (OperationCanceledException) when (token.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.486996+00:00"
+    },
+    {
+      "hash": "65bc6e056054ba6c",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Shared/Dialogs/ScriptLibraryDialog.razor",
+      "lineNumber": 221,
+      "codeSnippet": "catch (OperationCanceledException)\n        {\n            // ignored\n        }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4870196+00:00"
+    },
+    {
+      "hash": "d79af5f15dda73fe",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Shared/Integrations/CredentialAccessEditor.razor",
+      "lineNumber": 293,
+      "codeSnippet": "catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4870101+00:00"
+    },
+    {
+      "hash": "e4197598d26b2b18",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Shared/Integrations/CredentialAccessEditor.razor",
+      "lineNumber": 349,
+      "codeSnippet": "catch (Exception error) when (IsRequestFailure(error)) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4870127+00:00"
+    },
+    {
+      "hash": "a962fe244e7d4ad7",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Shared/Integrations/HttpHostSetupApprovalPanel.razor",
+      "lineNumber": 72,
+      "codeSnippet": "catch (Exception exception) when (exception is HttpRequestException or JsonException or OperationCanceledException) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.487006+00:00"
+    },
+    {
+      "hash": "f029fa14ff4d33bd",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Shared/MonacoTextEditor.razor",
+      "lineNumber": 71,
+      "codeSnippet": "catch (JSDisconnectedException) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4870001+00:00"
+    },
+    {
+      "hash": "3bb1448a9940386f",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Shared/MonacoTextEditor.razor",
+      "lineNumber": 71,
+      "codeSnippet": "catch (ObjectDisposedException) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4870029+00:00"
+    },
+    {
+      "hash": "682ee4ddf1d1f4ba",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Shared/Netclaw/NetclawConnectionStatus.razor",
+      "lineNumber": 111,
+      "codeSnippet": "catch (OperationCanceledException) when (ct.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4870236+00:00"
+    },
+    {
+      "hash": "aa0a98656235ed7a",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Shared/Netclaw/NetclawConnectionStatus.razor",
+      "lineNumber": 112,
+      "codeSnippet": "catch (ObjectDisposedException) when (_disposed) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4870261+00:00"
+    },
+    {
+      "hash": "a5039402b55862c5",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/Shared/Pairing/PairingConnectionsPanel.razor",
+      "lineNumber": 177,
+      "codeSnippet": "catch (Exception e) when (Expected(e)) { /* View reloads directory and shows its failure; cards remain deletable. */ }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4870168+00:00"
+    },
+    {
+      "hash": "3da556e6cbedf4c4",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/SoftwareInventory/SoftwareInventoryPanel.razor.cs",
+      "lineNumber": 108,
+      "codeSnippet": "catch (OperationCanceledException) when (token.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4870366+00:00"
+    },
+    {
+      "hash": "e3ab95b4a42e1d06",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/SoftwareInventory/SoftwareInventoryPanel.razor.cs",
+      "lineNumber": 138,
+      "codeSnippet": "catch (OperationCanceledException) when (token.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.487039+00:00"
+    },
+    {
+      "hash": "15d909e54d21b936",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/SoftwareInventory/SoftwareInventoryPanel.razor.cs",
+      "lineNumber": 186,
+      "codeSnippet": "catch (OperationCanceledException) when (requestToken.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4870423+00:00"
+    },
+    {
+      "hash": "159ca6ad926078b3",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/SoftwareInventory/SoftwareInventoryPanel.razor.cs",
+      "lineNumber": 263,
+      "codeSnippet": "catch (OperationCanceledException) when (token.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.487045+00:00"
+    },
+    {
+      "hash": "f20e00d07a8beeda",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/SoftwareInventory/SoftwareInventoryPanel.razor.cs",
+      "lineNumber": 301,
+      "codeSnippet": "catch (OperationCanceledException) when (token.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4870477+00:00"
+    },
+    {
+      "hash": "6c4558712555eeb0",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/SoftwareInventory/SoftwareInventoryPolicyEditor.razor",
+      "lineNumber": 43,
+      "codeSnippet": "catch (OperationCanceledException) when (token.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4870518+00:00"
+    },
+    {
+      "hash": "32d57da5e7634970",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Components/SoftwareInventory/SoftwareInventoryPolicyEditor.razor",
+      "lineNumber": 59,
+      "codeSnippet": "catch (OperationCanceledException) when (token.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4870544+00:00"
+    },
+    {
+      "hash": "06999d02e9c5424c",
+      "ruleId": "SW005",
+      "filePath": "src/NetRatel/NetRatel.Web/NetRatel.Web.csproj",
+      "lineNumber": 12,
+      "codeSnippet": "<NoWarn>$(NoWarn);EXTEXP0001</NoWarn>",
+      "message": "Adding warnings to NoWarn: EXTEXP0001",
+      "baselinedAt": "2026-11-17T18:17:55.486927+00:00"
+    },
+    {
+      "hash": "97baa84f3e0d98aa",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Services/ClientArtifactsService.cs",
+      "lineNumber": 170,
+      "codeSnippet": "catch (System.Text.Json.JsonException) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.487341+00:00"
+    },
+    {
+      "hash": "46b172f9a1ae4564",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Services/ClientArtifactsService.cs",
+      "lineNumber": 189,
+      "codeSnippet": "catch (System.Text.Json.JsonException) { /* Authentication/proxy errors may have an empty or non-JSON body. */ }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.487344+00:00"
+    },
+    {
+      "hash": "a739d44337e93b97",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Services/ClientTasks/TaskApiService.cs",
+      "lineNumber": 58,
+      "codeSnippet": "catch { /* ignore */ }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4874141+00:00"
+    },
+    {
+      "hash": "ba0535db34d20432",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Services/ClientTasks/TaskExecutionStream.cs",
+      "lineNumber": 42,
+      "codeSnippet": "catch (ObjectDisposedException) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4874028+00:00"
+    },
+    {
+      "hash": "2832fbc0928d6ae1",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Services/ClientTasks/TaskExecutionStream.cs",
+      "lineNumber": 66,
+      "codeSnippet": "catch (Exception) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4874052+00:00"
+    },
+    {
+      "hash": "5a2fa7a52427154c",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Services/ClientTasks/TaskExecutionStream.cs",
+      "lineNumber": 74,
+      "codeSnippet": "catch (Exception) when (!ct.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4874088+00:00"
+    },
+    {
+      "hash": "c67b93752f8878ff",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Services/ClientTasks/TaskExecutionStream.cs",
+      "lineNumber": 101,
+      "codeSnippet": "catch (OperationCanceledException) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4874109+00:00"
+    },
+    {
+      "hash": "588f697742358610",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Services/ClientUpdateActivityStream.cs",
+      "lineNumber": 68,
+      "codeSnippet": "catch (OperationCanceledException) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4873281+00:00"
+    },
+    {
+      "hash": "14fcba7e76fc815d",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Services/ClientUpdateActivityStream.cs",
+      "lineNumber": 84,
+      "codeSnippet": "catch (ObjectDisposedException) { /* A concurrent Stop already drained this session. */ }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4873315+00:00"
+    },
+    {
+      "hash": "9f1e314f2c6db84c",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Services/ClientUpdateActivityStream.cs",
+      "lineNumber": 118,
+      "codeSnippet": "catch (Exception) when (!ct.IsCancellationRequested) { /* Reconnect obtains a new authoritative snapshot. */ }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4873339+00:00"
+    },
+    {
+      "hash": "653228465d6ff643",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Services/FileSystem/GatewayFileSystemApiService.cs",
+      "lineNumber": 65,
+      "codeSnippet": "catch (GatewayFileCapabilityUnavailableException)\n                    {\n                        // A directory snapshot may race another replacement.\n                    }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4873992+00:00"
+    },
+    {
+      "hash": "9788dff215d6d6de",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Services/Flows/FlowApiService.cs",
+      "lineNumber": 177,
+      "codeSnippet": "catch (JsonException) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4874216+00:00"
+    },
+    {
+      "hash": "0d46c3213d6363bc",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Services/Jobs/JobRunStreamService.cs",
+      "lineNumber": 66,
+      "codeSnippet": "catch (Exception exception) when (exception is HttpRequestException or IOException or JsonException or InvalidDataException || exception is OperationCanceledException && !cancellationToken.IsCancellationRequested) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4873546+00:00"
+    },
+    {
+      "hash": "473669c8b10a4c6b",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Services/NetclawApiService.cs",
+      "lineNumber": 80,
+      "codeSnippet": "catch (JsonException) { /* Preserve the status-specific message for empty or non-JSON errors. */ }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.487351+00:00"
+    },
+    {
+      "hash": "ee0a0064770c0fd3",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Services/Notifications/NetRatelNotificationStreamService.cs",
+      "lineNumber": 75,
+      "codeSnippet": "catch { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.487361+00:00"
+    },
+    {
+      "hash": "1d86426d1fe4a459",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Services/Pairing/PairingApiClient.cs",
+      "lineNumber": 111,
+      "codeSnippet": "catch (JsonException) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4873639+00:00"
+    },
+    {
+      "hash": "6abcc1c4049db51b",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Services/Pairing/PairingApiClient.cs",
+      "lineNumber": 115,
+      "codeSnippet": "catch (Exception e) when (e is JsonException or InvalidDataException) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4873669+00:00"
+    },
+    {
+      "hash": "dd86936181c11913",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Services/PromptLibraryApiService.cs",
+      "lineNumber": 44,
+      "codeSnippet": "catch (JsonException) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.487338+00:00"
+    },
+    {
+      "hash": "7a27e9f38ffb9ee6",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Services/RemoteSupport/RemoteSupportSignalPayloadNormalizer.cs",
+      "lineNumber": 67,
+      "codeSnippet": "catch\n                    {\n                    }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4873891+00:00"
+    },
+    {
+      "hash": "fa536d627db7bc68",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Services/Requests/RequestStreamService.cs",
+      "lineNumber": 89,
+      "codeSnippet": "catch { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4873958+00:00"
+    },
+    {
+      "hash": "5bba621a93cb2f32",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Services/ScriptLibrary/ScriptLibraryClient.cs",
+      "lineNumber": 80,
+      "codeSnippet": "catch (System.Text.Json.JsonException) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4873922+00:00"
+    },
+    {
+      "hash": "48e2b07c030de67a",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Services/Services/ClientServicesLiveStreamService.cs",
+      "lineNumber": 72,
+      "codeSnippet": "catch (Exception exception) when (exception is IOException or JsonException or InvalidDataException) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4874186+00:00"
+    },
+    {
+      "hash": "3121d87dbff2cd1b",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Services/SseClient.cs",
+      "lineNumber": 57,
+      "codeSnippet": "catch (ObjectDisposedException) { /* A completing enumeration already released the source. */ }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4873474+00:00"
+    },
+    {
+      "hash": "391df66c795d8d03",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Services/Tenants/TenantApiService.cs",
+      "lineNumber": 67,
+      "codeSnippet": "catch (System.Text.Json.JsonException) { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4873583+00:00"
+    },
+    {
+      "hash": "29ff55ec92184743",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Services/Terminal/TerminalService.cs",
+      "lineNumber": 535,
+      "codeSnippet": "catch (OperationCanceledException) when (ct.IsCancellationRequested)\n            {\n            }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4873702+00:00"
+    },
+    {
+      "hash": "767c9605b8d2e1f5",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Services/Terminal/TerminalService.cs",
+      "lineNumber": 635,
+      "codeSnippet": "catch (OperationCanceledException) when (ct.IsCancellationRequested)\n            {\n            }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4873737+00:00"
+    },
+    {
+      "hash": "912a437f1f1f2bd5",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Services/Terminal/TerminalService.cs",
+      "lineNumber": 805,
+      "codeSnippet": "catch\n            {\n            }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4873758+00:00"
+    },
+    {
+      "hash": "194a6ef24ee1bb23",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Services/Terminal/TerminalService.cs",
+      "lineNumber": 841,
+      "codeSnippet": "catch { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4873778+00:00"
+    },
+    {
+      "hash": "b462fc5d0f69e1d5",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Services/Terminal/TerminalService.cs",
+      "lineNumber": 845,
+      "codeSnippet": "catch { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4873809+00:00"
+    },
+    {
+      "hash": "9501c4fffdb7a466",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Services/Terminal/TerminalService.cs",
+      "lineNumber": 850,
+      "codeSnippet": "catch { }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4873832+00:00"
+    },
+    {
+      "hash": "05f9decca076153f",
+      "ruleId": "SW003",
+      "filePath": "src/NetRatel/NetRatel.Web/Services/Terminal/TerminalService.cs",
+      "lineNumber": 861,
+      "codeSnippet": "catch\n                {\n                }",
+      "message": "Empty catch block swallows exceptions without handling",
+      "baselinedAt": "2026-11-17T18:17:55.4873863+00:00"
+    }
+  ]
+}

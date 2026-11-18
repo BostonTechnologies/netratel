@@ -131,7 +131,9 @@
                                     <MudTooltip Text="Clear this occurrence"><MudIconButton Icon="@Icons.Material.Filled.Clear" Size="Size.Small" Disabled="@(!snapshot.Permissions.CanClear)" OnClick='() => OpenOperator(row, "clear")' aria-label="Clear alert" data-testid="monitoring-clear" /></MudTooltip>
                                     <MudTooltip Text="Bypass new actions"><MudIconButton Icon="@Icons.Material.Filled.Pause" Size="Size.Small" Disabled="@(!snapshot.Permissions.CanBypass)" OnClick='() => OpenOperator(row, "bypass")' aria-label="Bypass alert actions" data-testid="monitoring-bypass" /></MudTooltip>
                                 }
-                                @if (!MonitoringOfflinePresentation.IsSeries(row.Series)) { <ClientToolsLauncher @key="(row.Series, 0)" TenantId="row.Series.TenantId" AgentId="row.Series.AgentId" HostLabel="@ClientName(row.Series.AgentId)" TenantLabel="@TenantName" Readiness="_clientToolReadiness" ScopeKey="@Navigation.Uri" /><MonitoringInvestigationLauncher @key="(row.Series, 1)" Row="row" ClientLabel="@ClientName(row.Series.AgentId)" /> }
+                                @if (!MonitoringOfflinePresentation.IsSeries(row.Series)) { <ClientToolsLauncher @key="(row.Series, 0)" TenantId="row.Series.TenantId" AgentId="row.Series.AgentId" HostLabel="@ClientName(row.Series.AgentId)" TenantLabel="@TenantName" Readiness="_clientToolReadiness" ScopeKey="@Navigation.Uri" /> }
+                                @if (!MonitoringOfflinePresentation.IsSeries(row.Series) || row.Occurrence is not null)
+                                { <MonitoringInvestigationLauncher @key="(row.Series, 1)" Row="row" ClientLabel="@(MonitoringOfflinePresentation.IsSeries(row.Series) ? "monitored clients" : ClientName(row.Series.AgentId))" /> }
                             </div></td>
                         </tr>
                         @if (Expanded(row))
@@ -181,6 +183,8 @@
                                                 </dl>
                                                 @if (detailOccurrence.FlowOutcome?.ActionResults is { } actions) { <div class="monitoring-detail-note" data-testid="monitoring-action-counts">@actions.Succeeded / @actions.Total actions succeeded · @actions.Failed failed · @actions.DeliveryUnknown delivery unconfirmed</div> }
                                                 <div class="monitoring-detail-links">
+                                                    @if (MonitoringOfflinePresentation.IsSeries(row.Series))
+                                                    { <MonitoringInvestigationLauncher @key="(row.Series, 2)" Row="row" ClientLabel="monitored clients" /> }
                                                     @if (detailOccurrence.FlowOutcome?.FlowRunId is { } runId && runId != Guid.Empty) { <a class="monitoring-detail-button" href="@($"/flows?tenantId={row.Series.TenantId}&run={runId:D}")"><MudIcon Icon="@Icons.Material.Filled.ReceiptLong" Size="Size.Small" />Flow run and receipt</a> }
                                                     @if (detailOccurrence.PinnedRule.PublishedFlowVersionId is { } flow) { <a class="monitoring-detail-button" href="@($"/flows?tenantId={row.Series.TenantId}&version={flow:D}")"><MudIcon Icon="@Icons.Material.Filled.AccountTree" Size="Size.Small" />Published flow</a> }
                                                 </div>

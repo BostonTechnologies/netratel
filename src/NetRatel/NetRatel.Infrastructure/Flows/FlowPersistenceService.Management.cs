@@ -60,7 +60,7 @@ public sealed partial class FlowPersistenceService
         var liveAi = await db.Set<AiInvestigationRecord>().AnyAsync(investigation => investigation.TenantId == tenantId &&
             investigation.Automated && investigation.FlowRunId != null && runIds.Contains(investigation.FlowRunId.Value) &&
             (investigation.State == InvestigationState.Queued || investigation.State == InvestigationState.Processing ||
-                investigation.State == InvestigationState.AwaitingApproval), ct).ConfigureAwait(false);
+                investigation.State == InvestigationState.AwaitingApproval || investigation.State == InvestigationState.WaitingForFollowUp), ct).ConfigureAwait(false);
         if (liveNative || liveAi) return Result(FlowDeleteDisposition.ActiveWork, "flow-active-work", row);
         row.Enabled = false;
         row.DeletedFromRevision = row.Revision;

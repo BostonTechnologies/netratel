@@ -921,8 +921,18 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
         jobs = manual.split("\njobs:\n", 1)
         self.assertEqual(2, len(jobs))
         sections = dict(re.findall(r"(?ms)^  ([a-z-]+):\n(.*?)(?=^  [a-z-]+:|\Z)", jobs[1]))
-        self.assertEqual(["selected-suite", "filesystem", "windows-mcp", "client-measurement", "migrations-image", "api-image", "cli-tool"], list(sections))
+        self.assertEqual(["selected-suite", "candidate-images", "filesystem", "windows-mcp", "client-measurement", "migrations-image", "api-image", "cli-tool"], list(sections))
         selected, measurement, portable = (sections[name] for name in ("selected-suite", "client-measurement", "cli-tool"))
+        candidates = sections["candidate-images"]
+        self.assertIn("inputs.suite != 'candidate-images'", selected)
+        self.assertIn("if: inputs.suite == 'candidate-images'", candidates)
+        self.assertIn("ref: ${{ inputs.source_ref }}", candidates)
+        self.assertIn('test "$revision" = "$CANDIDATE_SOURCE"', candidates)
+        self.assertEqual(["api", "web", "migrations", "mcp-http", "client"],
+                         re.findall(r"(?m)^\s+- component: ([a-z-]+)$", candidates))
+        self.assertIn("scan-public-image.sh", candidates)
+        self.assertNotIn("packages: write", candidates)
+        self.assertNotIn("docker push", candidates)
         filesystem = sections["filesystem"]
         self.assertIn("inputs.suite != 'filesystem'", selected)
         self.assertIn("if: inputs.suite == 'filesystem'", filesystem)

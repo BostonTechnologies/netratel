@@ -13,6 +13,35 @@ public sealed class NetclawChatAcceptanceTests(ClientsManagementBrowserFixture b
     : IClassFixture<ClientsManagementBrowserFixture>
 {
     [Fact]
+    public async Task Unsent_multiline_chat_draft_survives_back_and_reload_without_sending()
+    {
+        var api = new ChatFixture();
+        await using var host = await ClientsManagementFixtureHost.StartAsync(services => services.AddSingleton<INetclawApiService>(api));
+        await using var context = await browserFixture.Browser.NewContextAsync();
+        var page = await context.NewPageAsync();
+        await page.GotoAsync(host.BaseAddress + "/ai/chat?tenantId=17");
+        var composer = page.GetByTestId("chat-message");
+        await composer.FillAsync("First draft line");
+        await composer.PressAsync("Alt+Enter");
+        await composer.PressSequentiallyAsync("Second draft line");
+        const string draft = "First draft line\nSecond draft line";
+        await Assertions.Expect(composer).ToHaveValueAsync(draft);
+
+        await page.GotoAsync(host.BaseAddress + "/");
+        await page.GoBackAsync();
+        await Assertions.Expect(composer).ToHaveValueAsync(draft);
+        await page.ReloadAsync();
+        await Assertions.Expect(composer).ToHaveValueAsync(draft);
+        await page.GetByRole(AriaRole.Button, new() { Name = "Discard draft", Exact = true }).ClickAsync();
+        await page.ReloadAsync();
+        await Assertions.Expect(composer).ToBeEnabledAsync();
+        await Assertions.Expect(composer).ToHaveValueAsync("");
+        Assert.Equal(0, api.Creates);
+        Assert.Equal(0, api.Sends);
+        await AssertHealthyAsync(page);
+    }
+
+    [Fact]
     public async Task Incremental_snapshot_drafts_become_one_saved_completion_without_resending()
     {
         var api = new ChatFixture(incremental: true);
