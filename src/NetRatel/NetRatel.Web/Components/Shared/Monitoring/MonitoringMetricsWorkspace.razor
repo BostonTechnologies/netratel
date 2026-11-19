@@ -63,13 +63,14 @@
 
     @if (State.Catalogue is { Series.Count: > 0 })
     {
+        var interfaces = Interfaces.ToArray();
         <div class="metrics-controls">
             <label>Disk volume<select value="@State.SelectedDisk" @onchange="ChangeDisk"><option value="">Select a volume</option>
                 @foreach (var disk in Available(MetricHistoryKind.DiskUsedPercent)) { <option value="@disk.Id">@disk.DisplayName</option> }
             </select></label>
             <label>Network interface<select value="@State.SelectedInterface" @onchange="ChangeInterface" data-testid="metrics-interface"><option value="">Select an interface</option>
-                @foreach (var item in Interfaces)
-                { <option value="@item.ResourceKey">@(item.DisplayName + (item.RecentlyObserved ? "" : " (retained)"))</option> }
+                @foreach (var item in interfaces)
+                { <option value="@item.ResourceKey">@InterfaceLabel(item, interfaces)</option> }
             </select></label>
             <label>Watched service<select value="@State.SelectedService" @onchange="ChangeService"><option value="">Select a service</option>
                 @foreach (var item in Available(MetricHistoryKind.ServiceState)) { <option value="@item.Id">@item.DisplayName</option> }
@@ -140,6 +141,13 @@
         Available(MetricHistoryKind.NetworkRx).Concat(Available(MetricHistoryKind.NetworkTx))
             .GroupBy(item => item.ResourceKey, StringComparer.Ordinal).Select(group => group.OrderByDescending(item => item.RecentlyObserved).First())
             .OrderBy(item => item.DisplayName, StringComparer.Ordinal).ThenBy(item => item.ResourceKey, StringComparer.Ordinal);
+    private static string InterfaceLabel(MetricSeriesDescription item, MetricSeriesDescription[] interfaces)
+    {
+        var label = item.DisplayName + (item.RecentlyObserved ? "" : " (retained)");
+        return interfaces.Count(other => other.DisplayName == item.DisplayName && other.RecentlyObserved == item.RecentlyObserved) > 1
+            ? $"{label} · {item.ResourceKey[..Math.Min(10, item.ResourceKey.Length)]}" : label;
+    }
+
     private MetricHistorySeries[] Series(params MetricHistoryKind[] kinds) =>
         State.History?.Series.Where(item => kinds.Contains(item.Series.Kind)).OrderBy(item => item.Series.Kind).ToArray() ?? [];
     private string DiskTitle => Series(MetricHistoryKind.DiskUsedPercent).FirstOrDefault() is { } disk ? $"Disk usage · {disk.Series.DisplayName}" : "Disk usage";

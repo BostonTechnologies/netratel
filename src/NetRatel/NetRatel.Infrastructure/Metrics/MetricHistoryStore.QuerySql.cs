@@ -21,13 +21,14 @@ public sealed partial class MetricHistoryStore
         ), portions AS (
             SELECT "SeriesId" AS series, date_bin(make_interval(secs => @step), "Bucket", TIMESTAMPTZ '1970-01-01 00:00:00+00') AS bin,
                 "Count" AS count, "Min" AS lo, "Max" AS hi,
-                CASE WHEN "LastAt" >= @from AND "LastAt" < @to THEN "Last" END AS last_value,
-                CASE WHEN "LastAt" >= @from AND "LastAt" < @to THEN "LastAt" END AS last_time,
+                CASE WHEN "LastOrderAt" >= @from AND "LastOrderAt" < @to THEN "Last" END AS last_value,
+                CASE WHEN "LastOrderAt" >= @from AND "LastOrderAt" < @to THEN "LastAt" END AS last_time,
+                CASE WHEN "LastOrderAt" >= @from AND "LastOrderAt" < @to THEN "LastOrderAt" END AS last_order,
                 "Integral" * ((right_us - left_us)::double precision / tier_us::double precision) AS integral,
                 div("Covered" * right_us, tier_us) - div("Covered" * left_us, tier_us) AS covered,
                 div("Bytes" * right_us, tier_us) - div("Bytes" * left_us, tier_us) AS bytes,
-                CASE WHEN "LastAt" >= @from AND "LastAt" < @to THEN "TotalBytes" END AS total,
-                CASE WHEN "LastAt" >= @from AND "LastAt" < @to THEN "FreeBytes" END AS free,
+                CASE WHEN "LastOrderAt" >= @from AND "LastOrderAt" < @to THEN "TotalBytes" END AS total,
+                CASE WHEN "LastOrderAt" >= @from AND "LastOrderAt" < @to THEN "FreeBytes" END AS free,
                 "Quality" | CASE WHEN left_us > 0 OR right_us < tier_us THEN 768 ELSE 0 END AS quality,
                 div("Running" * right_us, tier_us) - div("Running" * left_us, tier_us) AS running,
                 div("Stopped" * right_us, tier_us) - div("Stopped" * left_us, tier_us) AS stopped,
@@ -50,15 +51,15 @@ public sealed partial class MetricHistoryStore
 
     private const string AggregateHistoryColumns = """
         sum(count)::bigint AS count, min(lo) AS lo, max(hi) AS hi,
-        (array_agg(last_value ORDER BY last_time DESC NULLS LAST))[1] AS last_value, max(last_time) AS last_time,
+        (array_agg(last_value ORDER BY last_order DESC NULLS LAST))[1] AS last_value, (array_agg(last_time ORDER BY last_order DESC NULLS LAST))[1] AS last_time,
         sum(integral) AS integral, sum(covered)::bigint AS covered, sum(bytes) AS bytes,
-        (array_agg(total ORDER BY last_time DESC NULLS LAST))[1] AS total,
-        (array_agg(free ORDER BY last_time DESC NULLS LAST))[1] AS free, bit_or(quality) AS quality,
-        sum(running)::bigint AS running, sum(stopped)::bigint AS stopped, sum(other)::bigint AS other
+        (array_agg(total ORDER BY last_order DESC NULLS LAST))[1] AS total,
+        (array_agg(free ORDER BY last_order DESC NULLS LAST))[1] AS free, bit_or(quality) AS quality,
+        sum(running)::bigint AS running, sum(stopped)::bigint AS stopped, sum(other)::bigint AS other, max(last_order) AS last_order
         """;
 
     private const string CatalogueSql = """
-        SELECT s."Id", s."Kind", s."Resource", s."Label", retained.first_at, s."LastAt", s."Quality"
+        SELECT s."Id", s."Kind", s."Resource", s."Label", retained.first_at, COALESCE(s."LastSourceAt", s."LastAt"), s."Quality"
         FROM "MetricSeries" s
         CROSS JOIN LATERAL (
             SELECT min(candidate."Bucket") AS first_at FROM (

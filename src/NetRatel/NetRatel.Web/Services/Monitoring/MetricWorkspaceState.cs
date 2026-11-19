@@ -95,7 +95,7 @@ public sealed class MetricWorkspaceState(IMonitoringApiService api) : IDisposabl
     {
         var interfaces = series.Where(item => item.Kind is MetricHistoryKind.NetworkRx or MetricHistoryKind.NetworkTx)
             .Select(item => item.ResourceKey).Distinct(StringComparer.Ordinal).ToArray();
-        if (scope.Interface is null && interfaces.Length == 1) _soleInterface ??= interfaces[0];
+        if (scope.Interface is null && interfaces.Length == 1) _soleInterface = interfaces[0];
         SelectedInterface = interfaces.Contains(scope.Interface ?? _soleInterface, StringComparer.Ordinal) ? scope.Interface ?? _soleInterface : null;
 
         var disks = series.Where(item => item.Kind == MetricHistoryKind.DiskUsedPercent).OrderBy(item => item.DisplayName, StringComparer.Ordinal).ToArray();

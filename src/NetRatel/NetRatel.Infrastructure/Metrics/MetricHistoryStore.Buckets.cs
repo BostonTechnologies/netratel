@@ -17,6 +17,7 @@ public sealed partial class MetricHistoryStore
         Bind("maxs", NpgsqlDbType.Double, row => row.Max);
         Bind("lasts", NpgsqlDbType.Double, row => row.Last);
         Bind("last_times", NpgsqlDbType.TimestampTz, row => row.LastAt);
+        Bind("last_orders", NpgsqlDbType.TimestampTz, row => row.LastOrderAt);
         Bind("integrals", NpgsqlDbType.Double, row => row.Integral);
         Bind("covered", NpgsqlDbType.Bigint, row => row.Covered);
         Bind("bytes", NpgsqlDbType.Numeric, row => row.Bytes);
@@ -50,22 +51,23 @@ public sealed partial class MetricHistoryStore
 
     private const string UpsertBuckets = """
         WITH input AS MATERIALIZED (
-            SELECT * FROM unnest(@series, @buckets, @counts, @mins, @maxs, @lasts, @last_times,
+            SELECT * FROM unnest(@series, @buckets, @counts, @mins, @maxs, @lasts, @last_times, @last_orders,
                 @integrals, @covered, @bytes, @totals, @free, @qualities, @running, @stopped, @other)
-            AS i(series, bucket, count, lo, hi, last_value, last_time, integral, covered, bytes, total, free, quality, running, stopped, other)
+            AS i(series, bucket, count, lo, hi, last_value, last_time, last_order, integral, covered, bytes, total, free, quality, running, stopped, other)
         ), changed AS (
-            INSERT INTO "MetricBuckets" AS b ("TenantId","SeriesId","Tier","Bucket","Count","Min","Max","Last","LastAt",
+            INSERT INTO "MetricBuckets" AS b ("TenantId","SeriesId","Tier","Bucket","Count","Min","Max","Last","LastAt","LastOrderAt",
                 "Integral","Covered","Bytes","TotalBytes","FreeBytes","Quality","Running","Stopped","Other")
-            SELECT @tenant, series, 60, bucket, count, lo, hi, last_value, last_time, integral, covered, bytes,
+            SELECT @tenant, series, 60, bucket, count, lo, hi, last_value, last_time, last_order, integral, covered, bytes,
                 total, free, quality, running, stopped, other FROM input
             ON CONFLICT ("TenantId","SeriesId","Tier","Bucket") DO UPDATE SET
                 "Count" = b."Count" + EXCLUDED."Count",
                 "Min" = LEAST(b."Min", EXCLUDED."Min"),
                 "Max" = GREATEST(b."Max", EXCLUDED."Max"),
-                "Last" = CASE WHEN b."LastAt" IS NULL OR EXCLUDED."LastAt" >= b."LastAt" THEN EXCLUDED."Last" ELSE b."Last" END,
-                "TotalBytes" = CASE WHEN b."LastAt" IS NULL OR EXCLUDED."LastAt" >= b."LastAt" THEN EXCLUDED."TotalBytes" ELSE b."TotalBytes" END,
-                "FreeBytes" = CASE WHEN b."LastAt" IS NULL OR EXCLUDED."LastAt" >= b."LastAt" THEN EXCLUDED."FreeBytes" ELSE b."FreeBytes" END,
-                "LastAt" = GREATEST(b."LastAt", EXCLUDED."LastAt"),
+                "Last" = CASE WHEN b."LastOrderAt" IS NULL OR EXCLUDED."LastOrderAt" >= b."LastOrderAt" THEN EXCLUDED."Last" ELSE b."Last" END,
+                "TotalBytes" = CASE WHEN b."LastOrderAt" IS NULL OR EXCLUDED."LastOrderAt" >= b."LastOrderAt" THEN EXCLUDED."TotalBytes" ELSE b."TotalBytes" END,
+                "FreeBytes" = CASE WHEN b."LastOrderAt" IS NULL OR EXCLUDED."LastOrderAt" >= b."LastOrderAt" THEN EXCLUDED."FreeBytes" ELSE b."FreeBytes" END,
+                "LastAt" = CASE WHEN b."LastOrderAt" IS NULL OR EXCLUDED."LastOrderAt" >= b."LastOrderAt" THEN EXCLUDED."LastAt" ELSE b."LastAt" END,
+                "LastOrderAt" = GREATEST(b."LastOrderAt", EXCLUDED."LastOrderAt"),
                 "Integral" = b."Integral" + EXCLUDED."Integral",
                 "Covered" = b."Covered" + EXCLUDED."Covered",
                 "Bytes" = b."Bytes" + EXCLUDED."Bytes",

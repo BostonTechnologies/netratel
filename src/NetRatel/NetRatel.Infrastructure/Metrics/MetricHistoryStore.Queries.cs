@@ -44,7 +44,7 @@ public sealed partial class MetricHistoryStore
         return await _db.Set<MetricSeriesRow>().AsNoTracking()
             .Where(row => row.TenantId == tenant && row.AgentId == agent && ids.Contains(row.Id))
             .Select(row => new MetricSeriesDescription(row.Id, row.AgentId, row.Kind, row.Resource, row.Label,
-                "", row.FirstAt, row.LastAt, row.Quality, false)).ToListAsync(ct).ConfigureAwait(false);
+                "", row.FirstAt, row.LastSourceAt ?? row.LastAt, row.Quality, false)).ToListAsync(ct).ConfigureAwait(false);
     }
 
     public async Task<MetricHistoryResponse> QueryAsync(int tenant, MetricHistoryQuery query, CancellationToken ct)
@@ -174,9 +174,11 @@ public sealed partial class MetricHistoryStore
         decimal? Decimal(int index) => row.IsDBNull(index) ? null : row.GetDecimal(index);
         double? weighted = covered == 0 || service is not null ? null : network
             ? (double)bytes!.Value * 1_000_000d / covered : row.GetDouble(7) / covered;
-        return new(row.GetInt64(2), Number(5), row.IsDBNull(6) ? null : row.GetFieldValue<DateTimeOffset>(6),
+        var observedAt = row.IsDBNull(6) ? null : (DateTimeOffset?)row.GetFieldValue<DateTimeOffset>(6);
+        var attributedAt = row.IsDBNull(16) ? null : (DateTimeOffset?)row.GetFieldValue<DateTimeOffset>(16);
+        return new(row.GetInt64(2), Number(5), observedAt,
             Number(3), Number(4), weighted, covered, ExactBytes(bytes), ExactBytes(Decimal(10)), ExactBytes(Decimal(11)),
-            quality, service);
+            quality, service, attributedAt == observedAt ? null : attributedAt);
     }
 
     private static MetricHistoryStatistics Empty(MetricHistoryQuality quality) =>

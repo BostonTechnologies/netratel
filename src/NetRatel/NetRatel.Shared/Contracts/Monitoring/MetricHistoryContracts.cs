@@ -101,7 +101,8 @@ public sealed record MetricServiceCheckpoint(DateTimeOffset ObservedAtUtc, Clien
 
 public sealed record MetricHistoryStatistics(long Count, double? Last, DateTimeOffset? LastObservedAtUtc,
     double? Minimum, double? Maximum, double? WeightedAverage, long CoveredMicroseconds, string? TransferredBytes,
-    string? DiskTotalBytes, string? DiskFreeBytes, MetricHistoryQuality Quality, MetricServiceDuration? ServiceDuration);
+    string? DiskTotalBytes, string? DiskFreeBytes, MetricHistoryQuality Quality, MetricServiceDuration? ServiceDuration,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] DateTimeOffset? LastAttributedAtUtc = null);
 public sealed record MetricHistoryPoint(DateTimeOffset FromUtc, DateTimeOffset ToExclusiveUtc, MetricHistoryStatistics Statistics);
 public sealed record MetricHistorySeries(MetricSeriesDescription Series, MetricHistoryStatistics Summary,
     IReadOnlyList<MetricHistoryPoint> Points, IReadOnlyList<MetricServiceCheckpoint> ServiceDetail, bool ServiceDetailLimited);

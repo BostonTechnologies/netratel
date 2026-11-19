@@ -231,7 +231,7 @@ public sealed class AgentGatewayTelemetryPublisher(
                 var includeSlow = now >= nextSlowSampleAtUtc;
                 if (includeSlow) nextSlowSampleAtUtc = now.Add(slowInterval);
                 var sequence = sequenceCursor.Next();
-                var snapshot = collector.CreateFrame(session, sequence, now, includeSlow);
+                var snapshot = collector.CreateFrame(session, sequence, now, includeSlow, activeFastInterval);
                 await SendAcknowledgedAsync(TelemetrySnapshotSerializer.CreateEnvelope(snapshot, session, options.ProtocolVersion)).ConfigureAwait(false);
                 if (servicesEnabled && services.TryTakeCompleted(out var collection) && collection is not null)
                 {
@@ -340,7 +340,7 @@ internal sealed class GatewayTelemetrySnapshotCollector(string agentVersion, Act
         GatewayPresenceSession session,
         ulong sequence,
         DateTimeOffset observedAtUtc,
-        bool includeSlowMetrics)
+        bool includeSlowMetrics, TimeSpan? expectedFastCadence = null)
     {
         if (includeSlowMetrics)
         {
@@ -363,7 +363,8 @@ internal sealed class GatewayTelemetrySnapshotCollector(string agentVersion, Act
             TransportHealth = _health
         };
 
-        frame.CpuQuality = SampleCpu(out var cpu);
+        var windowLimit = CounterReadClock.WindowLimit(expectedFastCadence);
+        frame.CpuQuality = SampleCpu(windowLimit, out var cpu);
         frame.Cpu = cpu;
 
         if (TrySampleMemory(out var memory))
@@ -372,12 +373,12 @@ internal sealed class GatewayTelemetrySnapshotCollector(string agentVersion, Act
         }
 
         frame.Disks.AddRange(_disks.Select(disk => disk.Clone()));
-        _networkCounters.Sample(frame, MaximumScopesPerFrame);
+        _networkCounters.Sample(frame, MaximumScopesPerFrame, windowLimit);
         return frame;
     }
 
 
-    private TelemetryMeasurementQuality SampleCpu(out TelemetryCpu? cpu)
+    private TelemetryMeasurementQuality SampleCpu(int windowLimit, out TelemetryCpu? cpu)
     {
         cpu = null;
         try
@@ -393,7 +394,7 @@ internal sealed class GatewayTelemetrySnapshotCollector(string agentVersion, Act
             var previous = _previousCpu;
             _previousCpu = (current, clock);
             if (previous is null) return TelemetryMeasurementQuality.WarmUp;
-            var window = clock.MeasureFrom(previous.Value.Clock, _timeProvider, out var next);
+            var window = clock.MeasureFrom(previous.Value.Clock, _timeProvider, out var next, windowLimit);
             if (window is null || !TryCpuUsage(previous.Value.Sample, current, out var usagePercent))
                 return TelemetryMeasurementQuality.Reset;
 

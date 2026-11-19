@@ -13,7 +13,7 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace NetRatel.Infrastructure.Persistence.Migrations
 {
     [DbContext(typeof(OrchestratorDbContext))]
-    [Migration("20261119154734_AddHistoricalMetrics")]
+    [Migration("20261119161541_AddHistoricalMetrics")]
     partial class AddHistoricalMetrics
     {
         /// <inheritdoc />
@@ -62,6 +62,9 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                         .HasColumnType("double precision");
 
                     b.Property<DateTimeOffset?>("LastAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("LastOrderAt")
                         .HasColumnType("timestamp with time zone");
 
                     b.Property<double?>("Max")
@@ -267,6 +270,9 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                         .HasColumnType("timestamp with time zone");
 
                     b.Property<DateTimeOffset?>("LastIntervalEnd")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("LastSourceAt")
                         .HasColumnType("timestamp with time zone");
 
                     b.Property<int>("Quality")

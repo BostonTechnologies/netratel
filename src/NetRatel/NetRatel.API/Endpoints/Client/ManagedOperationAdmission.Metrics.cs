@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.EntityFrameworkCore;
 using NetRatel.Application.Operations;
 using NetRatel.Infrastructure.Metrics;
 using NetRatel.Shared.Contracts.Monitoring;
@@ -16,8 +17,13 @@ internal sealed partial class ManagedOperationAdmission
             return Denied("target_not_found");
         var current = await services.GetRequiredService<MetricHistoryStore>()
             .ReadPolicyAsync(admitted.Decision!.Request.TenantId, ct).ConfigureAwait(false);
+        var currentIds = current.Watches.Select(watch => watch.AgentId).Distinct().ToArray();
+        var tenant = admitted.Decision.Request.TenantId;
+        var stillOwned = await db.Agents.AsNoTracking().Where(agent => agent.TenantId == tenant && currentIds.Contains(agent.Id) &&
+            agent.IsEnabled && agent.RevokedAtUtc == null && agent.Status == NetRatel.Infrastructure.Persistence.AgentStatus.Active)
+            .Select(agent => agent.Id).ToArrayAsync(ct).ConfigureAwait(false);
         var context = new List<McpOperatorRouteAccessRequest>();
-        foreach (var id in current.Watches.Concat(data.Watches).Select(watch => watch.AgentId).Distinct())
+        foreach (var id in stillOwned.Union(data.Watches.Select(watch => watch.AgentId)))
         {
             var route = await ContextRouteAsync(descriptor, admitted, id, ct).ConfigureAwait(false);
             var decision = (await routes.EvaluateAsync(route, ct).ConfigureAwait(false)).Decision;

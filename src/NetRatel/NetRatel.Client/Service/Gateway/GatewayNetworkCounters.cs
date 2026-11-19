@@ -7,6 +7,7 @@ using System.Net.NetworkInformation;
 using System.Security.Cryptography;
 using System.Text;
 using NetRatel.AgentGateway.Contracts.V1;
+using NetRatel.Shared.Contracts.Monitoring;
 
 namespace NetRatel.Client.Service.Gateway;
 
@@ -14,7 +15,7 @@ internal sealed class GatewayNetworkCounters(TimeProvider time, Action<string> l
 {
     private readonly Dictionary<string, NetworkRead> _baselines = new(StringComparer.Ordinal);
 
-    public void Sample(TelemetryFrame frame, int maximumScopes)
+    public void Sample(TelemetryFrame frame, int maximumScopes, int windowLimit)
     {
         NetworkInterface[] interfaces;
         try { interfaces = NetworkInterface.GetAllNetworkInterfaces(); }
@@ -49,11 +50,7 @@ internal sealed class GatewayNetworkCounters(TimeProvider time, Action<string> l
             string identity = Hash($"name:{name}");
             try
             {
-                var properties = nic.GetIPProperties();
-                var index = properties.GetIPv4Properties()?.Index ?? properties.GetIPv6Properties()?.Index;
-                var strongIdentity = OperatingSystem.IsWindows() && Guid.TryParse(nic.Id, out var adapterId)
-                    ? $"windows:{adapterId:D}"
-                    : index is > 0 ? $"ifindex:{index.Value.ToString(CultureInfo.InvariantCulture)}" : null;
+                var strongIdentity = AdapterIdentity(nic);
                 var fingerprint = nic.GetPhysicalAddress().ToString();
                 if (OperatingSystem.IsLinux() && !name.Contains('/') && name is not ("." or ".."))
                     fingerprint += ":" + File.GetCreationTimeUtc("/sys/class/net/" + name).Ticks.ToString(CultureInfo.InvariantCulture);
@@ -68,7 +65,7 @@ internal sealed class GatewayNetworkCounters(TimeProvider time, Action<string> l
                 var sent = statistics.BytesSent;
                 var clock = CounterReadClock.Read(time);
                 var evidence = strongIdentity is not null && received >= 0 && sent >= 0
-                    ? Observe(identity, name, fingerprint, (ulong)received, (ulong)sent, clock)
+                    ? Observe(identity, name, fingerprint, (ulong)received, (ulong)sent, clock, windowLimit)
                     : WithoutWindow(identity, name, TelemetryMeasurementQuality.Unsupported);
                 frame.Networks.Add(evidence);
             }
@@ -91,7 +88,8 @@ internal sealed class GatewayNetworkCounters(TimeProvider time, Action<string> l
         foreach (var identity in _baselines.Keys.Where(key => !visible.Contains(key)).ToArray()) _baselines.Remove(identity);
     }
 
-    internal TelemetryNetwork Observe(string id, string name, string fingerprint, ulong rx, ulong tx, CounterReadClock clock)
+    internal TelemetryNetwork Observe(string id, string name, string fingerprint, ulong rx, ulong tx, CounterReadClock clock,
+        int windowLimit = MetricMeasurementWindow.DefaultWindowLimitSeconds)
     {
         var next = new NetworkRead(fingerprint, rx, tx, Guid.NewGuid(), clock);
         var quality = TelemetryMeasurementQuality.WarmUp;
@@ -100,7 +98,7 @@ internal sealed class GatewayNetworkCounters(TimeProvider time, Action<string> l
         {
             sample.Quality = TelemetryMeasurementQuality.Reset;
             if (previous.Fingerprint == fingerprint && rx >= previous.Received && tx >= previous.Sent &&
-                clock.MeasureFrom(previous.Clock, time, out var attributed) is { } window)
+                clock.MeasureFrom(previous.Clock, time, out var attributed, windowLimit) is { } window)
             {
                 next = next with { Generation = previous.Generation, Clock = attributed };
                 sample.CounterGeneration = previous.Generation.ToString("D");
@@ -118,6 +116,14 @@ internal sealed class GatewayNetworkCounters(TimeProvider time, Action<string> l
 
     private static TelemetryNetwork WithoutWindow(string id, string name, TelemetryMeasurementQuality quality, Guid generation = default) =>
         new() { Scope = name, DisplayName = name, InterfaceId = id, Quality = quality, CounterGeneration = generation.ToString("D") };
+
+    private static string? AdapterIdentity(NetworkInterface nic)
+    {
+        if (OperatingSystem.IsWindows() && Guid.TryParse(nic.Id, out var adapterId)) return $"windows:{adapterId:D}";
+        var properties = nic.GetIPProperties();
+        var index = properties.GetIPv4Properties()?.Index ?? properties.GetIPv6Properties()?.Index;
+        return index is > 0 ? $"ifindex:{index.Value.ToString(CultureInfo.InvariantCulture)}" : null;
+    }
 
     private static string Hash(string identity) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(identity)));
 

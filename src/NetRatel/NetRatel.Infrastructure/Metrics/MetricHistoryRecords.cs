@@ -57,6 +57,7 @@ internal sealed class MetricSeriesRow
     public required string Label { get; set; }
     public DateTimeOffset FirstAt { get; set; }
     public DateTimeOffset LastAt { get; set; }
+    public DateTimeOffset? LastSourceAt { get; set; }
     public DateTimeOffset? LastIntervalEnd { get; set; }
     public Guid StreamId { get; set; }
     public long StreamOrdinal { get; set; }
@@ -79,6 +80,7 @@ internal sealed class MetricBucketRow
     public double? Max { get; set; }
     public double? Last { get; set; }
     public DateTimeOffset? LastAt { get; set; }
+    public DateTimeOffset? LastOrderAt { get; set; }
     public double Integral { get; set; }
     public long Covered { get; set; }
     public decimal Bytes { get; set; }

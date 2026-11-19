@@ -31,7 +31,7 @@ public sealed class MetricHistoryPostgresTests(PostgreSqlPersistenceFixture fixt
             var width = i <= 10 ? 5 : 1;
             var at = start.AddSeconds(i <= 10 ? i * 5 : 50 + i - 10);
             var bytes = i <= 10 ? 5_000UL : 10_000UL;
-            return Frame(fence, (ulong)i, at, width, bytes, generation, disk);
+            return Frame(fence, (ulong)i, at, width, bytes, generation, disk, i == 20 ? at.AddSeconds(-10) : null);
         }).ToArray();
         var batchId = Guid.NewGuid();
 
@@ -82,6 +82,9 @@ public sealed class MetricHistoryPostgresTests(PostgreSqlPersistenceFixture fixt
             var second = (await store.QueryAsync(client.TenantId, new(client.AgentId, [rx], start.AddSeconds(29), end), default)).Series[0].Summary;
             Assert.Equal(150_000m, decimal.Parse(first.TransferredBytes!) + decimal.Parse(second.TransferredBytes!));
             Assert.True(first.Quality.HasFlag(MetricHistoryQuality.EstimatedTiming));
+            var latest = (await store.QueryAsync(client.TenantId, new(client.AgentId, [rx], start, end.AddSeconds(1)), default)).Series[0].Summary;
+            Assert.Equal(end.AddSeconds(-10), latest.LastObservedAtUtc);
+            Assert.Equal(end, latest.LastAttributedAtUtc);
             var diskHistory = (await store.QueryAsync(client.TenantId, new(client.AgentId, [diskId], start, end), default)).Series[0].Summary;
             Assert.Equal(1, diskHistory.Count);
             Assert.Equal(disk.TotalBytes!.Value.ToString(), diskHistory.DiskTotalBytes);
@@ -140,19 +143,27 @@ public sealed class MetricHistoryPostgresTests(PostgreSqlPersistenceFixture fixt
             Assert.Equal(1000d, incoming.Minimum);
             Assert.Equal(10000d, incoming.Maximum);
             Assert.Equal(20, incoming.Count);
+            if (resolution > 60)
+            {
+                Assert.Equal(end.AddSeconds(-10), incoming.LastObservedAtUtc);
+                Assert.Equal(end, incoming.LastAttributedAtUtc);
+            }
         });
     }
 
     [Fact]
     public void Counter_fragments_conserve_large_bytes_and_do_not_infer_a_lost_window()
     {
-        var start = new DateTimeOffset(2026, 11, 1, 10, 0, 56, TimeSpan.Zero);
+        var start = new DateTimeOffset(2026, 11, 1, 10, 0, 56, TimeSpan.Zero).AddTicks(3);
         var fence = Fence(new(7, Guid.NewGuid()));
         var accumulator = new MetricMinuteAccumulator();
         var series = new MetricSeriesRow { TenantId = 7, AgentId = fence.Client.AgentId, Kind = MetricHistoryKind.NetworkRx,
             Label = "eth0", Resource = "device" };
         const ulong amount = (1UL << 61) + 5;
         Add(start, start.AddSeconds(5), 1, amount);
+        var replacement = fence with { EvidenceStreamId = Guid.NewGuid(), RegistrationOrdinal = 2 };
+        var duplicate = new MetricIngress(replacement, 2, start.AddSeconds(5), null, [], 512);
+        Assert.False(accumulator.Accept(series, Reading(start, start.AddSeconds(5), amount), duplicate, start.AddMinutes(-1), null));
         Add(start.AddSeconds(10), start.AddSeconds(15), 3, 0);
 
         var buckets = accumulator.Buckets.OrderBy(bucket => bucket.Bucket).ToArray();
@@ -164,18 +175,20 @@ public sealed class MetricHistoryPostgresTests(PostgreSqlPersistenceFixture fixt
         void Add(DateTimeOffset from, DateTimeOffset to, ulong sequence, ulong bytes)
         {
             var input = new MetricIngress(fence, sequence, to, null, [], 512);
-            var at = new MetricMeasurementWindow(from, to, 5_000_000, to);
-            Assert.True(accumulator.Accept(series, new(MetricHistoryKind.NetworkRx, "device", "eth0", to,
-                MetricHistoryQuality.None, bytes / 5d, at, bytes), input, from.AddMinutes(-1), null));
+            Assert.True(accumulator.Accept(series, Reading(from, to, bytes), input, from.AddMinutes(-1), null));
         }
     }
+
+    private static MetricReading Reading(DateTimeOffset from, DateTimeOffset to, ulong bytes) =>
+        new(MetricHistoryKind.NetworkRx, "device", "eth0", to, MetricHistoryQuality.None, bytes / 5d,
+            new(from, to, 5_000_000, to), bytes);
 
     private static MonitoringEvidenceFence Fence(ClientKey client) => new(client, Guid.NewGuid(), 1, Guid.NewGuid(), 1);
 
     private static MetricIngress Frame(MonitoringEvidenceFence fence, ulong sequence, DateTimeOffset end, int seconds, ulong bytes,
-        Guid generation, TelemetryDisk? disk)
+        Guid generation, TelemetryDisk? disk, DateTimeOffset? wallEnd = null)
     {
-        var window = new MetricMeasurementWindow(end.AddSeconds(-seconds), end, seconds * 1_000_000L, end);
+        var window = new MetricMeasurementWindow(end.AddSeconds(-seconds), wallEnd ?? end, seconds * 1_000_000L, end);
         var snapshot = new TelemetrySnapshot(fence.Client, fence.ConnectionEpoch, sequence, end, end,
             new(55, null, null) { Window = window }, new(4096, 2048, 2048, 50), disk is null ? [] : [disk],
             [new("veth0", bytes / (double)seconds, bytes * 2d / seconds)

@@ -60,13 +60,14 @@ public sealed partial class MetricHistoryStore
 
     private async Task<int> RollupAsync(int tenant, short source, short target, DateTimeOffset start, DateTimeOffset end, CancellationToken ct) =>
         await _db.Database.ExecuteSqlInterpolatedAsync($"""
-            INSERT INTO "MetricBuckets" ("TenantId", "SeriesId", "Tier", "Bucket", "Count", "Min", "Max", "Last", "LastAt",
+            INSERT INTO "MetricBuckets" ("TenantId", "SeriesId", "Tier", "Bucket", "Count", "Min", "Max", "Last", "LastAt", "LastOrderAt",
                 "Integral", "Covered", "Bytes", "TotalBytes", "FreeBytes", "Quality", "Running", "Stopped", "Other")
             SELECT {tenant}, "SeriesId", {target}, {start}, sum("Count"), min("Min"), max("Max"),
-                (array_agg("Last" ORDER BY "LastAt" DESC NULLS LAST, "Bucket" DESC))[1], max("LastAt"),
+                (array_agg("Last" ORDER BY "LastOrderAt" DESC NULLS LAST, "Bucket" DESC))[1],
+                (array_agg("LastAt" ORDER BY "LastOrderAt" DESC NULLS LAST, "Bucket" DESC))[1], max("LastOrderAt"),
                 sum("Integral"), sum("Covered"), sum("Bytes"),
-                (array_agg("TotalBytes" ORDER BY "LastAt" DESC NULLS LAST, "Bucket" DESC))[1],
-                (array_agg("FreeBytes" ORDER BY "LastAt" DESC NULLS LAST, "Bucket" DESC))[1],
+                (array_agg("TotalBytes" ORDER BY "LastOrderAt" DESC NULLS LAST, "Bucket" DESC))[1],
+                (array_agg("FreeBytes" ORDER BY "LastOrderAt" DESC NULLS LAST, "Bucket" DESC))[1],
                 bit_or("Quality"), sum("Running"), sum("Stopped"), sum("Other")
             FROM "MetricBuckets"
             WHERE "TenantId" = {tenant} AND "Tier" = {source} AND "Bucket" >= {start} AND "Bucket" < {end}

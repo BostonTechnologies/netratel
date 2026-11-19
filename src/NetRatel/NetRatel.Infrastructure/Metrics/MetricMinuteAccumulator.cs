@@ -7,6 +7,7 @@ internal sealed class MetricMinuteAccumulator
 {
     public static readonly TimeSpan Lateness = TimeSpan.FromMinutes(2);
     public static readonly TimeSpan ClockLead = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan ClockReadTolerance = TimeSpan.FromMilliseconds(25);
 
     private readonly Dictionary<(MetricSeriesRow Series, DateTimeOffset Bucket), MetricBucketRow> _buckets = [];
     public IEnumerable<MetricBucketRow> Buckets => _buckets.Values;
@@ -16,7 +17,9 @@ internal sealed class MetricMinuteAccumulator
     public bool Accept(MetricSeriesRow series, MetricReading reading, MetricIngress input, DateTimeOffset sealedBefore,
         DateTimeOffset? enabledSince)
     {
-        var orderAt = reading.OrderAt;
+        // Match the PostgreSQL timestamp precision before ordering or deduplicating a reading.
+        var orderAt = ToMicrosecond(reading.OrderAt);
+        reading = reading with { At = ToMicrosecond(reading.At) };
         var sampleMinute = Floor(reading.Window is null ? orderAt : orderAt.AddTicks(-1), 60);
         if (sampleMinute < sealedBefore || orderAt > input.ReceivedAt + ClockLead || reading.At > input.ReceivedAt + ClockLead ||
             orderAt < enabledSince)
@@ -35,7 +38,8 @@ internal sealed class MetricMinuteAccumulator
         if (reading.Window is { } window && reading.Value is not null)
         {
             var start = orderAt.AddTicks(-window.ElapsedMicroseconds * TimeSpan.TicksPerMicrosecond);
-            if (window.StartedAtUtc != start || reading.At != orderAt) quality |= MetricHistoryQuality.EstimatedTiming;
+            if ((window.StartedAtUtc - start).Duration() > ClockReadTolerance || (reading.At - orderAt).Duration() > ClockReadTolerance)
+                quality |= MetricHistoryQuality.EstimatedTiming;
             var coveredFrom = Max(Max(start, series.LastIntervalEnd ?? start), enabledSince.GetValueOrDefault());
             if (coveredFrom < sealedBefore) Late++;
             AddInterval(series, reading, start, Max(coveredFrom, sealedBefore), orderAt, quality, reading.Bytes);
@@ -52,10 +56,11 @@ internal sealed class MetricMinuteAccumulator
         if (reading.Value is { } value)
         {
             Observe(bucket, value);
-            if (bucket.LastAt is null || reading.At >= bucket.LastAt)
+            if (bucket.LastOrderAt is null || orderAt >= bucket.LastOrderAt)
             {
                 bucket.Last = value;
                 bucket.LastAt = reading.At;
+                bucket.LastOrderAt = orderAt;
                 bucket.TotalBytes = reading.DiskTotal;
                 bucket.FreeBytes = reading.DiskFree;
             }
@@ -65,10 +70,12 @@ internal sealed class MetricMinuteAccumulator
         {
             bucket.Count++;
             bucket.LastAt = reading.At;
+            bucket.LastOrderAt = orderAt;
             Details.Add((series, reading.At, state));
         }
 
         series.LastAt = orderAt;
+        series.LastSourceAt = reading.At;
         series.Sequence = input.Sequence;
         series.StreamId = input.Fence.EvidenceStreamId;
         series.StreamOrdinal = input.Fence.RegistrationOrdinal;
@@ -154,6 +161,9 @@ internal sealed class MetricMinuteAccumulator
         var ticks = seconds * TimeSpan.TicksPerSecond;
         return new(date.UtcTicks / ticks * ticks, TimeSpan.Zero);
     }
+    private static DateTimeOffset ToMicrosecond(DateTimeOffset date) =>
+        new(date.UtcTicks - date.UtcTicks % TimeSpan.TicksPerMicrosecond, TimeSpan.Zero);
+
     internal static long Microseconds(DateTimeOffset from, DateTimeOffset to) => (to.UtcTicks - from.UtcTicks) / TimeSpan.TicksPerMicrosecond;
     internal static DateTimeOffset Max(DateTimeOffset a, DateTimeOffset b) => a > b ? a : b;
     internal static DateTimeOffset Min(DateTimeOffset a, DateTimeOffset b) => a < b ? a : b;

@@ -161,7 +161,7 @@ public static class AgentTelemetryProtocolValidator
 
     private static AgentFrameValidationResult ValidateNetworks(TelemetryFrame frame)
     {
-        var identities = new HashSet<string>(StringComparer.Ordinal);
+        var identities = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         if (!Enum.IsDefined(frame.NetworkQuality) || frame.NetworkOmittedCount > 0 && frame.NetworkQuality != TelemetryMeasurementQuality.Partial ||
             !HaveValidUniqueScopes(frame.Networks.Select(network => network.Scope)) ||
             frame.Networks.Any(network =>

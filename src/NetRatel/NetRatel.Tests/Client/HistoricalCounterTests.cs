@@ -54,6 +54,19 @@ public sealed class HistoricalCounterTests
     }
 
     [Fact]
+    public void Supported_sixty_second_fast_cadence_keeps_its_counter_window()
+    {
+        var clock = new CounterClock();
+        var collector = new GatewayNetworkCounters(clock, _ => { });
+        var windowLimit = CounterReadClock.WindowLimit(TimeSpan.FromSeconds(60));
+        collector.Observe("adapter", "eth0", "fingerprint", 0, 0, CounterReadClock.Read(clock), windowLimit);
+        clock.Advance(60, 60);
+        var sample = collector.Observe("adapter", "eth0", "fingerprint", 60_000, 0, CounterReadClock.Read(clock), windowLimit);
+        Assert.Equal(TelemetryMeasurementQuality.Valid, sample.Quality);
+        Assert.Equal(1000, sample.RxBytesPerSec);
+    }
+
+    [Fact]
     public void Protobuf_keeps_integer_delta_and_measured_window()
     {
         var clock = new CounterClock();

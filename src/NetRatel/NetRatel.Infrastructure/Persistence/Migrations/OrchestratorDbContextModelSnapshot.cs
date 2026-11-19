@@ -61,6 +61,9 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.Property<DateTimeOffset?>("LastAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<DateTimeOffset?>("LastOrderAt")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<double?>("Max")
                         .HasColumnType("double precision");
 
@@ -264,6 +267,9 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                         .HasColumnType("timestamp with time zone");
 
                     b.Property<DateTimeOffset?>("LastIntervalEnd")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("LastSourceAt")
                         .HasColumnType("timestamp with time zone");
 
                     b.Property<int>("Quality")

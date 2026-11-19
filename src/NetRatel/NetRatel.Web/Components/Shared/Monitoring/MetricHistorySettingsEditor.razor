@@ -117,6 +117,8 @@
             if (!_lifetime.IsCancellationRequested) LoadDraft(result);
         }
         catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { return; }
+        catch (HttpRequestException error) when (error.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+        { LoseSettingsAccess(); }
         catch (Exception error) when (error is HttpRequestException or System.Text.Json.JsonException)
         { _error = "Metrics settings could not be loaded."; }
         finally { _loading = false; }
@@ -137,6 +139,8 @@
             if (!token.IsCancellationRequested && _watchAgent == agent) _inherited = result.Activations;
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { return; }
+        catch (HttpRequestException error) when (error.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+        { LoseSettingsAccess(); }
         catch (Exception error) when (error is HttpRequestException or System.Text.Json.JsonException)
         { if (!token.IsCancellationRequested) _error = "Could not load inherited watches for this computer."; }
     }
@@ -180,6 +184,8 @@
             _error = error.Message;
             await LoadConflictAsync(settings.Policy.Revision, token);
         }
+        catch (HttpRequestException error) when (error.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+        { LoseSettingsAccess(); }
         catch (Exception error) when (error is HttpRequestException or System.Text.Json.JsonException)
         { if (!token.IsCancellationRequested) _error = error is HttpRequestException ? error.Message : "Could not confirm the settings save."; }
         finally { _saving = false; }
@@ -193,8 +199,19 @@
             if (!token.IsCancellationRequested && latest.Policy.Revision != expected) _conflict = latest;
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { return; }
+        catch (HttpRequestException error) when (error.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+        { LoseSettingsAccess(); }
         catch (Exception error) when (error is HttpRequestException or System.Text.Json.JsonException)
         { if (!token.IsCancellationRequested) _error = "Could not read the current revision. Your edits are still in the form."; }
+    }
+
+    private void LoseSettingsAccess()
+    {
+        _settings = _conflict = null;
+        _watches.Clear();
+        _inherited = [];
+        _reason = _service = _success = null;
+        _error = "You do not have permission to manage metrics settings.";
     }
 
     private void KeepDraft()
