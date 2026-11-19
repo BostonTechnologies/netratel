@@ -19,6 +19,8 @@ public sealed class MonitoringCurrentPermissionHttpTests(ApiFactory factory)
         await AssertStatusAsync(credential, Configuration(authority.TenantId), HttpStatusCode.OK);
         await AssertStatusAsync(authority.LocalAccount, Configuration(authority.TenantId), HttpStatusCode.OK);
         await AssertStatusAsync(credential, Configuration(authority.ForeignTenantId), HttpStatusCode.Forbidden);
+        await AssertStatusAsync(credential, Prefix(authority.TenantId) + "/metrics/settings", HttpStatusCode.OK);
+        await AssertStatusAsync(credential, Prefix(authority.ForeignTenantId) + "/metrics/settings", HttpStatusCode.Forbidden);
         await AssertStatusAsync(authority.LocalAccount, Configuration(authority.ForeignTenantId), HttpStatusCode.Forbidden);
         await AssertDiscoveryAsync(credential, [authority.TenantId]);
         await AssertDiscoveryAsync(authority.LocalAccount, [authority.TenantId]);
@@ -44,6 +46,7 @@ public sealed class MonitoringCurrentPermissionHttpTests(ApiFactory factory)
         await AssertStatusAsync(first, Configuration(authority.TenantId), HttpStatusCode.Forbidden);
         await AssertStatusAsync(second, Configuration(authority.TenantId), HttpStatusCode.Forbidden);
         await AssertDiscoveryAsync(first, []);
+        await AssertStatusAsync(first, Prefix(authority.TenantId) + "/metrics/settings", HttpStatusCode.Forbidden);
         await AssertDiscoveryAsync(second, []);
     }
 
@@ -86,6 +89,8 @@ public sealed class MonitoringCurrentPermissionHttpTests(ApiFactory factory)
         using var credential = authority.CredentialClient();
         await AssertStatusAsync(credential, Prefix(authority.TenantId) + "/permissions", HttpStatusCode.OK);
         await AssertStatusAsync(credential, Prefix(authority.TenantId) + "/clients", HttpStatusCode.OK);
+        await AssertStatusAsync(credential, Prefix(authority.TenantId) + "/metrics/settings", HttpStatusCode.OK);
+        await AssertStatusAsync(credential, Prefix(authority.TenantId) + $"/metrics/agents/{Guid.NewGuid():D}/catalogue", HttpStatusCode.Forbidden);
         using var published = await credential.GetAsync(Prefix(authority.TenantId) + "/published-flows");
         published.StatusCode.Should().Be(HttpStatusCode.OK);
         JsonNode.Parse(await published.Content.ReadAsStringAsync())!.AsArray().Should().BeEmpty(
@@ -133,6 +138,7 @@ public sealed class MonitoringCurrentPermissionHttpTests(ApiFactory factory)
         agent.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer",
             factory.CreateAgentBearerToken(authority.TenantId, Guid.NewGuid()));
         await AssertStatusAsync(agent, Configuration(authority.TenantId), HttpStatusCode.Forbidden);
+        await AssertStatusAsync(agent, Prefix(authority.TenantId) + "/metrics/settings", HttpStatusCode.Forbidden);
         await AssertStatusAsync(agent, "/api/v2/monitoring/tenants", HttpStatusCode.Forbidden);
     }
 

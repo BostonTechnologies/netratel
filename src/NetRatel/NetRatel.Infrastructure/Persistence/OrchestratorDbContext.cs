@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using NetRatel.Infrastructure.Netclaw;
+using NetRatel.Infrastructure.Metrics;
 using NetRatel.Infrastructure.Flows;
 using NetRatel.Application.Operations;
 using NetRatel.Infrastructure.ServiceIdentity;
@@ -195,6 +196,7 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
         AiInvestigationContextRecord.Configure(modelBuilder);
         AiPromptPersistenceModel.Configure(modelBuilder);
         MonitoringPersistenceModel.Configure(modelBuilder);
+        MetricPersistenceModel.Configure(modelBuilder);
         FlowPersistenceModel.Configure(modelBuilder);
         FlowReceiverEvidenceModel.Configure(modelBuilder);
         modelBuilder.Entity<NotificationConnectorRecord>(entity =>

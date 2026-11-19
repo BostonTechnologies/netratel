@@ -1,5 +1,7 @@
 # Release history
 
+- [0.1.6-beta.2](0.1.6-beta.2.md) — historical CPU, memory, disk, network and watched-service metrics.
+
 - [0.1.6-beta.1](0.1.6-beta.1.md) — durable scheduled-report references, OIDC access administration, and incident-origin MCP diagnostics.
 
 - [0.1.5 — stable candidate](0.1.5.md) — upgrade summary and testing scope.

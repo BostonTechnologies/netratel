@@ -64,3 +64,8 @@ An aggregate result identifies one parent, counts and distinct node/native-run
 references. Fetch logs with node and step-run identity, retaining authorization
 and redaction. An old singular operation that cannot represent the requested
 set returns an explicit validation/unsupported result.
+
+
+## Historical metrics
+
+Use `netratel_monitoring` with `metrics_catalog` and `metrics_query` for the exact tenant and agent. Choose RX and TX series IDs for one interface. Whole-range summaries report weighted B/s, observed peaks, coverage and exact decimal-string byte totals when source windows are available. `metrics_status` uses `monitoring.read`. `metrics_settings` and confirmed `save_metrics_settings` use `monitoring.manage`; the tenant and exact selected watch targets still require current policy. [Request examples](../integrations/CLI_AND_MCP.md#historical-metrics) · [Collection and retention](../operations/MONITORING.md#historical-metrics)

@@ -39,7 +39,10 @@ public sealed record UpdateClientServicesRefresh(
     ClientKey Client,
     ClientServicesRefreshRequestDto Request) : IClientServicesMessage;
 
-public sealed record ClientServiceWatchPolicy(ClientKey Client, ClientServiceWatchPolicyDto Policy);
+public sealed record ClientServiceWatchPolicy(ClientKey Client, ClientServiceWatchPolicyDto Policy)
+{
+    public string? SelectionIdentity { get; init; }
+}
 
 public sealed record UpdateClientServiceWatchPolicy(ClientServiceWatchPolicy Policy) : IClientServicesMessage
 {
@@ -80,6 +83,9 @@ public sealed record ClientServicesState(
     ServiceCollectionAttemptDto? LatestInventoryAttempt = null,
     IReadOnlyList<ClientServicesRefreshRequestDto>? RefreshRequests = null)
 {
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public string? WatchSelectionIdentity { get; init; }
+
     public static ClientServicesState Empty(ClientKey client) =>
         new(client, 0, 0, 0, null, null, [], [], 0);
 }

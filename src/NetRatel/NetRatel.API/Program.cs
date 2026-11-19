@@ -915,6 +915,13 @@ builder.Services.AddNetRatelApplication();
 builder.Services.AddNetRatelInfrastructure(builder.Configuration);
 builder.Services.AddScoped<NetRatel.API.Services.SoftwareInventoryService>();
 builder.Services.AddMonitoringFlowBridge();
+builder.Services.AddScoped<NetRatel.Infrastructure.Metrics.MetricHistoryStore>();
+builder.Services.AddSingleton<NetRatel.Infrastructure.Metrics.MetricHistoryWorker>();
+builder.Services.AddSingleton<NetRatel.Application.Metrics.IMetricHistoryIngestion>(provider =>
+    provider.GetRequiredService<NetRatel.Infrastructure.Metrics.MetricHistoryWorker>());
+builder.Services.AddHostedService(provider => provider.GetRequiredService<NetRatel.Infrastructure.Metrics.MetricHistoryWorker>());
+builder.Services.AddHostedService<NetRatel.Infrastructure.Metrics.MetricHistoryMaintenance>();
+builder.Services.AddScoped<MetricHistoryApiService>();
 builder.Services.AddNetRatelServiceIdentityApi(builder.Configuration);
 builder.Services.AddSystemPairing(builder.Configuration);
 builder.Services.AddPairingApi();
@@ -924,6 +931,8 @@ builder.Services.AddNotificationConnectors();
 builder.Services.AddNetclawInvestigations();
 builder.Services.AddScoped<ManagedOperationAdmission>();
 builder.Services.ConfigureHttpJsonOptions(JobTargetHttpJson.Configure);
+builder.Services.ConfigureHttpJsonOptions(options => options.SerializerOptions.TypeInfoResolverChain.Insert(0,
+    NetRatel.Shared.Contracts.Monitoring.MetricHistoryJsonContext.Default));
 builder.Services.AddScoped<McpJobTargetPolicyReader>();
 builder.Services.AddScoped<McpAggregateExecutionAuthority>();
 builder.Services.AddScoped<McpReviewedJobAdmissionRecovery>();

@@ -14,6 +14,14 @@ public interface IMonitoringApiService
     Task<MonitoringClientPageDto> GetClientsAsync(int tenantId, string? cursor = null, CancellationToken token = default);
     Task<MonitoringClientPageDto> SearchClientsAsync(int tenantId, string? search, string? cursor = null, CancellationToken token = default) => GetClientsAsync(tenantId, cursor, token);
     Task<IReadOnlyList<MonitoringClientIdentityDto>> GetClientIdentitiesAsync(int tenantId, IReadOnlyCollection<Guid> agentIds, CancellationToken token = default) => Task.FromResult<IReadOnlyList<MonitoringClientIdentityDto>>([]);
+    Task<MetricCatalogue> GetMetricCatalogueAsync(int tenantId, Guid agentId, string? cursor = null, CancellationToken token = default) =>
+        Task.FromException<MetricCatalogue>(new HttpRequestException("Historical metrics are unavailable."));
+    Task<MetricHistoryResponse> QueryMetricsAsync(int tenantId, Guid agentId, MetricHistoryRange range, CancellationToken token = default) =>
+        Task.FromException<MetricHistoryResponse>(new HttpRequestException("Historical metrics are unavailable."));
+    Task<MetricHistorySettings> GetMetricsSettingsAsync(int tenantId, Guid? agentId = null, CancellationToken token = default) =>
+        Task.FromException<MetricHistorySettings>(new HttpRequestException("Metrics settings are unavailable."));
+    Task<MetricHistorySettings> SaveMetricsSettingsAsync(int tenantId, MetricHistoryPolicyWrite write, CancellationToken token = default) =>
+        Task.FromException<MetricHistorySettings>(new HttpRequestException("Metrics settings are unavailable."));
     Task<MonitoringPermissionsDto> GetPermissionsAsync(int tenantId, CancellationToken token = default);
     Task<MonitoringConfigurationDto> GetConfigurationAsync(int tenantId, CancellationToken token = default);
     Task<MonitoringSummaryDto> GetSummaryAsync(int tenantId, CancellationToken token = default);
@@ -61,6 +69,23 @@ public sealed class MonitoringApiService(IHttpClientFactory clients) : IMonitori
     {
         using var message = new HttpRequestMessage(HttpMethod.Post, Root(tenantId) + "/clients/identities") { Content = JsonContent.Create(agentIds) };
         return await SendReadAsync<MonitoringClientIdentityDto[]>(message, token);
+    }
+    public Task<MetricCatalogue> GetMetricCatalogueAsync(int tenantId, Guid agentId, string? cursor = null, CancellationToken token = default) =>
+        GetAsync<MetricCatalogue>(Root(tenantId) + $"/metrics/agents/{agentId:D}/catalogue?limit={MetricHistoryLimits.MaximumCataloguePage}" +
+            (cursor is null ? "" : "&cursor=" + Uri.EscapeDataString(cursor)), token);
+    public async Task<MetricHistoryResponse> QueryMetricsAsync(int tenantId, Guid agentId, MetricHistoryRange range, CancellationToken token = default)
+    {
+        using var message = new HttpRequestMessage(HttpMethod.Post, Root(tenantId) + $"/metrics/agents/{agentId:D}/query")
+        { Content = JsonContent.Create(range, MetricHistoryJsonContext.Default.MetricHistoryRange) };
+        return await SendReadAsync<MetricHistoryResponse>(message, token);
+    }
+    public Task<MetricHistorySettings> GetMetricsSettingsAsync(int tenantId, Guid? agentId = null, CancellationToken token = default) =>
+        GetAsync<MetricHistorySettings>(Root(tenantId) + "/metrics/settings" + (agentId is { } agent ? $"?agentId={agent:D}" : ""), token);
+    public async Task<MetricHistorySettings> SaveMetricsSettingsAsync(int tenantId, MetricHistoryPolicyWrite write, CancellationToken token = default)
+    {
+        using var message = new HttpRequestMessage(HttpMethod.Put, Root(tenantId) + "/metrics/settings")
+        { Content = JsonContent.Create(write, MetricHistoryJsonContext.Default.MetricHistoryPolicyWrite) };
+        return await SendReadAsync<MetricHistorySettings>(message, token);
     }
     public Task<MonitoringPermissionsDto> GetPermissionsAsync(int tenantId, CancellationToken token = default) =>
         GetAsync<MonitoringPermissionsDto>(Root(tenantId) + "/permissions", token);
@@ -204,6 +229,16 @@ public sealed class MonitoringApiService(IHttpClientFactory clients) : IMonitori
             var code = problem.RootElement.TryGetProperty("title", out var title) ? title.GetString() : null;
             message = code switch
             {
+                "metrics_revision_conflict" => "Another operator saved metrics settings. Review the current revision before saving your edits.",
+                "metrics_settings_busy" => "Metrics maintenance is saving progress. Retry your settings change.",
+                "invalid_metrics_base_days" => "Check the one-minute retention days.",
+                "invalid_metrics_five_minute_days" => "Five-minute retention must be at least the one-minute retention and within its maximum.",
+                "invalid_metrics_hourly_days" => "Hourly retention must be at least the five-minute retention and within its maximum.",
+                "invalid_metrics_reason" => "Enter a reason for this settings change.",
+                "invalid_metrics_watch" or "duplicate_metrics_watch" => "Check the selected service names and remove duplicates.",
+                "invalid_metrics_watch_count" or "service_watch_capacity_exceeded" => "This selection exceeds service watch capacity, including alert-required watches.",
+                "invalid_metrics_range" or "invalid_metrics_resolution" => "Check the metrics range and resolution.",
+                "metrics_query_capacity" => "Metrics queries are busy. Refresh to try again.",
                 "monitoring_occurrence_replaced" => "A newer occurrence has replaced this alert. Refresh and review it; your reason is retained.",
                 "monitoring_occurrence_closed" => "This alert occurrence has ended or was suspended. Refresh and review its history; your reason is retained.",
                 "monitoring_operator_conflict" => "Another operator changed this alert. Refresh and review the action; your reason is retained.",

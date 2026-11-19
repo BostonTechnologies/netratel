@@ -96,6 +96,7 @@ public static partial class ManagedOperationEndpoints
                 await admission.RecordAcceptedAsync(admitted, cancellationToken).ConfigureAwait(false);
                 http.User = admitted.User!;
                 var result = await DispatchAsync(descriptor, request, http, cancellationToken, admitted).ConfigureAwait(false);
+                result = await admission.FilterMetricsResponseAsync(descriptor, admitted, result, cancellationToken).ConfigureAwait(false);
                 return await admission.FilterAiResponseAsync(descriptor, request, admitted, result, cancellationToken).ConfigureAwait(false);
             }
             catch (McpOperatorAdmissionRejectedException exception) { return Denied(exception.FailureCode); }
@@ -147,11 +148,22 @@ public static partial class ManagedOperationEndpoints
 
     private static Task<IResult> MonitoringAsync(string operation, JsonElement request, HttpContext http, CancellationToken ct)
     {
-        var service = http.RequestServices.GetRequiredService<MonitoringApiService>();
         var tenant = request.GetProperty("tenantId").GetInt32();
         var limit = request.TryGetProperty("limit", out var size) ? size.GetInt32() : 50;
         var cursor = Text(request, "cursor");
         var user = http.User;
+        if (operation is "metrics_catalog" or "metrics_query" or "metrics_status" or "metrics_settings" or "save_metrics_settings")
+        {
+            var metrics = http.RequestServices.GetRequiredService<MetricHistoryApiService>();
+            return operation switch
+            {
+                "metrics_catalog" => MonitoringEndpoints.ExecuteAsync(() => metrics.CatalogueAsync(tenant, Id(request, "agentId"), limit, cursor, user, ct)),
+                "metrics_query" => MonitoringEndpoints.ExecuteAsync(() => metrics.QueryAsync(tenant, Id(request, "agentId"), Data<MetricHistoryRange>(request), user, ct)),
+                "save_metrics_settings" => MonitoringEndpoints.ExecuteAsync(() => metrics.SaveAsync(tenant, Data<MetricHistoryPolicyWrite>(request), user, ct)),
+                _ => MonitoringEndpoints.ExecuteAsync(() => metrics.SettingsAsync(tenant, null, user, ct))
+            };
+        }
+        var service = http.RequestServices.GetRequiredService<MonitoringApiService>();
         return operation switch
         {
             "permissions" => MonitoringEndpoints.ExecuteAsync(() => service.GetPermissionsAsync(tenant, user, ct)),

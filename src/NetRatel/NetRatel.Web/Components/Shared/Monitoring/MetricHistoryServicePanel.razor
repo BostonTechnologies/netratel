@@ -1,0 +1,41 @@
+@using NetRatel.Shared.Contracts.Monitoring
+@using NetRatel.Web.Services.Monitoring
+
+<MudPaper Class="pa-4 metrics-wide" Outlined="true">
+    <MudText Typo="Typo.h6">Watched service · @Series.Series.DisplayName</MudText>
+    @if (Series.Summary.ServiceDuration is { } duration)
+    {
+        <dl class="service-durations" aria-label="Selected period service duration">
+            <dt>Running</dt><dd>@Duration(duration.RunningMicroseconds)</dd>
+            <dt>Stopped</dt><dd>@Duration(duration.StoppedMicroseconds)</dd>
+            <dt>Other observed states</dt><dd>@Duration(duration.OtherKnownMicroseconds)</dd>
+            <dt>Unknown</dt><dd>@Duration(duration.UnknownMicroseconds)</dd>
+        </dl>
+    }
+    @if (History.FromUtc < History.ServiceDetailFromUtc)
+    {
+        <p>Before @MetricHistoryPresentation.Time(History.ServiceDetailFromUtc, Zone), retained service history shows durations and coverage.</p>
+    }
+    @if (Series.ServiceDetail.Count > 0)
+    {
+        <details>
+            <summary>Observed states and checkpoints (@Series.ServiceDetail.Count)</summary>
+            <div class="metric-service-scroll"><table><thead><tr><th>Observed at</th><th>State</th></tr></thead><tbody>
+                @foreach (var checkpoint in Series.ServiceDetail.Reverse())
+                {
+                    <tr><td>@MetricHistoryPresentation.Time(checkpoint.ObservedAtUtc, Zone) @(checkpoint.Predecessor ? " (before selection)" : "")</td><td>@checkpoint.State</td></tr>
+                }
+            </tbody></table></div>
+            <p>Times show when the watcher observed each state. Coverage stops when the evidence expires.</p>
+            @if (Series.ServiceDetailLimited) { <p>Narrow the range to inspect more checkpoints. Durations cover the full selected range.</p> }
+        </details>
+    }
+    else { <p>No detailed service checkpoints in the selected range.</p> }
+</MudPaper>
+
+@code {
+    [Parameter, EditorRequired] public MetricHistorySeries Series { get; set; } = default!;
+    [Parameter, EditorRequired] public MetricHistoryResponse History { get; set; } = default!;
+    [Parameter, EditorRequired] public TimeZoneInfo Zone { get; set; } = TimeZoneInfo.Utc;
+    private static string Duration(long microseconds) => MetricHistoryPresentation.Duration(microseconds);
+}

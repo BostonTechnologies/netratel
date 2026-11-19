@@ -25,6 +25,15 @@ public partial class MonitoringPage
     [SupplyParameterFromQuery(Name = "pageSize")] public int? RequestedPageSize { get; set; }
     [SupplyParameterFromQuery(Name = "view")] public string? RequestedView { get; set; }
     [SupplyParameterFromQuery(Name = "timeZone")] public string? RequestedTimeZone { get; set; }
+    [SupplyParameterFromQuery(Name = "metricsClient")] public Guid? RequestedMetricsClient { get; set; }
+    [SupplyParameterFromQuery(Name = "metricsRange")] public string? RequestedMetricsRange { get; set; }
+    [SupplyParameterFromQuery(Name = "metricsFrom")] public string? RequestedMetricsFrom { get; set; }
+    [SupplyParameterFromQuery(Name = "metricsTo")] public string? RequestedMetricsTo { get; set; }
+    [SupplyParameterFromQuery(Name = "metricsInterface")] public string? RequestedMetricsInterface { get; set; }
+    [SupplyParameterFromQuery(Name = "metricsDisk")] public long? RequestedMetricsDisk { get; set; }
+    [SupplyParameterFromQuery(Name = "metricsService")] public long? RequestedMetricsService { get; set; }
+    [SupplyParameterFromQuery(Name = "metricsResource")] public string? RequestedMetricsResource { get; set; }
+    [SupplyParameterFromQuery(Name = "manageMetrics")] public string? RequestedMetricsSettings { get; set; }
     private string? _appliedFilters;
     private string? _severity, _fromDate, _toDate, _filterError;
     private int _pageSize = 20;
@@ -118,7 +127,7 @@ public partial class MonitoringPage
         _stateFilter = NormalizeStateFilter(RequestedState); _search = RequestedSearch ?? "";
         _severity = Enum.TryParse<MonitoringSeverity>(RequestedSeverity, true, out var severity) && Enum.IsDefined(severity) ? severity.ToString() : null;
         _fromDate = RequestedFrom; _toDate = RequestedTo; _pageSize = RequestedPageSize is 20 or 50 or 100 ? RequestedPageSize.Value : 20;
-        _tab = RequestedView?.Equals("history", StringComparison.OrdinalIgnoreCase) == true ? "History" : RequestedView?.Equals("manage", StringComparison.OrdinalIgnoreCase) == true ? "Manage" : "Active";
+        _tab = RequestedView?.ToUpperInvariant() switch { "HISTORY" => "History", "MANAGE" => "Manage", "METRICS" => "Metrics", _ => "Active" };
         if (!string.IsNullOrWhiteSpace(RequestedTimeZone))
             try { _timeZone = TimeZoneInfo.FindSystemTimeZoneById(RequestedTimeZone); }
             catch (Exception error) when (error is TimeZoneNotFoundException or InvalidTimeZoneException) { _filterError = "The linked timezone is unavailable. Choose dates in the displayed timezone."; }
@@ -140,7 +149,7 @@ public partial class MonitoringPage
         if (includeAlert && RequestedAlertId is { } alert) pairs.Add(new("alert", alert.ToString("D")));
         var currentQuery = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(new Uri(Navigation.Uri).Query);
         if (!int.TryParse(currentQuery.GetValueOrDefault("tenantId"), out var linkedTenant) || linkedTenant == State.TenantId)
-            foreach (var pair in currentQuery.Where(pair => pair.Key.StartsWith("manage", StringComparison.Ordinal)))
+            foreach (var pair in currentQuery.Where(pair => pair.Key.StartsWith("manage", StringComparison.Ordinal) || pair.Key.StartsWith("metrics", StringComparison.Ordinal)))
                 pairs.Add(new(pair.Key, pair.Value.ToString()));
         return "monitoring?" + string.Join("&", pairs.Select(pair => Uri.EscapeDataString(pair.Key) + "=" + Uri.EscapeDataString(pair.Value)));
     }
@@ -168,7 +177,35 @@ public partial class MonitoringPage
     private Task ClientChanged(Guid? id) { State.ClientFilter = id; return ApplyFilters(); }
     private Task PageSizeChanged(ChangeEventArgs args) { _pageSize = int.TryParse(args.Value?.ToString(), out var size) && size is 20 or 50 or 100 ? size : 20; return ApplyFilters(); }
     private Task ClearFilters() { _search = ""; _severity = _fromDate = _toDate = null; State.ClientFilter = null; _stateFilter = "firing"; return ApplyFilters(); }
-    private void ChangeTab(string tab) { _tab = tab; PersistFilters(includeAlert: true); }
+    private async Task ChangeTab(string tab)
+    {
+        if (_tab == tab) return;
+        var wasMetrics = _tab == "Metrics";
+        _tab = tab;
+        if (tab == "Metrics") FenceAlert();
+        PersistFilters(includeAlert: true);
+        if (wasMetrics && State.Snapshot is null && State.TenantId > 0) await LoadAlertWorkspaceAsync(State.TenantId);
+    }
+
+    private string MetricsLink(int tenant, Guid agent, string resource, DateTimeOffset at)
+    {
+        var from = at.AddHours(-1);
+        var to = at.AddHours(1) < DateTimeOffset.UtcNow ? at.AddHours(1) : DateTimeOffset.UtcNow;
+        return Navigation.GetUriWithQueryParameters(new Dictionary<string, object?>
+        {
+            ["view"] = "metrics", ["tenantId"] = tenant, ["metricsClient"] = agent, ["metricsRange"] = "custom",
+            ["metricsResource"] = resource, ["metricsFrom"] = from.ToString("O"), ["metricsTo"] = to.ToString("O"),
+            ["metricsInterface"] = null, ["metricsDisk"] = null, ["metricsService"] = null
+        });
+    }
+
+    private async Task LoadAlertWorkspaceAsync(int tenant)
+    {
+        try { State.Query = BuildQuery(tenant).Normalize(); _filterError = null; }
+        catch (ArgumentException error) { State.ClearScope(tenant); _filterError = error.Message; return; }
+        await State.SelectTenantAsync(tenant);
+        await LoadRequestedAlert();
+    }
 
     protected override async Task OnInitializedAsync()
     {
@@ -180,9 +217,9 @@ public partial class MonitoringPage
                 State.ClientFilter = RequestedClientId; ReadQueryFields();
                 var tenant = RequestedTenantId is { } requested ? _tenants.Any(item => item.TenantId == requested) ? requested : 0 : _tenants[0].TenantId;
                 if (tenant == 0) { _startupError = "The linked tenant does not grant Monitoring access."; RememberQuery(); return; }
-                try { State.Query = BuildQuery(tenant).Normalize(); }
-                catch (ArgumentException error) { State.ClearScope(tenant); _filterError = error.Message; RememberQuery(); return; }
-                await State.SelectTenantAsync(tenant); RememberQuery(); await LoadRequestedAlert();
+                if (_tab == "Metrics") State.ClearScope(tenant);
+                else await LoadAlertWorkspaceAsync(tenant);
+                RememberQuery();
             }
         }
         catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { return; }
@@ -212,10 +249,8 @@ public partial class MonitoringPage
         if (stateChanged || State.TenantId != tenant) _stateFilter = NormalizeStateFilter(RequestedState);
         State.ClientFilter = RequestedClientId;
         if (State.TenantId != tenant) { _pendingWatchAtSaveRevision = null; State.ClearScope(tenant); }
-        try { State.Query = BuildQuery(tenant).Normalize(); _filterError = null; }
-        catch (ArgumentException error) { State.ClearScope(tenant); _filterError = error.Message; return true; }
-        await State.SelectTenantAsync(tenant);
-        await LoadRequestedAlert();
+        if (_tab == "Metrics") _filterError = null;
+        else await LoadAlertWorkspaceAsync(tenant);
         return true;
     }
     private void FenceAlert()
@@ -307,7 +342,14 @@ public partial class MonitoringPage
     {
         if (_editor is not null || !int.TryParse(args.Value?.ToString(), out var tenant) || !_tenants.Any(t => t.TenantId == tenant)) return;
         FenceAlert(); CloseEditor(); _expanded.Clear(); _search = ""; _severity = _fromDate = _toDate = _filterError = null; _stateFilter = "firing"; RequestedTenantId = tenant; RequestedClientId = null; RequestedState = null; RequestedAlertId = null; RequestedSearch = null;
-        State.ClientFilter = null; State.Query = BuildQuery(tenant); _pendingWatchAtSaveRevision = null; _successMessage = null; await State.SelectTenantAsync(tenant);
+        State.ClientFilter = null; State.Query = BuildQuery(tenant); _pendingWatchAtSaveRevision = null; _successMessage = null;
+        if (_tab == "Metrics")
+        {
+            RequestedMetricsClient = null; RequestedMetricsInterface = null; RequestedMetricsDisk = RequestedMetricsService = null;
+            RequestedMetricsResource = RequestedMetricsFrom = RequestedMetricsTo = RequestedMetricsRange = null;
+            State.ClearScope(tenant);
+        }
+        else await State.SelectTenantAsync(tenant);
         PersistFilters();
     }
     private async Task Refresh()

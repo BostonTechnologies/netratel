@@ -1,0 +1,5 @@
+.service-durations { display:grid; grid-template-columns:minmax(0,1fr) auto; max-width:26rem; gap:.4rem .8rem; padding:.75rem 0; }
+.service-durations dd { margin:0; text-align:right; font-variant-numeric:tabular-nums; }
+.metric-service-scroll { max-height:18rem; overflow:auto; }
+.metric-service-scroll table { width:100%; border-collapse:collapse; }
+.metric-service-scroll th,.metric-service-scroll td { text-align:left; padding:.45rem; border-bottom:1px solid var(--mud-palette-divider); }

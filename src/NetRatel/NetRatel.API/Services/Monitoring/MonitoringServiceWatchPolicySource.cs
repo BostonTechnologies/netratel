@@ -1,4 +1,7 @@
+using System.Security.Cryptography;
+using System.Text;
 using NetRatel.API.Gateway;
+using NetRatel.Infrastructure.Metrics;
 using NetRatel.Application.Monitoring;
 using NetRatel.Application.Presence;
 using NetRatel.Application.Services;
@@ -9,7 +12,8 @@ namespace NetRatel.API.Services.Monitoring;
 
 /// <summary>Only enabled, tenant-owned exact service conditions select watches.</summary>
 public sealed class MonitoringServiceWatchPolicySource(IMonitoringConfigurationStore configurations,
-    IMonitoringClientDirectory directory, IClientServicesRouter services, TimeProvider timeProvider) : IClientServiceWatchPolicySource
+    IMonitoringClientDirectory directory, IClientServicesRouter services, TimeProvider timeProvider, IServiceScopeFactory? metricsScopes = null,
+    ILogger<MonitoringServiceWatchPolicySource>? logger = null) : IClientServiceWatchPolicySource
 {
     private readonly SemaphoreSlim[] _stripes = Enumerable.Range(0, 64).Select(_ => new SemaphoreSlim(1, 1)).ToArray();
 
@@ -22,14 +26,17 @@ public sealed class MonitoringServiceWatchPolicySource(IMonitoringConfigurationS
             var configuration = await configurations.GetAsync(client.TenantId, cancellationToken).ConfigureAwait(false);
             if (configuration.TenantId != client.TenantId) throw new InvalidOperationException("Monitoring configuration returned a different tenant.");
             var eligible = await directory.IsEligibleAsync(client, cancellationToken).ConfigureAwait(false);
-            var names = SelectNames(configuration, client.AgentId, eligible);
+            var alerts = SelectAlertWatches(configuration, client.AgentId, eligible);
+            var metrics = eligible ? await ReadMetricWatchesAsync(client, cancellationToken).ConfigureAwait(false) : [];
+            var names = Combine(client, alerts, metrics, timeProvider.GetUtcNow());
+            var selection = metricsScopes is null && metrics.Length == 0 ? null : SelectionIdentity(alerts, metrics);
             var current = await services.GetSnapshotAsync(client, cancellationToken).ConfigureAwait(false);
             if (current.Client != client) throw new InvalidOperationException("Services projection returned a different client.");
-            var unchanged = current.MonitoredServiceNames.SequenceEqual(names, StringComparer.Ordinal);
+            var unchanged = current.MonitoredServiceNames.SequenceEqual(names, StringComparer.Ordinal) && current.WatchSelectionIdentity == selection;
             var revision = unchanged ? Math.Max(1UL, current.WatchPolicyRevision) : checked(current.WatchPolicyRevision + 1);
             var policy = new ClientServiceWatchPolicy(client, new(revision, names,
                 ClientServicesLimits.DefaultWatchIntervalSeconds, ClientServicesLimits.DefaultInventoryIntervalSeconds,
-                timeProvider.GetUtcNow().Add(ClientServicesLimits.MaximumPolicyLifetime - ClientServicesLimits.PolicyClockSkewHeadroom)));
+                timeProvider.GetUtcNow().Add(ClientServicesLimits.MaximumPolicyLifetime - ClientServicesLimits.PolicyClockSkewHeadroom))) { SelectionIdentity = selection };
             if (!ClientServicesCoordinator.IsValidPolicy(policy.Policy, timeProvider.GetUtcNow()))
                 throw new ArgumentException("service_watch_capacity_exceeded");
             cancellationToken.ThrowIfCancellationRequested();
@@ -43,21 +50,69 @@ public sealed class MonitoringServiceWatchPolicySource(IMonitoringConfigurationS
         finally { gate.Release(); }
     }
 
+    private async Task<MetricServiceWatch[]> ReadMetricWatchesAsync(ClientKey client, CancellationToken ct)
+    {
+        if (metricsScopes is null) return [];
+        try
+        {
+            await using var scope = metricsScopes.CreateAsyncScope();
+            var store = scope.ServiceProvider.GetService<MetricHistoryStore>();
+            return store is null ? [] : await store.ReadClientWatchesAsync(client, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (Exception exception)
+        {
+            logger?.LogWarning(exception, "Metrics watch policy is unavailable. Applying the current alert-required watches.");
+            return [];
+        }
+    }
+
     public static string[] SelectNames(MonitoringConfigurationSnapshot configuration, Guid agentId, bool eligible)
     {
+        var names = SelectAlertWatches(configuration, agentId, eligible).Select(watch => watch.ServiceName)
+            .Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
+        if (names.Length > ClientServicesLimits.MaximumWatchServices) throw new ArgumentException("service_watch_capacity_exceeded");
+        return names;
+    }
+
+    internal static MetricServiceWatch[] SelectAlertWatches(MonitoringConfigurationSnapshot configuration, Guid agentId, bool eligible)
+    {
         if (!eligible) return [];
-        var windows = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var linux = new HashSet<string>(StringComparer.Ordinal);
+        var selected = new HashSet<MetricServiceWatch>();
         foreach (var rule in configuration.Rules)
         {
             if (rule.TenantId != configuration.TenantId) throw new InvalidOperationException("Monitoring rule returned a different tenant.");
             if (!rule.Enabled || rule.Condition.Kind != MonitoringMetricKind.ServiceExpectedState || !TargetsClient(rule, configuration, agentId)) continue;
-            if (rule.Condition.ServicePlatform == ClientServicePlatform.Windows) windows.Add(rule.Condition.ResourceName!.ToUpperInvariant());
-            else if (rule.Condition.ServicePlatform == ClientServicePlatform.LinuxSystemd) linux.Add(rule.Condition.ResourceName!);
+            if (rule.Condition.ServicePlatform is not { } platform) continue;
+            var name = platform == ClientServicePlatform.Windows ? rule.Condition.ResourceName!.ToUpperInvariant() : rule.Condition.ResourceName!;
+            selected.Add(new(agentId, platform, name));
         }
-        var names = windows.Concat(linux).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
-        if (names.Length > ClientServicesLimits.MaximumWatchServices) throw new ArgumentException("service_watch_capacity_exceeded");
-        return names;
+        return selected.OrderBy(watch => watch.Platform).ThenBy(watch => watch.ServiceName, StringComparer.Ordinal).ToArray();
+    }
+
+    internal static string[] Combine(ClientKey client, MetricServiceWatch[] alerts, MetricServiceWatch[] metrics, DateTimeOffset now)
+    {
+        var selected = alerts.Select(watch => watch.ServiceName).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToList();
+        foreach (var watch in metrics)
+        {
+            if (selected.Contains(watch.ServiceName, StringComparer.Ordinal)) continue;
+            selected.Add(watch.ServiceName);
+            if (!Valid(client, selected, now)) selected.RemoveAt(selected.Count - 1);
+        }
+        return selected.Order(StringComparer.Ordinal).ToArray();
+    }
+
+    internal static bool Valid(ClientKey client, IReadOnlyList<string> names, DateTimeOffset now) =>
+        ClientServicesCoordinator.IsValidPolicy(new ClientServiceWatchPolicy(client, new(1, names,
+            ClientServicesLimits.DefaultWatchIntervalSeconds, ClientServicesLimits.DefaultInventoryIntervalSeconds,
+            now.Add(ClientServicesLimits.MaximumPolicyLifetime - ClientServicesLimits.PolicyClockSkewHeadroom))).Policy, now);
+
+    private static string? SelectionIdentity(MetricServiceWatch[] alerts, MetricServiceWatch[] metrics)
+    {
+        if (alerts.Length == 0 && metrics.Length == 0) return null;
+        var selection = string.Join("\n", alerts.Select(watch => $"a:{(int)watch.Platform}:{watch.ServiceName}")
+            .Concat(metrics.Select(watch => $"m:{(int)watch.Platform}:{watch.ServiceName}")));
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(selection)));
     }
 
     private static bool TargetsClient(MonitoringRuleDto rule, MonitoringConfigurationSnapshot configuration, Guid agentId) =>

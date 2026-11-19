@@ -19,6 +19,7 @@ public sealed record ManagedOperationDescriptor(string Tool, string Operation, s
 {
     public McpOperationAccessScope Scope => Permission switch
     {
+        "monitoring.manage" when Operation == "metrics_settings" => McpOperationAccessScope.Observe,
         "client.manage" => Mutation ? McpOperationAccessScope.Execute : McpOperationAccessScope.Observe,
         "flow.execute" => McpOperationAccessScope.Execute,
         "tenant.admin" => McpOperationAccessScope.Admin,
@@ -104,6 +105,11 @@ public static class ManagedOperationCatalog
         new("netratel_monitoring", "events", "monitoring.read", false, false, Paged: true),
         new("netratel_monitoring", "clients", "monitoring.read", false, false, Paged: true, Searchable: true),
         new("netratel_monitoring", "client_series", "monitoring.read", false, true),
+        new("netratel_monitoring", "metrics_catalog", "monitoring.read", false, true, Paged: true),
+        new("netratel_monitoring", "metrics_query", "monitoring.read", false, true, typeof(MetricHistoryRange)),
+        new("netratel_monitoring", "metrics_status", "monitoring.read", false, false),
+        new("netratel_monitoring", "metrics_settings", "monitoring.manage", false, false),
+        new("netratel_monitoring", "save_metrics_settings", "monitoring.manage", true, false, typeof(MetricHistoryPolicyWrite)),
         new("netratel_monitoring", "published_flows", "monitoring.read", false, false),
         new("netratel_monitoring", "preview_targets", "monitoring.manage", false, false, typeof(MonitoringTargetPreviewRequest)),
         new("netratel_monitoring", "save_rule", "monitoring.manage", true, false, typeof(MonitoringRuleWriteDto), "ruleId"),

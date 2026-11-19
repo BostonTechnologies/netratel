@@ -87,6 +87,8 @@ internal sealed partial class ManagedOperationAdmission(
         var admitted = new ManagedOperationAdmissionResult(actor.User, decision, route, actor.ServicePrincipal, null);
         if (descriptor.Tool == "netratel_ai")
             return await AdmitAiContextAsync(descriptor, request, admitted, cancellationToken).ConfigureAwait(false);
+        if (descriptor.Tool == "netratel_monitoring" && descriptor.Operation == "save_metrics_settings")
+            return await AdmitMetricWatchTargetsAsync(descriptor, request, admitted, http.RequestServices, cancellationToken).ConfigureAwait(false);
         return IsOfflineMonitoringOperation(descriptor)
             ? await AdmitOfflineOccurrenceAsync(request, admitted, cancellationToken).ConfigureAwait(false)
             : admitted;

@@ -42,6 +42,9 @@ public sealed class TelemetrySnapshotSerializerTests
         });
         Assert.Equal(64, snapshot.Disks.Count);
         Assert.Equal(64, snapshot.Networks.Count);
+        Assert.Equal(TelemetryMeasurementQuality.Partial, envelope.Snapshot.NetworkQuality);
+        Assert.Equal((uint)(64 - envelope.Snapshot.Networks.Count), envelope.Snapshot.NetworkOmittedCount);
+        Assert.Equal(0U, snapshot.NetworkOmittedCount);
     }
     [Fact]
     public void EligibleCapacityWinsBeforeScopeAndEnvelopeBudgetsAndExcludedInventoryIsBounded()

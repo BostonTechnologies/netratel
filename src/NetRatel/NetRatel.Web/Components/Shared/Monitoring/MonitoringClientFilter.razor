@@ -6,7 +6,7 @@
 <div class="monitoring-client-picker" data-testid="monitoring-client-filter">
     <label>Find computer<input type="search" value="@_search" @oninput="Search" maxlength="256" placeholder="Name or hostname" data-testid="monitoring-client-search" /></label>
     <label>Computer<select value="@Value" @onchange="Select" aria-busy="@_loading" data-testid="monitoring-client-select">
-        <option value="">All computers</option>
+        <option value="">@EmptyLabel</option>
         @if (Value is { } selected && !_page.Items.Any(client => client.AgentId == selected)) { <option value="@selected">@ClientIdentityPresentation.Name(_selectedIdentity)</option> }
         @foreach (var client in _page.Items) { <option value="@client.AgentId">@Name(client)</option> }
     </select></label>
@@ -17,6 +17,8 @@
 
 @code {
     [Parameter] public int TenantId { get; set; }
+    [Parameter] public string EmptyLabel { get; set; } = "All computers";
+    [Parameter] public bool SelectFirst { get; set; }
     [Parameter] public Guid? Value { get; set; }
     [Parameter] public EventCallback<Guid?> ValueChanged { get; set; }
     private int _tenant;
@@ -31,7 +33,10 @@
     protected override async Task OnParametersSetAsync()
     {
         if (TenantId <= 0) return;
-        if (_tenant != TenantId) { _page = new([], null, 0); _error = null; _tenant = TenantId; _search = null; _selectedIdentity = null; _requestedIdentity = null; await Read(null); }
+        if (_tenant != TenantId) { _page = new([], null, 0); _error = null; _tenant = TenantId; _search = null; _selectedIdentity = null; _requestedIdentity = null; await Read(null);
+            if (SelectFirst && Value is null && _page.Items.FirstOrDefault() is { } first && _tenant == TenantId && !_disposed)
+                await ValueChanged.InvokeAsync(first.AgentId);
+        }
         if (Value is not { } value || _requestedIdentity == value) return;
         _requestedIdentity = value; var tenant = _tenant; var generation = _generation;
         _selectedIdentity = _page.Items.FirstOrDefault(item => item.AgentId == value)?.Identity;

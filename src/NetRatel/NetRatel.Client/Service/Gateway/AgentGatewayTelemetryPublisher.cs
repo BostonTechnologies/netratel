@@ -12,7 +12,6 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
-using System.Net.NetworkInformation;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -331,8 +330,8 @@ internal sealed class GatewayTelemetrySnapshotCollector(string agentVersion, Act
 {
     private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
     private const int MaximumScopesPerFrame = 64;
-    private GatewayCpuSample? _previousCpu;
-    private readonly Dictionary<string, GatewayNetworkSample> _previousNetworks = new(StringComparer.OrdinalIgnoreCase);
+    private (GatewayCpuSample Sample, CounterReadClock Clock)? _previousCpu;
+    private readonly GatewayNetworkCounters _networkCounters = new(timeProvider ?? TimeProvider.System, log);
     private IReadOnlyList<TelemetryDisk> _disks = [];
     private bool _diskInventoryTruncated;
     private TelemetryTransportHealth? _health;
@@ -364,10 +363,8 @@ internal sealed class GatewayTelemetrySnapshotCollector(string agentVersion, Act
             TransportHealth = _health
         };
 
-        if (TrySampleCpu(out var cpu))
-        {
-            frame.Cpu = cpu;
-        }
+        frame.CpuQuality = SampleCpu(out var cpu);
+        frame.Cpu = cpu;
 
         if (TrySampleMemory(out var memory))
         {
@@ -375,34 +372,33 @@ internal sealed class GatewayTelemetrySnapshotCollector(string agentVersion, Act
         }
 
         frame.Disks.AddRange(_disks.Select(disk => disk.Clone()));
-        frame.Networks.AddRange(SampleNetworks(observedAtUtc));
+        _networkCounters.Sample(frame, MaximumScopesPerFrame);
         return frame;
     }
 
 
-    private bool TrySampleCpu(out TelemetryCpu cpu)
+    private TelemetryMeasurementQuality SampleCpu(out TelemetryCpu? cpu)
     {
-        cpu = new TelemetryCpu();
+        cpu = null;
         try
         {
+            if (!OperatingSystem.IsLinux() && !OperatingSystem.IsWindows()) return TelemetryMeasurementQuality.Unsupported;
             if (!TryReadCpuSample(out var current))
             {
-                return false;
+                _previousCpu = null;
+                return TelemetryMeasurementQuality.Failed;
             }
 
-            var usagePercent = 0d;
-            if (_previousCpu is GatewayCpuSample previous)
-            {
-                var idleDelta = current.IdleTicks - previous.IdleTicks;
-                var totalDelta = current.TotalTicks - previous.TotalTicks;
-                if (totalDelta > 0)
-                {
-                    usagePercent = Math.Clamp((1d - ((double)idleDelta / totalDelta)) * 100d, 0d, 100d);
-                }
-            }
+            var clock = CounterReadClock.Read(_timeProvider);
+            var previous = _previousCpu;
+            _previousCpu = (current, clock);
+            if (previous is null) return TelemetryMeasurementQuality.WarmUp;
+            var window = clock.MeasureFrom(previous.Value.Clock, _timeProvider, out var next);
+            if (window is null || !TryCpuUsage(previous.Value.Sample, current, out var usagePercent))
+                return TelemetryMeasurementQuality.Reset;
 
-            _previousCpu = current;
-            cpu = new TelemetryCpu { UsagePercent = Math.Round(usagePercent, 1) };
+            _previousCpu = (current, next);
+            cpu = new TelemetryCpu { UsagePercent = usagePercent, Window = window };
             var loadAverage = ReadLoadAverage();
             if (loadAverage.HasValue)
             {
@@ -415,12 +411,14 @@ internal sealed class GatewayTelemetrySnapshotCollector(string agentVersion, Act
                 cpu.ProcessCount = processCount.Value;
             }
 
-            return true;
+            return TelemetryMeasurementQuality.Valid;
         }
         catch (Exception exception)
         {
             log($"Telemetry shadow CPU sample failed: {exception.Message}");
-            return false;
+            _previousCpu = null;
+            cpu = null;
+            return TelemetryMeasurementQuality.Failed;
         }
     }
 
@@ -454,13 +452,21 @@ internal sealed class GatewayTelemetrySnapshotCollector(string agentVersion, Act
             return false;
         }
 
-        var totalTicks = idleTime + kernelTime + userTime;
-        if (totalTicks == 0)
-        {
-            return false;
-        }
+        sample = FromWindowsCpuTimes(idleTime, kernelTime, userTime);
+        return sample.TotalTicks > 0;
+    }
 
-        sample = new GatewayCpuSample(totalTicks, idleTime);
+    // GetSystemTimes reports idle as part of kernel time.
+    internal static GatewayCpuSample FromWindowsCpuTimes(ulong idle, ulong kernel, ulong user) => new(checked(kernel + user), idle);
+
+    internal static bool TryCpuUsage(GatewayCpuSample previous, GatewayCpuSample current, out double percent)
+    {
+        percent = 0;
+        if (current.TotalTicks <= previous.TotalTicks || current.IdleTicks < previous.IdleTicks) return false;
+        var total = current.TotalTicks - previous.TotalTicks;
+        var idle = current.IdleTicks - previous.IdleTicks;
+        if (idle > total) return false;
+        percent = Math.Round((total - idle) * 100d / total, 1);
         return true;
     }
 
@@ -588,49 +594,6 @@ internal sealed class GatewayTelemetrySnapshotCollector(string agentVersion, Act
     }
 
 
-    private IReadOnlyList<TelemetryNetwork> SampleNetworks(DateTimeOffset now)
-    {
-        var networks = new List<TelemetryNetwork>();
-        foreach (var nic in NetworkInterface.GetAllNetworkInterfaces())
-        {
-            if (nic.OperationalStatus != OperationalStatus.Up || nic.NetworkInterfaceType == NetworkInterfaceType.Loopback)
-            {
-                continue;
-            }
-
-            try
-            {
-                var stats = nic.GetIPv4Statistics();
-                var current = new GatewayNetworkSample(stats.BytesReceived, stats.BytesSent, now);
-                var rx = 0d;
-                var tx = 0d;
-                if (_previousNetworks.TryGetValue(nic.Id, out var previous))
-                {
-                    var seconds = (current.Timestamp - previous.Timestamp).TotalSeconds;
-                    if (seconds > 0)
-                    {
-                        rx = Math.Max(0, (current.BytesReceived - previous.BytesReceived) / seconds);
-                        tx = Math.Max(0, (current.BytesSent - previous.BytesSent) / seconds);
-                    }
-                }
-
-                _previousNetworks[nic.Id] = current;
-                networks.Add(new TelemetryNetwork
-                {
-                    Scope = nic.Name,
-                    RxBytesPerSec = Math.Round(rx, 1),
-                    TxBytesPerSec = Math.Round(tx, 1)
-                });
-            }
-            catch (Exception exception)
-            {
-                log($"Telemetry shadow network sample skipped for '{nic.Name}': {exception.Message}");
-            }
-        }
-
-        return networks;
-    }
-
     private TelemetryTransportHealth SampleHealth(DateTimeOffset observedAtUtc) =>
         new()
         {
@@ -709,8 +672,7 @@ internal sealed class GatewayTelemetrySnapshotCollector(string agentVersion, Act
         return RuntimeInformation.IsOSPlatform(OSPlatform.Windows) && GlobalMemoryStatusEx(ref memoryStatus);
     }
 
-    private readonly record struct GatewayCpuSample(ulong TotalTicks, ulong IdleTicks);
-    private readonly record struct GatewayNetworkSample(long BytesReceived, long BytesSent, DateTimeOffset Timestamp);
+    internal readonly record struct GatewayCpuSample(ulong TotalTicks, ulong IdleTicks);
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
     private struct GatewayMemoryStatus
