@@ -12,8 +12,8 @@ namespace NetRatel.Infrastructure.Metrics;
 
 public sealed partial class MetricHistoryStore(OrchestratorDbContext db, TimeProvider time)
 {
-    public const long TenantRowLimit = 100_000_000;
-    public const long InstanceRowLimit = 400_000_000;
+    public const long TenantRowLimit = 120_000_000;
+    public const long InstanceRowLimit = 480_000_000;
     private const int MaximumTenantSeries = 32_768;
     private const int MaximumClientSeries = 320;
     private const int HistoryLockNamespace = 0x4E524D48;

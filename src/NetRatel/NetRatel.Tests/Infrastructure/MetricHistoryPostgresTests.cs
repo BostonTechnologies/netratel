@@ -17,7 +17,7 @@ public sealed class MetricHistoryPostgresTests(PostgreSqlPersistenceFixture fixt
     public async Task Network_weights_exact_bytes_and_stitches_rollups_after_a_restart_and_purge()
     {
         var dbOptions = new DbContextOptionsBuilder<OrchestratorDbContext>().UseNpgsql(await fixture.CreateDatabaseAsync()).Options;
-        var clock = new EvidenceClock(new(2026, 11, 1, 10, 1, 0, TimeSpan.Zero));
+        var clock = new EvidenceClock(new(2026, 11, 1, 10, 0, 0, TimeSpan.Zero));
         var start = clock.GetUtcNow().AddMinutes(-1);
         var end = start.AddMinutes(1);
         var client = new ClientKey(7, Guid.NewGuid());
@@ -82,9 +82,10 @@ public sealed class MetricHistoryPostgresTests(PostgreSqlPersistenceFixture fixt
             var second = (await store.QueryAsync(client.TenantId, new(client.AgentId, [rx], start.AddSeconds(29), end), default)).Series[0].Summary;
             Assert.Equal(150_000m, decimal.Parse(first.TransferredBytes!) + decimal.Parse(second.TransferredBytes!));
             Assert.True(first.Quality.HasFlag(MetricHistoryQuality.EstimatedTiming));
-            var latest = (await store.QueryAsync(client.TenantId, new(client.AgentId, [rx], start, end.AddSeconds(1)), default)).Series[0].Summary;
+            var latest = (await store.QueryAsync(client.TenantId, new(client.AgentId, [rx], end, end.AddSeconds(1)), default)).Series[0].Summary;
             Assert.Equal(end.AddSeconds(-10), latest.LastObservedAtUtc);
             Assert.Equal(end, latest.LastAttributedAtUtc);
+            Assert.Null(latest.TransferredBytes);
             var diskHistory = (await store.QueryAsync(client.TenantId, new(client.AgentId, [diskId], start, end), default)).Series[0].Summary;
             Assert.Equal(1, diskHistory.Count);
             Assert.Equal(disk.TotalBytes!.Value.ToString(), diskHistory.DiskTotalBytes);
@@ -101,11 +102,12 @@ public sealed class MetricHistoryPostgresTests(PostgreSqlPersistenceFixture fixt
         }
         await WithStoreAsync(async store => Assert.True(await store.MaintainAsync(client.TenantId, default)));
         await using (var db = new OrchestratorDbContext(dbOptions))
-            Assert.True(await db.Set<MetricBucketRow>().AnyAsync(row => row.Tier == 60 && row.SeriesId == rx));
+            Assert.True(await db.Set<MetricBucketRow>().AnyAsync(row => row.Tier == 60 && row.SeriesId == rx && row.Bucket < end));
         await WithStoreAsync(async store => Assert.True(await store.MaintainAsync(client.TenantId, default)));
         await using (var db = new OrchestratorDbContext(dbOptions))
-            Assert.False(await db.Set<MetricBucketRow>().AnyAsync(row => row.Tier == 60 && row.SeriesId == rx));
+            Assert.False(await db.Set<MetricBucketRow>().AnyAsync(row => row.Tier == 60 && row.SeriesId == rx && row.Bucket < end));
         await CheckTotalsAsync(300);
+        await WithStoreAsync(async store => Assert.True(await store.MaintainAsync(client.TenantId, default)));
 
         clock.Now = clock.Now.AddDays(1);
         await WithStoreAsync(async store => Assert.True(await store.MaintainAsync(client.TenantId, default)));
@@ -132,8 +134,10 @@ public sealed class MetricHistoryPostgresTests(PostgreSqlPersistenceFixture fixt
         Task CheckTotalsAsync(int resolution) => WithStoreAsync(async store =>
         {
             // Use full retained backing intervals at each tier. Clipped coarse edges carry an attribution flag.
-            var queryEnd = start.AddSeconds(resolution);
-            var result = await store.QueryAsync(client.TenantId, new(client.AgentId, [rx, tx], start, queryEnd, MaximumPointsPerSeries: 2), default);
+            var queryFrom = MetricMinuteAccumulator.Floor(start, resolution);
+            var queryEnd = queryFrom.AddSeconds(resolution);
+            Assert.Equal(end, queryEnd);
+            var result = await store.QueryAsync(client.TenantId, new(client.AgentId, [rx, tx], queryFrom, queryEnd, MaximumPointsPerSeries: 2), default);
             var incoming = result.Series[0].Summary;
             Assert.Equal(resolution, result.ResolutionSeconds);
             Assert.Equal("150000", incoming.TransferredBytes);
@@ -142,11 +146,17 @@ public sealed class MetricHistoryPostgresTests(PostgreSqlPersistenceFixture fixt
             Assert.Equal(2500d, incoming.WeightedAverage);
             Assert.Equal(1000d, incoming.Minimum);
             Assert.Equal(10000d, incoming.Maximum);
-            Assert.Equal(20, incoming.Count);
+            Assert.Equal(19, incoming.Count);
+            Assert.Equal(end.AddSeconds(-1), incoming.LastObservedAtUtc);
             if (resolution > 60)
             {
-                Assert.Equal(end.AddSeconds(-10), incoming.LastObservedAtUtc);
-                Assert.Equal(end, incoming.LastAttributedAtUtc);
+                var next = await store.QueryAsync(client.TenantId, new(client.AgentId, [rx], end, end.AddSeconds(resolution)), default);
+                var boundary = next.Series[0].Summary;
+                Assert.Equal(resolution, next.ResolutionSeconds);
+                Assert.Equal(end.AddSeconds(-10), boundary.LastObservedAtUtc);
+                Assert.Equal(end, boundary.LastAttributedAtUtc);
+                Assert.Equal(1, boundary.Count);
+                Assert.Null(boundary.TransferredBytes);
             }
         });
     }

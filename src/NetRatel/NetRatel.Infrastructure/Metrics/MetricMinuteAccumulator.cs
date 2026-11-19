@@ -20,7 +20,9 @@ internal sealed class MetricMinuteAccumulator
         // Match the PostgreSQL timestamp precision before ordering or deduplicating a reading.
         var orderAt = ToMicrosecond(reading.OrderAt);
         reading = reading with { At = ToMicrosecond(reading.At) };
-        var sampleMinute = Floor(reading.Window is null ? orderAt : orderAt.AddTicks(-1), 60);
+        // The measurement is observed at the closing read. Its interval contribution
+        // still ends before that read, even when the timestamps straddle bucket boundaries.
+        var sampleMinute = Floor(orderAt, 60);
         if (sampleMinute < sealedBefore || orderAt > input.ReceivedAt + ClockLead || reading.At > input.ReceivedAt + ClockLead ||
             orderAt < enabledSince)
         {
