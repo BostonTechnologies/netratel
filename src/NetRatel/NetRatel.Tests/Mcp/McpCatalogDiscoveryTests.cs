@@ -13,8 +13,8 @@ namespace NetRatel.Tests.Mcp;
 public sealed class McpCatalogDiscoveryTests
 {
     [Theory]
-    [InlineData(NetRatelMcpTransport.StreamableHttp, "dev", 29, "38fc11712eb0b691eb9f849410c98dc8be1af69a62a139077b2b8aff65e0be30")]
-    [InlineData(NetRatelMcpTransport.Stdio, "prod", 35, "1b22164573d515b2660795b198075dae369ff1721cd46b8e2d2bd5519e0f537f")]
+    [InlineData(NetRatelMcpTransport.StreamableHttp, "dev", 29, "f827f88d8c1b20e304c04e5ea98cebf991205123be70be690287b64dbcc41110")]
+    [InlineData(NetRatelMcpTransport.Stdio, "prod", 35, "1fc16737d36989b5ccb48aea1083498339bcfd462381af510009b9f8b3f117ba")]
     public void Factory_preserves_frozen_schema_bytes_for_selected_surfaces(
         NetRatelMcpTransport transport, string instance, int count, string expectedDigest)
     {
@@ -43,6 +43,11 @@ public sealed class McpCatalogDiscoveryTests
         }
         Assert.Equal(count, tools.Count);
         var monitoring = tools.Single(tool => tool.ProtocolTool.Name == "netratel_monitoring").ProtocolTool.InputSchema;
+        var metricOperations = monitoring.GetProperty("oneOf").EnumerateArray()
+            .Select(operation => operation.GetProperty("properties").GetProperty("operation").GetProperty("const").GetString())
+            .Where(name => name?.Contains("metrics", StringComparison.Ordinal) == true).Order(StringComparer.Ordinal);
+        Assert.Equal(new[] { "metrics_catalog", "metrics_query", "metrics_settings", "metrics_status", "save_metrics_settings" },
+            metricOperations);
         var save = monitoring.GetProperty("oneOf").EnumerateArray().Single(operation =>
             operation.GetProperty("properties").GetProperty("operation").GetProperty("const").GetString() == "save_rule");
         var examples = save.GetProperty("properties").GetProperty("request").GetProperty("properties").GetProperty("data").GetProperty("examples");
