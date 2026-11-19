@@ -558,21 +558,18 @@ class FastTestContainerPreparationTests(unittest.TestCase):
         helper = ROOT / "tools/ci/prepare-fast-test-containers.sh"
         self.assertIn('--signal=TERM --kill-after=5s "${deadline}s"', helper.read_text())
         self.assertNotIn("--foreground", helper.read_text())
-        for relative in (".github/workflows/public-pr-validation.yml", ".github/workflows/release-build.yml"):
-            workflow = (ROOT / relative).read_text()
-            with self.subTest(workflow=relative):
-                jobs = dict(re.findall(r"(?ms)^  ([a-z-]+):\n(.*?)(?=^  [a-z-]+:|\Z)",
-                                       workflow.split("\njobs:\n", 1)[1]))
-                job, budget = ("dotnet", 20) if "public-pr-validation" in relative else ("validate", 25)
-                selected_jobs = (job, "api") if job == "dotnet" else (job,)
-                self.assertEqual(len(selected_jobs), workflow.count("bash tools/ci/prepare-fast-test-containers.sh"))
-                for selected_job in selected_jobs:
-                    source = jobs[selected_job]
-                    prepare = source.index("- name: Prepare fast regression containers")
-                    self.assertLess(source.index("- name: Build Release"), prepare)
-                    self.assertLess(prepare, source.index("- name: Run fast regressions"))
-                    self.assertIn(f"timeout-minutes: {budget}", source)
-                    self.assertNotIn("continue-on-error", source)
+        workflow = (ROOT / ".github/workflows/public-pr-validation.yml").read_text()
+        jobs = dict(re.findall(r"(?ms)^  ([a-z-]+):\n(.*?)(?=^  [a-z-]+:|\Z)",
+                               workflow.split("\njobs:\n", 1)[1]))
+        self.assertEqual(2, workflow.count("bash tools/ci/prepare-fast-test-containers.sh"))
+        for job in ("dotnet", "api"):
+            with self.subTest(job=job):
+                source = jobs[job]
+                prepare = source.index("- name: Prepare fast regression containers")
+                self.assertLess(source.index("- name: Build Release"), prepare)
+                self.assertLess(prepare, source.index("- name: Run fast regressions"))
+                self.assertIn("timeout-minutes: 20", source)
+                self.assertNotIn("continue-on-error", source)
 
 
 class CorePartitionCoverageTests(unittest.TestCase):
@@ -826,29 +823,38 @@ for line in sys.stdin:
 
 class MtpCiRunnerSelectionTests(unittest.TestCase):
     def test_independent_contracts_are_required_before_pr_success_and_release_packaging(self):
-        for relative, gate in ((".github/workflows/public-pr-validation.yml", "pr-validation"),
-                               (".github/workflows/release-build.yml", "release-rehearsal")):
-            workflow = (ROOT / relative).read_text(encoding="utf-8")
-            jobs = dict(re.findall(r"(?ms)^  ([a-z-]+):\n(.*?)(?=^  [a-z-]+:|\Z)",
-                                   workflow.split("\njobs:\n", 1)[1]))
-            with self.subTest(workflow=relative):
-                contracts = jobs["contracts"]
-                self.assertIn("runs-on: ubuntu-latest", contracts)
-                self.assertIn("timeout-minutes: 20", contracts)
-                self.assertIn("actions/setup-dotnet@", contracts)
-                self.assertIn("global-json-file: global.json", contracts)
-                command = "python3 tools/ci/test-release-validation.py"
-                self.assertEqual(1, workflow.count(command))
-                self.assertIn(command, contracts)
-                self.assertNotRegex(contracts, r"(?m)^    (?:needs|if|continue-on-error):")
-                self.assertNotIn("continue-on-error", contracts)
-                self.assertIn("if: always()", jobs[gate])
-                self.assertRegex(jobs[gate], r"(?m)^    needs: \[[^\n]*\bcontracts\b[^\n]*\]$")
-                self.assertIn("CONTRACTS_RESULT: ${{ needs.contracts.result }}", jobs[gate])
-                self.assertIn('[[ "$CONTRACTS_RESULT" == success ]]', jobs[gate])
-                if gate == "release-rehearsal":
-                    for package in ("package", "mcp-windows", "client-packages"):
-                        self.assertIn("needs: [validate, contracts]", jobs[package])
+        public = (ROOT / ".github/workflows/public-pr-validation.yml").read_text(encoding="utf-8")
+        release = (ROOT / ".github/workflows/release-build.yml").read_text(encoding="utf-8")
+        job_pattern = r"(?ms)^  ([a-z-]+):\n(.*?)(?=^  [a-z-]+:|\Z)"
+        public_jobs = dict(re.findall(job_pattern, public.split("\njobs:\n", 1)[1]))
+        release_jobs = dict(re.findall(job_pattern, release.split("\njobs:\n", 1)[1]))
+        contracts = public_jobs["contracts"]
+        self.assertIn("runs-on: ubuntu-latest", contracts)
+        self.assertIn("timeout-minutes: 20", contracts)
+        self.assertIn("actions/setup-dotnet@", contracts)
+        self.assertIn("global-json-file: global.json", contracts)
+        command = "python3 tools/ci/test-release-validation.py"
+        self.assertEqual(1, public.count(command))
+        self.assertIn(command, contracts)
+        self.assertNotRegex(contracts, r"(?m)^    (?:needs|if|continue-on-error):")
+        self.assertNotIn("continue-on-error", contracts)
+        self.assertIn("if: always()", public_jobs["pr-validation"])
+        self.assertRegex(public_jobs["pr-validation"], r"(?m)^    needs: \[[^\n]*\bcontracts\b[^\n]*\]$")
+        self.assertIn("CONTRACTS_RESULT: ${{ needs.contracts.result }}", public_jobs["pr-validation"])
+        self.assertIn('[[ "$CONTRACTS_RESULT" == success ]]', public_jobs["pr-validation"])
+
+        self.assertIn("workflow_call:", public)
+        self.assertIn("inputs.release_source && 'release-build-'", public)
+        self.assertIn("PublicSourceRevision: ${{ inputs.release_source && github.sha || '' }}", public)
+        self.assertIn("uses: ./.github/workflows/public-pr-validation.yml", release_jobs["source-checks"])
+        self.assertIn("release_source: true", release_jobs["source-checks"])
+        self.assertNotRegex(release_jobs["source-checks"], r"(?m)^    (?:needs|if|continue-on-error):")
+        gate = release_jobs["release-rehearsal"]
+        self.assertIn("if: always()", gate)
+        self.assertIn("SOURCE_CHECKS_RESULT: ${{ needs.source-checks.result }}", gate)
+        self.assertIn('[[ "$SOURCE_CHECKS_RESULT" == success ]]', gate)
+        for package in ("package", "mcp-windows", "client-packages"):
+            self.assertIn("needs: [validate, source-checks]", release_jobs[package])
 
     def test_ci_uses_sdk10_mtp_selectors_and_requires_each_generic_test_assembly(self):
         helper = ROOT / "tools/ci/run-fast-regressions.sh"
@@ -882,7 +888,7 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
         for relative in (".github/workflows/public-pr-validation.yml", ".github/workflows/release-build.yml"):
             workflow = (ROOT / relative).read_text(encoding="utf-8")
             with self.subTest(workflow=relative):
-                self.assertEqual(2 if "public-pr-validation" in relative else 1,
+                self.assertEqual(2 if "public-pr-validation" in relative else 0,
                                  workflow.count("bash tools/ci/run-fast-regressions.sh"))
                 for manual_command in (
                     "run-physical-disk-incident-proof.sh", "run-pairing-acceptance.sh",
@@ -4607,12 +4613,12 @@ class WindowsMcpReleaseContractTests(unittest.TestCase):
         windows = jobs["mcp-windows"]
         self.assertIn("env:\n  PublicSourceRevision: ${{ github.sha }}", workflow)
         self.assertIn('verify-release-artifacts.sh --artifacts artifacts --version "$VERSION" --source-revision "$GITHUB_SHA"', workflow)
-        for required in ("needs: [validate, contracts]", "runs-on: windows-latest", "bash tools/ci/package-windows-mcp.sh",
+        for required in ("needs: [validate, source-checks]", "runs-on: windows-latest", "bash tools/ci/package-windows-mcp.sh",
                          "test-windows-mcp-archive.ps1", "-SourceRevision $env:GITHUB_SHA", "uses: actions/attest@",
                          "artifacts/SHA256SUMS", "-win-x64.zip", "-win-x64.spdx.json"):
             self.assertIn(required, windows)
         self.assertNotIn("continue-on-error", windows)
-        self.assertIn("needs: [validate, contracts, package, mcp-windows, client-packages]", jobs["release-rehearsal"])
+        self.assertIn("needs: [validate, source-checks, package, mcp-windows, client-packages]", jobs["release-rehearsal"])
         self.assertIn('[[ "$MCP_WINDOWS_RESULT" == success ]]', jobs["release-rehearsal"])
         packaging = (ROOT / "tools/ci/package-windows-mcp.sh").read_text()
         for required in ("--runtime win-x64 --self-contained false", "LICENSE NOTICE", "http-mcp-windows.ps1",
