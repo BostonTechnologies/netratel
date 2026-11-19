@@ -2,6 +2,7 @@ using Grpc.Core;
 using NetRatel.AgentGateway.Contracts.V1;
 using NetRatel.Application.Presence;
 using NetRatel.Application.Telemetry;
+using NetRatel.Shared.Contracts.Monitoring;
 using ApplicationTelemetryCpu = NetRatel.Application.Telemetry.TelemetryCpu;
 using ApplicationTelemetryDisk = NetRatel.Application.Telemetry.TelemetryDisk;
 using ApplicationTelemetryMemory = NetRatel.Application.Telemetry.TelemetryMemory;
@@ -28,7 +29,7 @@ internal static class AgentTelemetryGatewayMapper
                 : new ApplicationTelemetryCpu(
                     frame.Cpu.UsagePercent,
                     frame.Cpu.HasLoadAverage ? frame.Cpu.LoadAverage : null,
-                    frame.Cpu.HasProcessCount ? frame.Cpu.ProcessCount : null),
+                    frame.Cpu.HasProcessCount ? frame.Cpu.ProcessCount : null) { Window = MapWindow(frame.Cpu.Window) },
             frame.Memory is null
                 ? null
                 : new ApplicationTelemetryMemory(
@@ -53,7 +54,13 @@ internal static class AgentTelemetryGatewayMapper
             frame.Networks.Select(network => new ApplicationTelemetryNetwork(
                 network.Scope.Trim(),
                 network.RxBytesPerSec,
-                network.TxBytesPerSec)).ToArray(),
+                network.TxBytesPerSec)
+            {
+                Evidence = network.Quality == TelemetryMeasurementQuality.Legacy ? null : new(
+                    network.InterfaceId, network.DisplayName, Guid.Parse(network.CounterGeneration),
+                    (MetricMeasurementQuality)network.Quality, network.HasRxBytes ? network.RxBytes : null,
+                    network.HasTxBytes ? network.TxBytes : null, MapWindow(network.Window))
+            }).ToArray(),
             frame.TransportHealth is null
                 ? null
                 : new ApplicationTelemetryTransportHealth(
@@ -62,7 +69,16 @@ internal static class AgentTelemetryGatewayMapper
                     NullIfWhiteSpace(frame.TransportHealth.OsVersion),
                     frame.TransportHealth.LastHeartbeat?.ToDateTimeOffset()),
             "akka",
-            IsAuthoritative: true, DiskInventoryTruncated: frame.DiskInventoryTruncated);
+            IsAuthoritative: true, DiskInventoryTruncated: frame.DiskInventoryTruncated)
+        {
+            CpuQuality = (MetricMeasurementQuality)frame.CpuQuality,
+            NetworkQuality = (MetricMeasurementQuality)frame.NetworkQuality,
+            NetworkOmittedCount = frame.NetworkOmittedCount
+        };
+
+    private static MetricMeasurementWindow? MapWindow(TelemetryMeasurementWindow? window) => window is null ? null : new(
+        window.StartedAtUtc.ToDateTimeOffset(), window.EndedAtUtc.ToDateTimeOffset(), checked((long)window.ElapsedMicroseconds),
+        window.AttributedEndUtc.ToDateTimeOffset());
 
     public static void ThrowIfInvalid(AgentFrameValidationResult validation)
     {

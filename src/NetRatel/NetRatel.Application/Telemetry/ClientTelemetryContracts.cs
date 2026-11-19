@@ -7,7 +7,11 @@ namespace NetRatel.Application.Telemetry;
 public sealed record TelemetryCpu(
     double UsagePercent,
     double? LoadAverage,
-    int? ProcessCount);
+    int? ProcessCount)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public MetricMeasurementWindow? Window { get; init; }
+}
 
 public sealed record TelemetryMemory(
     double TotalMb,
@@ -38,7 +42,14 @@ public sealed record TelemetryDisk(
 public sealed record TelemetryNetwork(
     string Scope,
     double RxBytesPerSec,
-    double TxBytesPerSec);
+    double TxBytesPerSec)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public NetworkCounterEvidence? Evidence { get; init; }
+}
+
+public sealed record NetworkCounterEvidence(string InterfaceId, string DisplayName, Guid Generation,
+    MetricMeasurementQuality Quality, ulong? RxBytes, ulong? TxBytes, MetricMeasurementWindow? Window);
 
 public sealed record TelemetryTransportHealth(
     long UptimeSeconds,
@@ -59,7 +70,15 @@ public sealed record TelemetrySnapshot(
     TelemetryTransportHealth? TransportHealth,
     string Source = "akka",
     bool IsAuthoritative = false,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] bool DiskInventoryTruncated = false);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)] bool DiskInventoryTruncated = false)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public MetricMeasurementQuality CpuQuality { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public MetricMeasurementQuality NetworkQuality { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public uint NetworkOmittedCount { get; init; }
+}
 
 public enum TelemetryMessageDisposition
 {

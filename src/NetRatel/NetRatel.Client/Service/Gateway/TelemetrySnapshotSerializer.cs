@@ -25,7 +25,12 @@ internal static class TelemetrySnapshotSerializer
         while (envelope.CalculateSize() > MaximumEnvelopeBytes)
         {
             // Absent per-resource data remains Unknown. Do not turn a missing disk into recovered/free evidence.
-            if (envelope.Snapshot.Networks.Count > 0) envelope.Snapshot.Networks.RemoveAt(envelope.Snapshot.Networks.Count - 1);
+            if (envelope.Snapshot.Networks.Count > 0)
+            {
+                envelope.Snapshot.Networks.RemoveAt(envelope.Snapshot.Networks.Count - 1);
+                envelope.Snapshot.NetworkQuality = TelemetryMeasurementQuality.Partial;
+                envelope.Snapshot.NetworkOmittedCount++;
+            }
             else if (envelope.Snapshot.Disks.Count > 0)
             {
                 envelope.Snapshot.Disks.RemoveAt(envelope.Snapshot.Disks.Count - 1);

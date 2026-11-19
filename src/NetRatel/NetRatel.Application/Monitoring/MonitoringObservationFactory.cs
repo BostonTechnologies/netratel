@@ -153,7 +153,7 @@ public static class MonitoringObservationFactory
         return true;
     }
 
-    private static string? TryDiskKey(string scope)
+    public static string? TryDiskKey(string scope)
     {
         try { return MonitoringSeriesEvaluator.DiskResourceKey(scope); }
         catch (ArgumentException) { return null; }

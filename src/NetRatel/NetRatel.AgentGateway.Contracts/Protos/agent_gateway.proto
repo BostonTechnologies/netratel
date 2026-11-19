@@ -228,12 +228,35 @@ message TelemetryFrame {
   repeated TelemetryNetwork networks = 13;
   TelemetryTransportHealth transport_health = 14;
   bool disk_inventory_truncated = 15;
+  TelemetryMeasurementQuality cpu_quality = 16;
+  TelemetryMeasurementQuality network_quality = 17;
+  uint32 network_omitted_count = 18;
 }
 
 message TelemetryCpu {
   double usage_percent = 1;
   optional double load_average = 2;
   optional int32 process_count = 3;
+  TelemetryMeasurementWindow window = 4;
+}
+
+enum TelemetryMeasurementQuality {
+  TELEMETRY_MEASUREMENT_QUALITY_LEGACY = 0;
+  TELEMETRY_MEASUREMENT_QUALITY_VALID = 1;
+  TELEMETRY_MEASUREMENT_QUALITY_WARM_UP = 2;
+  TELEMETRY_MEASUREMENT_QUALITY_RESET = 3;
+  TELEMETRY_MEASUREMENT_QUALITY_MISSING = 4;
+  TELEMETRY_MEASUREMENT_QUALITY_FAILED = 5;
+  TELEMETRY_MEASUREMENT_QUALITY_UNSUPPORTED = 6;
+  TELEMETRY_MEASUREMENT_QUALITY_PARTIAL = 7;
+}
+
+message TelemetryMeasurementWindow {
+  google.protobuf.Timestamp started_at_utc = 1;
+  google.protobuf.Timestamp ended_at_utc = 2;
+  uint64 elapsed_microseconds = 3;
+  // Clock anchored to the first read's UTC and advanced using monotonic elapsed time.
+  google.protobuf.Timestamp attributed_end_utc = 4;
 }
 
 message TelemetryMemory {
@@ -280,6 +303,13 @@ message TelemetryNetwork {
   string scope = 1;
   double rx_bytes_per_sec = 2;
   double tx_bytes_per_sec = 3;
+  string interface_id = 4;
+  string display_name = 5;
+  string counter_generation = 6;
+  optional uint64 rx_bytes = 7;
+  optional uint64 tx_bytes = 8;
+  TelemetryMeasurementWindow window = 9;
+  TelemetryMeasurementQuality quality = 10;
 }
 
 message TelemetryTransportHealth {

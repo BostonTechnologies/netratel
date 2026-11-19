@@ -65,6 +65,42 @@ Rules without a validated immutable published flow remain display-only. The fall
 
 A handed-off intent retains its real persisted flow run ID. Once the intent exceeds 15 minutes without a verified terminal outcome, the next claim records `DeliveryUnknown` with that same ID and removes it from dispatch claims. Bounded receipt polling continues to look up the existing run and can reconcile a verified terminal outcome, including after manual clear, disconnection or a newer occurrence. This lookup cannot enqueue another run. An interrupted handoff without a recorded run ID also remains explicit Unknown and uses exact event/version lookup to recover an already persisted outcome.
 
+## Historical metrics
+
+Open **Monitoring → Metrics** and choose one computer. The default range is the last 24 hours. The chart axes and daily ranges use the displayed time zone. Use **Open metrics** on a device alert to jump to its computer, resource and surrounding time. **Metrics settings** opens the editor in **Rules & groups** for authorized managers.
+
+Eligible clients collect healthy and breaching values for CPU, memory, classified disk capacity, per-interface network RX/TX and watched services, even when no browser or rule is active. The existing fast and slow streams continue at their normal cadences. Updated clients send the actual CPU and network measurement windows. Update Windows clients for CPU accuracy because the older collector counts idle time twice in its total. Older network telemetry can display observed rate samples with legacy quality. Its volume, duration and weighted rate are unavailable. The updated client starts each new adapter counter generation with a warm-up observation.
+
+| Data | Default absolute age | Stored resolution |
+| --- | ---: | --- |
+| Numeric metrics and detailed watched-service checkpoints | 14 days | One-minute buckets and observed service checkpoints |
+| Numeric and service duration summaries | 90 days | Five minutes |
+| Numeric and service duration summaries | 365 days | One hour |
+
+Retention is independent of alert history. The horizons are ordered and run from observation time. Shortening a horizon makes older data expire and the bounded worker purges it after its successor commits. Expanding retention cannot restore expired rows. Disabling collection preserves readable retained data and ongoing cleanup. Reenabling starts with new observations. Policy changes require the current revision and an audit reason. Alert thresholds, occurrences and their histories are managed separately.
+
+**Network RX/TX** reports one interface at a time. The picker includes retained adapters that no longer report. RX and TX are bytes per second (B/s, KiB/s or MiB/s). **Received** and **Sent** are the server's byte totals over known counter windows. Weighted rate divides those bytes by covered time. Observed peaks come from individual measured rates. Zero bytes in a proven interval appear as zero. Lost frames, gaps, counter resets and unavailable data reduce coverage. A measurement window split across a bucket uses proportional integer allocation that conserves the source bytes. Queries that cut retained bucket edges use the same allocation and identify estimated timing. Display coarsening preserves range totals. When a client clock adjusts, history selects samples by their monotonic-attributed time and retains the original observed timestamp. At an exact bucket boundary, the closing read counts in the new bucket and the preceding interval retains its bytes and coverage. An interface can represent local or virtual traffic as well as external traffic.
+
+Detailed service views display observed state and checkpoint times. The older tiers show measured running, stopped, other known and unknown durations. A state can carry forward for up to 45 seconds within the same watch and evidence stream. Disconnection or expired evidence leaves unknown time. Configure exact client/service watches in the retention editor without creating alert rules. Alert-required watches have priority within the shared selection and transport limits.
+
+**Last accepted**, **Last persisted**, dropped observations, incomplete inventories and maintenance lag describe collection health. The process queue uses at most 2,048 frames or 32 MiB charged memory, with 512 frames or 8 MiB per tenant, and drops pending frames after 45 seconds. The PostgreSQL base tier seals two minutes after each minute ends. A tenant that reaches 90 million retained history and ingestion receipt rows, or whose unrolled source exceeds two days, pauses new ingestion. The corresponding instance ingestion ceiling is 360 million rows. Remaining capacity is reserved for dependent rollups. Committed history survives restart. In-memory pending observations can be lost during a restart, and offline intervals are not backfilled. History retries and maintenance run separately from the live alert acknowledgement path.
+
+### Storage and query sizing
+
+An isolated PostgreSQL 16 run used 100 synthetic clients, each with CPU, memory, two volumes, four reporting interfaces and one watched service. Ten clients also rotated one interface identity. At five-second fast and 30-second disk/service cadences, the store committed 2,800 frames in 9.26 seconds. Median tenant-batch commit was 288 ms, with 709 ms at the 95th percentile. Mean queue charge was 3.3 KB per frame. These timings measure replay into the store.
+
+The seeded base dataset occupied 371 MB of heap and 319 MB of indexes across 2.166 million rows, or 6.91 MB per client-day for the numeric and service-duration bucket table. The four query medians for two directions on one interface were 216 ms at 24 hours, 354 ms at 7 days, 1,016 ms at 90 days and 1,310 ms at a year. The query used the tenant/series/tier/time index and aggregated before emitting display rows. The year query also used about 15 MB of PostgreSQL temporary sort space. Three maintenance passes took 93, 8 and 6 ms on the seeded database.
+
+A straight extrapolation at the default horizons is about 26 GB for 100 comparable clients, including bucket indexes and overlapping retained tiers. Detailed service checkpoints, WAL, backups and variation in interface and volume counts add to that estimate. At the measured series count, the default tiers plus service checkpoints use about 87 million rows. Provision and observe actual database usage for the deployment's workload.
+
+### Retest after upgrading
+
+1. Apply the PostgreSQL migration and deploy matching API and Web. Upgrade one Linux or Windows client through the normal update flow.
+2. Use a computer with no alert rules. Let several minutes of CPU, memory, disks and network telemetry accumulate with the UI closed. Select it in Metrics and check timestamps, units and last persistence.
+3. Select a known interface. Transfer a known file on a test network and check RX/TX direction, observed rates, Received/Sent bytes and covered seconds. Compare with an OS counter over the same interval. Pause the agent, then reconnect. Check the gap and warm-up quality and confirm that an idle valid interval records zero.
+4. Add an exact watched service. Exercise a running and stopped observation, then let it go offline. Confirm unknown coverage and verify that alert-required watches still appear.
+5. Restart the API. Reopen the same range and compare byte totals. In a disposable tenant, change retention, disable collection, check retained history and alert state, then reenable and confirm only new evidence is collected.
+
 ## Authorization and API
 
 The stable permissions are `monitoring.read`, `monitoring.manage`, `monitoring.ack`, `monitoring.clear`, `monitoring.bypass` and `monitoring.targets.all`. Each operation authorizes its exact tenant/resource pair before disclosure or mutation. New dedicated MonitoringReader, MonitoringManager and MonitoringResponder role definitions do not widen existing persisted roles during upgrade. Operator identity comes from the verified stable NetRatel principal, and audited writes require a reason.
@@ -74,6 +110,7 @@ The stable permissions are `monitoring.read`, `monitoring.manage`, `monitoring.a
 - Read `permissions`, `configuration`, `summary`, paged `series`/`events`, `clients` and `published-flows`.
 - Preview exact deduplicated targets with `POST targets/preview`. Bounded detail includes honest cached support/unknown notes, total count and an explicit truncation flag. Preview does not collect from clients.
 - Save/delete `rules/{ruleId}`, `groups/{groupId}` or `bypasses/{bypassId}` with an expected configuration revision and reason.
+- Read `metrics/agents/{agentId}/catalogue` and post a bounded history range to `metrics/agents/{agentId}/query`. Whole-range summaries carry decimal-string byte totals and explicit quality. Read or update `metrics/settings` with the appropriate permission.
 - Read `agents/{agentId}/series` or acknowledge/clear through `POST agents/{agentId}/rules/{ruleId}/ack` and `/clear`. The resource key is a query parameter so volume/service names are not path segments.
 
 Shared HTTP DTOs live in `Shared/Contracts/Monitoring/MonitoringApiContracts.cs`. A durable save returns its saved revision even if service-watch reconciliation is pending; `WatchPolicyUpdatePending` indicates that the background renewal must finish, rather than asking the operator to repeat the save.

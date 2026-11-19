@@ -92,6 +92,30 @@ public static partial class NetRatelMcpToolDefinitions
                 properties["data"]!["description"] = MonitoringAuthoringGuidance.Text;
                 properties["data"]!["examples"] = MonitoringExamples(operation.Operation == "preview_targets");
             }
+            if (operation.Operation == "metrics_query")
+            {
+                var metricFields = properties["data"]!["properties"]!;
+                metricFields["seriesIds"]!["minItems"] = 1;
+                metricFields["seriesIds"]!["maxItems"] = MetricHistoryLimits.MaximumSeriesPerQuery;
+                metricFields["seriesIds"]!["uniqueItems"] = true;
+                metricFields["maximumPointsPerSeries"]!["minimum"] = 2;
+                metricFields["maximumPointsPerSeries"]!["maximum"] = MetricHistoryLimits.MaximumPointsPerSeries;
+                metricFields["resolutionSeconds"]!["minimum"] = MetricHistoryLimits.BaseSeconds;
+                metricFields["resolutionSeconds"]!["maximum"] = 86_400;
+                properties["data"]!["description"] = "Use exact series IDs from metrics_catalog on this client and an inclusive fromUtc/exclusive toExclusiveUtc range. Summaries cover the whole request. RX/TX rates are B/s, exact byte totals are decimal strings, and unavailable weighted values are null. Quality flags identify estimated edges and partial coverage.";
+            }
+            if (operation.Operation == "save_metrics_settings")
+            {
+                var metricFields = properties["data"]!["properties"]!;
+                metricFields["watches"]!["maxItems"] = MetricHistoryLimits.MaximumWatches;
+                foreach (var (name, maximum) in new[] { ("baseDays", MetricHistoryLimits.MaximumBaseDays),
+                             ("fiveMinuteDays", MetricHistoryLimits.MaximumFiveMinuteDays), ("hourlyDays", MetricHistoryLimits.MaximumHourlyDays) })
+                {
+                    metricFields[name]!["minimum"] = 1;
+                    metricFields[name]!["maximum"] = maximum;
+                }
+                properties["data"]!["description"] = "Review the current revision with metrics_settings. Retention is absolute age, ordered by tier and defaults to 14/90/365 days. Watches are exact client/platform/service selections.";
+            }
             if (operation.Tool == "netratel_flows" && operation.Operation == "delete")
             {
                 properties["data"]!["properties"]!["expectedRevision"]!["minimum"] = 1;

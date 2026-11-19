@@ -75,7 +75,7 @@ internal sealed partial class ManagedOperationAdmission
         var contextRoutes = new List<McpOperatorRouteAccessRequest>(agentIds.Count);
         foreach (var agentId in agentIds)
         {
-            var route = await AiContextRouteAsync(descriptor, admitted, agentId, ct).ConfigureAwait(false);
+            var route = await ContextRouteAsync(descriptor, admitted, agentId, ct).ConfigureAwait(false);
             var result = await routes.EvaluateAsync(route, ct).ConfigureAwait(false);
             if (!result.Decision.IsAllowed)
                 return Denied(result.Decision.FailureCode ?? "policy_denied");
@@ -91,7 +91,7 @@ internal sealed partial class ManagedOperationAdmission
         var visible = new List<InvestigationClientDto>(clients.Count);
         foreach (var client in clients)
         {
-            var route = await AiContextRouteAsync(descriptor, admitted, client.AgentId, ct).ConfigureAwait(false);
+            var route = await ContextRouteAsync(descriptor, admitted, client.AgentId, ct).ConfigureAwait(false);
             if ((await routes.EvaluateAsync(route, ct).ConfigureAwait(false)).Decision.IsAllowed)
                 visible.Add(client);
         }
@@ -113,7 +113,7 @@ internal sealed partial class ManagedOperationAdmission
             {
                 if (!decisions.TryGetValue(agentId, out var targetAllowed))
                 {
-                    var route = await AiContextRouteAsync(descriptor, admitted, agentId, ct).ConfigureAwait(false);
+                    var route = await ContextRouteAsync(descriptor, admitted, agentId, ct).ConfigureAwait(false);
                     targetAllowed = (await routes.EvaluateAsync(route, ct).ConfigureAwait(false)).Decision.IsAllowed;
                     decisions.Add(agentId, targetAllowed);
                 }
@@ -129,7 +129,7 @@ internal sealed partial class ManagedOperationAdmission
         return visible;
     }
 
-    private async Task<McpOperatorRouteAccessRequest> AiContextRouteAsync(ManagedOperationDescriptor descriptor,
+    private async Task<McpOperatorRouteAccessRequest> ContextRouteAsync(ManagedOperationDescriptor descriptor,
         ManagedOperationAdmissionResult admitted, Guid agentId, CancellationToken ct)
     {
         var source = admitted.Decision!.Request;

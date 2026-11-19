@@ -68,6 +68,7 @@ public static class MonitoringEndpoints
         group.MapPost("/agents/{agentId:guid}/rules/{ruleId:guid}/clear", (int tenantId, Guid agentId, Guid ruleId, string resourceKey,
             [FromBody] MonitoringOperatorActionDto body, HttpContext http, MonitoringApiService service, CancellationToken ct) =>
             ExecuteAsync(() => service.ActAsync(tenantId, agentId, ruleId, resourceKey, body, true, http.User, ct))).RequireAuthorization(MonitoringAuthorization.ClearPolicy);
+        group.MapMetricHistory();
         return app;
     }
 

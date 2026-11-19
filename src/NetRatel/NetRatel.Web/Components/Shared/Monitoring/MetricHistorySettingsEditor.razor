@@ -1,0 +1,250 @@
+@using System.Net
+@using NetRatel.Shared.Contracts.Monitoring
+@using NetRatel.Shared.Contracts.Services
+@using NetRatel.Web.Services.Monitoring
+@inject IMonitoringApiService Api
+@implements IDisposable
+
+<MudPaper Class="pa-4 metric-settings" Outlined="true">
+    <div class="metric-settings-heading">
+        <MudText Typo="Typo.h6">Metrics collection &amp; retention</MudText>
+        <MudButton OnClick="ToggleAsync" aria-expanded="@_open">@( _open ? "Close settings" : "Edit metrics settings")</MudButton>
+    </div>
+    @if (_open)
+    {
+        @if (_error is not null) { <MudAlert Severity="Severity.Error">@_error</MudAlert> }
+        @if (_success is not null) { <p role="status">@_success</p> }
+        @if (_settings is { } settings)
+        {
+            <div class="metric-policy-fields">
+                <label class="metric-enabled"><input type="checkbox" @bind="_enabled" disabled="@_saving" />Collect historical metrics</label>
+                <div><span>Base resolution</span><strong>One minute</strong></div>
+                <label>One-minute and detailed service history (days)
+                    <input type="number" min="1" max="@settings.MaximumBaseDays" @bind="_baseDays" disabled="@_saving" />
+                    @if (_baseDays < 1 || _baseDays > settings.MaximumBaseDays) { <small role="alert">Enter 1–@settings.MaximumBaseDays days.</small> }
+                </label>
+                <label>Five-minute summaries (days)
+                    <input type="number" min="@_baseDays" max="@settings.MaximumFiveMinuteDays" @bind="_fiveDays" disabled="@_saving" />
+                    @if (_fiveDays < _baseDays || _fiveDays > settings.MaximumFiveMinuteDays) { <small role="alert">Enter at least @_baseDays and at most @settings.MaximumFiveMinuteDays days.</small> }
+                </label>
+                <label>Hourly summaries (days)
+                    <input type="number" min="@_fiveDays" max="@settings.MaximumHourlyDays" @bind="_hourDays" disabled="@_saving" />
+                    @if (_hourDays < _fiveDays || _hourDays > settings.MaximumHourlyDays) { <small role="alert">Enter at least @_fiveDays and at most @settings.MaximumHourlyDays days.</small> }
+                </label>
+            </div>
+            <p>Each tier expires by the age of its observations. Shortening a horizon expires older data. Increasing a horizon cannot restore purged history. Disabling collection leaves retained history readable.</p>
+            <MudText Typo="Typo.subtitle1">Service history watches</MudText>
+            <p>Select the exact computer and service. Alert-required watches receive priority. Watch assignments become active when the client receives the policy.</p>
+            <MonitoringClientFilter TenantId="TenantId" Value="_watchAgent" ValueChanged="SelectWatchAgentAsync" EmptyLabel="Select a computer" />
+            <div class="metric-policy-fields">
+                <label>Platform<select @bind="_platform" disabled="@_saving"><option value="@ClientServicePlatform.Windows">Windows</option><option value="@ClientServicePlatform.LinuxSystemd">Linux systemd</option></select></label>
+                <label>Service name<input @bind="_service" maxlength="@ClientServicesLimits.MaximumNameLength" placeholder="Spooler or sshd.service" disabled="@_saving" /></label>
+                <MudButton OnClick="AddWatch" Disabled="@(_watchAgent is null || _saving)">Add watch</MudButton>
+            </div>
+            @if (_watches.Count > 0 || _inherited.Count > 0)
+            {
+                <table class="metric-watch-table">
+                    <thead><tr><th>Service</th><th>Computer</th><th>Watch status</th><th></th></tr></thead>
+                    <tbody>
+                        @foreach (var watch in _watches)
+                        {
+                            <tr><td>@watch.ServiceName</td><td>@ComputerName(watch.AgentId)</td><td>@WatchStatus(watch)</td>
+                                <td><MudButton Size="Size.Small" OnClick="() => _watches.Remove(watch)" Disabled="@_saving">Remove</MudButton></td></tr>
+                        }
+                        @foreach (var item in _inherited.Where(item => item.RequiredByAlerts && !_watches.Contains(item.Watch)))
+                        {
+                            <tr><td>@item.Watch.ServiceName</td><td>@ComputerName(item.Watch.AgentId)</td><td>Required by alerts · @Activation(item)</td><td></td></tr>
+                        }
+                    </tbody>
+                </table>
+            }
+            <label>Reason for change<input @bind="_reason" maxlength="512" disabled="@_saving" /></label>
+            @if (_conflict is { } latest)
+            {
+                <p>Revision @latest.Policy.Revision is current. Collection @(latest.Policy.Enabled ? "enabled" : "disabled") · @latest.Policy.BaseDays / @latest.Policy.FiveMinuteDays / @latest.Policy.HourlyDays days · @latest.Policy.Watches.Length explicit watches.</p>
+                <details><summary>Review the current watch selection</summary><ul>
+                    @foreach (var watch in latest.Policy.Watches) { <li>@watch.ServiceName on @ComputerName(watch.AgentId)</li> }
+                </ul></details>
+                <MudButton OnClick="KeepDraft">Keep my edits against the reviewed revision</MudButton>
+            }
+            <MudButton OnClick="SaveAsync" Variant="Variant.Filled" Color="Color.Primary" Disabled="@(!CanSave)">Save metrics settings</MudButton>
+        }
+        else if (_loading) { <p role="status">Loading metrics settings…</p> }
+        else { <MudButton OnClick="ReadAsync">Retry metrics settings</MudButton> }
+    }
+</MudPaper>
+
+@code {
+    [Parameter] public int TenantId { get; set; }
+    [Parameter] public bool OpenOnLoad { get; set; }
+    [Parameter] public Func<Guid, string>? ClientName { get; set; }
+    private readonly CancellationTokenSource _lifetime = new();
+    private CancellationTokenSource? _clientRead;
+    private MetricHistorySettings? _settings, _conflict;
+    private readonly List<MetricServiceWatch> _watches = [];
+    private IReadOnlyList<MetricWatchActivation> _inherited = [];
+    private bool _open, _loading, _saving, _enabled, _openedByLink;
+    private string? _error, _success, _reason, _service;
+    private int _baseDays, _fiveDays, _hourDays;
+    private Guid? _watchAgent;
+    private ClientServicePlatform _platform = ClientServicePlatform.Windows;
+    private bool CanSave => !_saving && _conflict is null && _settings is { } settings &&
+        _baseDays >= 1 && _baseDays <= settings.MaximumBaseDays && _fiveDays >= _baseDays &&
+        _fiveDays <= settings.MaximumFiveMinuteDays && _hourDays >= _fiveDays &&
+        _hourDays <= settings.MaximumHourlyDays && !string.IsNullOrWhiteSpace(_reason);
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (!OpenOnLoad || _openedByLink) return;
+        _open = _openedByLink = true;
+        await ReadAsync();
+    }
+
+    private async Task ToggleAsync()
+    {
+        _open = !_open;
+        if (_open && _settings is null) await ReadAsync();
+    }
+
+    private async Task ReadAsync()
+    {
+        if (_loading) return;
+        _loading = true;
+        _error = null;
+        try
+        {
+            var result = await Api.GetMetricsSettingsAsync(TenantId, token: _lifetime.Token);
+            if (!_lifetime.IsCancellationRequested) LoadDraft(result);
+        }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { return; }
+        catch (HttpRequestException error) when (error.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+        { LoseSettingsAccess(); }
+        catch (Exception error) when (error is HttpRequestException or System.Text.Json.JsonException)
+        { _error = "Metrics settings could not be loaded."; }
+        finally { _loading = false; }
+    }
+
+    private async Task SelectWatchAgentAsync(Guid? agent)
+    {
+        _watchAgent = agent;
+        _inherited = [];
+        _clientRead?.Cancel();
+        _clientRead?.Dispose();
+        if (agent is null) return;
+        _clientRead = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+        var token = _clientRead.Token;
+        try
+        {
+            var result = await Api.GetMetricsSettingsAsync(TenantId, agent, token);
+            if (!token.IsCancellationRequested && _watchAgent == agent) _inherited = result.Activations;
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { return; }
+        catch (HttpRequestException error) when (error.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+        { LoseSettingsAccess(); }
+        catch (Exception error) when (error is HttpRequestException or System.Text.Json.JsonException)
+        { if (!token.IsCancellationRequested) _error = "Could not load inherited watches for this computer."; }
+    }
+
+    private void AddWatch()
+    {
+        if (_watchAgent is not { } agent || _settings is not { } settings ||
+            !ClientServiceContractValidator.IsValidServiceName(_service?.Trim(), _platform))
+        { _error = "Choose a computer and enter a valid service name for its platform."; return; }
+        if (_watches.Count >= settings.MaximumWatches || _watches.Count(watch => watch.AgentId == agent) >= settings.MaximumWatchesPerAgent)
+        { _error = "This selection reached the service watch limit."; return; }
+        var service = _service!.Trim();
+        if (_platform == ClientServicePlatform.Windows) service = service.ToUpperInvariant();
+        var watch = new MetricServiceWatch(agent, _platform, service);
+        if (_watches.Contains(watch)) { _error = "This service is already selected."; return; }
+        _watches.Add(watch);
+        _service = _error = null;
+    }
+
+    private async Task SaveAsync()
+    {
+        if (!CanSave || _settings is not { } settings) return;
+        _saving = true;
+        _error = _success = null;
+        var token = _lifetime.Token;
+        try
+        {
+            var write = new MetricHistoryPolicyWrite(settings.Policy.Revision, _enabled, _baseDays, _fiveDays, _hourDays, _watches.ToArray(), _reason!.Trim());
+            var saved = await Api.SaveMetricsSettingsAsync(TenantId, write, token);
+            if (token.IsCancellationRequested) return;
+            if (saved.Policy.Revision != settings.Policy.Revision + 1)
+                throw new HttpRequestException("Could not verify the saved revision. Refresh to check its result.");
+            LoadDraft(saved);
+            _success = $"Metrics settings saved as revision {saved.Policy.Revision}.";
+            _reason = null;
+            if (_watchAgent is not null) await SelectWatchAgentAsync(_watchAgent);
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { return; }
+        catch (HttpRequestException error) when (error.StatusCode == HttpStatusCode.Conflict)
+        {
+            _error = error.Message;
+            await LoadConflictAsync(settings.Policy.Revision, token);
+        }
+        catch (HttpRequestException error) when (error.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+        { LoseSettingsAccess(); }
+        catch (Exception error) when (error is HttpRequestException or System.Text.Json.JsonException)
+        { if (!token.IsCancellationRequested) _error = error is HttpRequestException ? error.Message : "Could not confirm the settings save."; }
+        finally { _saving = false; }
+    }
+
+    private async Task LoadConflictAsync(long expected, CancellationToken token)
+    {
+        try
+        {
+            var latest = await Api.GetMetricsSettingsAsync(TenantId, token: token);
+            if (!token.IsCancellationRequested && latest.Policy.Revision != expected) _conflict = latest;
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { return; }
+        catch (HttpRequestException error) when (error.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+        { LoseSettingsAccess(); }
+        catch (Exception error) when (error is HttpRequestException or System.Text.Json.JsonException)
+        { if (!token.IsCancellationRequested) _error = "Could not read the current revision. Your edits are still in the form."; }
+    }
+
+    private void LoseSettingsAccess()
+    {
+        _settings = _conflict = null;
+        _watches.Clear();
+        _inherited = [];
+        _reason = _service = _success = null;
+        _error = "You do not have permission to manage metrics settings.";
+    }
+
+    private void KeepDraft()
+    {
+        _settings = _conflict;
+        _conflict = null;
+        _error = null;
+    }
+
+    private void LoadDraft(MetricHistorySettings settings)
+    {
+        _settings = settings;
+        _enabled = settings.Policy.Enabled;
+        _baseDays = settings.Policy.BaseDays;
+        _fiveDays = settings.Policy.FiveMinuteDays;
+        _hourDays = settings.Policy.HourlyDays;
+        _watches.Clear();
+        _watches.AddRange(settings.Policy.Watches);
+    }
+
+    private string ComputerName(Guid agent) => ClientName?.Invoke(agent) ?? agent.ToString("D");
+    private string WatchStatus(MetricServiceWatch watch)
+    {
+        var item = _inherited.FirstOrDefault(item => item.Watch == watch) ?? _settings?.Activations.FirstOrDefault(item => item.Watch == watch);
+        return item is null ? "Unsaved selection" : (item.RequiredByAlerts ? "Also required by alerts · " : "") + Activation(item);
+    }
+    private static string Activation(MetricWatchActivation item) => item.ActiveInPolicy
+        ? item.AwaitingEvidence ? "Awaiting current evidence" : "Current evidence" : "Outside the active watch policy";
+
+    public void Dispose()
+    {
+        _lifetime.Cancel();
+        _clientRead?.Dispose();
+        _lifetime.Dispose();
+    }
+}

@@ -12,6 +12,7 @@ using NetRatel.Application.Services;
 using NetRatel.API.Services;
 using NetRatel.Shared.Contracts.Services;
 using NetRatel.Application.Monitoring;
+using NetRatel.Application.Metrics;
 
 namespace NetRatel.API.Gateway;
 
@@ -30,9 +31,19 @@ public sealed class AgentTelemetryGatewayV2Service(
     ILogger<AgentTelemetryGatewayV2Service> logger,
     IClientServicesRouter? servicesRouter = null,
     IClientServiceWatchPolicySource? watchPolicySource = null,
-    IMonitoringRuntime? monitoring = null)
+    IMonitoringRuntime? monitoring = null,
+    IMetricHistoryIngestion? history = null)
     : global::NetRatel.AgentGateway.Contracts.V1.AgentTelemetryGatewayV2.AgentTelemetryGatewayV2Base
 {
+    private void OfferHistory(Action offer)
+    {
+        try { offer(); }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "Accepted gateway evidence could not be queued for historical metrics.");
+        }
+    }
+
     public override async Task Connect(
         IAsyncStreamReader<AgentTelemetryFrame> requestStream,
         IServerStreamWriter<GatewayTelemetryFrame> responseStream,
@@ -192,7 +203,11 @@ public sealed class AgentTelemetryGatewayV2Service(
                                     throw new RpcException(new Status(StatusCode.Unavailable, "The accepted services evidence is unavailable."));
                                 RequireMonitoringAccepted(await monitoring.RecordServicesAsync(new(evidenceFence, acceptedState), cancellationToken).ConfigureAwait(false));
                             }
-                            if (!registration.TryPublish(() => { }))
+                            if (!registration.TryPublish(() =>
+                            {
+                                if (history is not null && evidenceFence is not null && servicesResult.State is { } state)
+                                    OfferHistory(() => history.Offer(evidenceFence, state, chunk.PayloadBytes));
+                            }))
                                 throw new RpcException(new Status(StatusCode.Aborted, "Telemetry registration has been replaced."));
                             acceptedSequence = servicesResult.LastAcceptedSequence;
                         }
@@ -212,6 +227,8 @@ public sealed class AgentTelemetryGatewayV2Service(
                                 {
                                     compatibilityRegistry.Upsert(snapshot);
                                     liveRegistry.PublishAccepted(snapshot);
+                                    if (history is not null && evidenceFence is not null)
+                                        OfferHistory(() => history.Offer(evidenceFence, snapshot, envelope.CalculateSize()));
                                 }
                             }))
                             {

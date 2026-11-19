@@ -235,6 +235,21 @@ request limit. Use the current configuration revision as
 next resource revision as described below. On a revision conflict, read again,
 reconcile the intended change, and request another review.
 
+### Historical metrics
+
+The CLI and both MCP transports expose the same historical catalogue, query and policy as [Monitoring](../operations/MONITORING.md#historical-metrics). Discover the exact tenant and computer first. In your CLI terminal, run the catalogue, then substitute the interface RX and TX series IDs from its results.
+
+```bash
+netratel monitoring metrics-catalog --tenant-id 7 --agent-id 11111111-1111-4111-8111-111111111111
+netratel monitoring metrics-query --tenant-id 7 --agent-id 11111111-1111-4111-8111-111111111111 \
+  --body '{"seriesIds":[41,42],"fromUtc":"2026-11-18T09:00:00Z","toExclusiveUtc":"2026-11-18T10:00:00Z","maximumPointsPerSeries":120}'
+netratel monitoring metrics-status --tenant-id 7
+```
+
+For stdio or HTTP MCP, call `netratel_monitoring` with operation `metrics_catalog`, then `metrics_query` with a request containing `tenantId`, `agentId` and the same typed range under `data`. Follow the catalogue's `nextCursor` in the same tenant and computer. Query at most 12 series, with two to 2,000 display points per series and a total response budget. `summary` covers the entire requested range using the retained resolution. RX/TX rates use B/s. `transferredBytes` is an exact decimal string or null when unavailable. Inspect `coveredMicroseconds` and `quality` when comparing totals. Clipped retained intervals can have estimated timing.
+
+Reads use `monitoring.read`. Tenant managers use `metrics-settings` / `metrics_settings` to read the current revision, and `save-metrics-settings` / `save_metrics_settings` to submit `expectedRevision`, `enabled`, ordered `baseDays`, `fiveMinuteDays`, `hourlyDays`, exact `watches` and a reason. Inspect the preview before adding CLI `--confirm` or MCP `confirm: true`. Confirmed writes require `monitoring.manage` and the current operation and target policies.
+
 ### Service investigation and control
 
 Read inventory first to obtain the exact service name and reported platform.

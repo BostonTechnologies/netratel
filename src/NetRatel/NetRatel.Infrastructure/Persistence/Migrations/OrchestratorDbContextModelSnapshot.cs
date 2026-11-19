@@ -18,11 +18,335 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "10.0.14")
+                .HasAnnotation("ProductVersion", "10.0.15")
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
             NpgsqlModelBuilderExtensions.HasPostgresExtension(modelBuilder, "pg_trgm");
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Metrics.MetricBucketRow", b =>
+                {
+                    b.Property<int>("TenantId")
+                        .HasColumnType("integer");
+
+                    b.Property<long>("SeriesId")
+                        .HasColumnType("bigint");
+
+                    b.Property<short>("Tier")
+                        .HasColumnType("smallint");
+
+                    b.Property<DateTimeOffset>("Bucket")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<decimal>("Bytes")
+                        .HasPrecision(29)
+                        .HasColumnType("numeric(29,0)");
+
+                    b.Property<long>("Count")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("Covered")
+                        .HasColumnType("bigint");
+
+                    b.Property<decimal?>("FreeBytes")
+                        .HasPrecision(20)
+                        .HasColumnType("numeric(20,0)");
+
+                    b.Property<double>("Integral")
+                        .HasColumnType("double precision");
+
+                    b.Property<double?>("Last")
+                        .HasColumnType("double precision");
+
+                    b.Property<DateTimeOffset?>("LastAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("LastOrderAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<double?>("Max")
+                        .HasColumnType("double precision");
+
+                    b.Property<double?>("Min")
+                        .HasColumnType("double precision");
+
+                    b.Property<long>("Other")
+                        .HasColumnType("bigint");
+
+                    b.Property<int>("Quality")
+                        .HasColumnType("integer");
+
+                    b.Property<long>("Running")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("Stopped")
+                        .HasColumnType("bigint");
+
+                    b.Property<decimal?>("TotalBytes")
+                        .HasPrecision(20)
+                        .HasColumnType("numeric(20,0)");
+
+                    b.HasKey("TenantId", "SeriesId", "Tier", "Bucket");
+
+                    b.HasIndex("TenantId", "Tier", "Bucket", "SeriesId");
+
+                    b.ToTable("MetricBuckets", (string)null);
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Metrics.MetricInstanceBudgetRow", b =>
+                {
+                    b.Property<int>("Id")
+                        .HasColumnType("integer");
+
+                    b.Property<long>("RetainedRows")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("MetricInstanceBudgets", (string)null);
+
+                    b.HasData(
+                        new
+                        {
+                            Id = 1,
+                            RetainedRows = 0L
+                        });
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Metrics.MetricPolicyAuditRow", b =>
+                {
+                    b.Property<int>("TenantId")
+                        .HasColumnType("integer");
+
+                    b.Property<long>("Revision")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("Actor")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<DateTimeOffset>("ChangedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Policy")
+                        .IsRequired()
+                        .HasColumnType("jsonb");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)");
+
+                    b.HasKey("TenantId", "Revision");
+
+                    b.ToTable("MetricPolicyAudits", (string)null);
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Metrics.MetricPolicyRow", b =>
+                {
+                    b.Property<int>("TenantId")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("BaseDays")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTimeOffset?>("BasePurgedBefore")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Disposition")
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)");
+
+                    b.Property<bool>("Enabled")
+                        .HasColumnType("boolean");
+
+                    b.Property<DateTimeOffset?>("EnabledSince")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("FiveMinuteDays")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTimeOffset?>("FivePurgedBefore")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("FiveSealedBefore")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("HourSealedBefore")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("HourlyDays")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTimeOffset?>("LastAcceptedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("LastPersistedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("LastPurgeAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("LastRollupAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long>("LateObservations")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("PartialFrames")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("RetainedRows")
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("Revision")
+                        .HasColumnType("bigint");
+
+                    b.Property<int>("SeriesCount")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTimeOffset?>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("TenantId");
+
+                    b.ToTable("MetricPolicies", (string)null);
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Metrics.MetricReceiptRow", b =>
+                {
+                    b.Property<int>("TenantId")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("BatchId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("TenantId", "BatchId");
+
+                    b.HasIndex("TenantId", "CreatedAt");
+
+                    b.ToTable("MetricReceipts", (string)null);
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Metrics.MetricSeriesRow", b =>
+                {
+                    b.Property<int>("TenantId")
+                        .HasColumnType("integer");
+
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityAlwaysColumn(b.Property<long>("Id"));
+
+                    b.Property<Guid>("AgentId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid?>("CollectionId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("FirstAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<double?>("Gauge")
+                        .HasColumnType("double precision");
+
+                    b.Property<int>("Kind")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Label")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<DateTimeOffset>("LastAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("LastIntervalEnd")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("LastSourceAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("Quality")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Resource")
+                        .IsRequired()
+                        .HasMaxLength(264)
+                        .HasColumnType("character varying(264)");
+
+                    b.Property<decimal>("Sequence")
+                        .HasPrecision(20)
+                        .HasColumnType("numeric(20,0)");
+
+                    b.Property<int?>("State")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("StreamId")
+                        .HasColumnType("uuid");
+
+                    b.Property<long>("StreamOrdinal")
+                        .HasColumnType("bigint");
+
+                    b.Property<decimal>("WatchRevision")
+                        .HasPrecision(20)
+                        .HasColumnType("numeric(20,0)");
+
+                    b.HasKey("TenantId", "Id");
+
+                    b.HasIndex("TenantId", "AgentId", "Id");
+
+                    b.HasIndex("TenantId", "AgentId", "Kind", "Resource")
+                        .IsUnique();
+
+                    b.ToTable("MetricSeries", (string)null);
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Metrics.MetricServiceDetailRow", b =>
+                {
+                    b.Property<int>("TenantId")
+                        .HasColumnType("integer");
+
+                    b.Property<long>("SeriesId")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTimeOffset>("ObservedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("State")
+                        .HasColumnType("integer");
+
+                    b.HasKey("TenantId", "SeriesId", "ObservedAt");
+
+                    b.HasIndex("TenantId", "ObservedAt");
+
+                    b.ToTable("MetricServiceDetails", (string)null);
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Metrics.MetricWatchRow", b =>
+                {
+                    b.Property<int>("TenantId")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("AgentId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("Platform")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Name")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.HasKey("TenantId", "AgentId", "Platform", "Name");
+
+                    b.ToTable("MetricWatches", (string)null);
+                });
 
             modelBuilder.Entity("NetRatel.Infrastructure.Netclaw.AiInvestigationApprovalRecord", b =>
                 {

@@ -1,5 +1,6 @@
 using Grpc.Core;
 using NetRatel.AgentGateway.Contracts.V1;
+using NetRatel.Shared.Contracts.Monitoring;
 
 namespace NetRatel.API.Gateway;
 
@@ -49,7 +50,8 @@ public static class AgentTelemetryProtocolValidator
         }
 
         if (frame.Cpu is null && frame.Memory is null && frame.Disks.Count == 0 &&
-            frame.Networks.Count == 0 && frame.TransportHealth is null)
+            frame.Networks.Count == 0 && frame.TransportHealth is null && frame.CpuQuality == TelemetryMeasurementQuality.Legacy &&
+            frame.NetworkQuality == TelemetryMeasurementQuality.Legacy)
         {
             return Invalid(StatusCode.InvalidArgument, "At least one supported telemetry value is required.");
         }
@@ -59,7 +61,7 @@ public static class AgentTelemetryProtocolValidator
             return Invalid(StatusCode.ResourceExhausted, "Telemetry scope count exceeds the configured limit.");
         }
 
-        var metricValidation = ValidateCpu(frame.Cpu);
+        var metricValidation = ValidateCpu(frame.Cpu, frame.CpuQuality);
         if (!metricValidation.IsValid)
         {
             return metricValidation;
@@ -77,7 +79,7 @@ public static class AgentTelemetryProtocolValidator
             return metricValidation;
         }
 
-        metricValidation = ValidateNetworks(frame.Networks);
+        metricValidation = ValidateNetworks(frame);
         if (!metricValidation.IsValid)
         {
             return metricValidation;
@@ -86,8 +88,12 @@ public static class AgentTelemetryProtocolValidator
         return ValidateTransportHealth(frame.TransportHealth);
     }
 
-    private static AgentFrameValidationResult ValidateCpu(TelemetryCpu? cpu)
+    private static AgentFrameValidationResult ValidateCpu(TelemetryCpu? cpu, TelemetryMeasurementQuality quality)
     {
+        if (!Enum.IsDefined(quality) || (quality == TelemetryMeasurementQuality.Valid && !HasValidWindow(cpu?.Window)) ||
+            (quality != TelemetryMeasurementQuality.Valid && cpu?.Window is not null) ||
+            (quality is not (TelemetryMeasurementQuality.Legacy or TelemetryMeasurementQuality.Valid) && cpu is not null))
+            return Invalid(StatusCode.InvalidArgument, "CPU measurement window or quality is invalid.");
         if (cpu is not null &&
             (!IsPercentage(cpu.UsagePercent) ||
              (cpu.HasLoadAverage && !IsNonNegativeFinite(cpu.LoadAverage)) ||
@@ -153,18 +159,45 @@ public static class AgentTelemetryProtocolValidator
             disk.HasTotalBytes && disk.HasFreeBytes;
     }
 
-    private static AgentFrameValidationResult ValidateNetworks(IEnumerable<TelemetryNetwork> networks)
+    private static AgentFrameValidationResult ValidateNetworks(TelemetryFrame frame)
     {
-        var networkArray = networks as TelemetryNetwork[] ?? networks.ToArray();
-        if (!HaveValidUniqueScopes(networkArray.Select(network => network.Scope)) ||
-            networkArray.Any(network =>
+        var identities = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (!Enum.IsDefined(frame.NetworkQuality) || frame.NetworkOmittedCount > 0 && frame.NetworkQuality != TelemetryMeasurementQuality.Partial ||
+            !HaveValidUniqueScopes(frame.Networks.Select(network => network.Scope)) ||
+            frame.Networks.Any(network =>
                 !IsNonNegativeFinite(network.RxBytesPerSec) ||
-                !IsNonNegativeFinite(network.TxBytesPerSec)))
+                !IsNonNegativeFinite(network.TxBytesPerSec) || !HasValidNetworkEvidence(network, identities)))
         {
             return Invalid(StatusCode.InvalidArgument, "Network telemetry contains an unsupported value or duplicate scope.");
         }
 
         return AgentFrameValidationResult.Success;
+    }
+
+    private static bool HasValidNetworkEvidence(TelemetryNetwork network, HashSet<string> identities)
+    {
+        if (network.Quality == TelemetryMeasurementQuality.Legacy)
+            return network.InterfaceId.Length == 0 && network.DisplayName.Length == 0 && network.CounterGeneration.Length == 0 &&
+                network.Window is null && !network.HasRxBytes && !network.HasTxBytes;
+        if (!Enum.IsDefined(network.Quality) || network.InterfaceId.Length != 64 || !network.InterfaceId.All(Uri.IsHexDigit) ||
+            !identities.Add(network.InterfaceId) || string.IsNullOrWhiteSpace(network.DisplayName) || network.DisplayName.Length > 128 ||
+            network.DisplayName.Any(char.IsControl) || !Guid.TryParseExact(network.CounterGeneration, "D", out var generation)) return false;
+        return network.Quality == TelemetryMeasurementQuality.Valid
+            ? generation != Guid.Empty && network.HasRxBytes && network.HasTxBytes && HasValidWindow(network.Window)
+            : network.Window is null && !network.HasRxBytes && !network.HasTxBytes;
+    }
+
+    private static bool HasValidWindow(TelemetryMeasurementWindow? window)
+    {
+        if (window is null || window.ElapsedMicroseconds is 0 or > MetricMeasurementWindow.MaximumWindowSeconds * 1_000_000L ||
+            !IsValidTimestamp(window.StartedAtUtc) || !IsValidTimestamp(window.EndedAtUtc) || !IsValidTimestamp(window.AttributedEndUtc))
+            return false;
+        var attributed = window.AttributedEndUtc.ToDateTimeOffset();
+        var ticks = (long)window.ElapsedMicroseconds * TimeSpan.TicksPerMicrosecond;
+        if (attributed.UtcTicks < ticks) return false;
+        var budget = TimeSpan.FromSeconds(MetricMeasurementWindow.MaximumClockAdjustmentSeconds);
+        return (attributed - window.EndedAtUtc.ToDateTimeOffset()).Duration() <= budget &&
+            (attributed.AddTicks(-ticks) - window.StartedAtUtc.ToDateTimeOffset()).Duration() <= budget;
     }
 
     private static AgentFrameValidationResult ValidateTransportHealth(TelemetryTransportHealth? health)

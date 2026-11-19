@@ -230,6 +230,7 @@ public sealed class ClientServicesActor : ReceiveActor
             Revision = checked(_state.Revision + 1),
             WatchPolicyRevision = policy.Revision,
             MonitoredServiceNames = policy.ServiceNames.ToArray(),
+            WatchSelectionIdentity = update.SelectionIdentity,
             WatchedServices = _state.WatchedServices.Where(service => policy.ServiceNames.Any(name => MatchesName(service, name))).ToArray()
         };
         var saved = await _store.SaveAsync(candidate, _state.Revision, cancellationToken);

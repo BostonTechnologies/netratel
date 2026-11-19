@@ -15,7 +15,7 @@
         <MudText Typo="Typo.h5">Monitoring</MudText>
         <div class="monitoring-toolbar">
             <label>Tenant<select data-testid="monitoring-tenant" value="@State.TenantId" @onchange="ChangeTenant" disabled="@(_editor is not null)"><option value="0">Select tenant</option>@foreach (var tenant in _tenants) { <option value="@tenant.TenantId">@tenant.Name</option> }</select></label>
-            @if (_tab != "Manage")
+            @if (_tab is "Active" or "History")
             {
             <label>Search alerts<input type="search" value="@_search" @oninput="SearchChanged" maxlength="256" placeholder="Computer, rule or resource" data-testid="monitoring-search" /></label>
             <details class="monitoring-filters" data-testid="monitoring-filters" open="@_filtersOpen" @onkeydown="FiltersKey" @onkeydown:stopPropagation>
@@ -29,9 +29,18 @@
                 </div>
             </details>
             }
-            <MudTooltip Text="Refresh monitoring"><MudIconButton Icon="@Icons.Material.Filled.Refresh" OnClick="Refresh" Disabled="@(State.Loading || _busy)" aria-label="Refresh monitoring" data-testid="monitoring-refresh" /></MudTooltip>
+            @if (_tab != "Metrics") { <MudTooltip Text="Refresh monitoring"><MudIconButton Icon="@Icons.Material.Filled.Refresh" OnClick="Refresh" Disabled="@(State.Loading || _busy)" aria-label="Refresh monitoring" data-testid="monitoring-refresh" /></MudTooltip> }
         </div>
     </header>
+    @if (_tab == "Metrics" && State.TenantId > 0 && _startupError is null)
+    {
+        @ViewTabs
+        <MonitoringMetricsWorkspace @key="State.TenantId" TenantId="State.TenantId" AgentId="RequestedMetricsClient" Range="@RequestedMetricsRange"
+            From="@RequestedMetricsFrom" To="@RequestedMetricsTo" InterfaceKey="@RequestedMetricsInterface" DiskId="RequestedMetricsDisk"
+            ServiceId="RequestedMetricsService" AlertResource="@RequestedMetricsResource" Zone="_timeZone" />
+    }
+    else
+    {
     @if (_startupError is not null || State.Error is not null) { <MudAlert Severity="Severity.Error" data-testid="monitoring-read-error">@(_startupError ?? State.Error)</MudAlert> }
     @if (_filterError is not null) { <MudAlert Severity="Severity.Error" data-testid="monitoring-filter-error">@_filterError</MudAlert> }
     @if (_tab != "Manage" && FilterCount > 0)
@@ -66,6 +75,10 @@
                 @if (selectedReceipt.IncidentUrl is { } selectedTicket) { <a class="monitoring-detail-button" href="@selectedTicket" target="_blank" rel="noopener noreferrer">Open RatelDesk ticket</a> }
             }
             @if (selected.Occurrence.FlowOutcome?.FlowRunId is { } runId) { <a class="monitoring-detail-button" href="@($"/flows?tenantId={selected.TenantId}&run={runId:D}")">Open flow run</a> }
+            @if (selected.AgentId != Guid.Empty)
+            {
+                <a class="monitoring-detail-button" href="@MetricsLink(selected.TenantId, selected.AgentId, selected.Resource, selected.Occurrence.RaisedAtUtc)">Open metrics</a>
+            }
             <MudButton OnClick="CloseSelectedAlert">Close alert details</MudButton>
         </MudPaper>
     }
@@ -89,9 +102,7 @@
             <MudText Typo="Typo.caption">Tenant totals · @_timeZone.Id</MudText>
         </div>
         }
-        <nav class="monitoring-tabs" role="tablist" aria-label="Monitoring views">
-            @foreach (var tab in new[] { "Active", "Manage", "History" }) { <MudButton ButtonType="ButtonType.Button" role="tab" Variant="@(_tab == tab ? Variant.Filled : Variant.Text)" Color="Color.Primary" aria-selected="@((_tab == tab).ToString().ToLowerInvariant())" OnClick="() => ChangeTab(tab)" data-testid="@($"monitoring-tab-{tab.ToLowerInvariant()}")">@(tab == "Active" ? "Active alerts" : tab == "Manage" ? "Rules & groups" : "History")</MudButton> }
-        </nav>
+        @ViewTabs
         @if (_tab == "Active")
         {
             <MudPaper Class="monitoring-panel monitoring-results pa-3">
@@ -131,6 +142,8 @@
                                     <MudTooltip Text="Clear this occurrence"><MudIconButton Icon="@Icons.Material.Filled.Clear" Size="Size.Small" Disabled="@(!snapshot.Permissions.CanClear)" OnClick='() => OpenOperator(row, "clear")' aria-label="Clear alert" data-testid="monitoring-clear" /></MudTooltip>
                                     <MudTooltip Text="Bypass new actions"><MudIconButton Icon="@Icons.Material.Filled.Pause" Size="Size.Small" Disabled="@(!snapshot.Permissions.CanBypass)" OnClick='() => OpenOperator(row, "bypass")' aria-label="Bypass alert actions" data-testid="monitoring-bypass" /></MudTooltip>
                                 }
+                                @if (!MonitoringOfflinePresentation.IsSeries(row.Series) && row.Occurrence is { } metricsOccurrence && snapshot.Permissions.CanRead)
+                                { <a class="monitoring-detail-button" href="@MetricsLink(row.Series.TenantId, row.Series.AgentId, row.Series.ResourceKey, metricsOccurrence.RaisedAtUtc)">Open metrics</a> }
                                 @if (!MonitoringOfflinePresentation.IsSeries(row.Series)) { <ClientToolsLauncher @key="(row.Series, 0)" TenantId="row.Series.TenantId" AgentId="row.Series.AgentId" HostLabel="@ClientName(row.Series.AgentId)" TenantLabel="@TenantName" Readiness="_clientToolReadiness" ScopeKey="@Navigation.Uri" /> }
                                 @if (!MonitoringOfflinePresentation.IsSeries(row.Series) || row.Occurrence is not null)
                                 { <MonitoringInvestigationLauncher @key="(row.Series, 1)" Row="row" ClientLabel="@(MonitoringOfflinePresentation.IsSeries(row.Series) ? "monitored clients" : ClientName(row.Series.AgentId))" /> }
@@ -241,9 +254,15 @@
         else
         {
             <MonitoringManagement Configuration="snapshot.Configuration" Permissions="snapshot.Permissions" Flows="snapshot.PublishedFlows" ClientName="ClientName" Workspace="_managementWorkspace" QueryUri="@Navigation.Uri" Busy="@(State.Loading || _busy)" Error="@State.Error" Refresh="Refresh" EditRule="OpenRule" EditGroup="OpenGroup" NewBypass="OpenBypass" Delete="request => OpenDelete(request.Collection, request.Id, request.Name)" Launcher="RememberManagementLauncher" />
+            @if (snapshot.Permissions.CanManage)
+            {
+                <MetricHistorySettingsEditor @key="State.TenantId" TenantId="State.TenantId" ClientName="ClientName" OpenOnLoad="@(RequestedMetricsSettings == "1")" />
+            }
         }
     }
     else if (!State.Loading && _startupError is null && State.Error is null && _filterError is null) { <MudPaper Class="pa-4"><p>Select an authorized tenant to read monitoring.</p></MudPaper> }
+
+    }
 
     @if (_editor is not null && State.Snapshot is { } editSnapshot)
     {
@@ -319,3 +338,16 @@
         </aside>
     }
 </section>
+
+
+@code {
+    private RenderFragment ViewTabs => @<nav class="monitoring-tabs" role="tablist" aria-label="Monitoring views">
+        @foreach (var tab in new[] { "Active", "Manage", "History", "Metrics" })
+        {
+            <MudButton ButtonType="ButtonType.Button" role="tab" Variant="@(_tab == tab ? Variant.Filled : Variant.Text)" Color="Color.Primary"
+                aria-selected="@((_tab == tab).ToString().ToLowerInvariant())" OnClick="() => ChangeTab(tab)" data-testid="@($"monitoring-tab-{tab.ToLowerInvariant()}")">
+                @(tab == "Active" ? "Active alerts" : tab == "Manage" ? "Rules & groups" : tab)
+            </MudButton>
+        }
+    </nav>;
+}
