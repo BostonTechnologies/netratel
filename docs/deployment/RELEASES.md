@@ -178,20 +178,21 @@ three completed receipts cover the full selected Core population without
 overlap, including theory rows. Each
 group reports its duration. Source-changing PR events retain required checks;
 draft/readiness changes alone do not restart them.
-`tools/ci/run-fast-regressions.sh` defaults to the complete selection; the
-`core-components` and `api` arguments divide that same selection for PR/main.
+`tools/ci/run-fast-regressions.sh` defaults to the complete selection. The
+`core-components` and `api` arguments divide that same selection in hosted validation.
 The helper excludes
 `category=compose`, `category=hosted` and `category=manual-integration`.
-Restore, build and test outcomes remain independently visible. The same fast
-selection applies together on the tag validation runner using the original two
-Core partitions, with real CLI/stdio/native packaging
-and integrity checks retained. Packaging/publication costs are measured
-separately; the under-20-minute acceptance applies to required PR/main runs.
-Tag source validation has a bounded 25-minute allowance for the same assertions
-and authenticated receipt finalization. The preceding 20-minute tag allowance
-canceled a run after all fast cases passed but before finalization completed.
-Its immutable tag and unpublished draft remain evidence; a workflow/source fix
-uses the next unused product version rather than moving that tag.
+Restore, build and test outcomes remain independently visible. The tag build
+calls the same public validation workflow on the tagged commit. Core and
+component tests run alongside the API suite, and the same aggregate verifies
+complete disjoint Core coverage before packaging. The tag build also checks
+tag/version identity, public-main ancestry and the isolated OIDC launcher.
+CLI, stdio MCP and native packaging and integrity checks follow source
+validation. Packaging and publication costs are measured separately from the
+required PR/main runtime budget.
+
+Keep a failed candidate's immutable tag and unpublished draft as evidence.
+A workflow or source fix uses the next unused product version.
 
 Before the fast assemblies start, `tools/ci/prepare-fast-test-containers.sh`
 prepares their PostgreSQL and Testcontainers resource-reaper images sequentially.

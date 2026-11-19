@@ -7,12 +7,20 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      release_source:
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
+env:
+  PublicSourceRevision: ${{ inputs.release_source && github.sha || '' }}
+
 concurrency:
-  group: public-pr-validation-${{ github.event.pull_request.number || github.ref }}
+  group: public-pr-validation-${{ inputs.release_source && 'release-build-' || '' }}${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
