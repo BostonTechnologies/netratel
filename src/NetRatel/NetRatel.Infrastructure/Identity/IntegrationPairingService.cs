@@ -118,8 +118,9 @@ public sealed partial class IntegrationPairingService(NetRatelIdentityDbContext 
                 ? now.Add(TemporaryVerifierLifetime) : approval.ExpiresAtUtc;
             var owner = reviewed?.RequestingPrincipalId ?? principal.FindFirstValue("netratel_principal_id");
             var create = new IntegrationCredentialCreateRequest(request.Name, request.Purpose, expiresAt,
-                (approval.Grants ?? []).Select(grant => new IntegrationCredentialGrantRequest(grant.TenantId, grant.Permission)).ToArray(),
-                request.Resource, approval.InstancePermissions ?? []);
+                (approval.Grants ?? []).Select(grant => grant is null ? null! : new IntegrationCredentialGrantRequest(grant.TenantId, grant.Permission)).ToArray(),
+                request.Resource, approval.InstancePermissions ?? [])
+            { CurrentTenantIds = await CurrentReviewedTenantIdsAsync(reviewed?.Proposal, cancellationToken).ConfigureAwait(false) };
             try { if (reviewed?.Proposal.Action != "revoke") await validator.ValidateAsync(principal, create, cancellationToken).ConfigureAwait(false); }
             catch (IntegrationCredentialGrantValidationException) when (reviewed is not null)
             { throw new IntegrationCredentialGrantValidationException("reviewedProposal", true) { ReviewFailure = IntegrationPairingFailure.ForCode("review_approver_authority_missing", "approval") }; }
@@ -314,7 +315,12 @@ public sealed partial class IntegrationPairingService(NetRatelIdentityDbContext 
                 request.CredentialExpiresAtUtc > request.ExpiresAtUtc.Add(TemporaryVerifierLifetime) ||
                 Deserialize<IntegrationCredentialGrantRequest>(request.ApprovedGrantsJson!).Length != 0 ||
                 !Deserialize<string>(request.ApprovedInstancePermissionsJson!).SequenceEqual([VerifierPermission]))) return false;
-            if (reviewed?.Proposal.Action != "revoke") await validator.ValidateAsync(owner, CreateRequest(request), ct).ConfigureAwait(false);
+            if (reviewed?.Proposal.Action != "revoke")
+            {
+                var grantRequest = CreateRequest(request) with
+                { CurrentTenantIds = await CurrentReviewedTenantIdsAsync(reviewed?.Proposal, ct).ConfigureAwait(false) };
+                await validator.ValidateAsync(owner, grantRequest, ct).ConfigureAwait(false);
+            }
             if (request.CredentialId is not null)
             {
                 var credential = await db.IntegrationCredentials.AsNoTracking().SingleOrDefaultAsync(candidate => candidate.Id == request.CredentialId, ct).ConfigureAwait(false);

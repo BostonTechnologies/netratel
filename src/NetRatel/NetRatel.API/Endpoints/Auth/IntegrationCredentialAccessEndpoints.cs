@@ -55,7 +55,9 @@ public static partial class IntegrationCredentialEndpoints
         http.Response.Headers["X-Correlation-ID"] = http.TraceIdentifier;
         var logger = http.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("NetRatel.CredentialAccess");
         var owner = PrincipalId(http.User);
-        if (owner is null || mutation && !IsCookieMutationValidated(http.User, http)) return Results.Forbid();
+        if (owner is null || mutation && !IsCookieMutationValidated(http.User, http))
+            return IntegrationPairingFailureResponses.CredentialFailure(http,
+                IntegrationPairingFailure.ForCode("review_owner_authority_missing", stage) with { Field = "owner" }, StatusCodes.Status403Forbidden);
         var environment = http.RequestServices.GetRequiredService<IHostEnvironment>();
         if (!environment.IsDevelopment() && !environment.IsProduction())
             return Results.BadRequest(IntegrationPairingFailure.ForCode("review_binding_changed", stage) with
@@ -75,8 +77,11 @@ public static partial class IntegrationCredentialEndpoints
             if (!McpResourceUri.TryNormalize(configuration["Integration:HttpMcp:PublicResourceUri"] ?? origin + "/mcp", out var resource))
                 throw new IntegrationPairingUnavailableException
                 { ReviewFailure = IntegrationPairingFailure.ForCode("review_destination_unconfigured", stage) };
-            return Results.Ok(await action(new(owner, origin, resource!, environment.IsProduction()
-                ? McpOperatorEnvironment.Production : McpOperatorEnvironment.Development)).ConfigureAwait(false));
+            var result = await action(new(owner, origin, resource!, environment.IsProduction()
+                ? McpOperatorEnvironment.Production : McpOperatorEnvironment.Development)).ConfigureAwait(false);
+            return result is ReviewedMcpAccessReceipt { ReviewFailure: { } failure } receipt
+                ? Results.Ok(receipt with { ReviewFailure = failure with { CorrelationId = http.TraceIdentifier } })
+                : Results.Ok(result);
         }
         catch (IntegrationPairingUnavailableException exception)
         {
@@ -87,21 +92,21 @@ public static partial class IntegrationCredentialEndpoints
         }
         catch (IntegrationCredentialGrantValidationException exception)
         {
-            var failure = exception.ReviewFailure ?? new IntegrationPairingFailure(
-                exception.Forbidden ? "review_owner_authority_missing" : "review_proposal_changed", stage,
-                exception.Forbidden
-                    ? "Your account no longer has every selected permission. Review your current tenant and server access, then retry with your retained draft."
-                    : "Review the selected tenant and server permissions. Keep at least one permission and remove unavailable or duplicate selections, then retry.");
+            var failure = IntegrationPairingFailureResponses.Validation(exception, stage);
+            var status = IntegrationPairingFailureResponses.ValidationStatus(exception, failure);
             logger.LogWarning("Credential access failed. Stage {Stage}, HTTP {HttpStatus}, code {FailureCode}, reference {CorrelationId}",
-                stage, exception.Forbidden ? 403 : 400, failure.Code, http.TraceIdentifier);
+                stage, status, failure.Code, http.TraceIdentifier);
             return Results.Json(failure with { Stage = stage, CorrelationId = http.TraceIdentifier },
-                statusCode: exception.Forbidden ? StatusCodes.Status403Forbidden : StatusCodes.Status400BadRequest);
+                statusCode: status);
         }
         catch (Microsoft.EntityFrameworkCore.DbUpdateConcurrencyException)
-        { return Results.Conflict(new { code = "review_policy_changed", stage }); }
+        {
+            return Results.Conflict(IntegrationPairingFailure.ForCode("review_policy_changed", stage) with
+            { Field = "policies", CorrelationId = http.TraceIdentifier });
+        }
         catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or System.Security.Cryptography.CryptographicException)
-        { return Results.BadRequest(new { code = "review_proposal_changed", stage }); }
-        catch (KeyNotFoundException) { return Results.NotFound(new { code = "review_credential_unavailable", stage }); }
+        { return Results.BadRequest(IntegrationPairingFailure.ForCode("review_proposal_changed", stage) with { CorrelationId = http.TraceIdentifier }); }
+        catch (KeyNotFoundException) { return Results.NotFound(IntegrationPairingFailure.ForCode("review_credential_unavailable", stage) with { CorrelationId = http.TraceIdentifier }); }
         catch (Exception exception) when (IntegrationPairingFailureResponses.IsTransient(exception))
         {
             logger.LogWarning("Credential access failed. Stage {Stage}, HTTP {HttpStatus}, code {FailureCode}, exception type {ExceptionType}, reference {CorrelationId}",

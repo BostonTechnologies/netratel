@@ -1,3 +1,5 @@
+using NetRatel.Shared.Connectivity;
+
 namespace NetRatel.Infrastructure.Identity.Authorization;
 
 public sealed record IntegrationPermissionDescriptor(string Id, string Label, string Description);
@@ -5,11 +7,8 @@ public sealed record IntegrationPermissionDescriptor(string Id, string Label, st
 /// <summary>Human-readable permission descriptions shared by the delegation API and Web editor.</summary>
 public static class IntegrationPermissionCatalog
 {
-    // Keep proposals bounded while allowing the complete separately assignable catalog
-    // at instance scope and across the existing two-full-tenant grant budget. These
-    // cardinality bounds grant no authority; each requested permission is still checked.
-    public static int MaximumPermissionsPerScope => Math.Max(32, Delegable.Count);
-    public static int MaximumTenantGrants => 2 * MaximumPermissionsPerScope;
+    public static int MaximumPermissionsPerScope => Delegable.Count;
+    public static int MaximumTenantGrants => IntegrationCredentialLimits.MaximumTenantScopes * MaximumPermissionsPerScope;
 
     public static IReadOnlyList<IntegrationPermissionDescriptor> Delegable { get; } =
     [
@@ -47,4 +46,8 @@ public static class IntegrationPermissionCatalog
         new(NetRatelPermissions.McpConnectivityTest, "Test MCP connectivity", "Confirm one bounded probe to the server-owned destination; also requires connectivity inspection and the reviewed control-plane policy."),
         new(NetRatelPermissions.McpPolicyAdministration, "Manage MCP policy", "Change MCP operation policy.")
     ];
+
+    public static IntegrationCredentialLimits Limits { get; } =
+        new(IntegrationCredentialLimits.MaximumTenantScopes, MaximumPermissionsPerScope, MaximumTenantGrants,
+            IntegrationCredentialLimits.MaximumAccountRequestBytes);
 }

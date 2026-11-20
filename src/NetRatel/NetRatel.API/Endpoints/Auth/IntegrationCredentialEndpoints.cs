@@ -85,26 +85,16 @@ public static partial class IntegrationCredentialEndpoints
             var tenants = new List<CredentialTenantAuthorityResponse>();
             foreach (var candidate in candidates)
             {
-                var permissions = new List<IntegrationPermissionDescriptor>();
-                foreach (var descriptor in IntegrationPermissionCatalog.Delegable)
-                {
-                    if (await access.AuthorizeAsync(principal, descriptor.Id, candidate.TenantId, ct).ConfigureAwait(false))
-                        permissions.Add(descriptor);
-                }
+                var snapshot = await access.GetSnapshotAsync(principal, candidate.TenantId, ct).ConfigureAwait(false);
+                var permissions = AssignablePermissions(snapshot);
                 if (permissions.Count > 0)
                     tenants.Add(new(candidate.TenantId, candidate.Name, permissions));
             }
 
-            var instancePermissions = new List<IntegrationPermissionDescriptor>();
-            foreach (var descriptor in IntegrationPermissionCatalog.Delegable)
-            {
-                if (await access.AuthorizeAsync(principal, descriptor.Id, null, ct).ConfigureAwait(false))
-                    instancePermissions.Add(descriptor);
-            }
-
             var configuredResource = configuration["Integration:HttpMcp:PublicResourceUri"];
             if (!McpResourceUri.TryNormalize(configuredResource, out var canonicalResource)) canonicalResource = string.Empty;
-            return Results.Ok(new CredentialAuthorityResponse(tenants, instancePermissions, canonicalResource));
+            return Results.Ok(new CredentialAuthorityResponse(tenants, AssignablePermissions(instance), canonicalResource)
+            { Limits = IntegrationPermissionCatalog.Limits });
         });
 
         group.MapGet("/", async (ClaimsPrincipal principal, IIntegrationCredentialService credentials, HttpContext context, CancellationToken ct) =>
@@ -140,7 +130,8 @@ public static partial class IntegrationCredentialEndpoints
             var owner = PrincipalId(principal);
             if (owner is null || !IsCookieMutationValidated(principal, context))
             {
-                return Results.Forbid();
+                return IntegrationPairingFailureResponses.CredentialFailure(context,
+                    IntegrationPairingFailure.ForCode("review_owner_authority_missing", "connection") with { Field = "owner" }, StatusCodes.Status403Forbidden);
             }
 
             var grants = request.Grants ?? [];
@@ -150,44 +141,50 @@ public static partial class IntegrationCredentialEndpoints
             try
             {
                 await validator.ValidateAsync(principal, create, ct).ConfigureAwait(false);
-            }
-            catch (IntegrationCredentialGrantValidationException exception)
-            {
-                return exception.Forbidden ? Results.Forbid() : Results.ValidationProblem(
-                    new Dictionary<string, string[]> { [exception.Field] = ["Review the credential fields and selected access, then retry."] });
-            }
-
-            try
-            {
-                var approvedRequest = new IntegrationCredentialCreateRequest(
-                    request.Name,
-                    request.Purpose,
-                    request.ExpiresAtUtc,
-                    grants.Select(grant => new IntegrationCredentialGrantRequest(grant.TenantId, grant.Permission)).ToArray(),
-                    request.Resource,
-                    instancePermissions);
                 IntegrationCredentialSecret created;
                 if (request.Purpose == IntegrationCredentialPurpose.HttpMcp)
                 {
                     if (request.SetupRequestId is null || request.Policies is null || !request.ConfirmPolicies ||
                         !environment.IsProduction() && !environment.IsDevelopment())
-                        return Results.BadRequest(new { code = "integration_policies_required", stage = "policies" });
-                    created = await services.GetRequiredService<IntegrationSetupService>().CreateAsync(principal, request.SetupRequestId, approvedRequest, request.Policies,
+                        return IntegrationPairingFailureResponses.CredentialFailure(context,
+                            IntegrationPairingFailure.ForCode("integration_policies_required", "policies") with { Field = "policies" }, StatusCodes.Status400BadRequest);
+                    created = await services.GetRequiredService<IntegrationSetupService>().CreateAsync(principal, request.SetupRequestId, create, request.Policies,
                         environment.IsProduction() ? McpOperatorEnvironment.Production : McpOperatorEnvironment.Development, ct).ConfigureAwait(false);
                 }
-                else created = await credentials.CreateAsync(owner, approvedRequest, ct).ConfigureAwait(false);
+                else created = await credentials.CreateAsync(owner, create, ct).ConfigureAwait(false);
                 context.Response.Headers.CacheControl = "no-store";
                 return Results.Created($"/api/v2/account/integration-credentials/{created.CredentialId}", created);
             }
+            catch (IntegrationCredentialGrantValidationException exception)
+            {
+                var stage = exception.Field switch
+                {
+                    "grants" => "tenant_access", "instancePermissions" => "server_access", "policies" => "policies", _ => "connection"
+                };
+                var failure = IntegrationPairingFailureResponses.Validation(exception, stage);
+                return IntegrationPairingFailureResponses.CredentialFailure(context, failure,
+                    IntegrationPairingFailureResponses.ValidationStatus(exception, failure));
+            }
             catch (ArgumentException)
             {
-                return Results.ValidationProblem(new Dictionary<string, string[]> { ["credential"] = ["Review the credential fields and selected access, then retry."] });
+                return IntegrationPairingFailureResponses.CredentialFailure(context,
+                    IntegrationPairingFailure.ForCode("integration_setup_invalid", "connection") with { Field = "credential" }, StatusCodes.Status400BadRequest);
             }
-            catch (UnauthorizedAccessException) { return Results.Forbid(); }
-            catch (InvalidOperationException)
-            { return Results.Conflict(new { code = "integration_setup_conflict", stage = "policies", message = "Review the existing setup and retained draft before retrying." }); }
+            catch (UnauthorizedAccessException)
+            {
+                return IntegrationPairingFailureResponses.CredentialFailure(context,
+                    IntegrationPairingFailure.ForCode("review_approver_authority_missing", "policies") with { Field = "policies" }, StatusCodes.Status403Forbidden);
+            }
             catch (Exception exception) when (IntegrationPairingFailureResponses.IsTransient(exception))
-            { return Results.Json(new { code = "integration_setup_unavailable", stage = "credential_and_policies", message = "Setup did not complete. Retry the same approved draft." }, statusCode: 503); }
+            {
+                return IntegrationPairingFailureResponses.CredentialFailure(context,
+                    IntegrationPairingFailure.ForCode("integration_setup_unavailable", "credential_and_policies"), StatusCodes.Status503ServiceUnavailable);
+            }
+            catch (InvalidOperationException)
+            {
+                return IntegrationPairingFailureResponses.CredentialFailure(context,
+                    IntegrationPairingFailure.ForCode("integration_setup_conflict", "credential_and_policies"), StatusCodes.Status409Conflict);
+            }
         });
 
         group.MapPost("/setup/{requestId}/acknowledge", async (string requestId, ClaimsPrincipal principal,
@@ -280,5 +277,12 @@ public static partial class IntegrationCredentialEndpoints
     public sealed record CredentialTenantScopeResponse(int TenantId, string Name);
     public sealed record CredentialTenantAuthorityResponse(int TenantId, string Name, IReadOnlyList<IntegrationPermissionDescriptor> Permissions);
     public sealed record CredentialAuthorityResponse(IReadOnlyList<CredentialTenantAuthorityResponse> Tenants,
-        IReadOnlyList<IntegrationPermissionDescriptor> InstancePermissions, string ConfiguredHttpMcpServerUrl);
+        IReadOnlyList<IntegrationPermissionDescriptor> InstancePermissions, string ConfiguredHttpMcpServerUrl)
+    {
+        public IntegrationCredentialLimits? Limits { get; init; }
+    }
+
+    private static IReadOnlyList<IntegrationPermissionDescriptor> AssignablePermissions(EffectiveAccessSnapshot snapshot) =>
+        snapshot.IsInstanceAdministrator || snapshot.IsLegacyOperator ? IntegrationPermissionCatalog.Delegable :
+            IntegrationPermissionCatalog.Delegable.Where(permission => snapshot.Permissions.Contains(permission.Id)).ToArray();
 }

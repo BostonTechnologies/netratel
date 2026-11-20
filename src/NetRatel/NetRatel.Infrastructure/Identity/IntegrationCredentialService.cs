@@ -1,7 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.EntityFrameworkCore;
-using NetRatel.Infrastructure.Identity.Authorization;
 using NetRatel.Shared.Connectivity;
 
 namespace NetRatel.Infrastructure.Identity;
@@ -12,7 +11,11 @@ public sealed record IntegrationCredentialCreateRequest(
     DateTimeOffset ExpiresAtUtc,
     IReadOnlyList<IntegrationCredentialGrantRequest> Grants,
     string? Resource = null,
-    IReadOnlyList<string>? InstancePermissions = null);
+    IReadOnlyList<string>? InstancePermissions = null)
+{
+    // Reviewed maintenance may keep existing tenant scopes above the new-credential limit.
+    internal IReadOnlyCollection<int>? CurrentTenantIds { get; init; }
+}
 
 public sealed record IntegrationCredentialSecret(
     string CredentialId,
@@ -106,8 +109,16 @@ public sealed class IntegrationCredentialService(NetRatelIdentityDbContext db, T
         var now = (clock ?? TimeProvider.System).GetUtcNow();
         var suppliedGrants = request.Grants ?? [];
         var suppliedInstancePermissions = request.InstancePermissions ?? [];
+        try
+        {
+            IntegrationCredentialGrantValidator.ValidateGrantCounts(suppliedGrants.Count, suppliedInstancePermissions.Count);
+        }
+        catch (IntegrationCredentialGrantValidationException error)
+        {
+            throw new ArgumentException(error.ReviewFailure?.Describe(), error);
+        }
         var grants = suppliedGrants
-            .Where(grant => grant.TenantId > 0 && !string.IsNullOrWhiteSpace(grant.Permission))
+            .Where(grant => grant is not null && grant.TenantId > 0 && !string.IsNullOrWhiteSpace(grant.Permission))
             .Select(grant => new IntegrationCredentialGrantRequest(grant.TenantId, grant.Permission.Trim()))
             .Distinct()
             .ToArray();
@@ -122,15 +133,17 @@ public sealed class IntegrationCredentialService(NetRatelIdentityDbContext db, T
             (request.Purpose == IntegrationCredentialPurpose.HttpMcp && !McpResourceUri.TryNormalize(resource, out _)) ||
             (request.Purpose == IntegrationCredentialPurpose.Api && !string.IsNullOrWhiteSpace(resource)) ||
             request.ExpiresAtUtc <= now || request.ExpiresAtUtc > now.Add(MaximumLifetime) ||
-            (grants.Length == 0 && instancePermissions.Length == 0) ||
-            suppliedGrants.Count > IntegrationPermissionCatalog.MaximumTenantGrants || suppliedInstancePermissions.Count > IntegrationPermissionCatalog.MaximumPermissionsPerScope ||
-            suppliedGrants.Count != grants.Length || suppliedInstancePermissions.Count != instancePermissions.Length ||
-            grants.Any(grant => !NetRatelPermissions.All.Contains(grant.Permission) ||
-                grant.Permission == NetRatelPermissions.IntegrationManagement) ||
-            instancePermissions.Any(permission => !NetRatelPermissions.All.Contains(permission) ||
-                string.Equals(permission, NetRatelPermissions.IntegrationManagement, StringComparison.Ordinal)))
+            suppliedGrants.Count != grants.Length || suppliedInstancePermissions.Count != instancePermissions.Length)
         {
             throw new ArgumentException("Credential name, bounded expiry, and at least one explicit permission grant are required.");
+        }
+        try
+        {
+            IntegrationCredentialGrantValidator.ValidateGrantShape(grants, instancePermissions);
+        }
+        catch (IntegrationCredentialGrantValidationException error)
+        {
+            throw new ArgumentException(error.ReviewFailure?.Describe(), error);
         }
 
         if (request.Purpose == IntegrationCredentialPurpose.HttpMcp)
@@ -198,7 +211,7 @@ public sealed class IntegrationCredentialService(NetRatelIdentityDbContext db, T
         var now = (clock ?? TimeProvider.System).GetUtcNow();
         if (approved.ExpiresAtUtc <= now || approved.ExpiresAtUtc > now.Add(MaximumLifetime) ||
             string.IsNullOrWhiteSpace(approverPrincipalId))
-            throw new IntegrationCredentialGrantValidationException("reviewedProposal");
+            throw IntegrationCredentialGrantValidationException.Invalid("expiresAtUtc", "integration_expiry_invalid");
         if (db.Database.IsRelational())
         {
             // Serialize reviewed changes and revocation on the existing credential row. Pairing already owns the transaction.
@@ -209,7 +222,10 @@ public sealed class IntegrationCredentialService(NetRatelIdentityDbContext db, T
         }
         var current = (await ListAsync(ownerPrincipalId, cancellationToken).ConfigureAwait(false)).SingleOrDefault(x => x.Id == credentialId)
             ?? throw new IntegrationPairingUnavailableException();
-        if (RevisionHash(current) != expectedRevisionHash) throw new IntegrationCredentialGrantValidationException("reviewedRevision");
+        if (RevisionHash(current) != expectedRevisionHash)
+            throw IntegrationCredentialGrantValidationException.Invalid("reviewedRevision", "review_credential_changed");
+        IntegrationCredentialGrantValidator.ValidateGrantShape(approved.Grants, approved.InstancePermissions ?? [],
+            current.Grants.Select(grant => grant.TenantId).Distinct().ToArray());
         var credential = await db.IntegrationCredentials.Include(x => x.Grants).Include(x => x.InstanceGrants)
             .SingleOrDefaultAsync(x => x.Id == credentialId && x.OwnerPrincipalId == ownerPrincipalId, cancellationToken).ConfigureAwait(false)
             ?? throw new IntegrationPairingUnavailableException();

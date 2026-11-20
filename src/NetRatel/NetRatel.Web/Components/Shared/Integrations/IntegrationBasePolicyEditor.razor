@@ -18,6 +18,10 @@
         <MudItem xs="12" md="6"><MudTextField T="string" Label="Exact policy expiry (UTC)" Value="@_expiryText" ValueChanged="ChangeExpiry" Variant="Variant.Outlined" Disabled="Disabled" HelperText="Must be no later than the credential expiry." /></MudItem>
     </MudGrid>
     @if (_expiryError is not null) { <MudAlert Severity="Severity.Error">@_expiryError</MudAlert> }
+    @if (Value.Families == McpOperatorOperationFamily.None || Value.Operations is { Count: 0 })
+    {
+        <MudAlert Severity="Severity.Warning">Choose a supported operation family or an access preset for @ScopeName. None of the current policy operations fit the selected permissions.</MudAlert>
+    }
     <MudExpansionPanels Elevation="0" Class="mt-3" MultiExpansion="true">
         <MudExpansionPanel Text="Inspect supported operations">
             <MudStack Row="true" Wrap="Wrap.Wrap">@foreach(var operation in Supported.Where(op => Value.Families.HasFlag(op.OperationFamily) && (Value.Operations is null || Value.Operations.Contains(op.ToolName + "/" + op.OperationName)))) { <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">@operation.ToolName/@operation.OperationName</MudChip> }</MudStack>
@@ -61,8 +65,10 @@
     private Task ChangeFamilies(IReadOnlyCollection<McpOperatorOperationFamily> families)
     {
         var selected = families.Aggregate(McpOperatorOperationFamily.None, (f, next) => f | next);
-        var allowed = McpIntegrationPolicyCatalog.WithCanonicalPolicyOperations(Supported.Where(op => selected.HasFlag(op.OperationFamily)).Select(op => op.ToolName + "/" + op.OperationName));
-        return Change(Value with { Families = selected, Operations = Value.Operations?.Where(allowed.Contains).ToArray(), Constraints = Value.Constraints with { AllOperations = false, FullPermissionCatalog = false, PermissionCatalogSnapshot = null } });
+        var allowed = McpIntegrationPolicyCatalog.OperationsFor(Supported, selected).ToHashSet(StringComparer.Ordinal);
+        var newlySelected = McpIntegrationPolicyCatalog.OperationsFor(Supported, selected & ~Value.Families);
+        var operations = Value.Operations?.Where(allowed.Contains).Concat(newlySelected).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
+        return Change(Value with { Families = selected, Operations = operations, Constraints = Value.Constraints with { AllOperations = false, FullPermissionCatalog = false, PermissionCatalogSnapshot = null } });
     }
     private Task Preset(bool readOnly) => Change(Value with {
         Name = Value.Name[..(Value.Name.LastIndexOf(" · ", StringComparison.Ordinal) is var index && index >= 0 ? index : Value.Name.Length)] + (readOnly ? " · Read only" : " · All access"),

@@ -16,7 +16,8 @@ public sealed partial class IntegrationPairingService
         ReviewedMcpAccessProposal Proposal, string RequestingPrincipalId, string RequestingCredentialId,
         string Instance, McpOperatorEnvironment Environment, string PolicyRevisionHash, string ProposalHash,
         string? ApproverPrincipalId = null, bool Applied = false, string? ProtectedSetup = null, string? CredentialRevisionHash = null, string? ReviewBindingHash = null,
-        IntegrationPairingFailure? ReviewFailure = null, string? ApprovalMode = null, IReadOnlyList<McpIntegrationPolicy>? BasePolicies = null, McpOperatorConstraints? TargetPolicyLimits = null);
+        IntegrationPairingFailure? ReviewFailure = null, string? ApprovalMode = null, IReadOnlyList<McpIntegrationPolicy>? BasePolicies = null,
+        McpOperatorConstraints? TargetPolicyLimits = null, int[]? AccountPolicyScopes = null);
     private sealed record ProtectedSetupMaterial(string Code, string Capability)
     { public override string ToString() => "Protected setup material (code and capability redacted)"; }
 
@@ -30,11 +31,16 @@ public sealed partial class IntegrationPairingService
         if (applicationDb is null || effectiveAccess is null || policyAdministration is null || operatorAuthorization is null ||
             !Guid.TryParse(proposal.RequestId, out var requestId) || requestId == Guid.Empty ||
             proposal.Action is not ("create" or "reconcile" or "revoke") || proposal.Grants is null || proposal.InstancePermissions is null || proposal.Targets is null ||
-            string.IsNullOrWhiteSpace(proposal.Name) || proposal.Name.Length > 128 || proposal.Name.Any(char.IsControl) || proposal.ExpiresAtUtc.Offset != TimeSpan.Zero || proposal.ExpiresAtUtc <= clock.GetUtcNow() || proposal.ExpiresAtUtc > clock.GetUtcNow().AddDays(365) ||
+            string.IsNullOrWhiteSpace(proposal.Name) || proposal.Name.Length > 128 || proposal.Name.Any(char.IsControl) ||
             proposal.Targets.Count > 32 || proposal.Targets.Distinct().Count() != proposal.Targets.Count ||
             proposal.Action == "create" && proposal.CredentialId is not null ||
             proposal.Action != "create" && string.IsNullOrWhiteSpace(proposal.CredentialId))
             throw new IntegrationPairingUnavailableException();
+        if (proposal.ExpiresAtUtc <= clock.GetUtcNow() || proposal.ExpiresAtUtc > clock.GetUtcNow().AddDays(365))
+            throw IntegrationCredentialGrantValidationException.Invalid("expiresAtUtc", "integration_expiry_invalid");
+        IntegrationCredentialGrantValidator.ValidateGrantCounts(proposal.Grants.Count, proposal.InstancePermissions.Count);
+        if (proposal.Grants.Any(grant => grant is null))
+            throw IntegrationCredentialGrantValidationException.Invalid("grants", "integration_grants_invalid");
         origin = HttpHostSetupProtocol.NormalizeWebAddress(origin).TrimEnd('/');
         if (!McpResourceUri.TryNormalize(resource, out resource)) throw new IntegrationPairingUnavailableException();
         var requester = await db.IntegrationCredentials.AsNoTracking().SingleOrDefaultAsync(x => x.Id == requestingCredentialId &&
@@ -44,7 +50,8 @@ public sealed partial class IntegrationPairingService
             x.OwnerPrincipalId == owner && x.Purpose == IntegrationCredentialPurpose.HttpMcp && x.Resource == resource, ct).ConfigureAwait(false))
             throw new IntegrationPairingUnavailableException();
         var create = new IntegrationCredentialCreateRequest(proposal.Name, IntegrationCredentialPurpose.HttpMcp, proposal.ExpiresAtUtc,
-            proposal.Grants.Select(x => new IntegrationCredentialGrantRequest(x.TenantId, x.Permission)).ToArray(), resource, proposal.InstancePermissions);
+            proposal.Grants.Select(x => new IntegrationCredentialGrantRequest(x.TenantId, x.Permission)).ToArray(), resource, proposal.InstancePermissions)
+        { CurrentTenantIds = await CurrentReviewedTenantIdsAsync(proposal, ct).ConfigureAwait(false) };
         if (proposal.Action != "revoke") await validator.ValidateAsync(DurablePrincipal(owner), create, ct).ConfigureAwait(false);
         await ValidateTargetsAsync(proposal, ct).ConfigureAwait(false);
         var hash = HashProposal(proposal);
@@ -65,14 +72,21 @@ public sealed partial class IntegrationPairingService
         if (await db.IntegrationPairingRequests.CountAsync(x => x.ExpiresAtUtc > now &&
             (x.State == IntegrationPairingState.Pending || x.State == IntegrationPairingState.Approved || x.State == IntegrationPairingState.Issued), ct).ConfigureAwait(false) >= 4096)
             throw new IntegrationPairingUnavailableException();
+        int[]? accountPolicyScopes = null;
+        if (basePolicies is not null)
+        {
+            await ValidateBasePlanAsync(proposal, basePolicies, environment, ct).ConfigureAwait(false);
+            accountPolicyScopes = create.CurrentTenantIds?.ToArray() ?? [];
+        }
         var code = string.Concat(RandomNumberGenerator.GetBytes(8).Select(value => Alphabet[value % Alphabet.Length]));
         var capability = "nrt_pair_" + Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
         var metadata = new ReviewedAccessMetadata(true, proposal.Grants.Select(x => x.Permission).Concat(proposal.InstancePermissions).Distinct().ToArray(),
             proposal, owner, requestingCredentialId, environment == McpOperatorEnvironment.Production ? "prod" : "dev", environment,
-            await PolicyRevisionHashAsync(proposal, environment, id, ct).ConfigureAwait(false), hash,
+            await PolicyRevisionHashAsync(proposal, environment, id, accountPolicyScopes, ct).ConfigureAwait(false), hash,
             ProtectedSetup: protection.CreateProtector("NetRatel.IntegrationPairing.Setup.v1", id).Protect(JsonSerializer.Serialize(new ProtectedSetupMaterial(code, capability))),
             CredentialRevisionHash: await CredentialRevisionHashAsync(proposal.CredentialId, owner, ct).ConfigureAwait(false));
-        metadata = metadata with { BasePolicies = basePolicies, TargetPolicyLimits = basePolicies is null && proposal.Targets.Count > 0 ? McpIntegrationPolicyCatalog.AllAccessLimits with { AllOperations = false } : null };
+        metadata = metadata with { BasePolicies = basePolicies, AccountPolicyScopes = accountPolicyScopes,
+            TargetPolicyLimits = basePolicies is null && proposal.Targets.Count > 0 ? McpIntegrationPolicyCatalog.AllAccessLimits with { AllOperations = false } : null };
         metadata = metadata with { ReviewBindingHash = ReviewHash(origin, resource!, metadata) };
         var request = new IntegrationPairingRequest
         {
@@ -238,22 +252,34 @@ public sealed partial class IntegrationPairingService
                 metadata.Proposal.Action == "reconcile" && (credential.RevokedAtUtc is not null || credential.ExpiresAtUtc <= clock.GetUtcNow()))
                 return IntegrationPairingFailure.ForCode("review_credential_changed", stage);
         }
+        if (metadata.Proposal.Action != "revoke")
+        {
+            var grantRequest = new IntegrationCredentialCreateRequest(request.Name, request.Purpose, metadata.Proposal.ExpiresAtUtc,
+                metadata.Proposal.Grants.Select(x => new IntegrationCredentialGrantRequest(x.TenantId, x.Permission)).ToArray(), request.Resource, metadata.Proposal.InstancePermissions)
+            { CurrentTenantIds = await CurrentReviewedTenantIdsAsync(metadata.Proposal, ct).ConfigureAwait(false) };
+            try { await validator.ValidateAsync(DurablePrincipal(metadata.RequestingPrincipalId), grantRequest, ct).ConfigureAwait(false); }
+            catch (IntegrationCredentialGrantValidationException error)
+            {
+                return (error.ReviewFailure ?? IntegrationPairingFailure.ForCode("review_owner_authority_missing", stage)) with { Stage = stage };
+            }
+            try { await validator.ValidateAsync(DurablePrincipal(approver), grantRequest, ct).ConfigureAwait(false); }
+            catch (IntegrationCredentialGrantValidationException error)
+            {
+                return (error.Forbidden || error.ReviewFailure is null ? IntegrationPairingFailure.ForCode("review_approver_authority_missing", stage)
+                    : error.ReviewFailure) with { Stage = stage, Field = error.Field };
+            }
+        }
         try
         {
             await ValidateTargetsAsync(metadata.Proposal, ct).ConfigureAwait(false);
-            if (metadata.BasePolicies is { } basePlan) await ValidateBasePlanAsync(metadata.Proposal, basePlan, ct).ConfigureAwait(false);
+            if (metadata.BasePolicies is { } basePlan) await ValidateBasePlanAsync(metadata.Proposal, basePlan, metadata.Environment, ct).ConfigureAwait(false);
         }
-        catch (IntegrationCredentialGrantValidationException) { return IntegrationPairingFailure.ForCode("review_target_changed", stage); }
-        if (await PolicyRevisionHashAsync(metadata.Proposal, metadata.Environment, request.Id, ct).ConfigureAwait(false) != metadata.PolicyRevisionHash)
-            return IntegrationPairingFailure.ForCode("review_policy_changed", stage);
-        if (metadata.Proposal.Action != "revoke")
+        catch (IntegrationCredentialGrantValidationException error)
         {
-            var grantRequest = new IntegrationCredentialCreateRequest(request.Name, request.Purpose, metadata.Proposal.ExpiresAtUtc, metadata.Proposal.Grants.Select(x => new IntegrationCredentialGrantRequest(x.TenantId, x.Permission)).ToArray(), request.Resource, metadata.Proposal.InstancePermissions);
-            try { await validator.ValidateAsync(DurablePrincipal(metadata.RequestingPrincipalId), grantRequest, ct).ConfigureAwait(false); }
-            catch (IntegrationCredentialGrantValidationException) { return IntegrationPairingFailure.ForCode("review_owner_authority_missing", stage); }
-            try { await validator.ValidateAsync(DurablePrincipal(approver), grantRequest, ct).ConfigureAwait(false); }
-            catch (IntegrationCredentialGrantValidationException) { return IntegrationPairingFailure.ForCode("review_approver_authority_missing", stage); }
+            return (error.ReviewFailure ?? IntegrationPairingFailure.ForCode("review_target_changed", stage)) with { Stage = stage };
         }
+        if (await PolicyRevisionHashAsync(metadata.Proposal, metadata.Environment, request.Id, metadata.AccountPolicyScopes, ct).ConfigureAwait(false) != metadata.PolicyRevisionHash)
+            return IntegrationPairingFailure.ForCode("review_policy_changed", stage);
         var requester = await db.IntegrationCredentials.AsNoTracking().SingleOrDefaultAsync(x => x.Id == metadata.RequestingCredentialId && x.OwnerPrincipalId == metadata.RequestingPrincipalId, ct).ConfigureAwait(false);
         return requester is null || requester.RevokedAtUtc is not null || requester.ExpiresAtUtc <= clock.GetUtcNow() || requester.Resource != request.Resource
             ? IntegrationPairingFailure.ForCode("review_requester_unavailable", stage) : null;
@@ -264,6 +290,12 @@ public sealed partial class IntegrationPairingService
         var local = await db.Users.AsNoTracking().Where(x => x.PrincipalId == id).Select(x => (bool?)x.IsEnabled).SingleOrDefaultAsync(ct).ConfigureAwait(false);
         return local != false && effectiveAccess is not null && await effectiveAccess.AuthorizeAsync(DurablePrincipal(id), NetRatelPermissions.McpPolicyAdministration, null, ct).ConfigureAwait(false);
     }
+
+    private Task<int[]> CurrentReviewedTenantIdsAsync(ReviewedMcpAccessProposal? proposal, CancellationToken ct) =>
+        proposal is { Action: "reconcile", CredentialId: { } credentialId }
+            ? db.IntegrationCredentialGrants.AsNoTracking().Where(grant => grant.CredentialId == credentialId)
+                .Select(grant => grant.TenantId).Distinct().Order().ToArrayAsync(ct)
+            : Task.FromResult(Array.Empty<int>());
 
     private async Task<bool> ApplyReviewedAsync(IntegrationPairingRequest request, ReviewedAccessMetadata metadata, CancellationToken ct)
     {
@@ -308,7 +340,8 @@ public sealed partial class IntegrationPairingService
 
     private static void RequireReviewedExpiry(DateTimeOffset expiry)
     {
-        if (!ReviewedMcpAccessExpiry.IsSupported(expiry)) throw new IntegrationCredentialGrantValidationException("expiryPrecision");
+        if (!ReviewedMcpAccessExpiry.IsSupported(expiry))
+            throw IntegrationCredentialGrantValidationException.Invalid("expiryPrecision", "integration_expiry_invalid");
     }
 
     private async Task ValidateTargetsAsync(ReviewedMcpAccessProposal proposal, CancellationToken ct)
@@ -345,9 +378,11 @@ public sealed partial class IntegrationPairingService
         }
     }
 
-    private async Task<string> PolicyRevisionHashAsync(ReviewedMcpAccessProposal proposal, McpOperatorEnvironment environment, string requestId, CancellationToken ct)
+    private async Task<string> PolicyRevisionHashAsync(ReviewedMcpAccessProposal proposal, McpOperatorEnvironment environment, string requestId,
+        IReadOnlyList<int>? accountPolicyScopes, CancellationToken ct)
     {
-        var tenants = proposal.Targets.Select(x => x.TenantId).Concat(proposal.Grants.Select(g => g.TenantId)).Append(0).Distinct().ToArray();
+        var tenants = proposal.Targets.Select(x => x.TenantId).Concat(proposal.Grants.Select(g => g.TenantId))
+            .Concat(accountPolicyScopes ?? []).Append(0).Distinct().ToArray();
         var policies = await applicationDb!.McpOperatorPolicies.AsNoTracking().Where(x => x.Environment == environment && tenants.Contains(x.TenantId))
             .OrderBy(x => x.Id).Select(x => new { x.Id, x.Version, x.LifecycleState, x.AuditReference, x.ParentPolicyId }).ToArrayAsync(ct).ConfigureAwait(false);
         return IntegrationCredentialService.Hash(JsonSerializer.Serialize(policies.Where(x =>
@@ -432,7 +467,9 @@ public sealed partial class IntegrationPairingService
         // exact original proposal/hash so an already reviewed or approved binding is never rewritten by a retry.
         metadata.ProposalHash == HashProposal(metadata.Proposal) &&
         HashProposal(CanonicalProposal(metadata.Proposal)) == HashProposal(CanonicalProposal(proposal));
-    private static string ReviewHash(string origin, string resource, ReviewedAccessMetadata metadata) => metadata.BasePolicies is null && metadata.TargetPolicyLimits is null
+    private static string ReviewHash(string origin, string resource, ReviewedAccessMetadata metadata) => metadata.AccountPolicyScopes is not null
+        ? IntegrationCredentialService.Hash(JsonSerializer.Serialize(new { origin, resource, metadata.RequestingPrincipalId, metadata.RequestingCredentialId, metadata.Instance, metadata.Environment, metadata.ProposalHash, metadata.CredentialRevisionHash, metadata.PolicyRevisionHash, metadata.BasePolicies, metadata.AccountPolicyScopes }))
+        : metadata.BasePolicies is null && metadata.TargetPolicyLimits is null
         ? IntegrationCredentialService.Hash(JsonSerializer.Serialize(new { origin, resource, metadata.RequestingPrincipalId, metadata.RequestingCredentialId, metadata.Instance, metadata.Environment, metadata.ProposalHash, metadata.CredentialRevisionHash, metadata.PolicyRevisionHash }))
         : IntegrationCredentialService.Hash(JsonSerializer.Serialize(new { origin, resource, metadata.RequestingPrincipalId, metadata.RequestingCredentialId, metadata.Instance, metadata.Environment, metadata.ProposalHash, metadata.CredentialRevisionHash, metadata.PolicyRevisionHash, metadata.BasePolicies, metadata.TargetPolicyLimits }));
     private static string HashProposal(ReviewedMcpAccessProposal proposal) => IntegrationCredentialService.Hash(JsonSerializer.Serialize(new
@@ -449,6 +486,7 @@ public sealed partial class IntegrationPairingService
         })
     }));
     private static bool SameGrants(IReadOnlyList<IntegrationPairingGrant> left, IReadOnlyList<IntegrationPairingGrant> right) =>
+        left.Count == right.Count && left.All(grant => grant is not null) &&
         left.Select(x => (x.TenantId, x.Permission)).Order().SequenceEqual(right.Select(x => (x.TenantId, x.Permission)).Order());
     private static ReviewedAccessMetadata? AccessMetadata(IntegrationPairingRequest request)
     {
