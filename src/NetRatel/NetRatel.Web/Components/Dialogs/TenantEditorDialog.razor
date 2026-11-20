@@ -1,7 +1,11 @@
 @using NetRatel.Shared.Contracts
 @using NetRatel.Shared.Contracts.Requests
+@using NetRatel.Shared.Contracts.Monitoring
+@using NetRatel.Web.Components.Shared.Monitoring
 @using NetRatel.Web.Components.SoftwareInventory
 @inject IDialogService Dialogs
+
+<NavigationLock ConfirmExternalNavigation="@(_metricsDirty || _metricsSaving)" OnBeforeInternalNavigation="ConfirmNavigationAsync" />
 
 <MudDialog Class="tenant-editor-dialog">
     <DialogContent>
@@ -11,7 +15,7 @@
                 <div>
                     <MudText Typo="Typo.h6">@DialogTitle</MudText>
                     <MudText Typo="Typo.caption" Color="Color.Secondary">
-                        @(IsEditMode && Tenant is not null ? $"Tenant #{Tenant.TenantId}" : "Create a new tenant record")
+                        @(TenantId > 0 ? $"Tenant #{TenantId}" : "Create a new tenant record")
                     </MudText>
                 </div>
 
@@ -23,6 +27,12 @@
                 }
             </MudStack>
 
+            @if (ScopedMetricsTenant is not null)
+            {
+                @MetricsEditor
+            }
+            else
+            {
             <label class="tenant-editor-section-switcher">
                 <span>Tenant section</span>
                 <select @bind="Section" aria-label="Tenant section">
@@ -30,6 +40,7 @@
                     <option value="1">Software inventory</option>
                     <option value="2">Auto update</option>
                     <option value="3">HA Groups</option>
+                    <option value="4">Metrics</option>
                 </select>
             </label>
             <MudForm @ref="_form">
@@ -159,17 +170,41 @@
                             <MudText Class="pa-4">Create the tenant before adding HA Groups.</MudText>
                         }
                     </MudTabPanel>
+                    <MudTabPanel Text="Metrics">
+                        @if (TenantId <= 0)
+                        {
+                            <MudText Class="pa-4">Create the tenant before editing metrics settings.</MudText>
+                        }
+                        else if (_metricsOpened)
+                        {
+                            @MetricsEditor
+                        }
+                    </MudTabPanel>
                 </MudTabs>
             </MudForm>
+            }
+            @if (_metricsSaving)
+            {
+                <p role="status">Saving metrics settings… You can close this dialog after the save finishes.</p>
+            }
+            else if (_metricsDirty && ScopedMetricsTenant is null && Section != MetricsSection)
+            {
+                <p role="status">The Metrics tab has unsaved changes.</p>
+            }
         </MudStack>
         </div>
     </DialogContent>
 
     <DialogActions>
-        <MudButton Variant="Variant.Text" OnClick="CancelAsync">Cancel tenant changes</MudButton>
-        <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="SubmitAsync">
-            @(IsEditMode ? "Save tenant changes" : "Create Tenant")
+        <MudButton Variant="Variant.Text" OnClick="CancelAsync" Disabled="@(_metricsSaving || _confirmingDrafts)">
+            @(ScopedMetricsTenant is null ? "Cancel tenant changes" : "Close")
         </MudButton>
+        @if (ScopedMetricsTenant is null)
+        {
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="SubmitAsync" Disabled="@(_metricsSaving || _confirmingDrafts)">
+                @(IsEditMode ? "Save tenant changes" : "Create Tenant")
+            </MudButton>
+        }
     </DialogActions>
 </MudDialog>
 
@@ -177,6 +212,7 @@
     [CascadingParameter] private IMudDialogInstance MudDialog { get; set; } = default!;
 
     [Parameter] public TenantDto? Tenant { get; set; }
+    [Parameter] public MonitoringTenantDto? ScopedMetricsTenant { get; set; }
     [Parameter] public string DialogTitle { get; set; } = "Tenant";
     [Parameter] public bool IsEditMode { get; set; }
 
@@ -184,18 +220,54 @@
     private CreateTenantRequest _model = new();
     private string _domainsText = string.Empty;
     private bool _pinTargetVersion;
+    private const int MetricsSection = 4;
     private int _section;
     private int Section
     {
         get => _section;
-        set { _section = value; if (value == 1) _inventoryOpened = true; if (value == 3) _groupsOpened = true; }
+        set
+        {
+            _section = value;
+            _inventoryOpened |= value == 1;
+            _groupsOpened |= value == 3;
+            _metricsOpened |= value == MetricsSection;
+        }
     }
     private bool _groupsOpened, _groupDirty, _inventoryOpened;
+    private bool _metricsOpened, _metricsDirty, _metricsSaving, _confirmingDrafts;
+    private int TenantId => ScopedMetricsTenant?.TenantId ?? (IsEditMode ? Tenant?.TenantId ?? 0 : 0);
+    private RenderFragment MetricsEditor => @<MetricHistorySettingsEditor @key="TenantId" TenantId="TenantId"
+        Active="@(ScopedMetricsTenant is not null || Section == MetricsSection)" DraftChanged="MetricsDraftChanged" />;
+
     protected override Task OnInitializedAsync() => MudDialog is null ? Task.CompletedTask : MudDialog.SetOptionsAsync(
         MudDialog.Options with { BackdropClick = false, CloseOnEscapeKey = false, CloseButton = false });
     private void GroupDirtyChanged(bool dirty) { _groupsOpened = true; _groupDirty = dirty; }
-    private async Task<bool> ConfirmGroupDraftAsync() => !_groupDirty || await Dialogs.ShowMessageBoxAsync(
-        "Unsaved group changes", "The HA Group draft has not been saved. Discard that draft and close? Saved groups are unaffected.", yesText: "Discard group draft", cancelText: "Keep editing") == true;
+    private void MetricsDraftChanged((bool Dirty, bool Saving) draft) => (_metricsDirty, _metricsSaving) = draft;
+
+    private async Task<bool> ConfirmDraftsAsync()
+    {
+        if (_metricsSaving || _confirmingDrafts) return false;
+        if (!_groupDirty && !_metricsDirty) return true;
+        _confirmingDrafts = true;
+        try
+        {
+            var section = (_groupDirty, _metricsDirty) switch
+            {
+                (true, true) => "HA Groups and Metrics",
+                (true, _) => "HA Groups",
+                _ => "Metrics"
+            };
+            return await Dialogs.ShowMessageBoxAsync("Unsaved tenant drafts",
+                $"Discard the unsaved changes in {section} and close the editor?",
+                yesText: "Discard drafts", cancelText: "Keep editing") == true && !_metricsSaving;
+        }
+        finally { _confirmingDrafts = false; }
+    }
+
+    private async Task ConfirmNavigationAsync(LocationChangingContext context)
+    {
+        if ((_metricsDirty || _metricsSaving) && !await ConfirmDraftsAsync()) context.PreventNavigation();
+    }
 
     protected override void OnParametersSet()
     {
@@ -224,10 +296,11 @@
         _pinTargetVersion = !string.IsNullOrWhiteSpace(Tenant.AutoUpdateTargetVersion);
     }
 
-    private async Task CancelAsync() { if (await ConfirmGroupDraftAsync()) MudDialog.Cancel(); }
+    private async Task CancelAsync() { if (await ConfirmDraftsAsync()) MudDialog.Cancel(); }
 
     private async Task SubmitAsync()
     {
+        if (ScopedMetricsTenant is not null || _metricsSaving || _confirmingDrafts) return;
         if (_form is not null)
         {
             await _form.ValidateAsync();
@@ -237,7 +310,7 @@
             }
         }
 
-        if (!await ConfirmGroupDraftAsync()) return;
+        if (!await ConfirmDraftsAsync()) return;
         _model.Name = _model.Name?.Trim() ?? string.Empty;
         _model.Description = string.IsNullOrWhiteSpace(_model.Description) ? null : _model.Description.Trim();
         _model.Location = string.IsNullOrWhiteSpace(_model.Location) ? null : _model.Location.Trim();

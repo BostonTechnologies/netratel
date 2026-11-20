@@ -32,7 +32,7 @@
     background: var(--mud-palette-surface);
 }
 
-.telemetry-identity { grid-area: identity; min-width: 0; }
+.telemetry-identity { grid-area: identity; min-width: 0; overflow-wrap:anywhere; }
 .telemetry-stream-state { grid-area: state; max-width: 100%; justify-self: end; }
 .telemetry-close-button { grid-area: close; min-width: 44px; min-height: 44px; justify-self: end; }
 
@@ -44,6 +44,9 @@
 .client-telemetry-dialog ::deep .telemetry-health-label { opacity: .72; letter-spacing: .04em; text-transform: uppercase; }
 .client-telemetry-dialog ::deep .telemetry-health-strip .mud-grid-item { min-width: 0; }
 .client-telemetry-dialog ::deep .telemetry-health-strip .mud-typography:not(.telemetry-health-label) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.client-telemetry-dialog ::deep .telemetry-tabs,
+.client-telemetry-dialog ::deep .telemetry-tabs .mud-tabs-panels { min-width:0; }
+.client-telemetry-dialog ::deep .telemetry-tabs .mud-tab { min-height:44px; text-transform:none; }
 
 @media (max-width: 480px) {
     .telemetry-toolbar {

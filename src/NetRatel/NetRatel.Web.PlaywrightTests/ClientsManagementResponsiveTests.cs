@@ -1654,6 +1654,7 @@ internal sealed class ClientsManagementFixtureHost : IAsyncDisposable
         builder.Services.AddScoped<ClientPresenceApiService>();
         builder.Services.AddScoped<ClientPresentationService>();
         builder.Services.AddScoped<GatewayTelemetryApiService>();
+        builder.Services.AddScoped<GatewayTelemetryLiveStreamService>();
         builder.Services.AddScoped<GatewayClientActionApiService>();
         builder.Services.AddSingleton<FixtureClientServicesService>();
         builder.Services.AddSingleton<IClientServicesApiService>(services => services.GetRequiredService<FixtureClientServicesService>());
@@ -2319,6 +2320,9 @@ internal sealed class ClientDirectoryFixtureData
                     new GatewayTelemetryTransportHealth(3600, "0.4.101", "Linux", DateTimeOffset.UtcNow), "gateway", true)
             });
         }
+
+        if (request.RequestUri?.AbsolutePath.EndsWith("/telemetry", StringComparison.Ordinal) == true)
+            return new HttpResponseMessage(HttpStatusCode.NotFound);
 
         return Json(HttpStatusCode.OK, Array.Empty<object>());
     }

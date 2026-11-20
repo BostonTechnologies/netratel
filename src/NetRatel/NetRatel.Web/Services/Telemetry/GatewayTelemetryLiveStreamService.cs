@@ -1,3 +1,4 @@
+using System.Net;
 using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Runtime.CompilerServices;
@@ -57,6 +58,11 @@ public sealed class GatewayTelemetryLiveStreamService(IHttpClientFactory factory
                         $"/api/v2/agents/{tenantId}/{agentId:D}/telemetry/stream?samplePeriodMs={Math.Max(1000, samplePeriodMilliseconds)}");
                     request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
                     using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+                    if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+                    {
+                        output.TryWrite(GatewayTelemetryLiveEvent.Lifecycle("Forbidden"));
+                        break;
+                    }
                     response.EnsureSuccessStatusCode();
                     await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
                     using var reader = new StreamReader(stream);

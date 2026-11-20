@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Playwright;
 using NetRatel.Shared.Contracts.Netclaw;
@@ -94,7 +95,8 @@ public sealed class MonitoringWorkspaceAcceptanceTests(ClientsManagementBrowserF
         var tools = page.GetByTestId("client-tools-launcher").First.Locator(".mud-fab-menu-container > button");
         await tools.HoverAsync();
         var menu = page.Locator(".client-tools-overlay:popover-open"); await Assertions.Expect(menu).ToBeVisibleAsync();
-        await Assertions.Expect(menu.GetByRole(AriaRole.Menuitem)).ToHaveCountAsync(6);
+        await Assertions.Expect(menu.GetByRole(AriaRole.Menuitem)).ToHaveCountAsync(7);
+        await Assertions.Expect(menu.GetByRole(AriaRole.Menuitem).Nth(1)).ToHaveAccessibleNameAsync("Open metrics");
         Assert.True(await menu.EvaluateAsync<bool>("e => {const r=e.getBoundingClientRect(); return r.left>=0&&r.right<=innerWidth&&r.top>=0&&r.bottom<=innerHeight&&document.elementFromPoint(r.x+r.width/2,r.y+r.height/2)?.closest('.client-tools-overlay')===e}"));
         Assert.Equal(0, monitoring.Writes); Assert.Equal(0, ai.Creates); Assert.Equal(0, ai.Sends);
         await tools.FocusAsync(); await page.Keyboard.PressAsync("Escape");
@@ -133,10 +135,20 @@ public sealed class MonitoringWorkspaceAcceptanceTests(ClientsManagementBrowserF
         foreach (var button in new[] { buttons.First, buttons.Last })
         {
             await button.ScrollIntoViewIfNeededAsync();
+            Assert.True(await button.EvaluateAsync<bool>("""
+                button => {
+                    const adjacent = button.closest('tr').querySelector('[data-testid=monitoring-ack]');
+                    const measure = control => {
+                        const bounds = control.getBoundingClientRect(), icon = control.querySelector('svg').getBoundingClientRect();
+                        return [bounds.width, bounds.height, icon.width, icon.height, parseFloat(getComputedStyle(control).paddingLeft)];
+                    };
+                    return measure(button).every((value, index) => Math.abs(value - measure(adjacent)[index]) < 1);
+                }
+                """));
             if (touch) await button.TapAsync(); else await button.HoverAsync();
             var menu = page.Locator(".client-tools-overlay:popover-open");
             await Assertions.Expect(menu).ToBeVisibleAsync();
-            await Assertions.Expect(menu.GetByRole(AriaRole.Menuitem)).ToHaveCountAsync(6);
+            await Assertions.Expect(menu.GetByRole(AriaRole.Menuitem)).ToHaveCountAsync(7);
             Assert.True(await menu.EvaluateAsync<bool>("e=>{const r=e.getBoundingClientRect();return r.left>=0&&r.right<=innerWidth+1&&r.top>=0&&r.bottom<=innerHeight+1}"));
             await button.FocusAsync(); await page.Keyboard.PressAsync("Escape");
             await Assertions.Expect(button).ToBeFocusedAsync(); await Assertions.Expect(menu).ToHaveCountAsync(0);
@@ -145,6 +157,27 @@ public sealed class MonitoringWorkspaceAcceptanceTests(ClientsManagementBrowserF
         await Assertions.Expect(page.Locator(".client-tools-overlay:popover-open")).ToBeVisibleAsync();
         await page.GetByTestId("monitoring-table-scroll").EvaluateAsync("e=>{e.scrollTop=0;e.dispatchEvent(new Event('scroll'))}");
         await Assertions.Expect(page.Locator(".client-tools-overlay:popover-open")).ToHaveCountAsync(0);
+
+        await buttons.First.FocusAsync();
+        await page.Keyboard.PressAsync("ArrowUp");
+        var activeMenu = page.Locator(".client-tools-overlay:popover-open");
+        var metrics = activeMenu.GetByRole(AriaRole.Menuitem, new() { Name = "Open metrics" });
+        var enabledItems = activeMenu.Locator("button:not(:disabled)");
+        await Assertions.Expect(enabledItems.Last).ToBeFocusedAsync();
+        await page.Keyboard.PressAsync("Home");
+        await Assertions.Expect(enabledItems.First).ToBeFocusedAsync();
+        if (!await metrics.EvaluateAsync<bool>("button => button === document.activeElement"))
+            await page.Keyboard.PressAsync("ArrowDown");
+        await Assertions.Expect(metrics).ToBeFocusedAsync();
+        await page.Keyboard.PressAsync("ArrowDown");
+        await Assertions.Expect(activeMenu.GetByRole(AriaRole.Menuitem, new() { NameRegex = new Regex("^Services") })).ToBeFocusedAsync();
+        await page.Keyboard.PressAsync("ArrowUp");
+        await page.Keyboard.PressAsync("Enter");
+        await page.WaitForURLAsync(new Regex("view=metrics"));
+        var query = QueryHelpers.ParseQuery(new Uri(page.Url).Query);
+        Assert.Equal(monitoring.PagingAgent.ToString("D"), query["metricsClient"].ToString());
+        Assert.StartsWith("disk:/backup/", query["metricsResource"].ToString());
+        Assert.Equal(DateTimeOffset.Parse("2026-11-07T09:00:00Z"), DateTimeOffset.Parse(query["metricsFrom"].ToString()));
         Assert.Equal(0, monitoring.Writes); Assert.False(await page.Locator("#blazor-error-ui").IsVisibleAsync());
     }
 

@@ -1,22 +1,31 @@
 export function subscribe(component) {
-    const timer = window.setInterval(() => {
-        if (document.visibilityState === "visible") {
-            component.invokeMethodAsync("RefreshVisibleMetrics").catch(error => {
-                console.debug("Metrics refresh ended", error);
-            });
-        }
-    }, 60_000);
+    let timer;
     const visibility = () => {
-        if (document.visibilityState !== "visible") {
+        if (timer !== undefined && document.visibilityState !== "visible") {
             component.invokeMethodAsync("PauseHiddenMetrics").catch(error => {
                 console.debug("Metrics visibility subscription ended", error);
             });
         }
     };
     document.addEventListener("visibilitychange", visibility);
-    return {
-        dispose() {
+    const setActive = active => {
+        if (active && timer === undefined) {
+            timer = window.setInterval(() => {
+                if (document.visibilityState === "visible") {
+                    component.invokeMethodAsync("RefreshVisibleMetrics").catch(error => {
+                        console.debug("Metrics refresh ended", error);
+                    });
+                }
+            }, 60_000);
+        } else if (!active && timer !== undefined) {
             window.clearInterval(timer);
+            timer = undefined;
+        }
+    };
+    return {
+        setActive,
+        dispose() {
+            setActive(false);
             document.removeEventListener("visibilitychange", visibility);
         }
     };

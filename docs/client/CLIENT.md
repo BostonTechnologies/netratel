@@ -40,6 +40,12 @@ client's tenant/agent binding and authenticated gateway presence. Generate
 installer scripts and import client packs through
 [Agent Installers & Updates](#release-import-and-instance-automation).
 
+## Client telemetry
+
+On **Clients**, open a computer's telemetry dashboard. **Live** shows that computer's stream when you have `telemetry.read`. Open **History** to view retained CPU, memory, disk, per-interface network and watched-service metrics with `monitoring.read`. History works for an offline computer or one without a current snapshot when observations have been retained. The dialog keeps the selected computer and your History filters while you switch tabs.
+
+For a comparison with **Monitoring → Metrics**, use the same custom dates, displayed time zone and resources. Compare the server's Received/Sent byte totals and coverage for the selected adapter. Use **Refresh metrics** to reload a fixed range. Tenant collection and retention are edited separately under **Tenants → Edit Tenant → Metrics**. [Monitoring metrics and retest steps](../operations/MONITORING.md#retest-the-metrics-controls)
+
 ## Client labels and offboarding
 
 On **Clients**, the compact **Edit client** action beside Services edits the

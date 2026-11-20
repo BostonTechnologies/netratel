@@ -5,6 +5,8 @@ using NetRatel.Shared.Contracts.Services;
 using NetRatel.Shared.Contracts.Monitoring;
 using NetRatel.Shared.Contracts;
 using Microsoft.AspNetCore.Components;
+using Microsoft.AspNetCore.WebUtilities;
+using NetRatel.Web.Components.Dialogs;
 using NetRatel.Web.Components.Pages.Monitoring;
 using NetRatel.Web.Services.Monitoring;
 using NetRatel.Web.Services.Services;
@@ -38,6 +40,7 @@ public sealed class MonitoringPageTests : AsyncBunitContext
 
         cut.Find("[data-testid=monitoring-state-unknown]").Click();
         Assert.Contains("Unknown", Assert.Single(cut.FindAll("[data-testid=monitoring-series-row]")).TextContent);
+        Assert.Null(cut.FindComponent<ClientToolsLauncher>().Instance.MetricsHref);
         cut.Find("[data-testid=monitoring-state-all]").Click();
         Assert.Equal(3, cut.FindAll("[data-testid=monitoring-series-row]").Count);
         cut.Find("[data-testid=monitoring-state-firing]").Click();
@@ -167,6 +170,50 @@ public sealed class MonitoringPageTests : AsyncBunitContext
                 MonitoringEvidenceQuality.Fresh, LatestEvidence: evidence, ApplicableBypassIds: []);
             return Task.FromResult(new MonitoringSeriesPageDto([unknown, firing, pending], null));
         };
+    }
+
+    [Fact]
+    public void Active_alert_menu_targets_the_occurrence_even_without_live_evidence()
+    {
+        var rule = MonitoringRuleDraft.Create().Build(2);
+        var agent = Guid.NewGuid();
+        var raised = DateTimeOffset.UtcNow.AddDays(-1);
+        var evidence = new MonitoringEvidenceDto(new(1, 1), rule.RuleId, raised, raised,
+            MonitoringEvidenceQuality.Fresh, MonitoringClassification.Breach, 95, 0, null);
+        var occurrence = new MonitoringOccurrenceDto(Guid.NewGuid(), Guid.NewGuid(), raised, raised, rule,
+            evidence, MonitoringFlowDispatchDisposition.NoFlowSelected);
+        var row = new MonitoringSeriesState(new(2, rule.RuleId, agent, "disk:/data"), 1, 1, MonitoringPhase.Firing,
+            MonitoringEvidenceQuality.Fresh, Occurrence: occurrence);
+        _api.SeriesRead = (_, _, _) => Task.FromResult(new MonitoringSeriesPageDto([row], null));
+        var navigation = Services.GetRequiredService<NavigationManager>();
+        navigation.NavigateTo("/monitoring?tenantId=2&metricsDisk=1&metricsInterface=old&metricsService=2");
+
+        var cut = Render<MonitoringPage>();
+        var launcher = cut.FindComponent<ClientToolsLauncher>();
+        Assert.Empty(cut.FindAll(".monitoring-row-actions > a"));
+        Assert.Null(launcher.Find("button[aria-label='Open metrics']").GetAttribute("disabled"));
+
+        var query = QueryHelpers.ParseQuery(new Uri(launcher.Instance.MetricsHref!).Query);
+        Assert.Equal("metrics", query["view"].ToString());
+        Assert.Equal("2", query["tenantId"].ToString());
+        Assert.Equal(agent.ToString("D"), query["metricsClient"].ToString());
+        Assert.Equal("disk:/data", query["metricsResource"].ToString());
+        Assert.Equal("custom", query["metricsRange"].ToString());
+        Assert.Equal(raised.AddHours(-1), DateTimeOffset.Parse(query["metricsFrom"].ToString()));
+        Assert.Equal(raised.AddHours(1), DateTimeOffset.Parse(query["metricsTo"].ToString()));
+        Assert.DoesNotContain(query.Keys, key => key is "metricsDisk" or "metricsInterface" or "metricsService");
+    }
+
+    [Theory]
+    [InlineData("/monitoring?tenantId=1&view=manage&manageMetrics=1")]
+    [InlineData("/monitoring?tenantId=1&view=metrics")]
+    public void Monitoring_has_no_policy_editor_or_settings_link(string url)
+    {
+        Services.GetRequiredService<NavigationManager>().NavigateTo(url);
+        var cut = Render<MonitoringPage>();
+        Assert.Empty(cut.FindAll("[data-testid=metric-settings]"));
+        Assert.DoesNotContain("Metrics settings", cut.Markup);
+        Assert.DoesNotContain(cut.FindAll("a"), link => link.GetAttribute("href")?.Contains("manageMetrics=1") == true);
     }
     [Fact]
     public async Task Selected_closed_alert_loads_exact_persisted_occurrence_and_fences_a_prior_response()

@@ -72,7 +72,7 @@
         </MudTd>
         <MudTd DataLabel="Actions" Class="text-right">
             <MudStack Row="true" Justify="Justify.FlexEnd" AlignItems="AlignItems.Center" Spacing="0" Class="client-grid-actions">
-                <MudTooltip Text="Telemetry"><MudIconButton Icon="@Icons.Material.Filled.Insights" Size="Size.Small" Disabled="@(context.Telemetry is null)" OnClick="@(() => OpenTelemetryAsync(context))" aria-label="Open telemetry" /></MudTooltip>
+                <MudTooltip Text="Telemetry"><MudIconButton Icon="@Icons.Material.Filled.Insights" Size="Size.Small" Disabled="@(context.TenantId <= 0 || context.AgentId == Guid.Empty)" OnClick="@(() => OpenTelemetryAsync(context))" aria-label="Open telemetry" /></MudTooltip>
                 <MudTooltip Text="Terminal">
                     <MudMenu Dense="true" Disabled="@(!context.CanUseTerminal)">
                         <ActivatorContent Context="menuActivator"><MudIconButton Icon="@Icons.Material.Filled.Terminal" Size="Size.Small" Disabled="@(!context.CanUseTerminal)" OnClick="@menuActivator.ToggleAsync" aria-label="Open terminal" /></ActivatorContent>
@@ -131,17 +131,8 @@
         Snackbar.Add("Host copied.", Severity.Success);
     }
 
-    private async Task OpenTelemetryAsync(ClientPresentationModel client)
-    {
-        var parameters = new DialogParameters<GatewayTelemetryDialog>
-        {
-            { dialog => dialog.TenantId, client.TenantId }, { dialog => dialog.AgentId, client.AgentId },
-            { dialog => dialog.HostLabel, client.HostName }, { dialog => dialog.TenantLabel, client.TenantName },
-            { dialog => dialog.InitialSnapshot, client.Telemetry }
-        };
-        await DialogService.ShowAsync<GatewayTelemetryDialog>("Telemetry", parameters,
-            new DialogOptions { FullScreen = true, FullWidth = true, CloseOnEscapeKey = true, CloseButton = false });
-    }
+    private async Task OpenTelemetryAsync(ClientPresentationModel client) =>
+        await ClientToolDialogLauncher.TelemetryAsync(DialogService, client, client.Telemetry);
 
     private async Task OpenFilesAsync(ClientPresentationModel client)
     {

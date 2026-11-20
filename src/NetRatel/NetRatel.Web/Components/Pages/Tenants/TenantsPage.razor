@@ -3,14 +3,20 @@
 
 @using Microsoft.AspNetCore.Authorization
 @attribute [Authorize]
+@implements IDisposable
 
+@using System.Net
 @using MudBlazor
 @using NetRatel.Shared.Contracts
+@using NetRatel.Shared.Contracts.Monitoring
 @using NetRatel.Shared.Contracts.Requests
 @using NetRatel.Web.Components.Dialogs
 @using NetRatel.Web.Services.Tenants
+@using NetRatel.Web.Services.Monitoring
+@using NetRatel.Web.Services.Authentication
 
 @inject ITenantApiService TenantApi
+@inject IMonitoringApiService MonitoringApi
 @inject ISnackbar Snackbar
 @inject IDialogService DialogService
 @inject NavigationManager Nav
@@ -18,6 +24,44 @@
 <PageTitle>Tenants</PageTitle>
 
 <MudContainer MaxWidth="MaxWidth.False" Class="mt-4">
+    @if (IsScopedEntry || _profileListUnavailable)
+    {
+        <MudPaper Class="tenants-hero pa-4">
+            <MudText Typo="Typo.h4">Tenants</MudText>
+            @if (_isLoading)
+            {
+                <p role="status">Checking metrics access…</p>
+            }
+            else if (_metricsError is not null)
+            {
+                <MudAlert Severity="Severity.Warning">@_metricsError</MudAlert>
+            }
+            else if (IsScopedEntry && _scopedTenant is { } tenant)
+            {
+                <MudButton OnClick="OpenScopedDialogAsync">Edit Tenant · @tenant.Name</MudButton>
+            }
+            else if (_metricsTenants.Count == 0)
+            {
+                <p>No tenants with metrics management access are listed.</p>
+            }
+            else
+            {
+                <MudList T="int">
+                    @foreach (var item in _metricsTenants)
+                    {
+                        <MudListItem T="int" Href="@($"/tenants?editTenant={item.TenantId}&tab=metrics")"
+                                     aria-label="@($"Edit Tenant metrics for {item.Name}")">@item.Name · Edit Metrics</MudListItem>
+                    }
+                </MudList>
+            }
+            @if (IsScopedEntry)
+            {
+                <MudButton Href="/tenants">Back to Tenants</MudButton>
+            }
+        </MudPaper>
+    }
+    else
+    {
     <MudStack Spacing="3">
         <MudPaper Class="tenants-hero pa-4">
             <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="flex-wrap" Spacing="2">
@@ -196,6 +240,7 @@
             }
         </MudPaper>
     </MudStack>
+    }
 </MudContainer>
 
 <style>
@@ -257,10 +302,20 @@
     [SupplyParameterFromQuery(Name = "search")]
     public string? Search { get; set; }
 
+    [SupplyParameterFromQuery(Name = "editTenant")] public string? EditTenant { get; set; }
+    [SupplyParameterFromQuery(Name = "tab")] public string? Tab { get; set; }
+
     private List<TenantDto> _tenants = new();
     private bool _isLoading = true;
     private string _searchText = string.Empty;
     private DateTimeOffset? _lastLoadedUtc;
+    private bool _profileListUnavailable, _initialized, _openScoped;
+    private IReadOnlyList<MonitoringTenantDto> _metricsTenants = [];
+    private string? _requestedTenant, _metricsError;
+    private MonitoringTenantDto? _scopedTenant;
+    private IDialogReference? _scopedDialog;
+    private CancellationTokenSource? _scope;
+    private bool IsScopedEntry => EditTenant is not null && string.Equals(Tab, "metrics", StringComparison.OrdinalIgnoreCase);
 
     private IReadOnlyList<TenantDto> FilteredTenants =>
         _tenants
@@ -268,30 +323,146 @@
             .OrderBy(x => x.Name)
             .ToList();
 
-    protected override async Task OnInitializedAsync()
+    protected override async Task OnParametersSetAsync()
     {
         _searchText = Search ?? string.Empty;
-        await LoadTenantsAsync();
+        var requested = IsScopedEntry ? EditTenant : null;
+        if (_initialized && requested == _requestedTenant) return;
+        _initialized = true;
+        _requestedTenant = requested;
+        EndScope();
+        _scope = new();
+        _metricsError = null;
+        _tenants = [];
+        _scopedTenant = null;
+        _openScoped = false;
+        if (IsScopedEntry) await LoadScopedTenantAsync(_scope.Token);
+        else await LoadTenantsAsync();
     }
 
-    private async Task LoadTenantsAsync()
+    private async Task LoadScopedTenantAsync(CancellationToken token)
     {
         _isLoading = true;
         try
         {
-            _tenants = (await TenantApi.GetTenantsAsync()).ToList();
+            if (!int.TryParse(EditTenant, out var tenantId) || tenantId <= 0 ||
+                await ReadPermissionsAsync(tenantId, token) is not { CanManage: true })
+            {
+                if (!token.IsCancellationRequested) _metricsError = "Metrics management is unavailable for this tenant.";
+                return;
+            }
+            if (token.IsCancellationRequested) return;
+
+            // The directory only returns monitoring.read tenants. A manage-only operator can use a known ID.
+            _scopedTenant = _metricsTenants.FirstOrDefault(item => item.TenantId == tenantId) ?? new(tenantId, $"Tenant #{tenantId}");
+            _openScoped = true;
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { return; }
+        catch (Exception error) when (error is HttpRequestException or System.Text.Json.JsonException)
+        {
+            if (!token.IsCancellationRequested) _metricsError = "Could not verify metrics access for this tenant.";
+        }
+        finally { if (!token.IsCancellationRequested) _isLoading = false; }
+    }
+
+    protected override Task OnAfterRenderAsync(bool firstRender) =>
+        _openScoped ? OpenScopedDialogAsync() : Task.CompletedTask;
+
+    private async Task OpenScopedDialogAsync()
+    {
+        _openScoped = false;
+        if (_scopedTenant is not { } tenant || _scope is null || _scopedDialog is not null) return;
+        var token = _scope.Token;
+        var dialog = await DialogService.ShowAsync<TenantEditorDialog>("Edit Tenant", new DialogParameters<TenantEditorDialog>
+        {
+            { editor => editor.DialogTitle, $"Edit {tenant.Name}" },
+            { editor => editor.ScopedMetricsTenant, tenant }
+        }, BuildDialogOptions());
+        if (token.IsCancellationRequested) { dialog.Close(); return; }
+        _scopedDialog = dialog;
+        await dialog.Result;
+        if (!token.IsCancellationRequested) _scopedDialog = null;
+    }
+
+    private async Task LoadTenantsAsync()
+    {
+        if (_scope is null || IsScopedEntry) return;
+        var token = _scope.Token;
+        _isLoading = true;
+        try
+        {
+            var tenants = await TenantApi.GetTenantsAsync(token);
+            if (token.IsCancellationRequested) return;
+            _tenants = tenants.ToList();
+            _profileListUnavailable = false;
             _lastLoadedUtc = DateTimeOffset.UtcNow;
         }
+        catch (HttpRequestException error) when (error.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.Unauthorized)
+        {
+            if (token.IsCancellationRequested) return;
+            _profileListUnavailable = true;
+            await LoadMetricsDirectoryAsync(token);
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { return; }
         catch (Exception ex)
         {
-            Snackbar.Add($"Failed to load tenants: {ex.Message}", Severity.Error);
+            if (!token.IsCancellationRequested) Snackbar.Add($"Failed to load tenants: {ex.Message}", Severity.Error);
         }
         finally
         {
-            _isLoading = false;
-            StateHasChanged();
+            if (!token.IsCancellationRequested)
+            {
+                _isLoading = false;
+                StateHasChanged();
+            }
         }
     }
+
+    private async Task LoadMetricsDirectoryAsync(CancellationToken token)
+    {
+        _metricsTenants = [];
+        try
+        {
+            var directory = await MonitoringApi.GetTenantsAsync(token);
+            var managed = new List<MonitoringTenantDto>();
+            foreach (var batch in directory.Chunk(8))
+            {
+                if (token.IsCancellationRequested) return;
+                var permissions = await Task.WhenAll(batch.Select(tenant => ReadPermissionsAsync(tenant.TenantId, token)));
+                managed.AddRange(batch.Where((_, index) => permissions[index]?.CanManage == true));
+            }
+            if (!token.IsCancellationRequested) _metricsTenants = managed.OrderBy(tenant => tenant.Name).ToList();
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { return; }
+        catch (Exception error) when (error is HttpRequestException or System.Text.Json.JsonException)
+        {
+            if (!token.IsCancellationRequested) _metricsError = "Could not load the monitoring tenant directory.";
+        }
+    }
+
+    private async Task<MonitoringPermissionsDto?> ReadPermissionsAsync(int tenantId, CancellationToken token)
+    {
+        try
+        {
+            var permissions = await MonitoringApi.GetPermissionsAsync(tenantId, token);
+            return permissions.TenantId == tenantId ? permissions : null;
+        }
+        catch (HttpRequestException error) when (error.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.Unauthorized)
+        {
+            return null;
+        }
+    }
+
+    private void EndScope()
+    {
+        _scope?.Cancel();
+        _scope?.Dispose();
+        _scope = null;
+        _scopedDialog?.Close();
+        _scopedDialog = null;
+    }
+
+    public void Dispose() => EndScope();
 
     private async Task OpenAddDialogAsync()
     {
@@ -432,6 +603,7 @@
     {
         CloseOnEscapeKey = false,
         BackdropClick = false,
+        CloseOnNavigation = true,
         FullWidth = true,
         MaxWidth = MaxWidth.Medium
     };

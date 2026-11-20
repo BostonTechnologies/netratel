@@ -98,7 +98,7 @@
                                         <MudIconButton Icon="@Icons.Material.Filled.Insights"
                                                        Size="Size.Small"
                                                        Color="Color.Info"
-                                                       Disabled="@(telemetry is null)"
+                                                       Disabled="@(client.TenantId <= 0 || client.AgentId == Guid.Empty)"
                                                        OnClick="@(() => OpenTelemetryDialogAsync(client, telemetry))"
                                                        aria-label="Open telemetry dashboard" />
                                     </MudTooltip>

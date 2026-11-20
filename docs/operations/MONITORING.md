@@ -67,7 +67,11 @@ A handed-off intent retains its real persisted flow run ID. Once the intent exce
 
 ## Historical metrics
 
-Open **Monitoring → Metrics** and choose one computer. The default range is the last 24 hours. The chart axes and daily ranges use the displayed time zone. Use **Open metrics** on a device alert to jump to its computer, resource and surrounding time. **Metrics settings** opens the editor in **Rules & groups** for authorized managers.
+Open **Monitoring → Metrics** and choose one computer. The default range is the last 24 hours. The chart axes and daily ranges use the displayed time zone. On an eligible Active alerts row, open **Client tools → Open metrics** to jump to the computer, resource and time around the alert. The choice is available for authorized offline clients too.
+
+On **Clients**, open the telemetry dashboard for a computer and select **History** to use the same metrics and filters. History keeps the computer and tenant selected when the dialog opened. Switching to **History** releases that dialog's live subscription. Switching back to **Live** resumes it and marks cached readings as **Last received** until fresh data arrives. Use **Refresh metrics** for a fixed range. Relative ranges can refresh once a minute while the History tab is active and the browser is visible.
+
+Open **Tenants → Edit Tenant → Metrics** to change collection, retention and watched services. Enter an audit reason and select **Save metrics settings** to commit the policy independently of **Save tenant changes**. The dialog keeps drafts across sections and asks before discarding one. If another operator saves first, review the current revision before retrying your draft. [Scoped permissions and tenant entry](rbac.md#metrics-access)
 
 Eligible clients collect healthy and breaching values for CPU, memory, classified disk capacity, per-interface network RX/TX and watched services, even when no browser or rule is active. The existing fast and slow streams continue at their normal cadences. Updated clients send the actual CPU and network measurement windows. Update Windows clients for CPU accuracy because the older collector counts idle time twice in its total. Older network telemetry can display observed rate samples with legacy quality. Its volume, duration and weighted rate are unavailable. The updated client starts each new adapter counter generation with a warm-up observation.
 
@@ -98,8 +102,14 @@ A straight extrapolation at the default horizons is about 26 GB for 100 comparab
 1. Apply the PostgreSQL migration and deploy matching API and Web. Upgrade one Linux or Windows client through the normal update flow.
 2. Use a computer with no alert rules. Let several minutes of CPU, memory, disks and network telemetry accumulate with the UI closed. Select it in Metrics and check timestamps, units and last persistence.
 3. Select a known interface. Transfer a known file on a test network and check RX/TX direction, observed rates, Received/Sent bytes and covered seconds. Compare with an OS counter over the same interval. Pause the agent, then reconnect. Check the gap and warm-up quality and confirm that an idle valid interval records zero.
-4. Add an exact watched service. Exercise a running and stopped observation, then let it go offline. Confirm unknown coverage and verify that alert-required watches still appear.
+4. Add an exact watched service under **Tenants → Edit Tenant → Metrics**. Exercise a running and stopped observation, then let it go offline. Confirm unknown coverage and verify that alert-required watches still appear.
 5. Restart the API. Reopen the same range and compare byte totals. In a disposable tenant, change retention, disable collection, check retained history and alert state, then reenable and confirm only new evidence is collected.
+
+### Retest the metrics controls
+
+1. On **Active alerts**, open an eligible row's **Client tools** menu with the keyboard. Confirm the trigger matches the adjacent action buttons and **Open metrics** follows **Telemetry**. Activate it and confirm the client, resource and occurrence time window. An aggregate offline alert represents multiple clients.
+2. Open a saved tenant in **Edit Tenant → Metrics**. Verify its saved policy and watches. Change one setting, switch sections, then return and save with a reason. Reopen to confirm the new revision. Check that **Save tenant changes** handles the profile and that closing with a metrics draft offers a choice to keep editing.
+3. From a client card, switch **Live → History → Live**. Select the same fixed dates, time zone, volume, network interface and service in the dialog and in **Monitoring → Metrics**. Compare values, Received/Sent totals, coverage and gaps. Return to History and verify the selections. Repeat with a client that is offline or has no current snapshot and retained data from before collection was disabled.
 
 ## Authorization and API
 
