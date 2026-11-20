@@ -154,6 +154,27 @@ public sealed class GatewayTelemetryDialogTests : AsyncBunitContext
         Assert.Equal(0, _transport.ActiveStreams);
     }
 
+    [Fact]
+    public async Task Returning_to_live_rechecks_access_before_showing_cached_readings()
+    {
+        var provider = Render<MudDialogProvider>();
+        await OpenDialogAsync();
+        await provider.WaitForAssertionAsync(() => Assert.Contains("Fallback authority", provider.Markup));
+        await Tab(provider, "History").ClickAsync(new());
+        var held = new TaskCompletionSource<HttpResponseMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _transport.HoldSnapshot = held.Task;
+        await Tab(provider, "Live").ClickAsync(new());
+        await provider.WaitForAssertionAsync(() =>
+        {
+            Assert.Equal(2, _transport.SnapshotRequests);
+            Assert.DoesNotContain("Fallback authority", provider.Markup);
+        });
+        held.SetResult(new HttpResponseMessage(HttpStatusCode.Forbidden));
+        await provider.WaitForAssertionAsync(() => Assert.Contains("permission to read live telemetry", provider.Markup));
+        Assert.Equal(1, _transport.StreamRequests);
+        Assert.Empty(provider.FindAll(".telemetry-health-strip"));
+    }
+
     private Task<IDialogReference> OpenDialogAsync(GatewayTelemetrySummary? snapshot = null) =>
         Services.GetRequiredService<IDialogService>().ShowAsync<GatewayTelemetryDialog>("Telemetry",
             new DialogParameters<GatewayTelemetryDialog>
@@ -223,6 +244,7 @@ public sealed class GatewayTelemetryDialogTests : AsyncBunitContext
         public int ActiveStreams => _handler.ActiveStreams;
         public int MaximumStreams => _handler.MaximumStreams;
         public HttpStatusCode SnapshotStatus { set => _handler.SnapshotStatus = value; }
+        public Task<HttpResponseMessage>? HoldSnapshot { set => _handler.HoldSnapshot = value; }
 
         public HttpClient CreateClient(string name) => new(_handler, disposeHandler: false)
         {
@@ -237,6 +259,7 @@ public sealed class GatewayTelemetryDialogTests : AsyncBunitContext
         public int MaximumStreams { get; private set; }
         public int ActiveStreams;
         public HttpStatusCode SnapshotStatus = HttpStatusCode.OK;
+        public Task<HttpResponseMessage>? HoldSnapshot;
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
@@ -254,6 +277,7 @@ public sealed class GatewayTelemetryDialogTests : AsyncBunitContext
             }
 
             SnapshotRequests++;
+            if (HoldSnapshot is { } held) return held;
             if (SnapshotStatus != HttpStatusCode.OK) return Task.FromResult(new HttpResponseMessage(SnapshotStatus));
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
             {

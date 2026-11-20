@@ -40,6 +40,7 @@ public sealed class MonitoringPageTests : AsyncBunitContext
 
         cut.Find("[data-testid=monitoring-state-unknown]").Click();
         Assert.Contains("Unknown", Assert.Single(cut.FindAll("[data-testid=monitoring-series-row]")).TextContent);
+        Assert.Null(cut.FindComponent<ClientToolsLauncher>().Instance.MetricsHref);
         cut.Find("[data-testid=monitoring-state-all]").Click();
         Assert.Equal(3, cut.FindAll("[data-testid=monitoring-series-row]").Count);
         cut.Find("[data-testid=monitoring-state-firing]").Click();

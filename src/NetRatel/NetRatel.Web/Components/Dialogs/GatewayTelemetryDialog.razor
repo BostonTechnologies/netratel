@@ -17,7 +17,7 @@
                 <div class="telemetry-identity">
                     <MudText Typo="Typo.h5">@HostLabel</MudText>
                     <MudText Typo="Typo.caption" Color="Color.Secondary">@TenantLabel</MudText>
-                    @if (_tab == LiveTab && _snapshot is not null)
+                    @if (_tab == LiveTab && _liveVerified && _snapshot is not null)
                     {
                         <MudText Typo="Typo.caption" Color="Color.Secondary">@(IsFresh ? "Age" : "Last received") @FormatAge(_snapshot.ReceivedAtUtc) · @_snapshot.Source</MudText>
                     }
@@ -47,11 +47,11 @@
                         <MudAlert Severity="Severity.Error">Could not open live telemetry.</MudAlert>
                         <MudButton OnClick="() => StartLive()">Retry Live</MudButton>
                     }
-                    else if (_snapshot is null && !_waitingForLive)
+                    else if (_liveVerified && _snapshot is null && !_waitingForLive)
                     {
                         <p role="status">No live telemetry has been received for this computer.</p>
                     }
-                    else if (_snapshot is null)
+                    else if (!_liveVerified || _snapshot is null)
                     {
                         <MudStack Spacing="2" aria-label="Loading telemetry">
                             <MudSkeleton SkeletonType="SkeletonType.Text" Width="45%" />
@@ -126,7 +126,7 @@
     private Task _liveTask = Task.CompletedTask;
     private int _tab, _transition;
     private bool _disposed, _historyOpened, _historyReady, _zoneRequested;
-    private bool _liveDenied, _liveError, _waitingForLive, _receivedLiveSample;
+    private bool _liveDenied, _liveError, _liveVerified, _waitingForLive, _receivedLiveSample;
     private (int Tenant, Guid Agent) _scope;
     private TimeZoneInfo _zone = TimeZoneInfo.Utc;
     private MetricHistorySelection _historySelection = new();
@@ -172,7 +172,7 @@
         if (_disposed || _tab != LiveTab) return;
         var previous = StopLiveAsync();
         _streamState = "Connecting";
-        _receivedLiveSample = _liveDenied = _liveError = false;
+        _receivedLiveSample = _liveDenied = _liveError = _liveVerified = false;
         _waitingForLive = true;
         _liveCancellation = new();
         _liveTask = ReadLiveAsync(previous, _scope, _liveCancellation.Token, preferHistoryOnDenial);
@@ -188,6 +188,7 @@
             // Wait for that authorization before showing a cached snapshot or acquiring an SSE lease.
             var snapshot = await TelemetryApi.GetAsync(scope.Tenant, scope.Agent, token).WaitAsync(token);
             if (!CurrentLive(token)) return;
+            _liveVerified = true;
             if (MatchesScope(snapshot)) ReceiveSnapshot(snapshot);
             ReceiveSnapshot(_seed);
             _seed = null;
@@ -256,6 +257,7 @@
     private void LoseLiveAccess(bool preferHistory)
     {
         _liveDenied = true;
+        _liveVerified = false;
         _streamState = "Unavailable";
         ClearLiveSamples();
         if (preferHistory)
