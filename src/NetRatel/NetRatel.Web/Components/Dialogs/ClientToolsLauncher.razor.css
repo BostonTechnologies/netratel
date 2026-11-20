@@ -1,4 +1,6 @@
 .client-tools-launcher { display:inline-flex; align-items:center; }
+.client-tools-launcher ::deep .mud-fab-menu-container > button { width:auto; height:auto; min-width:0; min-height:0; padding:.375rem; }
+.client-tools-launcher ::deep .mud-fab-menu-container > button .mud-icon-root { font-size:1.25rem; }
 .client-tools-launcher ::deep .client-tools-overlay .mud-fab-menu-item { width:100%; justify-content:flex-start; min-height:36px; }
 .client-tools-launcher ::deep .client-tools-overlay>.mud-tooltip-root { display:block; width:100%; }
 .client-tools-error { font-size:.75rem; color:var(--mud-palette-error); max-width:16rem; }

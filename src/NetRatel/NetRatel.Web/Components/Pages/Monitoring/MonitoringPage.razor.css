@@ -19,7 +19,7 @@
 .monitoring-table td div { margin-top:.25rem; }
 .monitoring-table code { white-space:normal; font-size:.75rem; }
 .monitoring-note,.monitoring-pager { font-size:.875rem; }
-.monitoring-row-actions { display:flex; flex-wrap:wrap; gap:.5rem; }
+.monitoring-row-actions { display:flex; flex-wrap:wrap; align-items:center; gap:.5rem; }
 .monitoring-health { border:1px solid var(--mud-palette-divider); border-radius:4px; padding:.15rem .4rem; }
 .monitoring-health[data-state=Unknown] { color:var(--mud-palette-text-secondary); }
 .monitoring-health[data-state=Breach] { color:var(--mud-palette-error); }

@@ -7,7 +7,8 @@ export function attach(root, receiver, label) {
     const id = `client-tools-${crypto.randomUUID()}`;
     menu.id = id; menu.setAttribute('aria-label', label); menu.setAttribute('role', 'menu');
     button.setAttribute('aria-label', label); button.setAttribute('aria-haspopup', 'menu'); button.setAttribute('aria-controls', id);
-    let opened = false, disposed = false;
+    let opened = false, disposed = false, entryKey;
+    const enabledItems = () => [...menu.querySelectorAll('button:not(:disabled)')];
     function focus() { if (button.isConnected) button.focus({ preventScroll: true }); }
     function close(returnFocus = false) {
         if (!opened) return;
@@ -35,12 +36,16 @@ export function attach(root, receiver, label) {
     }
     function key(event) {
         if (!opened) {
-            if (event.target === button && ['ArrowDown', 'ArrowUp'].includes(event.key)) { event.preventDefault(); button.click(); requestAnimationFrame(() => menu.querySelector('button:not(:disabled)')?.focus()); }
+            if (event.target === button && ['ArrowDown', 'ArrowUp'].includes(event.key)) {
+                event.preventDefault();
+                entryKey = event.key;
+                button.click();
+            }
             return;
         }
         if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(true); return; }
         if (event.key === 'Tab') { close(); return; }
-        const items = [...menu.querySelectorAll('button:not(:disabled)')];
+        const items = enabledItems();
         const current = items.indexOf(document.activeElement);
         const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : event.key === 'ArrowDown' ? (current + 1) % items.length : event.key === 'ArrowUp' ? (current + items.length - 1) % items.length : -1;
         if (next >= 0 && items.length) { event.preventDefault(); items[next].focus(); }
@@ -58,6 +63,11 @@ export function attach(root, receiver, label) {
             menu.setAttribute('popover', 'manual');
             if (!menu.matches(':popover-open')) menu.showPopover();
             place();
+            if (entryKey) {
+                const items = enabledItems();
+                (entryKey === 'ArrowUp' ? items.at(-1) : items[0])?.focus();
+                entryKey = undefined;
+            }
         }, close, focus,
         dispose() {
             disposed = true; close(); document.removeEventListener('pointerdown', outside, true);

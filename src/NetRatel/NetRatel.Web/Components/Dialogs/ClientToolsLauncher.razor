@@ -5,14 +5,20 @@
 @inject IDialogService Dialogs
 @inject IServiceProvider Services
 @inject IJSRuntime JS
+@inject NavigationManager Navigation
 @inject ILogger<ClientToolsLauncher> Logger
 
 <span @ref="_root" class="client-tools-launcher" @onclick:stopPropagation data-testid="client-tools-launcher">
     <MudTooltip Text="Client tools">
-        <MudFabMenu Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.Build" Fixed="false" Direction="Direction.Bottom" Open="_open" OpenChanged="OpenChanged" OpenOnMouseHover="false" Disabled="@(!_ready || AgentId == Guid.Empty)" CloseOnMenuItemClicked="true" DropShadow="false" ButtonStyle="width:32px;height:32px;min-height:32px;" MenuClass="client-tools-overlay" aria-label="Client tools">
+        <MudFabMenu Variant="Variant.Text" Size="Size.Small" StartIcon="@Icons.Material.Filled.Build" Fixed="false" Direction="Direction.Bottom" Open="_open" OpenChanged="OpenChanged" OpenOnMouseHover="false" Disabled="@(!_ready || AgentId == Guid.Empty)" CloseOnMenuItemClicked="true" DropShadow="false" MenuClass="client-tools-overlay" aria-label="Client tools">
             @foreach (var tool in Tools)
             {
                 <MudTooltip Text="@Reason(tool)"><MudFabMenuItem Label="@tool" StartIcon="@Icon(tool)" Variant="Variant.Outlined" Size="Size.Small" Disabled="@(_opening || !Available(tool))" OnClick="() => Select(tool)" aria-label="@($"{tool} for {HostLabel}")" /></MudTooltip>
+                @if (tool == "Telemetry" && MetricsHref is not null)
+                {
+                    <MudFabMenuItem Label="Open metrics" StartIcon="@Icons.Material.Filled.QueryStats" Variant="Variant.Outlined"
+                                    Size="Size.Small" OnClick="OpenMetrics" aria-label="Open metrics" />
+                }
             }
         </MudFabMenu>
     </MudTooltip>
@@ -38,6 +44,7 @@
     [Parameter] public string TenantLabel { get; set; } = "";
     [Parameter, EditorRequired] public ClientToolReadiness Readiness { get; set; } = default!;
     [Parameter] public string ScopeKey { get; set; } = "";
+    [Parameter] public string? MetricsHref { get; set; }
     private static readonly string[] Tools = ["Telemetry", "Terminal", "Browse files", "Client logs", "Services", "Software inventory"];
     private ElementReference _root;
     private IJSObjectReference? _module, _controller;
@@ -116,6 +123,12 @@
         if (!_disposed) await InvokeAsync(StateHasChanged);
     }
     [JSInvokable] public Task Dismiss() { _open = false; return InvokeAsync(StateHasChanged); }
+    private void OpenMetrics()
+    {
+        _open = false;
+        if (MetricsHref is { } href) Navigation.NavigateTo(href);
+    }
+
     private async Task Select(string tool)
     {
         if (_opening || !Available(tool)) return;

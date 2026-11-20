@@ -142,9 +142,15 @@
                                     <MudTooltip Text="Clear this occurrence"><MudIconButton Icon="@Icons.Material.Filled.Clear" Size="Size.Small" Disabled="@(!snapshot.Permissions.CanClear)" OnClick='() => OpenOperator(row, "clear")' aria-label="Clear alert" data-testid="monitoring-clear" /></MudTooltip>
                                     <MudTooltip Text="Bypass new actions"><MudIconButton Icon="@Icons.Material.Filled.Pause" Size="Size.Small" Disabled="@(!snapshot.Permissions.CanBypass)" OnClick='() => OpenOperator(row, "bypass")' aria-label="Bypass alert actions" data-testid="monitoring-bypass" /></MudTooltip>
                                 }
-                                @if (!MonitoringOfflinePresentation.IsSeries(row.Series) && row.Occurrence is { } metricsOccurrence && snapshot.Permissions.CanRead)
-                                { <a class="monitoring-detail-button" href="@MetricsLink(row.Series.TenantId, row.Series.AgentId, row.Series.ResourceKey, metricsOccurrence.RaisedAtUtc)">Open metrics</a> }
-                                @if (!MonitoringOfflinePresentation.IsSeries(row.Series)) { <ClientToolsLauncher @key="(row.Series, 0)" TenantId="row.Series.TenantId" AgentId="row.Series.AgentId" HostLabel="@ClientName(row.Series.AgentId)" TenantLabel="@TenantName" Readiness="_clientToolReadiness" ScopeKey="@Navigation.Uri" /> }
+                                @if (!MonitoringOfflinePresentation.IsSeries(row.Series))
+                                {
+                                    var metricsHref = row.Occurrence is { } occurrence && snapshot.Permissions.CanRead
+                                        ? MetricsLink(row.Series.TenantId, row.Series.AgentId, row.Series.ResourceKey, occurrence.RaisedAtUtc)
+                                        : null;
+                                    <ClientToolsLauncher @key="(row.Series, 0)" TenantId="row.Series.TenantId" AgentId="row.Series.AgentId"
+                                                         HostLabel="@ClientName(row.Series.AgentId)" TenantLabel="@TenantName"
+                                                         Readiness="_clientToolReadiness" ScopeKey="@Navigation.Uri" MetricsHref="@metricsHref" />
+                                }
                                 @if (!MonitoringOfflinePresentation.IsSeries(row.Series) || row.Occurrence is not null)
                                 { <MonitoringInvestigationLauncher @key="(row.Series, 1)" Row="row" ClientLabel="@(MonitoringOfflinePresentation.IsSeries(row.Series) ? "monitored clients" : ClientName(row.Series.AgentId))" /> }
                             </div></td>
