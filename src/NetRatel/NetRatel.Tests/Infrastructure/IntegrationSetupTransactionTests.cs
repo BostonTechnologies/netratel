@@ -1,12 +1,25 @@
+using System.Net;
+using System.Net.Http.Json;
 using System.Security.Claims;
+using System.Threading.RateLimiting;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.TestHost;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using NetRatel.API.Endpoints.Auth;
+using NetRatel.API.Middleware;
 using NetRatel.Application.Operations;
 using NetRatel.Infrastructure.Identity;
 using NetRatel.Infrastructure.Identity.Authorization;
+using NetRatel.Infrastructure.Identity.Branding;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Infrastructure.Services;
+using NetRatel.Shared.Connectivity;
+using NetRatel.Tests.API;
 using Xunit;
 
 namespace NetRatel.Tests.Infrastructure;
@@ -16,6 +29,210 @@ public sealed partial class IntegrationSetupTransactionTests(PostgreSqlPersisten
 {
     private const string Owner = "aabbccddeeff00112233445566778899";
     private const string Resource = "https://mcp.example.test/mcp";
+
+    [Fact]
+    public async Task Account_endpoint_creates_four_full_tenants_and_server_scope_with_one_protected_handoff()
+    {
+        var connection = await InitializeAsync();
+        var protection = new EphemeralDataProtectionProvider();
+        await using (var seed = Open(connection, protection))
+        {
+            seed.App.Tenants.AddRange(new Tenant { Id = 703, Name = "Customer C" }, new Tenant { Id = 704, Name = "Customer D" });
+            await seed.App.SaveChangesAsync();
+        }
+        var permissions = IntegrationPermissionCatalog.Delegable.Select(permission => permission.Id).ToArray();
+        var request = new IntegrationCredentialCreateRequest("Customer connection", IntegrationCredentialPurpose.HttpMcp, ExactExpiry(),
+            Enumerable.Range(701, 4).SelectMany(id => permissions.Select(permission => new IntegrationCredentialGrantRequest(id, permission))).ToArray(), Resource, permissions);
+        var requestId = Guid.NewGuid().ToString("N");
+        var body = new IntegrationCredentialEndpoints.CreateIntegrationCredentialRequest(request.Name, request.Purpose, request.ExpiresAtUtc,
+            request.Grants, Resource, request.InstancePermissions, requestId, Plan(request), true);
+        await using var host = await StartAccountApiAsync(connection, protection);
+        using var client = IntegrationCredentialAccessEndpointTests.AccountClient(host, owner: Owner);
+        const string path = "/api/v2/account/integration-credentials/";
+        using var created = await client.PostAsJsonAsync(path, body);
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        var credential = Assert.IsType<IntegrationCredentialSecret>(await created.Content.ReadFromJsonAsync<IntegrationCredentialSecret>());
+        using var replay = await client.PostAsJsonAsync(path, body);
+        Assert.Equal(credential, await replay.Content.ReadFromJsonAsync<IntegrationCredentialSecret>());
+        using var acknowledged = await client.PostAsync(path + $"setup/{requestId}/acknowledge", null);
+        Assert.Equal(HttpStatusCode.NoContent, acknowledged.StatusCode);
+
+        await using var readback = Open(connection, protection);
+        var persisted = await readback.Identity.IntegrationCredentials.Include(row => row.Grants).Include(row => row.InstanceGrants).SingleAsync();
+        Assert.Equal(credential.CredentialId, persisted.Id);
+        Assert.Equal(request.ExpiresAtUtc, persisted.ExpiresAtUtc);
+        Assert.Equal(request.Grants.OrderBy(g => g.TenantId).ThenBy(g => g.Permission),
+            persisted.Grants.OrderBy(g => g.TenantId).ThenBy(g => g.Permission).Select(g => new IntegrationCredentialGrantRequest(g.TenantId, g.Permission)));
+        Assert.Equal(permissions.Order(), persisted.InstanceGrants.Select(g => g.Permission).Order());
+        Assert.Equal(new[] { 0, 701, 702, 703, 704 }, await readback.App.McpOperatorPolicies
+            .Where(policy => policy.IntegrationCredentialId == credential.CredentialId && policy.ParentPolicyId == null)
+            .OrderBy(policy => policy.TenantId).Select(policy => policy.TenantId).ToArrayAsync());
+        Assert.Null((await readback.Identity.IntegrationSetupAttempts.SingleAsync()).ProtectedDelivery);
+    }
+
+    [Fact]
+    public async Task Reviewed_account_edits_expand_remove_and_readd_tenants_and_keeps_exact_custom_policy_after_restart()
+    {
+        var connection = await InitializeAsync();
+        var protection = new EphemeralDataProtectionProvider();
+        var permissions = IntegrationPermissionCatalog.Delegable.Select(permission => permission.Id).ToArray();
+        var expiry = ExactExpiry();
+        IntegrationCredentialSecret issued;
+        await using (var seed = Open(connection, protection))
+        {
+            seed.App.Tenants.AddRange(Enumerable.Range(703, 3).Select(id => new Tenant { Id = id, Name = $"Customer {id}" }));
+            await seed.App.SaveChangesAsync();
+            var request = CreateRequest(1);
+            var setupId = Guid.NewGuid().ToString("N");
+            issued = await seed.Setup.CreateAsync(Principal(), setupId, request, Plan(request), McpOperatorEnvironment.Production, default);
+            await seed.Setup.AcknowledgeAsync(Owner, setupId, default);
+        }
+
+        var storeFailure = new FailPolicyWriteOnce(704);
+        await using var host = await StartAccountApiAsync(connection, protection, storeFailure);
+        using var client = IntegrationCredentialAccessEndpointTests.AccountClient(host, owner: Owner);
+        var path = $"/api/v2/account/integration-credentials/{issued.CredentialId}";
+        var expanded = await PrepareAsync(CreateRequest(4));
+        storeFailure.Armed = true;
+        using (var failed = await ApplyAsync(expanded))
+        {
+            Assert.Equal(HttpStatusCode.ServiceUnavailable, failed.StatusCode);
+            Assert.Equal("review_service_unavailable", (await failed.Content.ReadFromJsonAsync<IntegrationPairingFailure>())!.Code);
+        }
+        await using (var readback = Open(connection, protection))
+        {
+            Assert.Equal(permissions.Length, await readback.Identity.IntegrationCredentialGrants.CountAsync());
+            Assert.Equal(2, await readback.App.McpOperatorPolicies.CountAsync(policy => policy.IntegrationCredentialId == issued.CredentialId));
+            Assert.Empty(await readback.Identity.IntegrationCredentialLifecycleEvents.ToArrayAsync());
+        }
+        await SaveAsync(expanded, 4);
+        // Treat the previous apply response as lost and retry its exact decision.
+        await SaveAsync(expanded, 4);
+        await SaveAsync(await PrepareAsync(CreateRequest(5)), 5);
+
+        var policyOnly = await PrepareAsync(CreateRequest(5), policy => policy.TenantId != 701 ? policy : policy with
+        {
+            Name = "Customer A flow list",
+            Effect = McpOperatorPolicyEffect.Deny,
+            Families = McpOperatorOperationFamily.AutomationRead,
+            Operations = ["netratel_flows/list"],
+            Constraints = new(MaxOutputBytes: 4096),
+            ExpiresAtUtc = expiry.AddDays(-1)
+        });
+        var stale = await PrepareAsync(CreateRequest(5));
+        await SaveAsync(policyOnly, 5);
+        using (var conflict = await ApplyAsync(stale))
+        {
+            Assert.Equal(HttpStatusCode.Conflict, conflict.StatusCode);
+            Assert.Equal("review_policy_changed", (await conflict.Content.ReadFromJsonAsync<IntegrationPairingFailure>())!.Code);
+        }
+
+        var reduced = CreateRequest(5) with { Grants = CreateRequest(5).Grants.Where(grant => grant.TenantId != 702).ToArray() };
+        await SaveAsync(await PrepareAsync(reduced), 4);
+        await SaveAsync(await PrepareAsync(CreateRequest(5)), 5);
+
+        await using var restarted = Open(connection, protection);
+        await new IntegrationAllAccessReconciliation(restarted.Identity, restarted.App).ReconcileAsync();
+        var stored = await restarted.Identity.IntegrationCredentials.AsNoTracking().SingleAsync();
+        Assert.Equal(issued.CredentialId, stored.Id);
+        Assert.Equal(IntegrationCredentialService.Hash(issued.Secret), stored.SecretHash);
+        Assert.Equal(Resource, stored.Resource);
+        Assert.Equal(IntegrationCredentialPurpose.HttpMcp, stored.Purpose);
+        Assert.Equal(expiry, stored.ExpiresAtUtc);
+        var verified = await new IntegrationCredentialService(restarted.Identity).VerifyWithStatusAsync(issued.Secret, stored.Purpose, Resource);
+        Assert.Equal(5 * permissions.Length, verified.Credential!.Grants.Count);
+        var policies = await restarted.App.McpOperatorPolicies.AsNoTracking()
+            .Where(policy => policy.IntegrationCredentialId == issued.CredentialId && policy.ParentPolicyId == null).ToArrayAsync();
+        Assert.Equal(6, policies.Count(policy => policy.LifecycleState == McpOperatorPolicyLifecycleState.Active));
+        Assert.Single(policies, policy => policy.TenantId == 702 && policy.LifecycleState == McpOperatorPolicyLifecycleState.Disabled);
+        Assert.Single(policies, policy => policy.TenantId == 702 && policy.LifecycleState == McpOperatorPolicyLifecycleState.Active);
+        var retained = Assert.Single(policies, policy => policy.TenantId == 701);
+        Assert.Equal("Customer A flow list", retained.Name);
+        Assert.Equal(McpOperatorPolicyEffect.Deny, retained.Effect);
+        Assert.Equal(expiry.AddDays(-1), retained.ExpiresAtUtc);
+        Assert.Equal(new[] { "netratel_flows/list" }, retained.Operations);
+        Assert.Equal(4096, System.Text.Json.JsonSerializer.Deserialize(retained.ConstraintsJson, McpOperatorJsonContext.Default.McpOperatorConstraints)!.MaxOutputBytes);
+
+        IntegrationCredentialCreateRequest CreateRequest(int tenantCount) => new("Customer connection", IntegrationCredentialPurpose.HttpMcp,
+            expiry, Enumerable.Range(701, tenantCount).SelectMany(id => permissions.Select(permission => new IntegrationCredentialGrantRequest(id, permission))).ToArray(), Resource, permissions);
+
+        async Task<ReviewedMcpAccessReceipt> PrepareAsync(IntegrationCredentialCreateRequest request, Func<McpIntegrationPolicy, McpIntegrationPolicy>? edit = null)
+        {
+            var current = (await client.GetFromJsonAsync<McpIntegrationPolicy[]>(path + "/base-policies"))!.ToDictionary(policy => policy.TenantId);
+            var policiesToSave = Plan(request).Select(policy => current.GetValueOrDefault(policy.TenantId, policy)).ToArray();
+            if (edit is not null) policiesToSave = policiesToSave.Select(edit).ToArray();
+            using var response = await client.PostAsJsonAsync(path + "/access-requests",
+                new IntegrationCredentialEndpoints.CredentialAccessRequest(Guid.NewGuid().ToString("N"),
+                    request.Grants.Select(grant => new IntegrationPairingGrant(grant.TenantId, grant.Permission)).ToArray(), permissions, policiesToSave));
+            Assert.True(response.IsSuccessStatusCode, $"Prepare returned {(int)response.StatusCode}: {await response.Content.ReadAsStringAsync()}");
+            return (await response.Content.ReadFromJsonAsync<ReviewedMcpAccessReceipt>())!;
+        }
+
+        Task<HttpResponseMessage> ApplyAsync(ReviewedMcpAccessReceipt pending) => client.PostAsJsonAsync(
+            path + $"/access-requests/{pending.Request.RequestId}/apply",
+            new IntegrationCredentialEndpoints.CredentialAccessDecision(pending.Request.ProposalHash, true));
+
+        async Task SaveAsync(ReviewedMcpAccessReceipt pending, int tenantCount)
+        {
+            using var response = await ApplyAsync(pending);
+            Assert.True(response.IsSuccessStatusCode, $"Apply returned {(int)response.StatusCode}: {await response.Content.ReadAsStringAsync()}");
+            var receipt = (await response.Content.ReadFromJsonAsync<ReviewedMcpAccessReceipt>())!;
+            Assert.Equal("consumed", receipt.Request.Status);
+            Assert.Equal(tenantCount * permissions.Length, receipt.ConfiguredGrants.Count);
+            Assert.Equal(expiry, receipt.CredentialExpiresAtUtc);
+        }
+    }
+
+    private sealed class FailPolicyWriteOnce(int tenantId) : SaveChangesInterceptor
+    {
+        public bool Armed { get; set; }
+        public override ValueTask<InterceptionResult<int>> SavingChangesAsync(DbContextEventData eventData,
+            InterceptionResult<int> result, CancellationToken cancellationToken = default)
+        {
+            if (Armed && eventData.Context!.ChangeTracker.Entries<McpOperatorPolicyRecord>()
+                .Any(entry => entry.State == EntityState.Added && entry.Entity.TenantId == tenantId))
+            {
+                Armed = false;
+                throw new TimeoutException("Synthetic policy store interruption.");
+            }
+            return ValueTask.FromResult(result);
+        }
+    }
+
+    private static async Task<WebApplication> StartAccountApiAsync(string connection, IDataProtectionProvider protection,
+        SaveChangesInterceptor? interceptor = null)
+    {
+        var builder = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = Environments.Production });
+        builder.WebHost.UseTestServer();
+        builder.Configuration["Integration:HttpMcp:PublicResourceUri"] = Resource;
+        builder.Services.Configure<DeploymentBrandingOptions>(options => options.SiteUrl = "https://mcp.example.test");
+        IntegrationCredentialAccessEndpointTests.AddAccountAuthentication(builder.Services);
+        builder.Services.AddDbContext<NetRatelIdentityDbContext>(options => options.UseNpgsql(connection));
+        builder.Services.AddDbContext<OrchestratorDbContext>(options =>
+        {
+            options.UseNpgsql(connection);
+            if (interceptor is not null) options.AddInterceptors(interceptor);
+        });
+        builder.Services.AddSingleton(protection);
+        builder.Services.AddSingleton(TimeProvider.System);
+        builder.Services.AddScoped<IEffectiveAccessService, EffectiveAccessService>();
+        builder.Services.AddScoped<IIntegrationCredentialGrantValidator, IntegrationCredentialGrantValidator>();
+        builder.Services.AddScoped<IIntegrationCredentialService, IntegrationCredentialService>();
+        builder.Services.AddScoped<IMcpOperatorPolicyAdministration, McpOperatorPolicyAdministration>();
+        builder.Services.AddScoped<IMcpOperatorAuthorization, McpOperatorAuthorization>();
+        builder.Services.AddScoped<IDeploymentBrandingService, DeploymentBrandingService>();
+        builder.Services.AddScoped<IntegrationSetupService>();
+        builder.Services.AddScoped<IntegrationPairingService>();
+        builder.Services.AddRateLimiter(options => options.AddPolicy("integration-pairing-account", _ => RateLimitPartition.GetNoLimiter("test")));
+        var app = builder.Build();
+        app.UseAuthentication();
+        app.UseAuthorization();
+        app.UseRateLimiter();
+        app.UseMiddleware<PairingRequestBodyLimitMiddleware>();
+        app.MapIntegrationCredentialEndpoints();
+        await app.StartAsync();
+        return app;
+    }
 
     [Theory]
     [InlineData(true, true, 3)]
@@ -53,7 +270,8 @@ public sealed partial class IntegrationSetupTransactionTests(PostgreSqlPersisten
             [new(701, NetRatelPermissions.FlowRead), new(702, NetRatelPermissions.FlowRead)], Resource, [NetRatelPermissions.McpDiscoveryRead]);
         var id = Guid.NewGuid().ToString("N"); var valid = Plan(request); var invalid = valid.Select((p, i) => i == 1 ? p with { Name = new string('x', 161) } : p).ToArray();
         await using (var failed = Open(connection, protection))
-            await Assert.ThrowsAsync<ArgumentException>(() => failed.Setup.CreateAsync(Principal(), id, request, invalid, McpOperatorEnvironment.Production, default));
+            Assert.Equal("integration_policy_invalid", (await Assert.ThrowsAsync<IntegrationCredentialGrantValidationException>(
+                () => failed.Setup.CreateAsync(Principal(), id, request, invalid, McpOperatorEnvironment.Production, default))).ReviewFailure!.Code);
         await using var retry = Open(connection, protection);
         Assert.Empty(await retry.Identity.IntegrationCredentials.ToArrayAsync()); Assert.Empty(await retry.App.McpOperatorPolicies.Where(p => p.IntegrationCredentialId != null).ToArrayAsync()); Assert.Empty(await retry.Identity.IntegrationSetupAttempts.ToArrayAsync());
         await retry.Setup.CreateAsync(Principal(), id, request, valid, McpOperatorEnvironment.Production, default);

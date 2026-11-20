@@ -14,6 +14,33 @@ namespace NetRatel.Tests.Infrastructure;
 public sealed class IntegrationCredentialServiceTests(PostgreSqlPersistenceFixture postgres)
 {
     [Fact]
+    public async Task Full_catalog_selections_and_previous_grant_ceiling_fit_the_supported_tenant_bounds()
+    {
+        await using var db = await CreateDbAsync();
+        var service = new IntegrationCredentialService(db);
+        var limits = IntegrationPermissionCatalog.Limits;
+        var permissions = IntegrationPermissionCatalog.Delegable.Select(permission => permission.Id).ToArray();
+        var full = Enumerable.Range(1, limits.TenantScopes + 1)
+            .SelectMany(tenant => permissions.Select(permission => new IntegrationCredentialGrantRequest(tenant, permission))).ToArray();
+        var expiry = DateTimeOffset.UtcNow.AddDays(7);
+        foreach (var count in new[] { 1, 2, 3, 4, 5 }.Select(tenants => tenants * permissions.Length)
+            .Concat([65, 66, 67, limits.TenantGrants]).Distinct())
+        {
+            var grants = full[..count];
+            var created = await service.CreateAsync("principal-a", new($"Catalog {count}", IntegrationCredentialPurpose.Api, expiry,
+                grants, InstancePermissions: permissions));
+            (await db.IntegrationCredentialGrants.AsNoTracking().CountAsync(grant => grant.CredentialId == created.CredentialId))
+                .Should().Be(count);
+        }
+        foreach (var overage in new[] { full[..(limits.TenantGrants + 1)], Enumerable.Range(1, limits.TenantScopes + 1)
+            .Select(tenant => new IntegrationCredentialGrantRequest(tenant, NetRatelPermissions.FlowRead)).ToArray() })
+        {
+            await Assert.ThrowsAsync<ArgumentException>(() => service.CreateAsync("principal-a",
+                new("Above limit", IntegrationCredentialPurpose.Api, expiry, overage)));
+        }
+    }
+
+    [Fact]
     public async Task One_credential_persists_multiple_independent_tenant_grants_and_discovery_stays_scoped()
     {
         await using var db = await CreateDbAsync();

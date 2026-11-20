@@ -27,6 +27,42 @@ namespace NetRatel.Tests.API;
 
 public sealed class IntegrationCredentialAccessEndpointTests
 {
+    [Fact]
+    public async Task Account_grant_validation_reports_safe_counts_and_does_not_prepare_invalid_reviews()
+    {
+        await using var fixture = await ReviewedMcpAccessTests.Fixture.CreateAsync();
+        await using var app = await BuildAppAsync(fixture);
+        using var client = AccountClient(app);
+        var path = AccessPath(fixture);
+        var limits = IntegrationPermissionCatalog.Limits;
+        var cases = new (IntegrationPairingGrant[] Grants, string Code, int? Count, int? Limit)[]
+        {
+            (Enumerable.Range(1, limits.TenantScopes + 1).Select(id => new IntegrationPairingGrant(id, NetRatelPermissions.FlowRead)).ToArray(),
+                "integration_tenant_capacity", limits.TenantScopes + 1, limits.TenantScopes),
+            (Enumerable.Repeat(new IntegrationPairingGrant(17, NetRatelPermissions.FlowRead), limits.TenantGrants + 1).ToArray(),
+                "integration_grant_capacity", limits.TenantGrants + 1, limits.TenantGrants),
+            (Enumerable.Repeat(new IntegrationPairingGrant(17, NetRatelPermissions.FlowRead), limits.PermissionsPerScope + 1).ToArray(),
+                "integration_scope_capacity", limits.PermissionsPerScope + 1, limits.PermissionsPerScope),
+            ([new(17, NetRatelPermissions.FlowRead), new(17, NetRatelPermissions.FlowRead)], "integration_grants_invalid", null, null),
+            ([new(17, "unknown.permission")], "integration_grants_invalid", null, null),
+            ([null!], "integration_grants_invalid", null, null),
+            ([new(391, NetRatelPermissions.FlowRead)], "integration_tenant_unavailable", null, null)
+        };
+        foreach (var (grants, code, count, limit) in cases)
+        {
+            using var response = await client.PostAsJsonAsync(path, Request() with { Grants = grants });
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+            var failure = Assert.IsType<IntegrationPairingFailure>(await response.Content.ReadFromJsonAsync<IntegrationPairingFailure>());
+            Assert.Equal(code, failure.Code);
+            Assert.Equal("request", failure.Stage);
+            Assert.Equal("grants", failure.Field);
+            Assert.Equal(count, failure.RequestedCount);
+            Assert.Equal(limit, failure.Limit);
+            Assert.Equal(Assert.Single(response.Headers.GetValues("X-Correlation-ID")), failure.CorrelationId);
+        }
+        Assert.Empty(await fixture.Identity.IntegrationPairingRequests.ToArrayAsync());
+    }
+
     [Theory]
     [InlineData("local")]
     [InlineData("Oidc")]
@@ -99,6 +135,107 @@ public sealed class IntegrationCredentialAccessEndpointTests
     }
 
     [Fact]
+    public async Task Account_review_rejects_stale_operations_and_saves_reconciled_all_access_for_the_same_tenant()
+    {
+        await using var fixture = await ReviewedMcpAccessTests.Fixture.CreateAsync();
+        (await fixture.Identity.Users.SingleAsync(user => user.PrincipalId == "requester")).IsInstanceAdministrator = true;
+        await fixture.Identity.SaveChangesAsync();
+        await using var app = await BuildAppAsync(fixture);
+        using var client = AccountClient(app);
+        var path = AccessPath(fixture);
+        var policiesPath = path[..path.LastIndexOf('/')] + "/base-policies";
+        var original = (await client.GetFromJsonAsync<McpIntegrationPolicy[]>(policiesPath))!;
+        var selected = original.Select(policy => policy.TenantId == 17 ? policy with
+        {
+            Constraints = new(MaxOutputBytes: 4096),
+            Operations = ["netratel_flows/list"]
+        } : policy).ToArray();
+        var request = Request() with
+        {
+            Grants = [new(17, NetRatelPermissions.TelemetryRead), new(29, NetRatelPermissions.FlowRead)],
+            Policies = selected
+        };
+        using var rejected = await client.PostAsJsonAsync(path, request);
+        Assert.Equal(HttpStatusCode.BadRequest, rejected.StatusCode);
+        var failure = (await rejected.Content.ReadFromJsonAsync<IntegrationPairingFailure>())!;
+        Assert.Equal("integration_policy_invalid", failure.Code);
+        Assert.Equal(17, failure.TenantId);
+        Assert.False(string.IsNullOrWhiteSpace(failure.CorrelationId));
+
+        var updated = original.Select(policy => policy.TenantId == 17
+            ? McpIntegrationPolicyCatalog.ReconcilePermissions(policy, [NetRatelPermissions.FlowRead], [NetRatelPermissions.TelemetryRead])
+            : policy).ToArray();
+        using var prepared = await client.PostAsJsonAsync(path, request with { Policies = updated });
+        prepared.EnsureSuccessStatusCode();
+        var pending = (await prepared.Content.ReadFromJsonAsync<ReviewedMcpAccessReceipt>())!;
+        using var applied = await client.PostAsJsonAsync(path + $"/{pending.Request.RequestId}/apply",
+            new IntegrationCredentialEndpoints.CredentialAccessDecision(pending.Request.ProposalHash, true));
+        applied.EnsureSuccessStatusCode();
+        var receipt = (await applied.Content.ReadFromJsonAsync<ReviewedMcpAccessReceipt>())!;
+        Assert.Equal("consumed", receipt.Request.Status);
+        Assert.Equal(request.Grants, receipt.ConfiguredGrants);
+        var saved = Assert.Single(await fixture.App.McpOperatorPolicies.AsNoTracking().ToArrayAsync(), policy => policy.TenantId == 17);
+        Assert.DoesNotContain("netratel_flows/list", saved.Operations!);
+        Assert.Equal(updated.Single(policy => policy.TenantId == 17).Families, saved.OperationFamily);
+    }
+
+    [Fact]
+    public async Task Reviewed_edit_can_keep_existing_sparse_scopes_above_the_new_tenant_limit()
+    {
+        await using var fixture = await ReviewedMcpAccessTests.Fixture.CreateAsync();
+        (await fixture.Identity.Users.SingleAsync(user => user.PrincipalId == "requester")).IsInstanceAdministrator = true;
+        var current = await fixture.Identity.IntegrationCredentials.Include(credential => credential.Grants).SingleAsync();
+        var oldTenantIds = Enumerable.Range(101, IntegrationCredentialLimits.MaximumTenantScopes - 1).ToArray();
+        fixture.App.Tenants.AddRange(oldTenantIds.Append(301).Select(id => new Tenant { Id = id, Name = $"Customer {id}" }));
+        current.Grants.AddRange(oldTenantIds.Select(id => new IntegrationCredentialGrant
+        { CredentialId = current.Id, TenantId = id, Permission = NetRatelPermissions.FlowRead }));
+        await fixture.App.SaveChangesAsync();
+        await fixture.Identity.SaveChangesAsync();
+        await using var app = await BuildAppAsync(fixture);
+        using var client = AccountClient(app);
+        var path = AccessPath(fixture);
+        var grants = current.Grants.Select(grant => new IntegrationPairingGrant(grant.TenantId, grant.Permission)).ToArray();
+        var review = Request() with { Grants = grants };
+        using var rejected = await client.PostAsJsonAsync(path, review with
+        {
+            Grants = grants.Where(grant => grant.TenantId != 17).Append(new(301, NetRatelPermissions.FlowRead)).ToArray()
+        });
+        Assert.Equal(HttpStatusCode.BadRequest, rejected.StatusCode);
+        Assert.Equal("integration_tenant_capacity", (await rejected.Content.ReadFromJsonAsync<IntegrationPairingFailure>())!.Code);
+        using var prepared = await client.PostAsJsonAsync(path, review);
+        prepared.EnsureSuccessStatusCode();
+        var pending = (await prepared.Content.ReadFromJsonAsync<ReviewedMcpAccessReceipt>())!;
+        using var applied = await client.PostAsJsonAsync(path + $"/{pending.Request.RequestId}/apply",
+            new IntegrationCredentialEndpoints.CredentialAccessDecision(pending.Request.ProposalHash, true));
+        applied.EnsureSuccessStatusCode();
+        Assert.Equal(grants.Length, (await applied.Content.ReadFromJsonAsync<ReviewedMcpAccessReceipt>())!.ConfiguredGrants.Count);
+    }
+
+    [Fact]
+    public async Task Tenant_deleted_after_review_returns_a_grant_error_without_applying()
+    {
+        await using var fixture = await ReviewedMcpAccessTests.Fixture.CreateAsync();
+        (await fixture.Identity.Users.SingleAsync(user => user.PrincipalId == "requester")).IsInstanceAdministrator = true;
+        await fixture.Identity.SaveChangesAsync();
+        await using var app = await BuildAppAsync(fixture);
+        using var client = AccountClient(app);
+        var path = AccessPath(fixture);
+        using var prepared = await client.PostAsJsonAsync(path, Request());
+        prepared.EnsureSuccessStatusCode();
+        var pending = (await prepared.Content.ReadFromJsonAsync<ReviewedMcpAccessReceipt>())!;
+        fixture.App.Tenants.Remove(await fixture.App.Tenants.SingleAsync(tenant => tenant.Id == 17));
+        await fixture.App.SaveChangesAsync();
+        using var applied = await client.PostAsJsonAsync(path + $"/{pending.Request.RequestId}/apply",
+            new IntegrationCredentialEndpoints.CredentialAccessDecision(pending.Request.ProposalHash, true));
+        Assert.Equal(HttpStatusCode.BadRequest, applied.StatusCode);
+        var failure = (await applied.Content.ReadFromJsonAsync<IntegrationPairingFailure>())!;
+        Assert.Equal("integration_tenant_unavailable", failure.Code);
+        Assert.Equal("grants", failure.Field);
+        Assert.Empty(await fixture.App.McpOperatorPolicies.ToArrayAsync());
+        Assert.Equal(2, (await fixture.Credentials.ListAsync("requester")).Single().Grants.Count);
+    }
+
+    [Fact]
     public async Task Pending_browser_request_can_be_recovered_and_applied_after_independent_review()
     {
         await using var fixture = await ReviewedMcpAccessTests.Fixture.CreateAsync();
@@ -168,7 +305,7 @@ public sealed class IntegrationCredentialAccessEndpointTests
         await fixture.Identity.SaveChangesAsync();
         using var changed = await client.PostAsJsonAsync(path + "/" + pending.Request.RequestId + "/apply",
             new IntegrationCredentialEndpoints.CredentialAccessDecision(pending.Request.ProposalHash, true));
-        Assert.Equal(HttpStatusCode.Forbidden, changed.StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, changed.StatusCode);
         Assert.Equal("review_credential_changed", (await changed.Content.ReadFromJsonAsync<IntegrationPairingFailure>())!.Code);
 
         var policyProposal = fixture.Proposal("reconcile", fixture.Credential.CredentialId) with
@@ -208,11 +345,11 @@ public sealed class IntegrationCredentialAccessEndpointTests
         Assert.Empty((await valid.Content.ReadFromJsonAsync<ReviewedMcpAccessRequest[]>())!);
     }
 
-    private static HttpClient AccountClient(WebApplication app, string identity = "local")
+    internal static HttpClient AccountClient(WebApplication app, string identity = "local", string owner = "requester")
     {
         var client = app.GetTestClient();
         client.DefaultRequestHeaders.Add("X-Test-Identity", identity);
-        client.DefaultRequestHeaders.Add("X-Test-Owner", "requester");
+        client.DefaultRequestHeaders.Add("X-Test-Owner", owner);
         client.DefaultRequestHeaders.Add("X-NetRatel-Account-Request", "1");
         return client;
     }
@@ -223,13 +360,7 @@ public sealed class IntegrationCredentialAccessEndpointTests
         builder.WebHost.UseTestServer();
         builder.Configuration["Integration:HttpMcp:PublicResourceUri"] = ReviewedMcpAccessTests.Fixture.Resource;
         builder.Services.Configure<DeploymentBrandingOptions>(options => options.SiteUrl = ReviewedMcpAccessTests.Fixture.Origin);
-        builder.Services.AddAuthentication("AccessTest").AddScheme<AuthenticationSchemeOptions, AccountAuthentication>("AccessTest", _ => { });
-        builder.Services.AddAuthorization(options => options.AddPolicy("InteractiveAccount", policy =>
-        {
-            policy.RequireAuthenticatedUser();
-            policy.RequireAssertion(context => context.User.Identities.Any(identity => identity.IsAuthenticated &&
-                (identity.AuthenticationType == "Oidc" || identity.AuthenticationType == LocalAuthenticationOptions.Scheme)));
-        }));
+        AddAccountAuthentication(builder.Services);
         builder.Services.AddSingleton(fixture.Identity);
         builder.Services.AddSingleton(fixture.App);
         builder.Services.AddSingleton(fixture.EffectiveAccess);
@@ -246,6 +377,17 @@ public sealed class IntegrationCredentialAccessEndpointTests
         app.MapIntegrationCredentialEndpoints();
         await app.StartAsync();
         return app;
+    }
+
+    internal static void AddAccountAuthentication(IServiceCollection services)
+    {
+        services.AddAuthentication("AccessTest").AddScheme<AuthenticationSchemeOptions, AccountAuthentication>("AccessTest", _ => { });
+        services.AddAuthorization(options => options.AddPolicy("InteractiveAccount", policy =>
+        {
+            policy.RequireAuthenticatedUser();
+            policy.RequireAssertion(context => context.User.Identities.Any(identity => identity.IsAuthenticated &&
+                (identity.AuthenticationType == "Oidc" || identity.AuthenticationType == LocalAuthenticationOptions.Scheme)));
+        }));
     }
 
     private sealed class AccountAuthentication(IOptionsMonitor<AuthenticationSchemeOptions> options, ILoggerFactory logger, UrlEncoder encoder)

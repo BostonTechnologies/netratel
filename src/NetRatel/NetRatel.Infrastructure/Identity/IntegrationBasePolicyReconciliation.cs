@@ -88,60 +88,74 @@ public sealed partial class IntegrationPairingService
         var names = await applicationDb!.Tenants.AsNoTracking().ToDictionaryAsync(t => t.Id, t => t.Name, ct).ConfigureAwait(false);
         return grants.Select(g => g.TenantId).Concat(instancePermissions.Count > 0 ? [0] : []).Distinct().Order().Select(tenant =>
         {
-            var supported = McpIntegrationPolicyCatalog.Supported(tenant, tenant == 0 ? instancePermissions : grants.Where(g => g.TenantId == tenant).Select(g => g.Permission));
+            var permissions = tenant == 0 ? instancePermissions : grants.Where(g => g.TenantId == tenant).Select(g => g.Permission);
+            var previous = tenant == 0 ? credential.InstancePermissions : credential.Grants.Where(g => g.TenantId == tenant).Select(g => g.Permission);
             var existing = current.SingleOrDefault(p => p.TargetSelector.TenantId == tenant);
-            if (existing is not null && (existing.IsContainer || existing.TargetSelector.Kind is not (McpOperatorTargetSelectorKind.Tenant or McpOperatorTargetSelectorKind.ControlPlane))) throw new IntegrationCredentialGrantValidationException("policies");
-            var families = supported.Aggregate(McpOperatorOperationFamily.None, (f, op) => f | op.OperationFamily);
-            return existing is null ? new McpIntegrationPolicy(tenant, $"{credential.Name} · {(tenant == 0 ? "Server access" : names.GetValueOrDefault(tenant, "Unavailable tenant"))} · All access",
-                    McpOperatorPolicyEffect.Allow, families, McpIntegrationPolicyCatalog.AllAccessLimits, credential.ExpiresAtUtc)
-                : new McpIntegrationPolicy(tenant, existing.Name, existing.Effect, existing.Constraints.AllOperations ? families : existing.OperationFamily & families, existing.Constraints,
-                    existing.ExpiresAtUtc ?? credential.ExpiresAtUtc) { Operations = existing.Constraints.AllOperations ? null : existing.Operation is { } exact ? [exact] : existing.Operations,
-                        ExistingPolicyId = existing.PolicyId, ExpectedVersion = existing.Version, LifecycleState = existing.LifecycleState };
+            if (existing is not null && (existing.IsContainer || existing.TargetSelector.Kind is not (McpOperatorTargetSelectorKind.Tenant or McpOperatorTargetSelectorKind.ControlPlane)))
+                throw IntegrationCredentialGrantValidationException.Invalid("policies", "integration_policy_invalid", tenant);
+            return existing is null ? new McpIntegrationPolicy(tenant, McpIntegrationPolicyCatalog.DefaultBaseName(
+                    credential.Name, tenant == 0 ? "Server access" : names.GetValueOrDefault(tenant, "Unavailable tenant")),
+                    McpOperatorPolicyEffect.Allow, McpIntegrationPolicyCatalog.FamiliesFor(McpIntegrationPolicyCatalog.Supported(tenant, permissions)),
+                    McpIntegrationPolicyCatalog.AllAccessLimits, credential.ExpiresAtUtc)
+                : McpIntegrationPolicyCatalog.ReconcilePermissions(new(tenant, existing.Name, existing.Effect, existing.OperationFamily,
+                    existing.Constraints, existing.ExpiresAtUtc ?? credential.ExpiresAtUtc)
+                {
+                    Operations = existing.Operation is { } exact ? [exact] : existing.Operations,
+                    ExistingPolicyId = existing.PolicyId, ExpectedVersion = existing.Version, LifecycleState = existing.LifecycleState
+                }, previous, permissions);
         }).ToArray();
     }
 
-    private async Task ValidateBasePlanAsync(ReviewedMcpAccessProposal proposal, IReadOnlyList<McpIntegrationPolicy> plan, CancellationToken ct)
+    private async Task ValidateBasePlanAsync(ReviewedMcpAccessProposal proposal, IReadOnlyList<McpIntegrationPolicy> plan,
+        McpOperatorEnvironment environment, CancellationToken ct)
     {
-        var scopes = proposal.Grants.Select(g => g.TenantId).Concat(proposal.InstancePermissions.Count > 0 ? [0] : []).Distinct().Order();
-        if (!plan.Select(p => p.TenantId).Order().SequenceEqual(scopes)) throw new IntegrationCredentialGrantValidationException("policies");
+        var scopes = proposal.Grants.Select(g => g.TenantId).Concat(proposal.InstancePermissions.Count > 0 ? [0] : []).Distinct().ToArray();
+        IntegrationSetupService.ValidatePolicyScopes(scopes, plan);
         foreach (var policy in plan)
         {
-            var available = McpIntegrationPolicyCatalog.Supported(policy.TenantId, policy.TenantId == 0 ? proposal.InstancePermissions : proposal.Grants.Where(g => g.TenantId == policy.TenantId).Select(g => g.Permission));
-            var families = available.Aggregate(McpOperatorOperationFamily.None, (f, op) => f | op.OperationFamily);
-            var operations = McpIntegrationPolicyCatalog.WithCanonicalPolicyOperations(available.Where(op => policy.Families.HasFlag(op.OperationFamily)).Select(op => op.ToolName + "/" + op.OperationName));
-            if (policy.Families == McpOperatorOperationFamily.None || (policy.Families & ~families) != 0 || policy.ExpiresAtUtc > proposal.ExpiresAtUtc ||
-                policy.ExpiresAtUtc <= clock.GetUtcNow() || !ReviewedMcpAccessExpiry.IsSupported(policy.ExpiresAtUtc) ||
-                policy.Operations is { } selected && (selected.Count == 0 || selected.Any(op => !operations.Contains(op))))
-                throw new IntegrationCredentialGrantValidationException("policies");
-            IntegrationSetupService.ValidateUsableLimits(policy);
-            await policyAdministration!.ValidateDraftAsync(new(policy.Name, McpOperatorEnvironment.Production, policy.Effect, 0,
-                new(McpOperatorPrincipalSelectorKind.OAuthClientId, proposal.CredentialId!),
-                new(policy.TenantId == 0 ? McpOperatorTargetSelectorKind.ControlPlane : McpOperatorTargetSelectorKind.Tenant, policy.TenantId),
-                null, policy.Families, null, policy.Constraints, policy.ExpiresAtUtc, null), "integration-policy-review", ct).ConfigureAwait(false);
+            var operations = IntegrationSetupService.ResolvePolicyOperations(policy, PolicyPermissions(proposal, policy.TenantId),
+                proposal.ExpiresAtUtc, clock.GetUtcNow());
+            try
+            {
+                await policyAdministration!.ValidateDraftAsync(new(policy.Name, environment, policy.Effect, 0,
+                    new(McpOperatorPrincipalSelectorKind.OAuthClientId, proposal.CredentialId!),
+                    new(policy.TenantId == 0 ? McpOperatorTargetSelectorKind.ControlPlane : McpOperatorTargetSelectorKind.Tenant, policy.TenantId),
+                    null, policy.Families, null, policy.Constraints, policy.ExpiresAtUtc, null) { Operations = operations }, "integration-policy-review", ct).ConfigureAwait(false);
+            }
+            catch (ArgumentException)
+            {
+                throw IntegrationCredentialGrantValidationException.Invalid("policies", "integration_policy_invalid", policy.TenantId);
+            }
         }
     }
+
+    private static IEnumerable<string> PolicyPermissions(ReviewedMcpAccessProposal proposal, int tenantId) =>
+        tenantId == 0 ? proposal.InstancePermissions : proposal.Grants.Where(grant => grant.TenantId == tenantId).Select(grant => grant.Permission);
 
     private async Task ReconcileBasesAsync(IntegrationPairingRequest request, ReviewedAccessMetadata metadata, string credentialId, CancellationToken ct)
     {
         if (metadata.BasePolicies is not { } plan) return;
-        await ValidateBasePlanAsync(metadata.Proposal, plan, ct).ConfigureAwait(false);
         var current = (await policyAdministration!.ListAsync(metadata.Environment, null, ct).ConfigureAwait(false)).Items
             .Where(p => p.IntegrationCredentialId == credentialId && p.ParentPolicyId is null && p.LifecycleState == McpOperatorPolicyLifecycleState.Active).ToArray();
+        // The credential is locked here. Recheck the full reviewed scope before writing,
+        // including removed bases whose versions are absent from the new plan.
+        if (await PolicyRevisionHashAsync(metadata.Proposal, metadata.Environment, request.Id, metadata.AccountPolicyScopes, ct).ConfigureAwait(false) != metadata.PolicyRevisionHash)
+            throw IntegrationCredentialGrantValidationException.Invalid("policies", "review_policy_changed");
         foreach (var policy in plan)
         {
-            var available = McpIntegrationPolicyCatalog.Supported(policy.TenantId, policy.TenantId == 0 ? metadata.Proposal.InstancePermissions : metadata.Proposal.Grants.Where(g => g.TenantId == policy.TenantId).Select(g => g.Permission));
-            var operations = policy.Operations ?? McpIntegrationPolicyCatalog.WithCanonicalPolicyOperations(available.Where(op => policy.Families.HasFlag(op.OperationFamily)).Select(op => op.ToolName + "/" + op.OperationName));
+            var permissions = PolicyPermissions(metadata.Proposal, policy.TenantId);
+            var operations = IntegrationSetupService.ResolvePolicyOperations(policy, permissions, metadata.Proposal.ExpiresAtUtc, clock.GetUtcNow());
             var draft = new McpOperatorPolicyDraft(policy.Name, metadata.Environment, policy.Effect, 0,
                 new(McpOperatorPrincipalSelectorKind.OAuthClientId, credentialId),
                 new(policy.TenantId == 0 ? McpOperatorTargetSelectorKind.ControlPlane : McpOperatorTargetSelectorKind.Tenant, policy.TenantId),
-                null, policy.Families, null, IntegrationAllAccessReconciliation.Stamp(policy.Constraints,
-                    policy.TenantId == 0 ? metadata.Proposal.InstancePermissions : metadata.Proposal.Grants.Where(g => g.TenantId == policy.TenantId).Select(g => g.Permission)),
+                null, policy.Families, null, IntegrationAllAccessReconciliation.Stamp(policy.Constraints, permissions),
                 policy.ExpiresAtUtc, null, "pairing:" + request.Id + ":base:" + policy.TenantId)
             { IntegrationCredentialId = credentialId, Resource = request.Resource, Operations = operations, IntegrationReviewApproved = true };
             var existing = current.SingleOrDefault(p => p.TargetSelector.TenantId == policy.TenantId);
-            if (policy.ExistingPolicyId is { } expectedId && (existing?.PolicyId != expectedId || existing.Version != policy.ExpectedVersion))
-                throw new DbUpdateConcurrencyException("The base policy changed after review.");
+            if (existing?.PolicyId != policy.ExistingPolicyId || existing?.Version != policy.ExpectedVersion)
+                throw IntegrationCredentialGrantValidationException.Invalid("policies", "review_policy_changed", policy.TenantId);
             if (existing is null) await policyAdministration.CreateAsync(draft, metadata.ApproverPrincipalId!, ct).ConfigureAwait(false);
+            else if (BasePolicyMatches(existing, draft, policy)) continue;
             else await policyAdministration.ReplaceAsync(existing.PolicyId, existing.Version, existing.ToDraft() with {
                 Name = draft.Name, Effect = draft.Effect, OperationFamily = draft.OperationFamily, Operation = null,
                 Operations = draft.Operations, Constraints = draft.Constraints, ExpiresAtUtc = draft.ExpiresAtUtc, AuditReference = draft.AuditReference,
@@ -152,12 +166,20 @@ public sealed partial class IntegrationPairingService
             await policyAdministration!.DisableAsync(removed.PolicyId, removed.Version, metadata.ApproverPrincipalId!, ct).ConfigureAwait(false);
     }
 
+    private static bool BasePolicyMatches(McpOperatorPolicy existing, McpOperatorPolicyDraft draft, McpIntegrationPolicy policy) =>
+        !existing.IsContainer && existing.Operation is null && existing.Name == draft.Name && existing.Effect == draft.Effect &&
+        existing.OperationFamily == draft.OperationFamily && existing.ExpiresAtUtc == draft.ExpiresAtUtc &&
+        (existing.Operations is { } operations ? operations.ToHashSet(StringComparer.Ordinal).SetEquals(draft.Operations!) :
+            !policy.Constraints.AllOperations && policy.Operations is null) &&
+        JsonSerializer.Serialize(existing.Constraints, McpOperatorJsonContext.Default.McpOperatorConstraints) ==
+        JsonSerializer.Serialize(draft.Constraints, McpOperatorJsonContext.Default.McpOperatorConstraints);
+
     private static IReadOnlyList<ReviewedMcpBasePolicy>? BaseSummaries(ReviewedAccessMetadata metadata) => (metadata.BasePolicies ?? (metadata.TargetPolicyLimits is null ? null : metadata.Proposal.Targets.GroupBy(t => t.TenantId).Select(group => new McpIntegrationPolicy(group.Key, metadata.Proposal.Name + " · Reviewed scope " + group.Key, McpOperatorPolicyEffect.Allow, group.Aggregate(McpOperatorOperationFamily.None, (f, t) => f | McpOperatorOperationCatalog.Find(t.Tool, t.Operation)!.OperationFamily), metadata.TargetPolicyLimits, metadata.Proposal.ExpiresAtUtc) { Operations = McpIntegrationPolicyCatalog.WithCanonicalPolicyOperations(group.Select(t => t.Tool + "/" + t.Operation)) }).ToArray()))?.Select(policy =>
     {
         var available = McpIntegrationPolicyCatalog.Supported(policy.TenantId, policy.TenantId == 0 ? metadata.Proposal.InstancePermissions : metadata.Proposal.Grants.Where(g => g.TenantId == policy.TenantId).Select(g => g.Permission));
         var limits = JsonSerializer.SerializeToElement(policy.Constraints, McpOperatorJsonContext.Default.McpOperatorConstraints);
         return new ReviewedMcpBasePolicy(policy.TenantId, policy.Name, policy.Effect.ToString(), policy.Families.ToString(), policy.ExpiresAtUtc,
-            policy.Operations ?? McpIntegrationPolicyCatalog.WithCanonicalPolicyOperations(available.Where(op => policy.Families.HasFlag(op.OperationFamily)).Select(op => op.ToolName + "/" + op.OperationName)),
+            policy.Operations ?? McpIntegrationPolicyCatalog.OperationsFor(available, policy.Families),
             limits.EnumerateObject().Where(p => p.Value.ValueKind != JsonValueKind.Null).ToDictionary(p => p.Name, p => p.Value.ToString()));
     }).ToArray();
 }

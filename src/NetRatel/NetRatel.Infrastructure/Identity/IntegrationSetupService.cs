@@ -20,15 +20,16 @@ public sealed class IntegrationSetupService(NetRatelIdentityDbContext identity, 
         McpOperatorEnvironment environment, CancellationToken ct)
     {
         var owner = principal.FindFirstValue("netratel_principal_id") ?? throw new UnauthorizedAccessException();
-        if (!Guid.TryParse(requestId, out var id) || id == Guid.Empty || !ReviewedMcpAccessExpiry.IsSupported(request.ExpiresAtUtc) || request.Purpose != IntegrationCredentialPurpose.HttpMcp ||
+        if (!ReviewedMcpAccessExpiry.IsSupported(request.ExpiresAtUtc))
+            throw IntegrationCredentialGrantValidationException.Invalid("expiresAtUtc", "integration_expiry_invalid");
+        if (!Guid.TryParse(requestId, out var id) || id == Guid.Empty || request.Purpose != IntegrationCredentialPurpose.HttpMcp ||
             !McpResourceUri.TryNormalize(request.Resource, out var resource) || request.Resource != resource || !Enum.IsDefined(environment))
-            throw new ArgumentException("Review the connection and setup request.");
+            throw IntegrationCredentialGrantValidationException.Invalid("credential", "integration_setup_invalid");
         if (!await access.AuthorizeAsync(principal, NetRatelPermissions.McpPolicyAdministration, null, ct).ConfigureAwait(false))
             throw new UnauthorizedAccessException();
         await validator.ValidateAsync(principal, request, ct).ConfigureAwait(false);
-        var scopes = request.Grants.Select(g => g.TenantId).Concat((request.InstancePermissions?.Count ?? 0) > 0 ? [0] : []).Distinct().Order().ToArray();
-        if (!approved.Select(p => p.TenantId).Order().SequenceEqual(scopes))
-            throw new ArgumentException("Approve exactly one base policy for each selected tenant and the separate server scope.");
+        var scopes = request.Grants.Select(g => g.TenantId).Concat((request.InstancePermissions?.Count ?? 0) > 0 ? [0] : []).Distinct().ToArray();
+        ValidatePolicyScopes(scopes, approved);
         var hash = IntegrationCredentialService.Hash(JsonSerializer.Serialize(new { request, approved, environment }));
         await using var transaction = await identity.Database.BeginTransactionAsync(ct).ConfigureAwait(false);
         await identity.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock(hashtextextended({"integration-setup:" + id.ToString("N")}, 0))", ct).ConfigureAwait(false);
@@ -54,26 +55,24 @@ public sealed class IntegrationSetupService(NetRatelIdentityDbContext identity, 
         {
             var permissions = policy.TenantId == 0 ? request.InstancePermissions ?? [] :
                 request.Grants.Where(g => g.TenantId == policy.TenantId).Select(g => g.Permission).ToArray();
-            var supported = McpIntegrationPolicyCatalog.Supported(policy.TenantId, permissions);
-            var families = supported.Aggregate(McpOperatorOperationFamily.None, (f, op) => f | op.OperationFamily);
-            if (string.IsNullOrWhiteSpace(policy.Name) || !Enum.IsDefined(policy.Effect) || policy.Families == McpOperatorOperationFamily.None ||
-                (policy.Families & ~families) != 0 || policy.ExpiresAtUtc > request.ExpiresAtUtc ||
-                !ReviewedMcpAccessExpiry.IsSupported(policy.ExpiresAtUtc) || policy.ExistingPolicyId is not null || policy.ExpectedVersion is not null)
-                throw new ArgumentException("Review policy scope, operations, limits and exact expiry.");
-            var availableOperations = McpIntegrationPolicyCatalog.WithCanonicalPolicyOperations(supported.Where(op =>
-                policy.Families.HasFlag(op.OperationFamily)).Select(op => op.ToolName + "/" + op.OperationName));
-            if (policy.Operations is { } selected && (selected.Count == 0 || selected.Count > availableOperations.Count || selected.Distinct().Count() != selected.Count || selected.Any(op => !availableOperations.Contains(op))))
-                throw new ArgumentException("Selected operations must remain within the approved grants and families.");
-            ValidateUsableLimits(policy);
-            await policies.CreateAsync(new(policy.Name, environment, policy.Effect, 0,
-                new(McpOperatorPrincipalSelectorKind.OAuthClientId, created.CredentialId),
-                new(policy.TenantId == 0 ? McpOperatorTargetSelectorKind.ControlPlane : McpOperatorTargetSelectorKind.Tenant, policy.TenantId),
-                null, policy.Families, null, IntegrationAllAccessReconciliation.Stamp(policy.Constraints, permissions), policy.ExpiresAtUtc, null, "integration-setup:" + id.ToString("N"))
+            if (policy.ExistingPolicyId is not null || policy.ExpectedVersion is not null)
+                throw IntegrationCredentialGrantValidationException.Invalid("policies", "integration_policy_invalid", policy.TenantId);
+            var selected = ResolvePolicyOperations(policy, permissions, request.ExpiresAtUtc, DateTimeOffset.UtcNow);
+            try
             {
-                IntegrationCredentialId = created.CredentialId, Resource = resource,
-                IntegrationReviewApproved = true,
-                Operations = policy.Operations ?? availableOperations
-            }, owner, ct).ConfigureAwait(false);
+                await policies.CreateAsync(new(policy.Name, environment, policy.Effect, 0,
+                    new(McpOperatorPrincipalSelectorKind.OAuthClientId, created.CredentialId),
+                    new(policy.TenantId == 0 ? McpOperatorTargetSelectorKind.ControlPlane : McpOperatorTargetSelectorKind.Tenant, policy.TenantId),
+                    null, policy.Families, null, IntegrationAllAccessReconciliation.Stamp(policy.Constraints, permissions), policy.ExpiresAtUtc, null, "integration-setup:" + id.ToString("N"))
+                {
+                    IntegrationCredentialId = created.CredentialId, Resource = resource,
+                    IntegrationReviewApproved = true, Operations = selected
+                }, owner, ct).ConfigureAwait(false);
+            }
+            catch (ArgumentException)
+            {
+                throw IntegrationCredentialGrantValidationException.Invalid("policies", "integration_policy_invalid", policy.TenantId);
+            }
         }
         identity.IntegrationSetupAttempts.Add(new()
         {
@@ -120,4 +119,38 @@ public sealed class IntegrationSetupService(NetRatelIdentityDbContext identity, 
 
     public static void ValidateUsableLimits(McpIntegrationPolicy policy)
         => McpIntegrationPolicyCatalog.ValidateUsableLimits(policy);
+
+    internal static void ValidatePolicyScopes(IReadOnlyCollection<int> scopes, IReadOnlyList<McpIntegrationPolicy> plan)
+    {
+        if (plan.Count != scopes.Count || plan.Any(policy => policy is null) ||
+            !plan.Select(policy => policy.TenantId).Order().SequenceEqual(scopes.Order()))
+            throw IntegrationCredentialGrantValidationException.Invalid("policies", "integration_policies_required",
+                requested: plan.Count, limit: scopes.Count);
+    }
+
+    internal static IReadOnlyList<string> ResolvePolicyOperations(McpIntegrationPolicy policy, IEnumerable<string> permissions,
+        DateTimeOffset credentialExpiry, DateTimeOffset now)
+    {
+        if (policy.ExpiresAtUtc <= now || policy.ExpiresAtUtc > credentialExpiry || !ReviewedMcpAccessExpiry.IsSupported(policy.ExpiresAtUtc))
+            throw IntegrationCredentialGrantValidationException.Invalid("policies", "integration_policy_expiry_invalid", policy.TenantId);
+        var supported = McpIntegrationPolicyCatalog.Supported(policy.TenantId, permissions);
+        var availableFamilies = McpIntegrationPolicyCatalog.FamiliesFor(supported);
+        var available = McpIntegrationPolicyCatalog.OperationsFor(supported, policy.Families);
+        if (string.IsNullOrWhiteSpace(policy.Name) || !Enum.IsDefined(policy.Effect) || policy.Constraints is null ||
+            policy.Families == McpOperatorOperationFamily.None || (policy.Families & ~availableFamilies) != 0 ||
+            policy.Constraints.AllOperations && policy.Families != availableFamilies ||
+            policy.Operations is { } selected && (selected.Count == 0 || selected.Count > available.Count ||
+                selected.Distinct(StringComparer.Ordinal).Count() != selected.Count || selected.Any(operation => !available.Contains(operation)) ||
+                policy.Constraints.AllOperations && selected.Count != available.Count))
+            throw IntegrationCredentialGrantValidationException.Invalid("policies", "integration_policy_invalid", policy.TenantId);
+        try
+        {
+            ValidateUsableLimits(policy);
+        }
+        catch (ArgumentException)
+        {
+            throw IntegrationCredentialGrantValidationException.Invalid("policies", "integration_policy_invalid", policy.TenantId);
+        }
+        return policy.Operations ?? available;
+    }
 }

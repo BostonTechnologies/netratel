@@ -67,6 +67,8 @@ public sealed class CredentialAccessEditorTests : AsyncBunitContext
         transport.Submitted.Single().Grants.Should().BeEquivalentTo([new IntegrationPairingGrant(17, "flow.read"), new(18, "flow.read")]);
         transport.Submitted.Single().InstancePermissions.Should().Equal("mcp.discovery.read");
         transport.SubmittedFields.Single().Should().BeEquivalentTo(["requestId", "grants", "instancePermissions", "policies"]);
+        transport.Submitted.Single().Policies!.Select(policy => policy.TenantId).Should().Equal(0, 17, 18);
+        transport.Submitted.Single().Policies!.Single(policy => policy.TenantId == 17).ExpectedVersion.Should().Be(3);
         editor.Markup.Should().Contain("2030-04-01T10:11:12.123456Z");
         transport.Receipt!.Request.Proposal.Targets.Should().BeEmpty();
         editor.Find("[data-testid='access-apply']").HasAttribute("disabled").Should().BeTrue();
@@ -106,8 +108,38 @@ public sealed class CredentialAccessEditorTests : AsyncBunitContext
         editor.WaitForAssertion(() => transport.Submitted.Should().ContainSingle());
         transport.Submitted.Single().Grants.Should().Equal(new IntegrationPairingGrant(17, "flow.edit"));
         transport.Submitted.Single().InstancePermissions.Should().Equal("telemetry.read");
+        transport.Submitted.Single().Policies!.Select(policy => policy.TenantId).Should().Equal(0, 17);
         editor.Find("[data-testid='access-change-summary']").TextContent.Should()
             .Contain("Removed access").And.Contain("Customer C (ID 19): Read telemetry").And.Contain("Server-level: Discover MCP capabilities");
+    }
+
+    [Fact]
+    public void All_access_follows_a_replacement_family_while_another_scope_keeps_its_exact_custom_policy()
+    {
+        using var transport = Configure();
+        transport.Credential = transport.Credential with { Grants = [new(17, "flow.read"), new(19, "telemetry.read")] };
+        var custom = transport.PersistedPolicies().Single(policy => policy.TenantId == 19) with
+        {
+            Name = "Customer C restricted",
+            Constraints = new(MaxOutputBytes: 4096),
+            Effect = McpOperatorPolicyEffect.Deny,
+            ExpiresAtUtc = AccessTransport.ExactExpiry.AddDays(-1)
+        };
+        transport.CustomPolicy = custom;
+        var editor = RenderEditor();
+        editor.WaitForAssertion(() => editor.Find("[data-testid='access-edit-permission-17-telemetry.read']").Should().NotBeNull());
+        editor.Find("[data-testid='access-edit-permission-17-telemetry.read']").Change(true);
+        editor.Find("[data-testid='access-edit-permission-17-flow.read']").Change(false);
+        editor.Find("[data-testid='access-review']").Click();
+
+        editor.WaitForAssertion(() => transport.Submitted.Should().ContainSingle());
+        var policies = transport.Submitted.Single().Policies!;
+        var revised = policies.Single(policy => policy.TenantId == 17);
+        var supported = McpIntegrationPolicyCatalog.Supported(17, ["telemetry.read"]);
+        revised.Families.Should().Be(McpIntegrationPolicyCatalog.FamiliesFor(supported));
+        revised.Operations.Should().BeNull();
+        revised.Constraints.AllOperations.Should().BeTrue();
+        policies.Single(policy => policy.TenantId == 19).Should().BeEquivalentTo(custom);
     }
 
     [Fact]
@@ -291,7 +323,8 @@ public sealed class CredentialAccessEditorTests : AsyncBunitContext
         await editor.Find("[data-testid='access-edit-permission-18-flow.read']").ChangeAsync(true);
     }
 
-    private sealed record Draft(string RequestId, IReadOnlyList<IntegrationPairingGrant> Grants, IReadOnlyList<string> InstancePermissions);
+    private sealed record Draft(string RequestId, IReadOnlyList<IntegrationPairingGrant> Grants, IReadOnlyList<string> InstancePermissions,
+        IReadOnlyList<McpIntegrationPolicy>? Policies = null);
 
     private sealed class AccessTransport : HttpMessageHandler, IHttpClientFactory
     {
@@ -303,6 +336,7 @@ public sealed class CredentialAccessEditorTests : AsyncBunitContext
             IntegrationCredentialPurpose.HttpMcp, "https://mcp.example.test/mcp", DateTimeOffset.Parse("2026-10-01T12:00:00Z"), ExactExpiry,
             null, null, [new(17, "flow.read")]) { InstancePermissions = ["mcp.discovery.read"] };
         public ReviewedMcpAccessReceipt? Receipt { get; set; }
+        public McpIntegrationPolicy? CustomPolicy { get; set; }
         public List<Draft> Submitted { get; } = [];
         public List<string[]> SubmittedFields { get; } = [];
         public List<(string ProposalHash, bool Confirm)> ApplyDecisions { get; } = [];
@@ -317,6 +351,23 @@ public sealed class CredentialAccessEditorTests : AsyncBunitContext
         public bool ConsumeOnInspect { get; set; }
         public HttpClient CreateClient(string name) => new(this, disposeHandler: false) { BaseAddress = new Uri("https://api.example.test") };
 
+        public McpIntegrationPolicy[] PersistedPolicies() => Credential.Grants.Select(grant => (grant.TenantId, grant.Permission))
+            .Concat(Credential.InstancePermissions.Select(permission => (TenantId: 0, Permission: permission)))
+            .GroupBy(grant => grant.TenantId).Select(scope =>
+            {
+                if (CustomPolicy?.TenantId == scope.Key) return CustomPolicy;
+                var supported = McpIntegrationPolicyCatalog.Supported(scope.Key, scope.Select(grant => grant.Permission));
+                var families = McpIntegrationPolicyCatalog.FamiliesFor(supported);
+                return new McpIntegrationPolicy(scope.Key, $"Base policy {scope.Key}", McpOperatorPolicyEffect.Allow, families,
+                    McpIntegrationPolicyCatalog.AllAccessLimits, ExactExpiry)
+                {
+                    ExistingPolicyId = new Guid(scope.Key + 1, 0, 0, new byte[8]),
+                    ExpectedVersion = 3,
+                    LifecycleState = McpOperatorPolicyLifecycleState.Active,
+                    Operations = McpIntegrationPolicyCatalog.OperationsFor(supported, families)
+                };
+            }).ToArray();
+
         public ReviewedMcpAccessReceipt CreateReceipt(Draft draft)
         {
             var proposal = new ReviewedMcpAccessProposal(draft.RequestId, Credential.Name, "reconcile", Credential.ExpiresAtUtc,
@@ -330,7 +381,9 @@ public sealed class CredentialAccessEditorTests : AsyncBunitContext
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             var path = request.RequestUri!.AbsolutePath;
-            if (path.EndsWith("/base-policies", StringComparison.Ordinal)) return Json(Array.Empty<McpIntegrationPolicy>());
+            if (path.EndsWith("/base-policies", StringComparison.Ordinal))
+                return Json(path.StartsWith(Route + "/", StringComparison.Ordinal)
+                    ? Submitted.LastOrDefault()?.Policies ?? PersistedPolicies() : PersistedPolicies());
             if (request.Method == HttpMethod.Get && LoadFailureSuffix is { } suffix && path.EndsWith(suffix, StringComparison.Ordinal))
             {
                 var code = LoadFailureStatus switch { HttpStatusCode.BadRequest => "review_resource_mismatch", HttpStatusCode.ServiceUnavailable => "review_service_unavailable", _ => "upstream-secret-marker" };
@@ -342,7 +395,7 @@ public sealed class CredentialAccessEditorTests : AsyncBunitContext
                 return Json(new
                 {
                     tenants = new[] {
-                        new { tenantId = 17, name = "Customer A", permissions = new[] { Permission("flow.read", "Read flows"), Permission("flow.edit", "Edit flows") } },
+                        new { tenantId = 17, name = "Customer A", permissions = new[] { Permission("flow.read", "Read flows"), Permission("flow.edit", "Edit flows"), Permission("telemetry.read", "Read telemetry") } },
                         new { tenantId = 18, name = "Customer B", permissions = new[] { Permission("flow.read", "Read flows"), Permission("flow.edit", "Edit flows") } },
                         new { tenantId = 19, name = "Customer C", permissions = new[] { Permission("telemetry.read", "Read telemetry") } }
                     },

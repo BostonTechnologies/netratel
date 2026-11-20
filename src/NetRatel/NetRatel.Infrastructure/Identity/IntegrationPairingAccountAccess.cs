@@ -1,5 +1,4 @@
 using NetRatel.Application.Operations;
-using NetRatel.Infrastructure.Identity.Authorization;
 using NetRatel.Shared.Connectivity;
 
 namespace NetRatel.Infrastructure.Identity;
@@ -11,18 +10,22 @@ public sealed partial class IntegrationPairingService
         string requestId, IReadOnlyList<IntegrationPairingGrant> grants, IReadOnlyList<string> instancePermissions,
         string origin, string resource, McpOperatorEnvironment environment, CancellationToken ct = default, IReadOnlyList<McpIntegrationPolicy>? basePolicies = null)
     {
-        if (grants is null || instancePermissions is null || grants.Count > IntegrationPermissionCatalog.MaximumTenantGrants || instancePermissions.Count > IntegrationPermissionCatalog.MaximumPermissionsPerScope ||
-            grants.Any(grant => grant is null))
-            throw new IntegrationCredentialGrantValidationException("grants");
+        if (grants is null || instancePermissions is null)
+            throw IntegrationCredentialGrantValidationException.Invalid("grants", "integration_grants_invalid");
+        IntegrationCredentialGrantValidator.ValidateGrantCounts(grants.Count, instancePermissions.Count);
         var credential = await AccountAccessCredentialAsync(owner, credentialId, resource, ct).ConfigureAwait(false);
-        if (credential.RevokedAtUtc is not null || credential.ExpiresAtUtc <= clock.GetUtcNow())
+        IntegrationCredentialGrantValidator.ValidateGrantShape(
+            grants.Select(g => g is null ? null! : new IntegrationCredentialGrantRequest(g.TenantId, g.Permission)).ToArray(), instancePermissions,
+            credential.Grants.Select(grant => grant.TenantId).Distinct().ToArray());
+        if (credential.ExpiresAtUtc <= clock.GetUtcNow())
+            throw IntegrationCredentialGrantValidationException.Invalid("expiresAtUtc", "review_credential_expiry_passed");
+        if (credential.RevokedAtUtc is not null)
             throw new IntegrationPairingUnavailableException();
         var proposal = new ReviewedMcpAccessProposal(requestId, credential.Name, "reconcile", credential.ExpiresAtUtc,
             grants.OrderBy(grant => grant.TenantId).ThenBy(grant => grant.Permission, StringComparer.Ordinal).ToArray(),
             instancePermissions.Order(StringComparer.Ordinal).ToArray(), [], credential.Id);
         var existing = await FindAccessAsync(requestId, owner, credential.Id, ct).ConfigureAwait(false);
         basePolicies ??= existing is not null ? AccessMetadata(existing)!.BasePolicies : await ProposeBasesAsync(credential, grants, instancePermissions, environment, ct).ConfigureAwait(false);
-        if (basePolicies is not null) await ValidateBasePlanAsync(proposal, basePolicies, ct).ConfigureAwait(false);
         return await RequestReviewedAsync(proposal, owner, credential.Id, origin, resource, environment, ct, basePolicies).ConfigureAwait(false);
     }
 

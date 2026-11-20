@@ -42,6 +42,54 @@ public static class McpIntegrationPolicyCatalog
     }
 
     public static McpOperatorConstraints AllAccessLimits => new() { Unrestricted = true, AllOperations = true };
+    public const int MaximumPolicyNameLength = 160;
+
+    public static string DefaultBaseName(string credentialName, string scopeName, string preset = "All access")
+    {
+        var prefix = $"{credentialName} · {scopeName}";
+        var maximumPrefix = MaximumPolicyNameLength - preset.Length - " · ".Length;
+        if (prefix.Length > maximumPrefix)
+        {
+            if (char.IsHighSurrogate(prefix[maximumPrefix - 1])) maximumPrefix--;
+            prefix = prefix[..maximumPrefix].TrimEnd();
+        }
+        return $"{prefix} · {preset}";
+    }
+
+    public static McpOperatorOperationFamily FamiliesFor(IEnumerable<McpOperatorOperationDescriptor> operations) =>
+        operations.Aggregate(McpOperatorOperationFamily.None, (families, operation) => families | operation.OperationFamily);
+
+    public static IReadOnlyList<string> OperationsFor(IEnumerable<McpOperatorOperationDescriptor> operations, McpOperatorOperationFamily families) =>
+        WithCanonicalPolicyOperations(operations.Where(operation => families.HasFlag(operation.OperationFamily))
+            .Select(operation => operation.ToolName + "/" + operation.OperationName));
+
+    /// <summary>Keep custom operations within the intersection of the previous and revised grants.</summary>
+    public static McpIntegrationPolicy ReconcilePermissions(McpIntegrationPolicy policy, IEnumerable<string> previousPermissions,
+        IEnumerable<string> permissions)
+    {
+        var unchanged = permissions.ToHashSet(StringComparer.Ordinal).SetEquals(previousPermissions);
+        var supported = Supported(policy.TenantId, permissions);
+        var families = FamiliesFor(supported);
+        if (policy.Constraints.AllOperations)
+        {
+            var constraints = policy.Constraints;
+            if (constraints.FullPermissionCatalog && !unchanged)
+                constraints = constraints with { FullPermissionCatalog = false, PermissionCatalogSnapshot = null };
+            return policy with { Families = families, Operations = null, Constraints = constraints };
+        }
+
+        var retainedFamilies = policy.Families & families;
+        var allowed = OperationsFor(supported, retainedFamilies).ToHashSet(StringComparer.Ordinal);
+        if (unchanged && policy.Operations is null)
+            return policy with { Families = retainedFamilies };
+        var previous = policy.Operations ?? OperationsFor(Supported(policy.TenantId, previousPermissions), policy.Families);
+        var retained = previous.Where(allowed.Contains).ToArray();
+        if (unchanged) return policy with { Families = retainedFamilies, Operations = retained };
+        var coveredFamilies = supported.Select(operation => operation.OperationFamily).Distinct()
+            .Where(family => OperationsFor(supported, family).Any(retained.Contains))
+            .Aggregate(McpOperatorOperationFamily.None, (current, family) => current | family);
+        return policy with { Families = coveredFamilies, Operations = retained };
+    }
 
     // Retained for custom bounded policies and exact recognition of the original preset on upgrade.
     public static McpOperatorConstraints BoundedDefaults => new(

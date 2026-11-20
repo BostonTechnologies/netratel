@@ -476,7 +476,7 @@ public sealed partial class McpOperatorPolicyAdministration(OrchestratorDbContex
     private static void ValidateDraft(McpOperatorPolicyDraft draft, string actorId, bool allowSelfGrant = false)
     {
         ArgumentNullException.ThrowIfNull(draft);
-        if (!IsSafeValue(actorId, MaxIdentityLength) || !IsBoundedText(draft.Name, 160) ||
+        if (!IsSafeValue(actorId, MaxIdentityLength) || !IsBoundedText(draft.Name, McpIntegrationPolicyCatalog.MaximumPolicyNameLength) ||
             !Enum.IsDefined(draft.Environment) || !Enum.IsDefined(draft.Effect) ||
             draft.Priority is < -10_000 or > 10_000 || !Enum.IsDefined(draft.PrincipalSelector.Kind) ||
             !IsSafeValue(draft.PrincipalSelector.Value, MaxIdentityLength) ||

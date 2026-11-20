@@ -219,7 +219,7 @@ public sealed class IntegrationCredentialsStateTests : AsyncBunitContext
 
         Field<string>(page.Instance, "_name").Should().Be("Draft A");
         Field<int>(page.Instance, "_step").Should().Be(0);
-        Field<string>(page.Instance, "_error").Should().Be("Review the name.");
+        Field<string>(page.Instance, "_error").Should().Contain("credential name").And.Contain("synthetic-validation");
     }
 
     [Theory]
@@ -530,7 +530,8 @@ public sealed class IntegrationCredentialsStateTests : AsyncBunitContext
         });
         public void RejectCreate() => _create.SetResult(new HttpResponseMessage(HttpStatusCode.BadRequest)
         {
-            Content = JsonContent.Create(new { errors = new { name = new[] { "Review the name." } } })
+            Content = JsonContent.Create(IntegrationPairingFailure.ForCode("integration_name_invalid", "connection") with
+            { Field = "name", CorrelationId = "synthetic-validation" })
         });
         private static object Credential(string id, DateTimeOffset expiresAt, DateTimeOffset? revokedAt) => new {
             id, publicId = id, tokenPrefix = "synthetic", name = id, purpose = 0, resource = (string?)null,
