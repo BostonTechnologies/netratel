@@ -83,6 +83,7 @@ public sealed class MonitoringResponsiveTests(ClientsManagementBrowserFixture br
         Assert.Equal(DateTimeOffset.Parse("2026-11-06T22:00:00Z"), _api.QueryReads.Last().FromUtc);
         await Assertions.Expect(page.GetByTestId("monitoring-filter-chips")).ToContainTextAsync("5 active filters");
         await page.ReloadAsync();
+        await page.GetByTestId("monitoring-interactive").WaitForAsync(new() { State = WaitForSelectorState.Attached });
         await Assertions.Expect(page.GetByTestId("monitoring-page-size")).ToHaveValueAsync("100");
         await Assertions.Expect(page.GetByTestId("monitoring-series-row")).ToHaveCountAsync(100);
         await page.GetByTestId("monitoring-clear-filters").ClickAsync();
@@ -143,7 +144,29 @@ public sealed class MonitoringResponsiveTests(ClientsManagementBrowserFixture br
             await Assertions.Expect(page.GetByTestId("monitoring-tenant")).ToHaveValueAsync("1");
             await Assertions.Expect(page.GetByTestId("monitoring-tab-metrics")).ToHaveAttributeAsync("aria-selected", "true");
         }
+        await page.GetByTestId("monitoring-tenant").SelectOptionAsync("2");
+        await tabs.GetByRole(AriaRole.Link, new() { Name = "Flows", Exact = true }).ClickAsync();
+        await Assertions.Expect(page.GetByTestId("flows-no-access")).ToContainTextAsync("Choose an authorized tenant");
+        Assert.Contains("tenantId=2", page.Url);
+        await Assertions.Expect(page.GetByTestId("flow-tenant")).ToHaveValueAsync("0");
         Assert.False(await page.Locator("#blazor-error-ui").IsVisibleAsync());
+    }
+
+    [Fact]
+    [Trait("Category", "ManualBrowserAcceptance")]
+    public async Task Signals_navigation_opens_Flows_when_Monitoring_access_is_unavailable()
+    {
+        _api.AllowMonitoring = false;
+        await using var context = await browserFixture.Browser.NewContextAsync(new() { ViewportSize = new() { Width = 1366, Height = 900 } });
+        var page = await context.NewPageAsync();
+        await page.GotoAsync(_host!.BaseAddress + "/monitoring?tenantId=1");
+        await page.GetByTestId("monitoring-interactive").WaitForAsync(new() { State = WaitForSelectorState.Attached });
+        var menu = page.GetByRole(AriaRole.Navigation, new() { Name = "Primary navigation", Exact = true });
+        var entry = menu.GetByRole(AriaRole.Link, new() { Name = "Monitoring", Exact = true });
+        await Assertions.Expect(entry).ToHaveAttributeAsync("href", "/flows");
+        await entry.ClickAsync();
+        await Assertions.Expect(page.GetByTestId("flow-tenant")).ToHaveValueAsync("1");
+        await Assertions.Expect(menu.Locator("a.active")).ToHaveTextAsync("Monitoring");
     }
 
     private static Task<double> DocumentTopAsync(ILocator element) => element.EvaluateAsync<double>("e => e.getBoundingClientRect().top + window.scrollY");
@@ -561,6 +584,7 @@ internal sealed class FixtureMonitoringApi : IMonitoringApiService
     public MonitoringSeriesState Active { get; private set; }
     public int Writes { get; private set; }
     public bool PagingDataset { get; set; }
+    public bool AllowMonitoring { get; set; } = true;
     public bool ManagementDataset { get; set; }
     public Guid PagingAgent => _estate[260].AgentId;
     public List<MonitoringQueryDto> QueryReads { get; } = [];
@@ -606,7 +630,8 @@ internal sealed class FixtureMonitoringApi : IMonitoringApiService
             FlowOutcome = new(runId, MonitoringFlowOutcomeKind.Succeeded, DateTimeOffset.UtcNow, "incident-created", receipt)
         } };
     }
-    public Task<IReadOnlyList<MonitoringTenantDto>> GetTenantsAsync(CancellationToken token = default) => Task.FromResult<IReadOnlyList<MonitoringTenantDto>>([new(1, "SQL tenant"), new(2, "Other tenant")]);
+    public Task<IReadOnlyList<MonitoringTenantDto>> GetTenantsAsync(CancellationToken token = default) =>
+        Task.FromResult<IReadOnlyList<MonitoringTenantDto>>(AllowMonitoring ? [new(1, "SQL tenant"), new(2, "Other tenant")] : []);
     public Task<MonitoringPermissionsDto> GetPermissionsAsync(int tenantId, CancellationToken token = default) => Task.FromResult(new MonitoringPermissionsDto(tenantId, true, true, true, true, true, true));
     private static readonly MetricCollectionStatus MetricStatus =
         new(false, null, null, null, null, null, 2, 1000, 10000, 0, 0, null, 0, 0, 0, null, null);

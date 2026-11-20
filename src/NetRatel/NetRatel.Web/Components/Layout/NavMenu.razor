@@ -84,8 +84,8 @@
     private bool adminExpanded;
 
     private string CurrentPath => (currentUrl ?? string.Empty).Split('?', '#')[0].TrimEnd('/');
-    private string MonitoringHref => IsRouteBranch(CurrentPath, "flows") ? "/flows"
-        : IsRouteBranch(CurrentPath, "monitoring") || canReadMonitoring ? "/monitoring" : "/flows";
+    private string MonitoringHref => canReadFlows && (IsRouteBranch(CurrentPath, "flows") || !canReadMonitoring)
+        ? "/flows" : "/monitoring";
     private string AiOpsHref => IsRouteBranch(CurrentPath, "ai") ? "/" + CurrentPath : "/ai/chat";
     // Client detail routes belong to inventory; management and runtime settings
     // have their own leaves and must never also highlight Clients.
