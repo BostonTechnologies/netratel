@@ -546,6 +546,16 @@ internal sealed class FixtureMonitoringApi : IMonitoringApiService
         new(false, null, null, null, null, null, 2, 1000, 10000, 0, 0, null, 0, 0, 0, null, null);
     public Task<MetricHistorySettings> GetMetricsSettingsAsync(int tenantId, Guid? agentId = null, CancellationToken token = default) =>
         Task.FromResult(new MetricHistorySettings(MetricHistoryPolicy.Default, MetricStatus, []));
+    public Task<MetricCatalogue> GetMetricCatalogueAsync(int tenantId, Guid agentId, string? cursor = null, CancellationToken token = default) =>
+        Task.FromResult(new MetricCatalogue([NetworkSeries(agentId)], null, MetricStatus, ClientOnline: false));
+    public Task<MetricHistoryResponse> QueryMetricsAsync(int tenantId, Guid agentId, MetricHistoryRange range, CancellationToken token = default) =>
+        Task.FromResult(new MetricHistoryResponse(range.FromUtc, range.ToExclusiveUtc, 60, range.FromUtc.AddDays(-1),
+            range.FromUtc.AddDays(-1), "available", MetricStatus,
+            [new(NetworkSeries(agentId), new(1, 512, range.FromUtc, 512, 512, 512, 60_000_000, "128000", null, null,
+                MetricHistoryQuality.None, null), [], [], false)]));
+    private static MetricSeriesDescription NetworkSeries(Guid agentId) =>
+        new(1, agentId, MetricHistoryKind.NetworkRx, "eth0", "eth0", "B/s", DateTimeOffset.UtcNow.AddDays(-14),
+            DateTimeOffset.UtcNow, MetricHistoryQuality.None, false);
 
     public MonitoringConfigurationDto Configuration(int tenantId)
     {

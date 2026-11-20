@@ -19,15 +19,20 @@ public static class ClientToolDialogLauncher
             new DialogOptions { FullScreen = true, FullWidth = true, CloseOnEscapeKey = true, CloseOnNavigation = true });
     }
 
-    public static async Task<IDialogReference> TelemetryAsync(IDialogService dialogs, ClientPresentationModel client, GatewayTelemetrySummary? telemetry)
+    public static Task<IDialogReference> TelemetryAsync(IDialogService dialogs, ClientPresentationModel client, GatewayTelemetrySummary? telemetry) =>
+        TelemetryAsync(dialogs, client.TenantId, client.AgentId, client.HostName ?? client.DisplayName,
+            client.TenantName ?? $"Tenant {client.TenantId}", telemetry);
+
+    public static Task<IDialogReference> TelemetryAsync(IDialogService dialogs, int tenant, Guid agent, string host, string tenantName,
+        GatewayTelemetrySummary? telemetry)
     {
         var parameters = new DialogParameters<GatewayTelemetryDialog>
         {
-            { dialog => dialog.TenantId, client.TenantId }, { dialog => dialog.AgentId, client.AgentId },
-            { dialog => dialog.HostLabel, client.HostName ?? client.DisplayName }, { dialog => dialog.TenantLabel, client.TenantName ?? $"Tenant {client.TenantId}" },
+            { dialog => dialog.TenantId, tenant }, { dialog => dialog.AgentId, agent },
+            { dialog => dialog.HostLabel, host }, { dialog => dialog.TenantLabel, tenantName },
             { dialog => dialog.InitialSnapshot, telemetry }
         };
-        return await dialogs.ShowAsync<GatewayTelemetryDialog>("Telemetry", parameters,
+        return dialogs.ShowAsync<GatewayTelemetryDialog>("Telemetry", parameters,
             new DialogOptions { FullScreen = true, FullWidth = true, CloseOnEscapeKey = true, CloseButton = false });
     }
 

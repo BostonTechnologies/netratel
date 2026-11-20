@@ -63,7 +63,7 @@
     private bool Available(string tool) => TenantId > 0 && AgentId != Guid.Empty && tool switch
     {
         "Services" => true,
-        "Telemetry" => _client?.Telemetry is not null,
+        "Telemetry" => true,
         "Terminal" => _client?.CanUseTerminal == true,
         "Browse files" => _client?.CanUseFilesystem == true,
         "Client logs" => _client?.CanUseLogs == true,
@@ -153,7 +153,7 @@
             var dialog = tool switch
             {
                 "Services" => await ClientToolDialogLauncher.ServicesAsync(Dialogs, tenant, agent, HostLabel, TenantLabel),
-                "Telemetry" => await ClientToolDialogLauncher.TelemetryAsync(Dialogs, client!, client!.Telemetry),
+                "Telemetry" => await ClientToolDialogLauncher.TelemetryAsync(Dialogs, tenant, agent, HostLabel, TenantLabel, client?.Telemetry),
                 "Terminal" => await ClientToolDialogLauncher.TerminalAsync(Dialogs, client!, shell!),
                 "Browse files" => await ClientToolDialogLauncher.FilesAsync(Dialogs, Services, client!, client!.Telemetry?.Disks.FirstOrDefault()?.Scope ?? (client.OperatingSystem?.Contains("Windows", StringComparison.OrdinalIgnoreCase) == true ? "C:\\" : "/"), full),
                 "Client logs" => await ClientToolDialogLauncher.LogsAsync(Dialogs, client!),

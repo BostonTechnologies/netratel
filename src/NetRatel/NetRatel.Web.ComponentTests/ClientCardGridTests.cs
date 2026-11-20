@@ -133,8 +133,26 @@ public sealed class ClientCardGridTests : AsyncBunitContext
                 DateTimeOffset.UtcNow, "fixture", [], null, null, LatencyMilliseconds: 12,
                 LatencyMeasuredAtUtc: DateTimeOffset.UtcNow, LatencyExpiresAtUtc: DateTimeOffset.UtcNow.AddMinutes(1))]));
         cut.Find("button[aria-label='Open client services']").HasAttribute("disabled").Should().BeFalse();
+        cut.Find("button[aria-label='Open telemetry']").HasAttribute("disabled").Should().BeFalse();
         cut.FindAll("button[aria-label='Ping client']").Should().BeEmpty();
         cut.Find("[data-testid='client-latency']").Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task Offline_card_without_a_live_sample_opens_the_captured_telemetry_scope()
+    {
+        ComponentFactories.AddStub<GatewayTelemetryDialog>();
+        var dialogs = Render<MudDialogProvider>();
+        var client = new ClientPresentationModel(3, AgentId, "example workstation", "example-workstation",
+            "Example estate", "Linux", "x64", false, true, null, null, [], null, null);
+        var cards = Render<ClientCardGrid>(parameters => parameters.Add(component => component.Clients, [client]));
+        await cards.Find("button[aria-label='Open telemetry dashboard']").ClickAsync(new());
+        var launch = dialogs.FindComponent<Stub<GatewayTelemetryDialog>>().Instance.Parameters;
+        cards.Render(parameters => parameters.Add(component => component.Clients,
+            [client with { TenantId = 9, AgentId = Guid.NewGuid() }]));
+        Assert.Equal(3, launch.Get(dialog => dialog.TenantId));
+        Assert.Equal(AgentId, launch.Get(dialog => dialog.AgentId));
+        Assert.Null(launch.Get(dialog => dialog.InitialSnapshot));
     }
 
     [Theory]

@@ -1,6 +1,6 @@
 .metrics-workspace { display:grid; gap:1rem; min-width:0; }
 .metrics-controls,.metrics-status { display:flex; flex-wrap:wrap; align-items:end; gap:.75rem 1rem; }
-.metrics-controls label { display:grid; gap:.25rem; font-size:.875rem; }
+.metrics-controls label { display:grid; gap:.25rem; min-width:0; max-width:100%; font-size:.875rem; }
 .metrics-controls select,.metrics-controls input { max-width:min(100%,24rem); min-width:0; color:var(--mud-palette-text-primary); background:var(--mud-palette-surface); border:1px solid var(--mud-palette-divider); border-radius:4px; padding:.45rem; }
 .metrics-status { border:1px solid var(--mud-palette-divider); border-radius:8px; padding:.75rem; font-size:.875rem; }
 .metrics-status span,.metrics-range-note { color:var(--mud-palette-text-secondary); }

@@ -1,108 +1,12 @@
-@using System.Globalization
-@using Microsoft.JSInterop
-@using NetRatel.Shared.Contracts.Monitoring
 @using NetRatel.Web.Services.Monitoring
-@inject IMonitoringApiService Api
 @inject NavigationManager Navigation
-@inject IJSRuntime JS
-@implements IAsyncDisposable
 
-<section class="metrics-workspace" aria-label="Historical metrics" data-testid="monitoring-metrics" aria-busy="@State.Loading">
-    <div class="metrics-controls">
-        @if (!State.PermissionDenied)
-        {
-            <MonitoringClientFilter TenantId="TenantId" Value="AgentId" ValueChanged="ChangeAgent" EmptyLabel="Select a computer" SelectFirst="true" />
-            <label>Time range<select value="@Preset" @onchange="ChangeRange">
-                @foreach (var option in Ranges) { <option value="@option.Key">@option.Value.Label</option> }
-                <option value="custom">Custom</option>
-            </select></label>
-            <MudButton Variant="Variant.Outlined" OnClick="RefreshAsync" Disabled="@State.Loading">Refresh metrics</MudButton>
-        }
-    </div>
-    @if (Preset == "custom" && !State.PermissionDenied)
-    {
-        <div class="metrics-controls">
-            <label>From local date<input type="date" @bind="_fromDate" /></label>
-            <label>Through local date<input type="date" @bind="_toDate" /></label>
-            <MudButton OnClick="ApplyCustom">Apply dates</MudButton>
-            <small>@Zone.Id</small>
-        </div>
-    }
-    @if (_dateError is not null) { <p role="alert">@_dateError</p> }
-    @if (State.PermissionDenied) { <MudAlert Severity="Severity.Warning">You do not have permission to read this tenant’s metrics.</MudAlert> }
-    else if (State.Error is not null) { <MudAlert Severity="Severity.Error">@State.Error</MudAlert> }
-    else if (State.Loading) { <MudProgressLinear Indeterminate="true" aria-label="Loading historical metrics" /> }
-    else if (AgentId is null) { <p>Select a computer to view its metrics.</p> }
-
-    @if ((State.History?.Status ?? State.Catalogue?.Status) is { } status)
-    {
-        <div class="metrics-status" data-testid="metrics-collection-status">
-            <strong>@(status.Enabled ? "Collection enabled" : "Collection disabled")</strong>
-            <span>Last persisted @Time(status.LastPersistedAtUtc)</span>
-            <span>Last accepted @Time(status.LastAcceptedAtUtc)</span>
-            @if (status.QueueFrames > 0) { <span>@status.QueueFrames queued</span> }
-            @if (status.DroppedFrames > 0) { <span>@status.DroppedFrames dropped on this server</span> }
-            @if (status.PartialFrames > 0) { <span>@status.PartialFrames incomplete inventories</span> }
-            @if (status.LateObservations > 0) { <span>@status.LateObservations late observations</span> }
-            @if (status.Disposition is { } disposition) { <span role="status">@CollectionMessage(disposition)</span> }
-        </div>
-        @if (State.Catalogue?.Series.Count == 0 && !State.Loading)
-        {
-            <p>@(status.Enabled ? "No metrics have been retained for this computer yet." : "Collection is disabled and this computer has no retained metrics.")</p>
-        }
-        @if (State.Catalogue?.ClientOnline == false)
-        {
-            <p role="status">This computer is offline. Retained history is available for completed observations.</p>
-        }
-        else if (State.Catalogue is { Series.Count: > 0 } catalogue && catalogue.Series.All(item => !item.RecentlyObserved))
-        {
-            <p role="status">No recent observations for this computer. Retained history is still available.</p>
-        }
-    }
-
-    @if (State.Catalogue is { Series.Count: > 0 })
-    {
-        var interfaces = Interfaces.ToArray();
-        <div class="metrics-controls">
-            <label>Disk volume<select value="@State.SelectedDisk" @onchange="ChangeDisk"><option value="">Select a volume</option>
-                @foreach (var disk in Available(MetricHistoryKind.DiskUsedPercent)) { <option value="@disk.Id">@disk.DisplayName</option> }
-            </select></label>
-            <label>Network interface<select value="@State.SelectedInterface" @onchange="ChangeInterface" data-testid="metrics-interface"><option value="">Select an interface</option>
-                @foreach (var item in interfaces)
-                { <option value="@item.ResourceKey">@InterfaceLabel(item, interfaces)</option> }
-            </select></label>
-            <label>Watched service<select value="@State.SelectedService" @onchange="ChangeService"><option value="">Select a service</option>
-                @foreach (var item in Available(MetricHistoryKind.ServiceState)) { <option value="@item.Id">@item.DisplayName</option> }
-            </select></label>
-        </div>
-    }
-
-    @if (State.History is { } history)
-    {
-        <p class="metrics-range-note">
-            @Time(history.FromUtc) to @Time(history.ToExclusiveUtc) · @Zone.Id · @Duration(history.ResolutionSeconds * 1_000_000L) intervals
-        </p>
-        @if (history.Disposition == "outside_retention") { <MudAlert Severity="Severity.Info">This range is outside the tenant’s retention policy.</MudAlert> }
-        else if (history.Disposition == "no_observations") { <p>No observations were retained in this range.</p> }
-        <div class="metrics-grid">
-            <MetricHistoryChart Title="CPU utilization" Series="@Series(MetricHistoryKind.CpuPercent)" History="history" Zone="Zone" />
-            <MetricHistoryChart Title="Memory utilization" Series="@Series(MetricHistoryKind.MemoryPercent)" History="history" Zone="Zone" />
-            <MetricHistoryChart Title="Memory used and capacity" Series="@Series(MetricHistoryKind.MemoryUsedBytes, MetricHistoryKind.MemoryTotalBytes)" History="history" Zone="Zone" />
-            <MetricHistoryChart Title="@DiskTitle" Series="@Series(MetricHistoryKind.DiskUsedPercent)" History="history" Zone="Zone" />
-            <div class="metrics-wide">
-                <MetricHistoryChart Title="Network RX/TX" Series="@Series(MetricHistoryKind.NetworkRx, MetricHistoryKind.NetworkTx)" History="history" Zone="Zone" />
-            </div>
-            @if (Series(MetricHistoryKind.ServiceState).FirstOrDefault() is { } service)
-            {
-                <MetricHistoryServicePanel Series="service" History="history" Zone="Zone" />
-            }
-            else
-            {
-                <MudPaper Class="pa-4 metrics-wide"><MudText Typo="Typo.h6">Watched services</MudText><p>No retained watched-service evidence for this selection.</p></MudPaper>
-            }
-        </div>
-    }
-</section>
+<MetricHistoryWorkspace TenantId="TenantId" AgentId="AgentId" Selection="Selection" SelectionChanged="ChangeSelection" Zone="Zone">
+    <ClientPicker>
+        <MonitoringClientFilter TenantId="TenantId" Value="AgentId" ValueChanged="ChangeAgent"
+                                EmptyLabel="Select a computer" SelectFirst="true" />
+    </ClientPicker>
+</MetricHistoryWorkspace>
 
 @code {
     [Parameter] public int TenantId { get; set; }
@@ -116,157 +20,19 @@
     [Parameter] public string? AlertResource { get; set; }
     [Parameter] public TimeZoneInfo Zone { get; set; } = TimeZoneInfo.Utc;
 
-    private static readonly Dictionary<string, (string Label, TimeSpan Duration)> Ranges = new(StringComparer.Ordinal)
-    {
-        ["1h"] = ("Last hour", TimeSpan.FromHours(1)), ["6h"] = ("Last 6 hours", TimeSpan.FromHours(6)),
-        ["24h"] = ("Last 24 hours", TimeSpan.FromDays(1)), ["7d"] = ("Last 7 days", TimeSpan.FromDays(7)),
-        ["30d"] = ("Last 30 days", TimeSpan.FromDays(30)), ["90d"] = ("Last 90 days", TimeSpan.FromDays(90)),
-        ["1y"] = ("Last year", TimeSpan.FromDays(365))
-    };
+    private MetricHistorySelection Selection => new(Range, From, To, InterfaceKey, DiskId, ServiceId, AlertResource);
 
-    private MetricWorkspaceState? _state;
-    private MetricWorkspaceState State => _state ??= new(Api);
-    private (int, Guid?, string?, string?, string?, string?, long?, long?, string?)? _requested;
-    private DateTime? _fromDate, _toDate;
-    private string? _dateError;
-    private IJSObjectReference? _module, _subscription;
-    private DotNetObjectReference<MonitoringMetricsWorkspace>? _reference;
-    private bool _disposed;
-    private string Preset => Range == "custom" || Range is not null && Ranges.ContainsKey(Range) ? Range : "24h";
-    private IEnumerable<MetricSeriesDescription> Available(MetricHistoryKind kind) =>
-        State.Catalogue?.Series.Where(item => item.Kind == kind).OrderBy(item => item.DisplayName, StringComparer.Ordinal) ?? Enumerable.Empty<MetricSeriesDescription>();
-    private IEnumerable<MetricSeriesDescription> Interfaces =>
-        Available(MetricHistoryKind.NetworkRx).Concat(Available(MetricHistoryKind.NetworkTx))
-            .GroupBy(item => item.ResourceKey, StringComparer.Ordinal).Select(group => group.OrderByDescending(item => item.RecentlyObserved).First())
-            .OrderBy(item => item.DisplayName, StringComparer.Ordinal).ThenBy(item => item.ResourceKey, StringComparer.Ordinal);
-    private static string InterfaceLabel(MetricSeriesDescription item, MetricSeriesDescription[] interfaces)
+    private void ChangeAgent(Guid? value) => Update(new()
     {
-        var label = item.DisplayName + (item.RecentlyObserved ? "" : " (retained)");
-        return interfaces.Count(other => other.DisplayName == item.DisplayName && other.RecentlyObserved == item.RecentlyObserved) > 1
-            ? $"{label} · {item.ResourceKey[..Math.Min(10, item.ResourceKey.Length)]}" : label;
-    }
-
-    private MetricHistorySeries[] Series(params MetricHistoryKind[] kinds) =>
-        State.History?.Series.Where(item => kinds.Contains(item.Series.Kind)).OrderBy(item => item.Series.Kind).ToArray() ?? [];
-    private string DiskTitle => Series(MetricHistoryKind.DiskUsedPercent).FirstOrDefault() is { } disk ? $"Disk usage · {disk.Series.DisplayName}" : "Disk usage";
-
-    protected override Task OnParametersSetAsync()
-    {
-        var requested = (TenantId, AgentId, Range, From, To, InterfaceKey, DiskId, ServiceId, AlertResource);
-        if (_requested == requested) return Task.CompletedTask;
-        _requested = requested;
-        if (TryReadBound(From, out var from)) _fromDate = TimeZoneInfo.ConvertTime(from, Zone).Date;
-        if (TryReadBound(To, out var to)) _toDate = TimeZoneInfo.ConvertTime(to.AddTicks(-1), Zone).Date;
-        return RefreshAsync();
-    }
-
-    private async Task RefreshAsync()
-    {
-        if (_disposed || TenantId <= 0) return;
-        var to = DateTimeOffset.UtcNow;
-        var from = to.AddHours(-24);
-        _dateError = null;
-        if (Preset == "custom")
-        {
-            if (!TryReadBound(From, out from) || !TryReadBound(To, out to) || from >= to)
-            {
-                _dateError = "Choose a start and end date to load the custom range.";
-                State.Cancel();
-                return;
-            }
-        }
-        else from = to - Ranges[Preset].Duration;
-        await State.RefreshAsync(new(TenantId, AgentId, InterfaceKey, DiskId, ServiceId, AlertResource, from, to));
-    }
-
-    protected override async Task OnAfterRenderAsync(bool firstRender)
-    {
-        if (!firstRender || _disposed) return;
-        try
-        {
-            _module = await JS.InvokeAsync<IJSObjectReference>("import", "./js/monitoring-metrics.js");
-            if (_disposed || _module is null) return;
-            _reference = DotNetObjectReference.Create(this);
-            _subscription = await _module.InvokeAsync<IJSObjectReference>("subscribe", _reference);
-        }
-        catch (JSException) { return; }
-    }
-
-    [JSInvokable]
-    public Task RefreshVisibleMetrics() => InvokeAsync(async () =>
-    {
-        if (_disposed || Preset == "custom" || State.Loading) return;
-        var refresh = RefreshAsync();
-        StateHasChanged();
-        await refresh;
-        if (!_disposed) StateHasChanged();
+        ["metricsClient"] = value, ["metricsInterface"] = null, ["metricsDisk"] = null,
+        ["metricsService"] = null, ["metricsResource"] = null
     });
 
-    [JSInvokable]
-    public Task PauseHiddenMetrics() => InvokeAsync(() =>
+    private void ChangeSelection(MetricHistorySelection selection) => Update(new()
     {
-        State.Cancel();
-        if (!_disposed) StateHasChanged();
+        ["metricsRange"] = selection.Range, ["metricsFrom"] = selection.From, ["metricsTo"] = selection.To,
+        ["metricsInterface"] = selection.Interface, ["metricsDisk"] = selection.Disk, ["metricsService"] = selection.Service
     });
 
     private void Update(Dictionary<string, object?> fields) => Navigation.NavigateTo(Navigation.GetUriWithQueryParameters(fields));
-    private void ChangeAgent(Guid? value) => Update(new()
-    {
-        ["metricsClient"] = value, ["metricsInterface"] = null, ["metricsDisk"] = null, ["metricsService"] = null, ["metricsResource"] = null
-    });
-    private void ChangeRange(ChangeEventArgs args)
-    {
-        var range = args.Value?.ToString();
-        if (range == "custom")
-        {
-            var now = DateTimeOffset.UtcNow;
-            Update(new() { ["metricsRange"] = range, ["metricsFrom"] = now.AddHours(-24).ToString("O"), ["metricsTo"] = now.ToString("O") });
-        }
-        else Update(new() { ["metricsRange"] = range, ["metricsFrom"] = null, ["metricsTo"] = null });
-    }
-    private void ChangeInterface(ChangeEventArgs args) => Update(new() { ["metricsInterface"] = args.Value?.ToString() });
-    private void ChangeDisk(ChangeEventArgs args) => Update(new() { ["metricsDisk"] = ReadId(args) });
-    private void ChangeService(ChangeEventArgs args) => Update(new() { ["metricsService"] = ReadId(args) });
-    private static long? ReadId(ChangeEventArgs args) => long.TryParse(args.Value?.ToString(), out var id) ? id : null;
-    private static bool TryReadBound(string? value, out DateTimeOffset bound) =>
-        DateTimeOffset.TryParseExact(value, "O", CultureInfo.InvariantCulture, DateTimeStyles.None, out bound);
-    private void ApplyCustom()
-    {
-        try
-        {
-            var dates = MonitoringDateRange.ToUtc(_fromDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
-                _toDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), Zone);
-            if (dates.FromUtc is not { } from || dates.ToExclusiveUtc is not { } to) throw new ArgumentException();
-            to = to <= DateTimeOffset.UtcNow ? to : DateTimeOffset.UtcNow;
-            if (from >= to) throw new ArgumentException();
-            Update(new() { ["metricsRange"] = "custom", ["metricsFrom"] = from.ToString("O"), ["metricsTo"] = to.ToString("O") });
-        }
-        catch (ArgumentException) { _dateError = "Choose valid dates in the displayed timezone."; }
-    }
-
-    private string Time(DateTimeOffset? at) => MetricHistoryPresentation.Time(at, Zone);
-    private static string Duration(long microseconds) => MetricHistoryPresentation.Duration(microseconds);
-    private static string CollectionMessage(string code) => code switch
-    {
-        "queue_capacity" or "queue_age" => "The history queue dropped observations.",
-        "row_budget" or "maintenance_backlog" => "History is paused while maintenance frees capacity.",
-        "maintenance_lag" => "Rollups are behind.",
-        "late_observation" => "Some observations arrived after sealing.",
-        "series_capacity" => "Some resources reached the history series limit.",
-        "persistence_unavailable" => "History persistence is temporarily unavailable.",
-        _ => code
-    };
-
-    public async ValueTask DisposeAsync()
-    {
-        _disposed = true;
-        _state?.Dispose();
-        try
-        {
-            if (_subscription is not null) { await _subscription.InvokeVoidAsync("dispose"); await _subscription.DisposeAsync(); }
-            if (_module is not null) await _module.DisposeAsync();
-        }
-        catch (JSDisconnectedException) { return; }
-        finally { _reference?.Dispose(); }
-    }
 }

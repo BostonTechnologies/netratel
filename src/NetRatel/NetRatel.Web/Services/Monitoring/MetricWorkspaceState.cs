@@ -2,11 +2,15 @@ using System.Net;
 using NetRatel.Application.Monitoring;
 using NetRatel.Shared.Contracts.Monitoring;
 using NetRatel.Shared.Contracts.Services;
+using NetRatel.Web.Services.Authentication;
 
 namespace NetRatel.Web.Services.Monitoring;
 
 public sealed record MetricWorkspaceScope(int Tenant, Guid? Agent, string? Interface, long? Disk, long? Service, string? AlertResource,
     DateTimeOffset From, DateTimeOffset To);
+
+public sealed record MetricHistorySelection(string? Range = null, string? From = null, string? To = null,
+    string? Interface = null, long? Disk = null, long? Service = null, string? AlertResource = null);
 
 /// <summary>Only the mounted Metrics tab owns these requests and retained results.</summary>
 public sealed class MetricWorkspaceState(IMonitoringApiService api) : IDisposable
@@ -16,8 +20,8 @@ public sealed class MetricWorkspaceState(IMonitoringApiService api) : IDisposabl
     private (int Tenant, Guid? Agent) _client;
     private string? _soleInterface;
     public bool Loading { get; private set; }
-    public bool CanManage { get; private set; }
     public bool PermissionDenied { get; private set; }
+    public bool CheckingAccess { get; private set; }
     public string? Error { get; private set; }
     public MetricCatalogue? Catalogue { get; private set; }
     public MetricHistoryResponse? History { get; private set; }
@@ -25,39 +29,40 @@ public sealed class MetricWorkspaceState(IMonitoringApiService api) : IDisposabl
     public long? SelectedDisk { get; private set; }
     public long? SelectedService { get; private set; }
 
-    public async Task RefreshAsync(MetricWorkspaceScope scope)
+    public Task RefreshAsync(MetricWorkspaceScope scope) => ReadAsync(scope.Tenant, scope);
+    public Task RecheckAccessAsync(int tenant) => ReadAsync(tenant, null);
+
+    private async Task ReadAsync(int tenant, MetricWorkspaceScope? scope)
     {
         Cancel();
         _request = new();
         var token = _request.Token;
         var generation = _generation;
-        if (_client != (scope.Tenant, scope.Agent))
+        if (scope is not null && _client != (tenant, scope.Agent))
         {
-            _client = (scope.Tenant, scope.Agent);
-            _soleInterface = null;
-            Catalogue = null;
-            CanManage = false;
+            _client = (tenant, scope.Agent);
+            ClearResults();
         }
-        History = null;
+        if (scope is not null) History = null;
+        CheckingAccess = scope is null;
         Loading = true;
         Error = null;
         PermissionDenied = false;
         try
         {
-            var permissions = await api.GetPermissionsAsync(scope.Tenant, token);
+            var permissions = await api.GetPermissionsAsync(tenant, token);
             if (!Current()) return;
-            if (permissions.TenantId != scope.Tenant || !permissions.CanRead)
+            if (permissions.TenantId != tenant || !permissions.CanRead)
             {
-                LoseRead(permissions.TenantId == scope.Tenant && permissions.CanManage);
+                LoseRead();
                 return;
             }
-            CanManage = permissions.CanManage;
-            if (scope.Agent is not { } agent) return;
-            var catalogue = await api.GetMetricCatalogueAsync(scope.Tenant, agent, token: token);
+            if (scope?.Agent is not { } agent) return;
+            var catalogue = await api.GetMetricCatalogueAsync(tenant, agent, token: token);
             if (!Current()) return;
             if (catalogue.NextCursor is { } cursor)
             {
-                var next = await api.GetMetricCatalogueAsync(scope.Tenant, agent, cursor, token);
+                var next = await api.GetMetricCatalogueAsync(tenant, agent, cursor, token);
                 if (!Current()) return;
                 catalogue = catalogue with { Series = catalogue.Series.Concat(next.Series).ToArray(), NextCursor = next.NextCursor };
             }
@@ -66,7 +71,7 @@ public sealed class MetricWorkspaceState(IMonitoringApiService api) : IDisposabl
             Catalogue = catalogue;
             var ids = ResolveSelection(scope, catalogue.Series);
             if (ids.Length == 0) return;
-            var history = await api.QueryMetricsAsync(scope.Tenant, agent,
+            var history = await api.QueryMetricsAsync(tenant, agent,
                 new(ids, scope.From, scope.To, MaximumPointsPerSeries: 500), token);
             if (!Current()) return;
             if (history.Series.Any(row => row.Series.AgentId != agent || !ids.Contains(row.Series.Id)))
@@ -74,18 +79,18 @@ public sealed class MetricWorkspaceState(IMonitoringApiService api) : IDisposabl
             History = history;
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { return; }
-        catch (HttpRequestException error) when (error.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.Unauthorized)
-        { if (Current()) LoseRead(false); }
+        catch (Exception error) when (error is ReauthRequiredException or HttpRequestException { StatusCode: HttpStatusCode.Forbidden or HttpStatusCode.Unauthorized })
+        { if (Current()) LoseRead(); }
         catch (Exception error) when (error is HttpRequestException or System.Text.Json.JsonException)
         {
             if (Current())
             {
-                Catalogue = null;
+                ClearResults();
                 Error = error is HttpRequestException { StatusCode: HttpStatusCode.NotFound }
                     ? "This computer or a selected metric is no longer available." : "Could not load historical metrics. Refresh to try again.";
             }
         }
-        finally { if (Current()) Loading = false; }
+        finally { if (Current()) Loading = CheckingAccess = false; }
         return;
 
         bool Current() => generation == _generation && !token.IsCancellationRequested;
@@ -120,14 +125,18 @@ public sealed class MetricWorkspaceState(IMonitoringApiService api) : IDisposabl
         return item.ResourceKey.StartsWith("2:", StringComparison.Ordinal) ? "service:systemd:" + item.ResourceKey[2..] : null;
     }
 
-    private void LoseRead(bool manage)
+    private void LoseRead()
     {
         PermissionDenied = true;
-        CanManage = manage;
+        ClearResults();
+    }
+
+    private void ClearResults()
+    {
         Catalogue = null;
         History = null;
         SelectedDisk = SelectedService = null;
-        SelectedInterface = null;
+        SelectedInterface = _soleInterface = null;
     }
 
     public void Cancel()
@@ -136,7 +145,7 @@ public sealed class MetricWorkspaceState(IMonitoringApiService api) : IDisposabl
         _request?.Cancel();
         _request?.Dispose();
         _request = null;
-        Loading = false;
+        Loading = CheckingAccess = false;
     }
 
     public void Dispose() => Cancel();
