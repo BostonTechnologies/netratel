@@ -135,6 +135,51 @@ public sealed class IntegrationCredentialAccessEndpointTests
     }
 
     [Fact]
+    public async Task Account_review_rejects_stale_operations_and_saves_reconciled_all_access_for_the_same_tenant()
+    {
+        await using var fixture = await ReviewedMcpAccessTests.Fixture.CreateAsync();
+        (await fixture.Identity.Users.SingleAsync(user => user.PrincipalId == "requester")).IsInstanceAdministrator = true;
+        await fixture.Identity.SaveChangesAsync();
+        await using var app = await BuildAppAsync(fixture);
+        using var client = AccountClient(app);
+        var path = AccessPath(fixture);
+        var policiesPath = path[..path.LastIndexOf('/')] + "/base-policies";
+        var original = (await client.GetFromJsonAsync<McpIntegrationPolicy[]>(policiesPath))!;
+        var selected = original.Select(policy => policy.TenantId == 17 ? policy with
+        {
+            Constraints = new(MaxOutputBytes: 4096),
+            Operations = ["netratel_flows/list"]
+        } : policy).ToArray();
+        var request = Request() with
+        {
+            Grants = [new(17, NetRatelPermissions.TelemetryRead), new(29, NetRatelPermissions.FlowRead)],
+            Policies = selected
+        };
+        using var rejected = await client.PostAsJsonAsync(path, request);
+        Assert.Equal(HttpStatusCode.BadRequest, rejected.StatusCode);
+        var failure = (await rejected.Content.ReadFromJsonAsync<IntegrationPairingFailure>())!;
+        Assert.Equal("integration_policy_invalid", failure.Code);
+        Assert.Equal(17, failure.TenantId);
+        Assert.False(string.IsNullOrWhiteSpace(failure.CorrelationId));
+
+        var updated = original.Select(policy => policy.TenantId == 17
+            ? McpIntegrationPolicyCatalog.ReconcilePermissions(policy, [NetRatelPermissions.FlowRead], [NetRatelPermissions.TelemetryRead])
+            : policy).ToArray();
+        using var prepared = await client.PostAsJsonAsync(path, request with { Policies = updated });
+        prepared.EnsureSuccessStatusCode();
+        var pending = (await prepared.Content.ReadFromJsonAsync<ReviewedMcpAccessReceipt>())!;
+        using var applied = await client.PostAsJsonAsync(path + $"/{pending.Request.RequestId}/apply",
+            new IntegrationCredentialEndpoints.CredentialAccessDecision(pending.Request.ProposalHash, true));
+        applied.EnsureSuccessStatusCode();
+        var receipt = (await applied.Content.ReadFromJsonAsync<ReviewedMcpAccessReceipt>())!;
+        Assert.Equal("consumed", receipt.Request.Status);
+        Assert.Equal(request.Grants, receipt.ConfiguredGrants);
+        var saved = Assert.Single(await fixture.App.McpOperatorPolicies.AsNoTracking().ToArrayAsync(), policy => policy.TenantId == 17);
+        Assert.DoesNotContain("netratel_flows/list", saved.Operations!);
+        Assert.Equal(updated.Single(policy => policy.TenantId == 17).Families, saved.OperationFamily);
+    }
+
+    [Fact]
     public async Task Reviewed_edit_can_keep_existing_sparse_scopes_above_the_new_tenant_limit()
     {
         await using var fixture = await ReviewedMcpAccessTests.Fixture.CreateAsync();

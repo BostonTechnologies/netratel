@@ -102,7 +102,7 @@ public sealed partial class IntegrationSetupTransactionTests(PostgreSqlPersisten
         await using (var readback = Open(connection, protection))
         {
             Assert.Equal(permissions.Length, await readback.Identity.IntegrationCredentialGrants.CountAsync());
-            Assert.Equal(2, await readback.App.McpOperatorPolicies.CountAsync());
+            Assert.Equal(2, await readback.App.McpOperatorPolicies.CountAsync(policy => policy.IntegrationCredentialId == issued.CredentialId));
             Assert.Empty(await readback.Identity.IntegrationCredentialLifecycleEvents.ToArrayAsync());
         }
         await SaveAsync(expanded, 4);
@@ -113,6 +113,7 @@ public sealed partial class IntegrationSetupTransactionTests(PostgreSqlPersisten
         var policyOnly = await PrepareAsync(CreateRequest(5), policy => policy.TenantId != 701 ? policy : policy with
         {
             Name = "Customer A flow list",
+            Effect = McpOperatorPolicyEffect.Deny,
             Families = McpOperatorOperationFamily.AutomationRead,
             Operations = ["netratel_flows/list"],
             Constraints = new(MaxOutputBytes: 4096),
@@ -140,12 +141,14 @@ public sealed partial class IntegrationSetupTransactionTests(PostgreSqlPersisten
         Assert.Equal(expiry, stored.ExpiresAtUtc);
         var verified = await new IntegrationCredentialService(restarted.Identity).VerifyWithStatusAsync(issued.Secret, stored.Purpose, Resource);
         Assert.Equal(5 * permissions.Length, verified.Credential!.Grants.Count);
-        var policies = await restarted.App.McpOperatorPolicies.AsNoTracking().Where(policy => policy.ParentPolicyId == null).ToArrayAsync();
+        var policies = await restarted.App.McpOperatorPolicies.AsNoTracking()
+            .Where(policy => policy.IntegrationCredentialId == issued.CredentialId && policy.ParentPolicyId == null).ToArrayAsync();
         Assert.Equal(6, policies.Count(policy => policy.LifecycleState == McpOperatorPolicyLifecycleState.Active));
         Assert.Single(policies, policy => policy.TenantId == 702 && policy.LifecycleState == McpOperatorPolicyLifecycleState.Disabled);
         Assert.Single(policies, policy => policy.TenantId == 702 && policy.LifecycleState == McpOperatorPolicyLifecycleState.Active);
         var retained = Assert.Single(policies, policy => policy.TenantId == 701);
         Assert.Equal("Customer A flow list", retained.Name);
+        Assert.Equal(McpOperatorPolicyEffect.Deny, retained.Effect);
         Assert.Equal(expiry.AddDays(-1), retained.ExpiresAtUtc);
         Assert.Equal(new[] { "netratel_flows/list" }, retained.Operations);
         Assert.Equal(4096, System.Text.Json.JsonSerializer.Deserialize(retained.ConstraintsJson, McpOperatorJsonContext.Default.McpOperatorConstraints)!.MaxOutputBytes);
