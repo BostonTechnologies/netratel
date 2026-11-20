@@ -37,6 +37,16 @@ subsequent dispatch and target/operation-policy checks use current access.
 MCP target/environment policy, confirmations, and command admission remain
 additional constraints for delegated operations and cannot be bypassed by a role.
 
+### Metrics access
+
+Use **Tenants → Edit Tenant → Metrics** to manage collection, retention and service watches. **Save metrics settings** requires `monitoring.manage` for that exact tenant and saves independently of the tenant profile. Profile changes use `tenant.admin` and the full tenant directory uses `identity.admin`.
+
+Operators who lack the full directory can use the existing **Tenants** navigation to discover manageable tenants they can read through Monitoring. A manage-only operator with a known tenant ID can open the Metrics editor directly, for example at `/tenants?editTenant=42&tab=metrics`.
+
+Reading retained history requires `monitoring.read`. The client telemetry dialog's **Live** tab requires `telemetry.read`. An operator with historical access alone opens the dialog on **History**. [Historical metrics](MONITORING.md#historical-metrics)
+
+### Execution and delegated operations
+
 Execution groups reuse tenant authority: `tenant.admin` manages groups;
 `tenant.admin` or `job.manage` reads groups and permitted target-directory
 previews. Group membership is not an execution grant. Job admission checks the
