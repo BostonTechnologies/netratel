@@ -270,7 +270,7 @@ public class MainLayoutTests : AsyncBunitContext
     [InlineData("/clients/settings", "Admin")]
     [InlineData("/clients/detail/fixture-agent", "Estate Management")]
     [InlineData("/tenants", "Estate Management")]
-    [InlineData("/ai/prompts", "AI Ops")]
+    [InlineData("/ai/prompts", "Orchestration")]
     public void Navigation_DeepLinksExpandTheirGroupAndUserChoicesSurviveRenders(string route, string groupTitle)
     {
         var authorization = AddAuthorization();
@@ -298,6 +298,12 @@ public class MainLayoutTests : AsyncBunitContext
         if (groupTitle == "Admin")
         {
             cut.FindAll(".netratel-nav a.active").Should().HaveCount(1);
+        }
+        if (groupTitle == "Orchestration")
+        {
+            var aiOps = Assert.Single(cut.FindAll(".netratel-nav a[aria-label='AI Ops']"));
+            aiOps.Closest(".mud-nav-group")!.GetAttribute("aria-label").Should().Be("Orchestration");
+            aiOps.GetAttribute("aria-current").Should().Be("page");
         }
     }
 

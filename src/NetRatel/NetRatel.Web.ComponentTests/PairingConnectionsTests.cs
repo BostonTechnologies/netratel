@@ -9,6 +9,7 @@ using MudBlazor.Services;
 using NetRatel.Shared.SystemPairing;
 using NetRatel.Web.Components.Pages.Flows;
 using NetRatel.Web.Components.Shared.Pairing;
+using NetRatel.Web.Services.Flows;
 using NetRatel.Web.Services.Pairing;
 using Xunit;
 
@@ -151,6 +152,7 @@ public sealed class PairingConnectionsTests : AsyncBunitContext
     public async Task Refresh_keeps_incomplete_pair_resumable_without_automatically_opening_configuration()
     {
         var api = new FakeApi { Connections = [FakeApi.Unconfigured()] }; Services.AddSingleton<IPairingApiClient>(api);
+        Services.AddSingleton<IFlowApiService>(new FakeFlowApi());
         var panel = RenderPanel();
         FindAll(panel, "[data-testid='pairing-final-form']").Should().BeEmpty();
         Find(panel, "[data-testid='connection-view']").TextContent.Should().Contain("Continue setup");
