@@ -18,7 +18,6 @@
             </select></label>
             <MudButton Variant="Variant.Outlined" OnClick="RefreshAsync" Disabled="@State.Loading">Refresh metrics</MudButton>
         }
-        @if (State.CanManage) { <MudButton Href="@SettingsLink" Variant="Variant.Text">Metrics settings</MudButton> }
     </div>
     @if (Preset == "custom" && !State.PermissionDenied)
     {
@@ -134,7 +133,6 @@
     private DotNetObjectReference<MonitoringMetricsWorkspace>? _reference;
     private bool _disposed;
     private string Preset => Range == "custom" || Range is not null && Ranges.ContainsKey(Range) ? Range : "24h";
-    private string SettingsLink => Navigation.GetUriWithQueryParameters(new Dictionary<string, object?> { ["view"] = "manage", ["manageMetrics"] = "1", ["tenantId"] = TenantId });
     private IEnumerable<MetricSeriesDescription> Available(MetricHistoryKind kind) =>
         State.Catalogue?.Series.Where(item => item.Kind == kind).OrderBy(item => item.DisplayName, StringComparer.Ordinal) ?? Enumerable.Empty<MetricSeriesDescription>();
     private IEnumerable<MetricSeriesDescription> Interfaces =>

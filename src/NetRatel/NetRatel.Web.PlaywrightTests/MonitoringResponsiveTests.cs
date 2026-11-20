@@ -542,6 +542,11 @@ internal sealed class FixtureMonitoringApi : IMonitoringApiService
     }
     public Task<IReadOnlyList<MonitoringTenantDto>> GetTenantsAsync(CancellationToken token = default) => Task.FromResult<IReadOnlyList<MonitoringTenantDto>>([new(1, "SQL tenant"), new(2, "Other tenant")]);
     public Task<MonitoringPermissionsDto> GetPermissionsAsync(int tenantId, CancellationToken token = default) => Task.FromResult(new MonitoringPermissionsDto(tenantId, true, true, true, true, true, true));
+    private static readonly MetricCollectionStatus MetricStatus =
+        new(false, null, null, null, null, null, 2, 1000, 10000, 0, 0, null, 0, 0, 0, null, null);
+    public Task<MetricHistorySettings> GetMetricsSettingsAsync(int tenantId, Guid? agentId = null, CancellationToken token = default) =>
+        Task.FromResult(new MetricHistorySettings(MetricHistoryPolicy.Default, MetricStatus, []));
+
     public MonitoringConfigurationDto Configuration(int tenantId)
     {
         if (ManagementDataset && tenantId == 1)

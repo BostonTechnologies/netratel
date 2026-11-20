@@ -14,6 +14,41 @@ public sealed class TenantUpdateChannelResponsiveTests(ClientsManagementBrowserF
     private ClientsManagementFixtureHost? _fixture;
 
     [Theory]
+    [Trait("Category", "ManualBrowserAcceptance")]
+    [InlineData(1280, 800)]
+    [InlineData(390, 844)]
+    public async Task Metrics_is_the_fifth_tenant_section_on_desktop_and_phone(int width, int height)
+    {
+        await using var context = await browserFixture.Browser.NewContextAsync(new() { ViewportSize = new() { Width = width, Height = height } });
+        var page = await context.NewPageAsync();
+        await page.GotoAsync(_fixture!.BaseAddress + "/tenants");
+        await page.GetByRole(AriaRole.Button, new() { Name = "Manage Canary", Exact = true }).ClickAsync();
+        await page.GetByRole(AriaRole.Menuitem, new() { Name = "Edit Tenant", Exact = true }).ClickAsync();
+        var dialog = page.GetByRole(AriaRole.Dialog);
+        var switcher = dialog.GetByLabel("Tenant section", new() { Exact = true });
+        await switcher.WaitForAsync(new() { State = WaitForSelectorState.Attached });
+        if (await switcher.IsVisibleAsync())
+        {
+            await Assertions.Expect(switcher.Locator("option").Last).ToHaveTextAsync("Metrics");
+            await switcher.SelectOptionAsync(new SelectOptionValue { Label = "Metrics" });
+        }
+        else
+        {
+            var metrics = dialog.GetByRole(AriaRole.Tab, new() { Name = "Metrics", Exact = true });
+            await Assertions.Expect(dialog.GetByRole(AriaRole.Tab).Last).ToHaveTextAsync("Metrics");
+            await metrics.PressAsync("Enter");
+        }
+        var retention = dialog.GetByRole(AriaRole.Spinbutton).First;
+        await Assertions.Expect(retention).ToHaveValueAsync("14");
+        await AssertFitsAsync(page, retention, width);
+        await Assertions.Expect(dialog.GetByRole(AriaRole.Button, new() { Name = "Save metrics settings" })).ToBeVisibleAsync();
+        await dialog.GetByRole(AriaRole.Button, new() { Name = "Cancel tenant changes" }).ClickAsync();
+        await Assertions.Expect(dialog).ToBeHiddenAsync();
+        Assert.Null(_tenants.LastUpdate);
+        Assert.False(await page.Locator("#blazor-error-ui").IsVisibleAsync());
+    }
+
+    [Theory]
     [InlineData(1280, 800)]
     [InlineData(390, 844)]
     public async Task Tenant_channel_and_eligibility_controls_support_keyboard_and_all_themes(int width, int height)

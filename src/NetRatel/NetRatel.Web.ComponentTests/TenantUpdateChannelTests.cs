@@ -10,6 +10,7 @@ using NetRatel.Shared.Contracts.Requests;
 using NetRatel.Web.Components.Dialogs;
 using NetRatel.Web.Components.Pages.Tenants;
 using NetRatel.Web.Services.Tenants;
+using NetRatel.Web.Services.Monitoring;
 using Xunit;
 
 namespace NetRatel.Web.ComponentTests;
@@ -20,6 +21,7 @@ public sealed class TenantUpdateChannelTests : AsyncBunitContext
     {
         JSInterop.Mode = JSRuntimeMode.Loose;
         Services.AddMudServices(options => options.PopoverOptions.CheckForPopoverProvider = false);
+        Services.AddSingleton<IMonitoringApiService>(new MonitoringTestApi());
     }
 
     [Theory]

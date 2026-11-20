@@ -1,9 +1,10 @@
 .metric-settings { margin-top:1rem; }
-.metric-settings-heading,.metric-policy-fields { display:flex; flex-wrap:wrap; align-items:end; justify-content:space-between; gap:.75rem; margin-bottom:.8rem; }
-.metric-policy-fields { justify-content:flex-start; }
-.metric-policy-fields > div,.metric-policy-fields > label { display:grid; gap:.25rem; font-size:.875rem; }
+.metric-policy-fields { display:flex; flex-wrap:wrap; align-items:end; gap:.75rem; margin-bottom:.8rem; }
+.metric-policy-fields > div,.metric-policy-fields > label { display:grid; gap:.25rem; min-width:0; font-size:.875rem; }
+.metric-policy-fields input,.metric-settings label input { max-width:100%; }
 .metric-policy-fields .metric-enabled { display:flex; align-items:center; gap:.5rem; }
 .metric-policy-fields small { color:var(--mud-palette-error); }
 .metric-watch-table { width:100%; border-collapse:collapse; margin:.8rem 0; table-layout:fixed; }
 .metric-watch-table td,.metric-watch-table th { padding:.45rem; border-bottom:1px solid var(--mud-palette-divider); text-align:left; overflow-wrap:anywhere; }
+.metric-watch-table ::deep .mud-button { min-width:0; padding-inline:.25rem; overflow-wrap:anywhere; }
 .metric-settings p { margin:.65rem 0; }

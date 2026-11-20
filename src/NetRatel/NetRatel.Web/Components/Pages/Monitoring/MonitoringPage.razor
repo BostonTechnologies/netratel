@@ -260,10 +260,6 @@
         else
         {
             <MonitoringManagement Configuration="snapshot.Configuration" Permissions="snapshot.Permissions" Flows="snapshot.PublishedFlows" ClientName="ClientName" Workspace="_managementWorkspace" QueryUri="@Navigation.Uri" Busy="@(State.Loading || _busy)" Error="@State.Error" Refresh="Refresh" EditRule="OpenRule" EditGroup="OpenGroup" NewBypass="OpenBypass" Delete="request => OpenDelete(request.Collection, request.Id, request.Name)" Launcher="RememberManagementLauncher" />
-            @if (snapshot.Permissions.CanManage)
-            {
-                <MetricHistorySettingsEditor @key="State.TenantId" TenantId="State.TenantId" ClientName="ClientName" OpenOnLoad="@(RequestedMetricsSettings == "1")" />
-            }
         }
     }
     else if (!State.Loading && _startupError is null && State.Error is null && _filterError is null) { <MudPaper Class="pa-4"><p>Select an authorized tenant to read monitoring.</p></MudPaper> }

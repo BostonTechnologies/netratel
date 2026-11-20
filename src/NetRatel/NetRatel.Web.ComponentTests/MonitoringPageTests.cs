@@ -203,6 +203,17 @@ public sealed class MonitoringPageTests : AsyncBunitContext
         Assert.DoesNotContain(query.Keys, key => key is "metricsDisk" or "metricsInterface" or "metricsService");
     }
 
+    [Theory]
+    [InlineData("/monitoring?tenantId=1&view=manage&manageMetrics=1")]
+    [InlineData("/monitoring?tenantId=1&view=metrics")]
+    public void Monitoring_has_no_policy_editor_or_settings_link(string url)
+    {
+        Services.GetRequiredService<NavigationManager>().NavigateTo(url);
+        var cut = Render<MonitoringPage>();
+        Assert.Empty(cut.FindAll("[data-testid=metric-settings]"));
+        Assert.DoesNotContain("Metrics settings", cut.Markup);
+        Assert.DoesNotContain(cut.FindAll("a"), link => link.GetAttribute("href")?.Contains("manageMetrics=1") == true);
+    }
     [Fact]
     public async Task Selected_closed_alert_loads_exact_persisted_occurrence_and_fences_a_prior_response()
     {

@@ -33,7 +33,6 @@ public partial class MonitoringPage
     [SupplyParameterFromQuery(Name = "metricsDisk")] public long? RequestedMetricsDisk { get; set; }
     [SupplyParameterFromQuery(Name = "metricsService")] public long? RequestedMetricsService { get; set; }
     [SupplyParameterFromQuery(Name = "metricsResource")] public string? RequestedMetricsResource { get; set; }
-    [SupplyParameterFromQuery(Name = "manageMetrics")] public string? RequestedMetricsSettings { get; set; }
     private string? _appliedFilters;
     private string? _severity, _fromDate, _toDate, _filterError;
     private int _pageSize = 20;
