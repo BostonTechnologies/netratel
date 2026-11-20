@@ -137,6 +137,10 @@ public sealed partial class IntegrationPairingService
         if (metadata.BasePolicies is not { } plan) return;
         var current = (await policyAdministration!.ListAsync(metadata.Environment, null, ct).ConfigureAwait(false)).Items
             .Where(p => p.IntegrationCredentialId == credentialId && p.ParentPolicyId is null && p.LifecycleState == McpOperatorPolicyLifecycleState.Active).ToArray();
+        // The credential is locked here. Recheck the full reviewed scope before writing,
+        // including removed bases whose versions are absent from the new plan.
+        if (await PolicyRevisionHashAsync(metadata.Proposal, metadata.Environment, request.Id, metadata.AccountPolicyScopes, ct).ConfigureAwait(false) != metadata.PolicyRevisionHash)
+            throw IntegrationCredentialGrantValidationException.Invalid("policies", "review_policy_changed");
         foreach (var policy in plan)
         {
             var permissions = PolicyPermissions(metadata.Proposal, policy.TenantId);

@@ -62,7 +62,8 @@ public sealed partial class IntegrationPairingService
             var bound = AccessMetadata(existing);
             if (bound?.RequestingPrincipalId != owner || bound.RequestingCredentialId != requestingCredentialId || bound.Environment != environment || existing.Resource != resource || existing.PublicOrigin != origin)
                 throw new IntegrationPairingUnavailableException();
-            if (!SameProposal(bound, proposal)) throw ReviewValidation("review_proposal_conflict", "request", "requestId");
+            if (!SameProposal(bound, proposal) || JsonSerializer.Serialize(bound.BasePolicies) != JsonSerializer.Serialize(basePolicies))
+                throw ReviewValidation("review_proposal_conflict", "request", "requestId");
             if (existing.State is not (IntegrationPairingState.Pending or IntegrationPairingState.Approved or IntegrationPairingState.Issued) || (existing.State == IntegrationPairingState.Issued ? existing.DeliveryExpiresAtUtc <= clock.GetUtcNow() : existing.ExpiresAtUtc <= clock.GetUtcNow()) || bound.ProtectedSetup is null)
                 throw new IntegrationPairingUnavailableException();
             var setup = JsonSerializer.Deserialize<ProtectedSetupMaterial>(protection.CreateProtector("NetRatel.IntegrationPairing.Setup.v1", existing.Id).Unprotect(bound.ProtectedSetup))!;
