@@ -93,6 +93,15 @@ public sealed class GatewayTelemetryDialogTests : AsyncBunitContext
         Assert.Equal(fixedQuery.SeriesIds, monitoringQuery.SeriesIds);
         Assert.Equal(500, monitoringQuery.MaximumPointsPerSeries);
         Assert.Equal(expected, monitoring.Find("[data-testid=metrics-received]").TextContent);
+        foreach (var (card, selector) in new[] { ("metrics-disk-card", "metrics-disk"),
+                     ("metrics-network-card", "metrics-interface"), ("metrics-service-card", "metrics-service") })
+        {
+            var query = $"[data-testid={card}] select[data-testid={selector}]";
+            Assert.Single(provider.FindAll(query));
+            Assert.Single(monitoring.FindAll(query));
+        }
+        Assert.Single(workspace.FindAll("button[aria-label='Refresh metrics']"));
+
 
         var reads = _history.Queries.Count;
         await Tab(provider, "Live").ClickAsync(new());

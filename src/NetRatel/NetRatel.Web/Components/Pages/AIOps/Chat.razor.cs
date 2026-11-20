@@ -128,9 +128,9 @@ public partial class Chat
         ? $"/ai/chat?tenantId={tenant}&chat={chat:D}"
         : $"/ai/chat?tenantId={tenant}";
 
-    private void ChooseTenant(ChangeEventArgs args)
+    private void ChooseTenant(int tenant)
     {
-        if (int.TryParse(args.Value?.ToString(), out var tenant) && tenant != _tenant && _tenants.Any(x => x.TenantId == tenant))
+        if (tenant != _tenant && _tenants.Any(x => x.TenantId == tenant))
             Navigation.NavigateTo(ChatUrl(tenant));
     }
 

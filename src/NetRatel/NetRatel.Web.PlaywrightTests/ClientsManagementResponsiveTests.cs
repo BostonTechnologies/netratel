@@ -1664,6 +1664,7 @@ internal sealed class ClientsManagementFixtureHost : IAsyncDisposable
         builder.Services.AddSingleton<FixtureMonitoringApi>();
         builder.Services.AddSingleton<NetRatel.Web.Services.Monitoring.IMonitoringApiService>(services => services.GetRequiredService<FixtureMonitoringApi>());
         builder.Services.AddSingleton<IClientArtifactsService>(services => services.GetRequiredService<FixtureClientArtifactsService>());
+        builder.Services.AddSingleton(TimeProvider.System);
         builder.Services.AddSingleton<FixtureClientUpdateActivityStream>();
         builder.Services.AddSingleton<IClientUpdateActivityStream>(services => services.GetRequiredService<FixtureClientUpdateActivityStream>());
         builder.Services.AddSingleton<ITenantApiService, FixtureTenantApiService>();

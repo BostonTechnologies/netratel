@@ -140,7 +140,8 @@ public sealed class MonitoringPageTests : AsyncBunitContext
     {
         var pending = new TaskCompletionSource<MonitoringClientPageDto>();
         _api.ClientSearch = (tenant, _, _, _) => tenant == 2 ? pending.Task : _api.GetClientsAsync(tenant);
-        var cut = Render<NetRatel.Web.Components.Shared.Monitoring.MonitoringClientFilter>(parameters => parameters.Add(component => component.TenantId, 1));
+        var cut = Render<NetRatel.Web.Components.Shared.Monitoring.MonitoringClientFilter>(parameters => parameters
+            .Add(component => component.TenantId, 1).Add(component => component.SelectFirst, true));
         await cut.WaitForAssertionAsync(() => Assert.Contains("SQL Server", cut.Markup));
         cut.Render(parameters => parameters.Add(component => component.TenantId, 2));
         await cut.WaitForAssertionAsync(() => Assert.DoesNotContain("SQL Server", cut.Markup));
@@ -213,7 +214,7 @@ public sealed class MonitoringPageTests : AsyncBunitContext
         var cut = Render<MonitoringPage>();
         Assert.Empty(cut.FindAll("[data-testid=metric-settings]"));
         Assert.DoesNotContain("Metrics settings", cut.Markup);
-        Assert.DoesNotContain(cut.FindAll("a"), link => link.GetAttribute("href")?.Contains("manageMetrics=1") == true);
+        Assert.DoesNotContain(cut.FindAll("a:not([aria-current=page])"), link => link.GetAttribute("href")?.Contains("manageMetrics=1") == true);
     }
     [Fact]
     public async Task Selected_closed_alert_loads_exact_persisted_occurrence_and_fences_a_prior_response()

@@ -1,13 +1,13 @@
 .software-inventory { padding: 1.5rem; min-width: 0; max-width: 100%; display: grid; gap: 1rem; }
+.software-inventory.tenant-inventory { padding: 0; gap: .5rem; }
 .overview-heading, .table-heading, .scan-heading, .inventory-toolbar, .inventory-pagination { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
-.overview-heading { font-size: .8rem; color: var(--mud-palette-text-secondary); }
-.overview-heading > span:first-child { color: var(--mud-palette-text-primary); font-weight: 600; }
-.inventory-overview { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: .85rem; }
-.metric { display: flex; flex-direction: column; gap: .45rem; padding: 1.15rem; border: 1px solid var(--mud-palette-lines-default); border-radius: 10px; background: var(--mud-palette-surface); }
-.metric > span:first-child { font-size: .8rem; font-weight: 600; }
-.metric > strong { font-size: 1.9rem; line-height: 1.2; font-weight: 600; font-variant-numeric: tabular-nums; }
-.metric small { font-size: 1rem; color: var(--mud-palette-text-secondary); font-weight: 400; }
-.metric > span:last-child { color: var(--mud-palette-text-secondary); font-size: .72rem; line-height: 1.45; }
+.overview-heading { font-size: .82rem; gap: .25rem .75rem; color: var(--mud-palette-text-secondary); }
+.inventory-overview { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 132px), 1fr)); gap: .5rem; }
+.metric { display: flex; flex-direction: column; gap: .15rem; min-width: 0; padding: .45rem .65rem; border: 1px solid var(--mud-palette-lines-default); border-radius: 7px; background: var(--mud-palette-surface); }
+.metric > span:first-child { font-size: .82rem; font-weight: 600; }
+.metric > strong { font-size: 1.35rem; line-height: 1.15; font-weight: 600; font-variant-numeric: tabular-nums; }
+.metric small { font-size: .9rem; color: var(--mud-palette-text-secondary); font-weight: 400; }
+.metric > span:last-child { color: var(--mud-palette-text-secondary); font-size: .78rem; line-height: 1.3; }
 .inventory-caption { color: var(--mud-palette-text-secondary); font-size: .78rem; line-height: 1.5; }
 .inventory-eyebrow { display: block; font-size: .67rem; letter-spacing: .12em; font-weight: 600; color: var(--mud-palette-text-secondary); margin-bottom: .45rem; }
 .client-scan-card { padding: 1.2rem 1.4rem; border: 1px solid var(--mud-palette-lines-default); border-radius: 10px; display: grid; gap: .8rem; background: var(--mud-palette-surface); }
@@ -60,9 +60,6 @@ summary { cursor: pointer; }
 }
 @media (max-width: 700px) {
     .software-inventory { padding: .75rem; }
-    .inventory-overview { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    .metric { padding: .9rem; }
-    .metric > strong { font-size: 1.6rem; }
     .client-scan-card { padding: 1rem; }
     .inventory-toolbar, .inventory-searchbar, .table-heading { padding-left: .7rem; padding-right: .7rem; }
     .inventory-pagination { gap: .4rem; padding: .7rem; }

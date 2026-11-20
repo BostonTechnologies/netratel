@@ -392,6 +392,10 @@ public sealed class FlowsResponsiveTests(ClientsManagementBrowserFixture browser
         var evidence = EvidenceRoot(); Directory.CreateDirectory(evidence);
         await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, "flows-dirty-dialog.png"), FullPage = true, Animations = ScreenshotAnimations.Disabled });
         await page.GetByRole(AriaRole.Button, new() { Name = "Keep editing", Exact = true }).ClickAsync();
+        await page.GetByTestId("signals-workspace-tabs").GetByRole(AriaRole.Link, new() { Name = "Monitoring", Exact = true }).ClickAsync();
+        await page.GetByTestId("flow-unsaved").WaitForAsync();
+        await page.GetByRole(AriaRole.Button, new() { Name = "Keep editing", Exact = true }).ClickAsync();
+        Assert.Contains("/flows", page.Url);
         await page.GetByTestId("flow-tenant").SelectOptionAsync("23"); await page.GetByTestId("flow-unsaved").WaitForAsync();
         await Assertions.Expect(page.GetByTestId("flow-tenant")).ToHaveValueAsync("17");
         await Assertions.Expect(page.GetByTestId("flow-name")).ToHaveValueAsync("My preserved changes");

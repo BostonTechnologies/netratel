@@ -65,11 +65,30 @@ public sealed class ClientUpdateActivityResponsiveTests(ClientsManagementBrowser
             Assert.InRange(Math.Abs(geometry.GetProperty("cellWidth").GetDouble() - tableWidth), 0, 2);
             Assert.InRange(Math.Abs(geometry.GetProperty("leftOffset").GetDouble()), 0, 2);
             await CaptureAsync(page, "activity-details-expanded");
+            var grouping = page.GetByRole(AriaRole.Combobox, new() { Name = "Group current page", Exact = true });
+            await grouping.PressAsync("Space");
+            await Assertions.Expect(grouping).ToHaveAttributeAsync("aria-expanded", "true");
+            var readsWithPopupOpen = fixture.Data.AttemptPageRequests;
+            var live = page.GetByTestId("activity-live-status");
+            await DriveInvalidationsAsync(fixture);
+            Assert.Equal(readsWithPopupOpen, fixture.Data.AttemptPageRequests);
+            await Assertions.Expect(grouping).ToHaveAttributeAsync("aria-expanded", "true");
+            await Assertions.Expect(live).ToContainTextAsync("Updates pending");
+            await CaptureAsync(page, "activity-grouping-with-updates-pending");
+
+            await grouping.PressAsync("ArrowDown");
+            await grouping.PressAsync("Enter");
+            await Assertions.Expect(grouping).ToContainTextAsync("Version");
+            await grouping.ClickAsync();
+            await page.GetByRole(AriaRole.Option, new() { Name = "Tenant", Exact = true }).ClickAsync();
+            await Assertions.Expect(grouping).ToContainTextAsync("Tenant");
+            await Assertions.Expect(page.GetByTestId("attempt-table")).ToContainTextAsync("Accepted", new() { Timeout = 10_000 });
+            Assert.Equal(readsWithPopupOpen + 1, fixture.Data.AttemptPageRequests);
             var search = page.GetByTestId("attempt-search");
             await search.FocusAsync();
-            fixture.Data.HistoryStatus = "Accepted";
+            fixture.Data.HistoryStatus = "Downloading";
             await fixture.ActivityStream.SendAsync("invalidate");
-            await Assertions.Expect(page.GetByTestId("attempt-table")).ToContainTextAsync("Accepted");
+            await Assertions.Expect(page.GetByTestId("attempt-table")).ToContainTextAsync("Downloading", new() { Timeout = 10_000 });
             await Assertions.Expect(search).ToBeFocusedAsync();
             await Assertions.Expect(detailsToggle).ToHaveAttributeAsync("aria-controls", detailsId!);
             await Assertions.Expect(detailsToggle).ToHaveAttributeAsync("aria-expanded", "true");
@@ -79,7 +98,7 @@ public sealed class ClientUpdateActivityResponsiveTests(ClientsManagementBrowser
             await Assertions.Expect(page.GetByTestId("activity-live-status")).ToContainTextAsync("Reconnecting");
             fixture.Data.HistoryStatus = "FailedPreActivation";
             await fixture.ActivityStream.SendAsync("ready");
-            await Assertions.Expect(page.GetByTestId("attempt-table")).ToContainTextAsync("FailedPreActivation");
+            await Assertions.Expect(page.GetByTestId("attempt-table")).ToContainTextAsync("FailedPreActivation", new() { Timeout = 10_000 });
             await Assertions.Expect(page.GetByTestId("activity-live-status")).ToContainTextAsync("Live");
             await Assertions.Expect(search).ToBeFocusedAsync();
             await Assertions.Expect(detailsToggle).ToHaveAttributeAsync("aria-controls", detailsId!);
@@ -110,6 +129,16 @@ public sealed class ClientUpdateActivityResponsiveTests(ClientsManagementBrowser
             await File.WriteAllTextAsync(Path.Combine(root, "activity", "activity-failure.json"),
                 JsonSerializer.Serialize(new { state, errors, serverDiagnostics = fixture.StartupServerDiagnostics.TakeLast(20).ToArray() }, new JsonSerializerOptions { WriteIndented = true }));
             throw;
+        }
+    }
+
+    private static async Task DriveInvalidationsAsync(ClientsManagementFixtureHost fixture)
+    {
+        using var events = new PeriodicTimer(TimeSpan.FromMilliseconds(250));
+        for (var index = 0; index < 24 && await events.WaitForNextTickAsync(); index++)
+        {
+            fixture.Data.HistoryStatus = index < 23 ? "Downloading" : "Accepted";
+            await fixture.ActivityStream.SendAsync("invalidate");
         }
     }
 

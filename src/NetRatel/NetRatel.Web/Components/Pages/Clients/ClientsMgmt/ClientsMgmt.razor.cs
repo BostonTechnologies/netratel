@@ -7,35 +7,46 @@ namespace NetRatel.Web.Components.Pages.Clients.ClientsMgmt;
 public partial class ClientsMgmt
 {
     [Inject] public IClientUpdateActivityStream ActivityStream { get; set; } = null!;
-    private CancellationTokenSource? _activityCancellation;
-    private Task? _activityRefreshTask;
+    [Inject] public TimeProvider ActivityClock { get; set; } = null!;
+
+    private static readonly TimeSpan ActivityRefreshInterval = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan ActivityEditQuietPeriod = TimeSpan.FromMilliseconds(500);
     private readonly SemaphoreSlim _activityReads = new(1, 1);
+    private readonly HashSet<string> _activityPopups = [];
+    private CancellationTokenSource? _activityCancellation;
+    private CancellationTokenSource? _activityRead;
+    private Task? _activityRefreshTask;
     private long _activityGeneration;
+    private long? _activityLastRead;
+    private long? _activityLastEdit;
     private bool _activityRefreshPending;
     private bool _activityBackendConnected;
-    private bool _activitySnapshotCurrent;
+    private bool _activityHasSnapshot;
     private string _activityStatus = "Paused";
     private string? _activityError;
     private DateTimeOffset? _activityUpdatedAt;
-    private TableGroupDefinition<ClientUpdateHistoryItemModel>? _activityGroup;
-    private IReadOnlyList<ClientUpdateHistoryItemModel> _activityItems = [];
+    private TableGroupDefinition<ActivityRow>? _activityGroup;
+    private IReadOnlyList<ActivityRow> _activityItems = [];
+    private int _activityPage;
+    private int? _activityRecoveryPage;
+    private int _activityPageSize = 20;
     private int _activityTotal;
-    private long _activitySnapshotGeneration = -1;
-    private int _activitySnapshotPage;
-    private int _activitySnapshotPageSize;
-    private bool HasCurrentActivitySnapshot => _activitySnapshotGeneration == _activityGeneration &&
-        _activitySnapshotPage == (_attemptTable?.CurrentPage ?? 0) && _activitySnapshotPageSize == (_attemptTable?.RowsPerPage ?? 10);
-    private string ActivityCountFormat => _activityError is null ? "{first_item}-{last_item} of {all_items}" :
-        HasCurrentActivitySnapshot ? "{first_item}-{last_item} of {all_items} (last loaded)" : "Count unavailable";
+
+    // MudTable keys each main row by its item. Keep that key when its evidence changes.
+    private sealed record ActivityRow(ClientUpdateHistoryItemModel Item)
+    {
+        public bool Equals(ActivityRow? other) => Item.AttemptId == other?.Item.AttemptId;
+        public override int GetHashCode() => Item.AttemptId.GetHashCode();
+    }
 
     private readonly Dictionary<string, long> _activityExpandedGroups = [];
     private readonly HashSet<Guid> _expandedActivityAttempts = [];
     private readonly Dictionary<Guid, ElementReference> _activityDetailLaunchers = [];
     private Guid? _restoreActivityDetailsFocus;
     private long _activityGroupOrder;
-    private string ActivityGroupKey(object key) => _attemptGrouping + "\0" + key;
-    private bool IsActivityGroupExpanded(object key) => _activityExpandedGroups.ContainsKey(ActivityGroupKey(key));
-    private void ToggleActivityGroup(object key)
+    private string ActivityGroupKey(object? key) => _attemptGrouping + "\0" + key;
+    private bool IsActivityGroupExpanded(object? key) => _activityExpandedGroups.ContainsKey(ActivityGroupKey(key));
+    private void ToggleActivityGroup(object? key)
     {
         var group = ActivityGroupKey(key);
         if (!_activityExpandedGroups.Remove(group))
@@ -46,7 +57,7 @@ public partial class ClientsMgmt
         }
     }
 
-    private string ActivityRowStyle(ClientUpdateHistoryItemModel item, int _) =>
+    private string ActivityRowStyle(ActivityRow item, int _) =>
         AttemptGroup?.Selector is { } selector && !IsActivityGroupExpanded(selector(item)) ? "display:none" : string.Empty;
 
     private void ToggleActivityDetails(Guid attemptId) => SetActivityDetailsExpanded(attemptId, !_expandedActivityAttempts.Contains(attemptId));
@@ -86,182 +97,249 @@ public partial class ClientsMgmt
         var cancellation = new CancellationTokenSource();
         _activityCancellation = cancellation;
         var generation = ++_activityGeneration;
-        _activitySnapshotCurrent = false;
         try
         {
-            await ActivityStream.StartAsync(_attemptTenantId,
-            notification => InvokeAsync(() =>
+            await ActivityStream.StartAsync(_attemptTenantId, notification => InvokeAsync(() =>
             {
-                if (generation != _activityGeneration || _activeTab != ActivityTab || _automationDisposed) return;
-                var previousStatus = _activityStatus;
+                if (!IsActivityCurrent(generation)) return;
                 _activityBackendConnected = notification.Connected;
+                var previousStatus = _activityStatus;
                 if (!notification.Connected) _activityStatus = "Reconnecting";
-                if (notification.Kind is "ready" or "invalidate" || notification.Connected && !_activitySnapshotCurrent)
+                if (notification.Kind is "ready" or "invalidate")
                 {
-                    _activitySnapshotCurrent = false;
-                    QueueActivityRefresh(generation);
+                    var wasPending = _activityRefreshPending;
+                    _activityRefreshPending = true;
+                    ScheduleActivityRefresh();
+                    if (!wasPending) StateHasChanged();
                 }
-                // Invalidations change no displayed rows until the authoritative
-                // refresh completes. Keep event bursts from rendering the entire page.
                 if (previousStatus != _activityStatus) StateHasChanged();
             }), status => _ = InvokeAsync(() =>
             {
-                if (generation != _activityGeneration || _automationDisposed) return;
+                if (!IsActivityCurrent(generation)) return;
                 var statusChanged = _activityStatus != status;
                 _activityStatus = status;
-                if (status != "Live")
-                {
-                    _activitySnapshotCurrent = false;
-                    _activityBackendConnected = false;
-                }
+                if (status != "Live") _activityBackendConnected = false;
                 if (statusChanged) StateHasChanged();
             }), cancellation.Token);
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested || generation != _activityGeneration)
         {
-            // A later scope can cancel this start while it waits for the previous
-            // transport to drain. Superseded UI input is a normal cancellation.
+            // A later tenant or tab can replace a stream while startup is draining.
+            return;
         }
     }
 
     private async Task StopActivityAsync()
     {
-        var stoppedGeneration = ++_activityGeneration;
+        ++_activityGeneration;
         var cancellation = _activityCancellation;
         _activityCancellation = null;
+        _activityRead = null;
         cancellation?.Cancel();
-        _activityRefreshPending = false;
-        // Detach the cancelled loop before awaiting transport shutdown. A reentrant
-        // scope change can start and own a new coalescer during that await.
         _activityRefreshTask = null;
+        _activityRefreshPending = false;
         _activityBackendConnected = false;
-        _activitySnapshotCurrent = false;
         _activityStatus = "Paused";
-        _attemptsLoading = false;
+        _activityPopups.Clear();
+        _activityLastEdit = null;
         await ActivityStream.StopAsync();
-        // Do not await an InvokeAsync refresh on the renderer while navigating/disposal.
-        // Cancellation + generation fencing prevents its delayed result from applying.
-        if (stoppedGeneration == _activityGeneration) _activityRefreshTask = null;
         cancellation?.Dispose();
     }
 
-    private async Task ActivityScopeChangedAsync()
+    private bool IsActivityCurrent(long generation) =>
+        generation == _activityGeneration && _activeTab == ActivityTab && !_automationDisposed;
+
+    private async Task ActivityScopeChangedAsync(bool tenantChanged = false, bool editing = false)
     {
-        await StopActivityAsync();
+        if (editing) _activityLastEdit = ActivityClock.GetTimestamp();
+        _activityPage = 0;
+        ClearActivitySnapshot();
+        if (tenantChanged || _activityCancellation is null)
+        {
+            // Tenant is the SSE scope. Other filters only change the history read.
+            _activityExpandedGroups.Clear();
+            _expandedActivityAttempts.Clear();
+            var expectedGeneration = _activityGeneration + 1;
+            await StopActivityAsync();
+            if (!IsActivityCurrent(expectedGeneration)) return;
+            await StartActivityAsync();
+            if (!IsActivityCurrent(expectedGeneration + 1)) return;
+        }
+        await RefreshActivityAsync();
+    }
+
+    private void ClearActivitySnapshot()
+    {
+        _activityItems = [];
+        _activityTotal = 0;
+        _activityRecoveryPage = null;
+        _activityHasSnapshot = false;
         _activityUpdatedAt = null;
         _activityError = null;
-        await StartActivityAsync();
-        if (_attemptTable is not null)
-        {
-            _attemptTable.NavigateTo(0);
-            await _attemptTable.ReloadServerData();
-        }
+        _activityDetailLaunchers.Clear();
     }
 
-    private void QueueActivityRefresh(long generation)
+    private async Task ChangeActivityPageAsync(int page)
     {
-        if (_activityCancellation is null || generation != _activityGeneration) return;
-        _activityRefreshPending = true;
-        _activityRefreshTask ??= CoalesceActivityRefreshAsync(generation, _activityCancellation.Token);
+        _activityPage = page;
+        ClearActivitySnapshot();
+        await RefreshActivityAsync();
     }
 
+    private Task ChangeActivityPageSizeAsync(int size)
+    {
+        _activityPageSize = size;
+        return ChangeActivityPageAsync(0);
+    }
+
+    private void SetActivityPopup(string popup, bool open)
+    {
+        if (open) _activityPopups.Add(popup);
+        else _activityPopups.Remove(popup);
+        ScheduleActivityRefresh();
+    }
+
+    private TimeSpan ActivityQuietTimeRemaining =>
+        _activityLastEdit is { } edit ? ActivityEditQuietPeriod - ActivityClock.GetElapsedTime(edit) : TimeSpan.Zero;
+
+    private void ScheduleActivityRefresh()
+    {
+        if (_activityCancellation is not { } scope || !_activityRefreshPending || _activityRead is not null ||
+            _activityRefreshTask is not null || _activityPopups.Count != 0) return;
+        _activityRefreshTask = CoalesceActivityRefreshAsync(_activityGeneration, scope.Token);
+    }
+
+    // A trailing read consumes all dirty signals received before it starts. While
+    // typing or a popup is open, keep the current page and leave one pending read.
     private async Task CoalesceActivityRefreshAsync(long generation, CancellationToken ct)
     {
+        await Task.Yield();
         try
         {
-            while (_activityRefreshPending && !ct.IsCancellationRequested && generation == _activityGeneration)
+            while (IsActivityCurrent(generation) && !ct.IsCancellationRequested && _activityRefreshPending &&
+                   _activityPopups.Count == 0 && _activityRead is null)
             {
-                await Task.Delay(200, ct);
-                ct.ThrowIfCancellationRequested();
-                if (generation != _activityGeneration || _activeTab != ActivityTab || _automationDisposed) return;
-                _activityRefreshPending = false;
-                await InvokeAsync(async () =>
+                var untilBudget = _activityLastRead is { } last ? ActivityRefreshInterval - ActivityClock.GetElapsedTime(last) : TimeSpan.Zero;
+                var untilQuiet = ActivityQuietTimeRemaining;
+                var delay = untilBudget > untilQuiet ? untilBudget : untilQuiet;
+                if (delay > TimeSpan.Zero)
                 {
-                    if (generation != _activityGeneration || _activeTab != ActivityTab || _attemptTable is null) return;
-                    await _attemptTable.ReloadServerData();
-                    StateHasChanged();
-                });
+                    await Task.Delay(delay, ActivityClock, ct);
+                    continue;
+                }
+
+                await ReadActivityAsync(automatic: true);
+                if (IsActivityCurrent(generation)) StateHasChanged();
             }
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // The outgoing tab or tenant owns this wait.
+            return;
+        }
         finally
         {
             if (generation == _activityGeneration)
             {
                 _activityRefreshTask = null;
-                // An event arriving at completion still receives a refresh.
-                if (_activityRefreshPending) QueueActivityRefresh(generation);
+                ScheduleActivityRefresh();
             }
         }
     }
 
-    private Task RefreshActivityAsync() => _attemptTable?.ReloadServerData() ?? Task.CompletedTask;
+    private Task RefreshActivityAsync() => ReadActivityAsync(automatic: false);
 
-    private async Task<TableData<ClientUpdateHistoryItemModel>> LoadAttemptsAsync(TableState state, CancellationToken ct)
+    private async Task ReadActivityAsync(bool automatic)
     {
         var generation = _activityGeneration;
-        using var scopeRead = CancellationTokenSource.CreateLinkedTokenSource(ct, _activityCancellation?.Token ?? CancellationToken.None);
-        var readToken = scopeRead.Token;
+        if (_activityCancellation is not { } scope || !IsActivityCurrent(generation)) return;
+
+        _activityRead?.Cancel();
+        using var read = CancellationTokenSource.CreateLinkedTokenSource(scope.Token);
+        _activityRead = read;
+        var token = read.Token;
         var search = EmptyToNull(_attemptSearch);
         var status = EmptyToNull(_attemptStatus);
         var runtime = EmptyToNull(_attemptRid);
         var tenant = _attemptTenantId;
         var version = EmptyToNull(_attemptVersion);
-        await _activityReads.WaitAsync(readToken);
+        var requestedPage = _activityRecoveryPage ?? _activityPage;
+        var pageSize = _activityPageSize;
         try
         {
-            readToken.ThrowIfCancellationRequested();
-            if (_automationDisposed || generation != _activityGeneration) return ActivitySnapshot();
-            _attemptsLoading = true;
-            var page = await Artifacts.GetUpdateHistoryAsync(state.Page, state.PageSize, search, status, null, runtime, tenant, version, readToken);
-            readToken.ThrowIfCancellationRequested();
-            if (_automationDisposed || generation != _activityGeneration) return ActivitySnapshot();
-            // Purge/filter membership changes can remove the final page. Clamp only then.
-            var lastPage = Math.Max(0, (page.Total - 1) / state.PageSize);
-            if (state.Page > lastPage)
+            await _activityReads.WaitAsync(token);
+            try
             {
-                _attemptTable?.NavigateTo(lastPage);
-                page = await Artifacts.GetUpdateHistoryAsync(lastPage, state.PageSize, search, status, null, runtime, tenant, version, readToken);
-                readToken.ThrowIfCancellationRequested();
-                if (_automationDisposed || generation != _activityGeneration) return ActivitySnapshot();
+                if (automatic && ActivityInteractionInProgress) return;
+                _activityLastRead = ActivityClock.GetTimestamp();
+                _activityRefreshPending = false;
+                var page = await Artifacts.GetUpdateHistoryAsync(requestedPage, pageSize, search, status, null, runtime, tenant, version, token);
+                token.ThrowIfCancellationRequested();
+
+                var lastPage = Math.Max(0, (page.Total - 1) / pageSize);
+                if (requestedPage > lastPage)
+                {
+                    if (automatic)
+                    {
+                        _activityRecoveryPage = lastPage;
+                        _activityRefreshPending = true;
+                        return;
+                    }
+                    page = await Artifacts.GetUpdateHistoryAsync(lastPage, pageSize, search, status, null, runtime, tenant, version, token);
+                    token.ThrowIfCancellationRequested();
+                }
+
+                if (automatic && ActivityInteractionInProgress)
+                {
+                    _activityRefreshPending = true;
+                    return;
+                }
+                ApplyActivityPage(page);
             }
-            _activityItems = page.Items;
-            var currentAttempts = page.Items.Select(item => item.AttemptId).ToHashSet();
-            _expandedActivityAttempts.IntersectWith(currentAttempts);
-            foreach (var attemptId in _activityDetailLaunchers.Keys.Where(id => !currentAttempts.Contains(id)).ToArray())
-                _activityDetailLaunchers.Remove(attemptId);
-            _activityTotal = page.Total;
-            _activitySnapshotGeneration = generation;
-            _activitySnapshotPage = page.Page;
-            _activitySnapshotPageSize = page.PageSize;
-            _activityUpdatedAt = DateTimeOffset.Now;
-            _activityError = null;
-            _activitySnapshotCurrent = true;
-            if (_activeTab == ActivityTab && _activityBackendConnected && _activitySnapshotCurrent) _activityStatus = "Live";
-            return ActivitySnapshot();
+            finally { _activityReads.Release(); }
         }
-        catch (Exception exception) when (exception is HttpRequestException or NetRatel.Web.Services.Authentication.ReauthRequiredException or System.Text.Json.JsonException ||
-            exception is OperationCanceledException && !ct.IsCancellationRequested)
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
-            if (_automationDisposed || generation != _activityGeneration) return ActivitySnapshot();
-            _activityError = HasCurrentActivitySnapshot
+            // Only the latest page and filter request may apply.
+            return;
+        }
+        catch (Exception exception) when (exception is HttpRequestException or NetRatel.Web.Services.Authentication.ReauthRequiredException or
+                                          System.Text.Json.JsonException or OperationCanceledException)
+        {
+            if (!IsActivityCurrent(generation) || token.IsCancellationRequested) return;
+            var accessLost = exception is NetRatel.Web.Services.Authentication.ReauthRequiredException or
+                HttpRequestException { StatusCode: System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden };
+            if (accessLost) ClearActivitySnapshot();
+            _activityError = _activityHasSnapshot
                 ? "Activity refresh failed. Showing the last loaded page; use Refresh to retry."
                 : "Activity refresh failed. No snapshot is available for these filters and page; use Refresh to retry.";
-            _activityStatus = exception is NetRatel.Web.Services.Authentication.ReauthRequiredException or
-                HttpRequestException { StatusCode: System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden }
-                ? "Paused" : "Reconnecting";
-            if (_activityStatus == "Paused") _activityBackendConnected = false;
-            _activitySnapshotCurrent = false;
-            return ActivitySnapshot();
+            _activityStatus = accessLost ? "Paused" : "Reconnecting";
+            if (accessLost) _activityBackendConnected = false;
         }
         finally
         {
-            if (generation == _activityGeneration) _attemptsLoading = false;
-            _activityReads.Release();
+            if (ReferenceEquals(_activityRead, read))
+            {
+                _activityRead = null;
+                ScheduleActivityRefresh();
+            }
         }
     }
 
-    private TableData<ClientUpdateHistoryItemModel> ActivitySnapshot() => HasCurrentActivitySnapshot
-        ? new() { Items = _activityItems, TotalItems = _activityTotal }
-        : new() { Items = [], TotalItems = 0 };
+    private bool ActivityInteractionInProgress => _activityPopups.Count != 0 || ActivityQuietTimeRemaining > TimeSpan.Zero;
+
+    private void ApplyActivityPage(ClientUpdateHistoryPageModel page)
+    {
+        _activityItems = page.Items.Select(item => new ActivityRow(item)).ToArray();
+        var currentAttempts = page.Items.Select(item => item.AttemptId).ToHashSet();
+        foreach (var attemptId in _activityDetailLaunchers.Keys.Where(id => !currentAttempts.Contains(id)).ToArray())
+            _activityDetailLaunchers.Remove(attemptId);
+        _activityTotal = page.Total;
+        _activityPage = page.Page;
+        _activityRecoveryPage = null;
+        _activityHasSnapshot = true;
+        _activityUpdatedAt = ActivityClock.GetUtcNow();
+        _activityError = null;
+        if (_activityBackendConnected) _activityStatus = "Live";
+    }
 }

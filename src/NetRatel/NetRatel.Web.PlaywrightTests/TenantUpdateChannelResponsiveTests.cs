@@ -51,7 +51,7 @@ public sealed class TenantUpdateChannelResponsiveTests(ClientsManagementBrowserF
     [Theory]
     [InlineData(1280, 800)]
     [InlineData(390, 844)]
-    public async Task Tenant_channel_and_eligibility_controls_support_keyboard_and_all_themes(int width, int height)
+    public async Task Tenant_channel_and_installer_header_support_keyboard_and_all_themes(int width, int height)
     {
         foreach (var theme in new[] { "light", "dark", "system" })
         {
@@ -114,16 +114,19 @@ public sealed class TenantUpdateChannelResponsiveTests(ClientsManagementBrowserF
             await page.GetByRole(AriaRole.Button, new() { Name = "Cancel tenant changes", Exact = true }).ClickAsync();
             _tenants.Reset();
             await page.GotoAsync(_fixture.BaseAddress + "/clients/mgmt", new() { WaitUntil = WaitUntilState.DOMContentLoaded });
-            var explanation = page.GetByTestId("tenant-prerelease-excluded");
-            await Assertions.Expect(explanation).ToContainTextAsync("0.4.103-rc.1", new() { Timeout = 90_000 });
-            await Assertions.Expect(explanation).ToContainTextAsync("Excluded releases create no update attempts");
-            await Assertions.Expect(page.GetByTestId("release-automation-settings")).ToContainTextAsync("Prerelease deployment: on");
-            var policy = page.GetByRole(AriaRole.Combobox, new() { Name = "Tenant rollout policy", Exact = true });
-            await policy.FocusAsync();
-            await policy.PressAsync("Tab");
-            await AssertFitsAsync(page, policy, width);
-            await page.GetByTestId("tenant-update-policy").ScrollIntoViewIfNeededAsync();
-            await page.ScreenshotAsync(new() { Path = Path.Combine(root, $"tenant-eligibility-{width}-{theme}.png"), FullPage = true });
+            var header = page.GetByTestId("client-management-header");
+            await Assertions.Expect(header).ToBeVisibleAsync();
+            await Assertions.Expect(header).Not.ToContainTextAsync("Tenant rollout eligibility");
+            var tabs = page.GetByTestId("client-management-tabs");
+            var before = await tabs.BoundingBoxAsync();
+            Assert.NotNull(before);
+            await tabs.GetByRole(AriaRole.Tab, new() { Name = "Activity", Exact = true }).ClickAsync();
+            await Assertions.Expect(page.GetByTestId("attempt-table")).ToBeVisibleAsync();
+            var after = await tabs.BoundingBoxAsync();
+            Assert.NotNull(after);
+            Assert.InRange(Math.Abs(after.Y - before.Y), 0, 1);
+            await AssertFitsAsync(page, header, width);
+            await page.ScreenshotAsync(new() { Path = Path.Combine(root, $"installer-header-{width}-{theme}.png"), FullPage = true });
             Assert.Empty(errors);
             Assert.False(await page.Locator("#blazor-error-ui").IsVisibleAsync());
         }

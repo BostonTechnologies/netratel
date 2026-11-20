@@ -34,5 +34,12 @@
         ["metricsInterface"] = selection.Interface, ["metricsDisk"] = selection.Disk, ["metricsService"] = selection.Service
     });
 
-    private void Update(Dictionary<string, object?> fields) => Navigation.NavigateTo(Navigation.GetUriWithQueryParameters(fields));
+    private void Update(Dictionary<string, object?> fields)
+    {
+        // The picker can select its first computer before the view-tab navigation
+        // reaches the browser. Keep the selection scoped to this Metrics route.
+        fields["view"] = "metrics";
+        fields["tenantId"] = TenantId;
+        Navigation.NavigateTo(Navigation.GetUriWithQueryParameters(fields));
+    }
 }

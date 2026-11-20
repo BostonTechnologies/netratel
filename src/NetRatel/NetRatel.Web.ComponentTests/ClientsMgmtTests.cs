@@ -23,48 +23,27 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
     private static readonly Guid AttemptId = Guid.Parse("7f745b7b-4060-4b88-9ed5-6eab40a6fb5c");
     private readonly StubClientArtifactsService _artifacts = new();
     private readonly StubActivityStream _activity = new();
+    private readonly ActivityTestClock _clock = new();
 
     public ClientsMgmtTests()
     {
         JSInterop.Mode = JSRuntimeMode.Loose;
         Services.AddMudServices(options => options.PopoverOptions.CheckForPopoverProvider = false);
         Services.AddLogging();
+        Services.AddSingleton<TimeProvider>(_clock);
         Services.AddSingleton<IClientArtifactsService>(_artifacts);
         Services.AddSingleton<IClientUpdateActivityStream>(_activity);
         Services.AddSingleton<ITenantApiService>(new StubTenantApiService());
     }
 
-    [Theory]
-    [InlineData("stable", true)]
-    [InlineData("prerelease", false)]
-    public void Tenant_policy_identifies_enabled_published_prereleases_excluded_by_the_selected_channel(string channel, bool excluded)
+    [Fact]
+    public void Installer_header_does_not_read_tenant_rollout_eligibility()
     {
-        _artifacts.PublishedPrereleases.Add(new()
-        {
-            Version = "0.4.103-rc.1", RuntimeId = "linux-x64", Channel = "prerelease", Enabled = true
-        });
-        _artifacts.PublishedPrereleases.Add(new()
-        {
-            Version = "0.4.104-rc.1", RuntimeId = "linux-x64", Channel = "prerelease", Enabled = false
-        });
-        var tenant = new TenantDto(7, "Canary", null, null, [], null, null, true, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow)
-        { AutoUpdateChannel = channel, AutoUpdateTargetVersion = "0.4.103-rc.1" };
-        var cut = Render<TenantUpdatePolicySummary>(parameters => parameters.Add(component => component.Tenants, [tenant]));
-        cut.WaitForAssertion(() =>
-        {
-            cut.Markup.Should().Contain("Global release automation downloads and publishes packages");
-            cut.Markup.Should().Contain("Target version pin: 0.4.103-rc.1");
-            cut.FindAll("[data-testid='tenant-prerelease-excluded']").Count.Should().Be(excluded ? 1 : 0);
-            if (excluded)
-            {
-                var explanation = cut.Find("[data-testid='tenant-prerelease-excluded']").TextContent;
-                explanation.Should().Contain("0.4.103-rc.1").And.NotContain("0.4.104-rc.1");
-                explanation.Should().Contain("even when global prerelease deployment is on");
-                explanation.Should().Contain("Excluded releases create no update attempts");
-            }
-        });
-        Assert.Equal<(int, int, string?, bool?)?>((0, 10, "prerelease", true), _artifacts.EligibilityQuery);
-        _artifacts.SaveCalls.Should().Be(0);
+        var cut = Render<ClientsMgmt>();
+        cut.WaitForAssertion(() => cut.FindAll(".mud-tab").Select(tab => tab.TextContent.Trim())
+            .Should().Equal("GitHub releases", "Activity", "Suspended"));
+        cut.Find("[data-testid=client-management-header]").TextContent.Should().NotContain("Tenant rollout eligibility");
+        _artifacts.EligibilityQuery.Should().BeNull();
     }
 
     [Fact]
@@ -438,6 +417,7 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
         });
         _activity.Starts.Should().Be(1);
         await cut.InvokeAsync(() => _activity.SendAsync("ready"));
+        await AdvanceActivityAsync(cut);
         await cut.WaitForAssertionAsync(() =>
         {
             cut.Find("[data-testid='activity-live-status']").TextContent.Should().Contain("Live");
@@ -447,9 +427,20 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
         await cut.InvokeAsync(() => cut.Find("button.mud-table-row-expander").ClickAsync(new()));
         await cut.WaitForAssertionAsync(() => cut.Markup.Should().Contain("activation_timeout"));
         var before = _artifacts.AttemptPageRequests;
-        _artifacts.HistoryStatus = "Accepted";
+        var grouping = cut.FindComponents<MudSelect<string>>().Single(field => field.Instance.Label == "Group current page");
+        await cut.InvokeAsync(() => grouping.Instance.OpenMenu());
         _artifacts.HistoryPurged = true;
-        await cut.InvokeAsync(async () => { for (var index = 0; index < 30; index++) await _activity.SendAsync("invalidate"); });
+        foreach (var status in new[] { "Downloading", "Accepted" })
+        {
+            _artifacts.HistoryStatus = status;
+            await cut.InvokeAsync(async () => { for (var index = 0; index < 30; index++) await _activity.SendAsync("invalidate"); });
+            await AdvanceActivityAsync(cut);
+            _artifacts.AttemptPageRequests.Should().Be(before);
+            cut.Find("[data-testid='attempt-grouping']").GetAttribute("aria-expanded").Should().Be("true");
+            cut.Find("[data-testid='activity-live-status']").TextContent.Should().Contain("Updates pending");
+        }
+        await cut.InvokeAsync(() => grouping.Instance.CloseMenu());
+        await AdvanceActivityAsync(cut);
         await cut.WaitForAssertionAsync(() => cut.Markup.Should().Contain("Accepted").And.Contain("Historical · local package deleted"));
         _artifacts.AttemptPageRequests.Should().Be(before + 1, "a burst refreshes one current filtered page");
         cut.Find("button.mud-table-row-expander").GetAttribute("aria-expanded").Should().Be("true", "the expanded group remains open after refresh");
@@ -457,6 +448,7 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
         await cut.InvokeAsync(() => cut.Find("[data-testid='activity-refresh']").ClickAsync(new()));
         await cut.WaitForAssertionAsync(() => cut.Find("[data-testid='activity-live-status']").TextContent.Should().Contain("Reconnecting", "a manual snapshot does not make a disconnected stream Live"));
         await cut.InvokeAsync(() => _activity.SendAsync("ready"));
+        await AdvanceActivityAsync(cut);
         await cut.WaitForAssertionAsync(() => cut.Find("[data-testid='activity-live-status']").TextContent.Should().Contain("Live"));
 
         var statusChanged = typeof(ClientsMgmt).GetMethod("OnAttemptStatusChanged", BindingFlags.Instance | BindingFlags.NonPublic)!;
@@ -464,17 +456,20 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
         await cut.WaitForAssertionAsync(() => _artifacts.LastHistoryStatus.Should().Be("Accepted"));
         _artifacts.HistoryStatus = "RolledBack";
         await cut.InvokeAsync(() => _activity.SendAsync("invalidate"));
+        await AdvanceActivityAsync(cut);
         await cut.WaitForAssertionAsync(() => cut.Markup.Should().Contain("No update attempts match the active filters."));
         _artifacts.LastHistoryStatus.Should().Be("Accepted");
 
         // A missed change enters this status filter while disconnected. Ready always reconciles.
         _artifacts.HistoryStatus = "Accepted";
         await cut.InvokeAsync(() => _activity.SendAsync("ready"));
+        await AdvanceActivityAsync(cut);
         await cut.WaitForAssertionAsync(() => cut.Find("button.mud-table-row-expander").GetAttribute("aria-expanded").Should().Be("true", "expansion is retained when the group leaves and reenters the filtered page"));
         await cut.InvokeAsync(() => cut.FindAll(".mud-tab").Single(x => x.TextContent.Trim() == "GitHub releases").ClickAsync(new()));
         _activity.Active.Should().BeFalse();
         var inactiveReads = _artifacts.AttemptPageRequests;
         await cut.InvokeAsync(() => _activity.SendAsync("invalidate"));
+        await AdvanceActivityAsync(cut);
         _artifacts.AttemptPageRequests.Should().Be(inactiveReads);
     }
 
@@ -487,6 +482,7 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
         await cut.WaitForAssertionAsync(() => cut.FindAll(".mud-tab").Should().NotBeEmpty());
         await cut.InvokeAsync(() => cut.FindAll(".mud-tab").Single(x => x.TextContent.Trim() == "Activity").ClickAsync(new()));
         await cut.InvokeAsync(() => _activity.SendAsync("ready"));
+        await AdvanceActivityAsync(cut);
         await cut.WaitForAssertionAsync(() => cut.Markup.Should().Contain("Reconciliation required"));
         await cut.InvokeAsync(() => cut.Find("button.mud-table-row-expander").ClickAsync(new()));
         await cut.InvokeAsync(() => cut.Find("[data-testid='attempt-details-toggle']").ClickAsync(new()));
@@ -505,6 +501,7 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
         await cut.WaitForAssertionAsync(() => cut.FindAll(".mud-tab").Should().NotBeEmpty());
         await cut.InvokeAsync(() => cut.FindAll(".mud-tab").Single(x => x.TextContent.Trim() == "Activity").ClickAsync(new()));
         await cut.InvokeAsync(() => _activity.SendAsync("ready"));
+        await AdvanceActivityAsync(cut);
         await cut.WaitForAssertionAsync(() => cut.Find("[data-testid='activity-live-status']").TextContent.Should().Contain("Live"));
         await cut.InvokeAsync(() => cut.Find("button.mud-table-row-expander").ClickAsync(new()));
 
@@ -526,6 +523,7 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
         var reads = _artifacts.AttemptPageRequests;
         _artifacts.HistoryStatus = "Accepted";
         await cut.InvokeAsync(() => _activity.SendAsync("invalidate"));
+        await AdvanceActivityAsync(cut);
         await cut.WaitForAssertionAsync(() =>
         {
             _artifacts.AttemptPageRequests.Should().BeGreaterThan(reads);
@@ -545,19 +543,23 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
         await cut.WaitForAssertionAsync(() => cut.FindAll(".mud-tab").Should().NotBeEmpty());
         await cut.InvokeAsync(() => cut.FindAll(".mud-tab").Single(x => x.TextContent.Trim() == "Activity").ClickAsync(new()));
         await cut.InvokeAsync(() => _activity.SendAsync("ready"));
+        await AdvanceActivityAsync(cut);
         await cut.WaitForAssertionAsync(() => cut.Find("[data-testid='activity-live-status']").TextContent.Should().Contain("Live"));
-        var table = (MudTable<ClientUpdateHistoryItemModel>)typeof(ClientsMgmt).GetField("_attemptTable", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(cut.Instance)!;
-        await cut.InvokeAsync(() => table.NavigateTo(1));
+        var pager = cut.FindComponents<ClientManagementPager>().Single(item => item.Instance.Label == "Activity");
+        await cut.InvokeAsync(() => pager.FindAll("button").Single(button => button.TextContent.Trim() == "Next").Click());
         await cut.WaitForAssertionAsync(() => _artifacts.LastHistoryPage.Should().Be(1));
         var before = _artifacts.AttemptPageRequests;
         await cut.InvokeAsync(() => _activity.SendAsync("invalidate"));
+        await AdvanceActivityAsync(cut);
         await cut.WaitForAssertionAsync(() => { _artifacts.AttemptPageRequests.Should().BeGreaterThan(before); _artifacts.LastHistoryPage.Should().Be(1); });
-        table.CurrentPage.Should().Be(1);
+        pager.Instance.Page.Should().Be(1);
         _artifacts.HistoryTotal = 1;
         await cut.InvokeAsync(() => _activity.SendAsync("invalidate"));
+        await AdvanceActivityAsync(cut);
+        await AdvanceActivityAsync(cut);
         await cut.WaitForAssertionAsync(() =>
         {
-            table.CurrentPage.Should().Be(0);
+            pager.Instance.Page.Should().Be(0);
             _artifacts.LastHistoryPage.Should().Be(0);
         });
     }
@@ -575,6 +577,7 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
             {
                 refresh = (Task?)typeof(ClientsMgmt).GetField("_activityRefreshTask", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(cut.Instance);
             });
+            await AdvanceActivityAsync(cut);
             if (refresh is not null) await refresh.WaitAsync(TimeSpan.FromSeconds(5));
         }
         await cut.WaitForAssertionAsync(() => cut.FindAll(".mud-tab").Should().NotBeEmpty());
@@ -607,12 +610,13 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
 
             // A third immediate scope change cancels an earlier Start waiting for
             // transport shutdown. That old input must not fault the UI callback.
+            var chooseTenant = typeof(ClientsMgmt).GetMethod("OnAttemptTenantChanged", BindingFlags.Instance | BindingFlags.NonPublic)!;
             var queuedStart = _activity.HoldNextStart();
             try
             {
-                var supersededChange = cut.InvokeAsync(async () => await (Task)change.Invoke(cut.Instance, ["Downloading"])!);
+                var supersededChange = cut.InvokeAsync(async () => await (Task)chooseTenant.Invoke(cut.Instance, [7])!);
                 await queuedStart.Started.Task.WaitAsync(TimeSpan.FromSeconds(2));
-                await cut.InvokeAsync(async () => await (Task)change.Invoke(cut.Instance, ["Accepted"])!);
+                await cut.InvokeAsync(async () => await (Task)chooseTenant.Invoke(cut.Instance, [null])!);
                 await supersededChange;
                 _activity.Starts.Should().Be(4);
                 await cut.InvokeAsync(() => _activity.SendAsync("ready"));
@@ -627,6 +631,59 @@ public sealed class ClientsMgmtTests : AsyncBunitContext
         {
             pendingStop.Drain.TrySetResult();
             await olderStop;
+        }
+    }
+
+    private Task AdvanceActivityAsync(IRenderedComponent<ClientsMgmt> cut) => cut.InvokeAsync(async () =>
+    {
+        await Task.Yield();
+        _clock.Advance(TimeSpan.FromSeconds(5));
+        await Task.Yield();
+    });
+
+    private sealed class ActivityTestClock : TimeProvider
+    {
+        private readonly List<ActivityTimer> _timers = [];
+        private long _time;
+        public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+        public override long GetTimestamp() => _time;
+        public override DateTimeOffset GetUtcNow() => DateTimeOffset.UnixEpoch.AddTicks(_time);
+
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            var timer = new ActivityTimer(this, callback, state);
+            timer.Change(dueTime, period);
+            _timers.Add(timer);
+            return timer;
+        }
+
+        public void Advance(TimeSpan by)
+        {
+            _time += by.Ticks;
+            foreach (var timer in _timers.ToArray()) timer.RunDueCallback();
+        }
+
+        private sealed class ActivityTimer(ActivityTestClock clock, TimerCallback callback, object? state) : ITimer
+        {
+            private long _due = long.MaxValue;
+            private TimeSpan _period;
+
+            public bool Change(TimeSpan dueTime, TimeSpan period)
+            {
+                _period = period;
+                _due = dueTime == Timeout.InfiniteTimeSpan ? long.MaxValue : clock._time + dueTime.Ticks;
+                return true;
+            }
+
+            public void RunDueCallback()
+            {
+                if (_due > clock._time) return;
+                _due = _period > TimeSpan.Zero ? clock._time + _period.Ticks : long.MaxValue;
+                callback(state);
+            }
+
+            public void Dispose() => clock._timers.Remove(this);
+            public ValueTask DisposeAsync() { Dispose(); return ValueTask.CompletedTask; }
         }
     }
 

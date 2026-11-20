@@ -1,8 +1,16 @@
 @using NetRatel.Shared.Contracts.Monitoring
 @using NetRatel.Web.Services.Monitoring
 
-<MudPaper Class="pa-4 metrics-wide" Outlined="true">
-    <MudText Typo="Typo.h6">Watched service · @Series.Series.DisplayName</MudText>
+<MudPaper Class="pa-4" Outlined="true" data-testid="metrics-service-card">
+    <MudText Typo="Typo.h6">Watched services</MudText>
+    @Controls
+    @if (Series is null || History is null)
+    {
+        <p>No retained watched-service evidence for this selection.</p>
+    }
+    else
+    {
+    <MudText Typo="Typo.subtitle2">@Series.Series.DisplayName</MudText>
     @if (Series.Summary.ServiceDuration is { } duration)
     {
         <dl class="service-durations" aria-label="Selected period service duration">
@@ -31,11 +39,13 @@
         </details>
     }
     else { <p>No detailed service checkpoints in the selected range.</p> }
+    }
 </MudPaper>
 
 @code {
-    [Parameter, EditorRequired] public MetricHistorySeries Series { get; set; } = default!;
-    [Parameter, EditorRequired] public MetricHistoryResponse History { get; set; } = default!;
+    [Parameter] public RenderFragment? Controls { get; set; }
+    [Parameter, EditorRequired] public MetricHistorySeries? Series { get; set; }
+    [Parameter, EditorRequired] public MetricHistoryResponse? History { get; set; }
     [Parameter, EditorRequired] public TimeZoneInfo Zone { get; set; } = TimeZoneInfo.Utc;
     private static string Duration(long microseconds) => MetricHistoryPresentation.Duration(microseconds);
 }

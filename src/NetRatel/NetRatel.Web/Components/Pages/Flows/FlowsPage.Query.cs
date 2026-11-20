@@ -59,10 +59,10 @@ public partial class FlowsPage
         }
     }
 
-    private void PersistQuery()
+    private void PersistQuery(bool clearDetails = false)
     {
         _appliedListParameters = _query;
-        var uri = Navigation.GetUriWithQueryParameters(new Dictionary<string, object?>
+        var parameters = new Dictionary<string, object?>
         {
             ["tenantId"] = _tenantId, ["search"] = string.IsNullOrEmpty(_query.Search) ? null : _query.Search,
             ["enabled"] = _query.Enabled == FlowEnabledFilter.All ? null : _query.Enabled.ToString(),
@@ -70,7 +70,12 @@ public partial class FlowsPage
             ["sort"] = _query.Sort == FlowSort.Name ? null : _query.Sort.ToString(),
             ["descending"] = _query.Descending ? true : null, ["page"] = _query.PageIndex == 0 ? null : _query.PageIndex,
             ["pageSize"] = _query.PageSize == 20 ? null : _query.PageSize
-        });
+        };
+        if (clearDetails)
+        {
+            foreach (var key in new[] { "version", "run", "draftId", "nodeId", "flowId" }) parameters[key] = null;
+        }
+        var uri = Navigation.GetUriWithQueryParameters(parameters);
         if (uri != Navigation.Uri) Navigation.NavigateTo(uri, replace: true);
     }
 

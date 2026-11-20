@@ -121,7 +121,9 @@
         <NavMenu />
     </MudDrawer>
     <MudMainContent Class="netratel-main-content" data-testid="app-main-content">
-        @Body
+        <CascadingValue Value="_workspaceNavigation" IsFixed="true">
+            @Body
+        </CascadingValue>
     </MudMainContent>
     <GlobalSearchOverlay Open="_searchOpen" OpenChanged="OnSearchOpenChanged" />
 </MudLayout>
@@ -134,6 +136,7 @@
 </div>
 
 @code {
+    private readonly NetRatel.Web.Components.Shared.Navigation.WorkspaceNavigation _workspaceNavigation = new();
     private bool _drawerOpen = true;
     private bool _searchOpen;
     private AppBarVersionDetails _appBarVersion = new("NetRatel.Web", "vdev", "dev", "Fallback", "unknown");

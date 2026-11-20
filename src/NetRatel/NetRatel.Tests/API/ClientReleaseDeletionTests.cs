@@ -370,7 +370,7 @@ public sealed class ClientReleaseDeletionTests(PostgreSqlPersistenceFixture post
         for (var page = 0; page < 7; page++)
         {
             var result = await workspace.ReadAsync(page, 20, null, "all", null, "local", false, default);
-            Assert.Equal(122, result.Total); Assert.Contains("unavailable", result.Warning);
+            Assert.Equal(122, result.Total); Assert.True(result.IsComplete); Assert.Null(result.Warning);
             seen.AddRange(result.Items.Select(x => x.Version));
         }
         Assert.Equal(122, seen.Count); Assert.Equal(122, seen.Distinct().Count()); Assert.Contains(Version, seen);
@@ -379,6 +379,66 @@ public sealed class ClientReleaseDeletionTests(PostgreSqlPersistenceFixture post
         Assert.Equal("Unknown", exact.Items[0].SourceState);
         Assert.Single(exact.Items[0].Packages); Assert.Single(exact.Items[0].Imports);
     }
+    [Fact]
+    public async Task Workspace_demands_bounded_source_pages_without_scanning_for_search_or_cleanup()
+    {
+        await using var db = new OrchestratorDbContext(_options);
+        await SeedAsync(db);
+        foreach (var (size, expectedRequests) in new[] { (20, 1), (50, 2), (100, 4) })
+        {
+            using var upstream = new GitHubClientReleaseCatalogTests.SyntheticCatalogue();
+            using var http = new HttpClient(upstream) { BaseAddress = new("https://api.github.com/") };
+            var workspace = new ClientReleaseWorkspaceService(db, Artifacts(db), GitHubClientReleaseCatalogTests.Catalog(http));
+
+            var first = await workspace.ReadAsync(0, size, null, "all", null, null, false, default);
+            Assert.Equal(size, first.Items.Count);
+            Assert.Equal(Version, first.Items[0].Version);
+            Assert.Equal("3.0.1", first.Items[1].Version);
+            Assert.Equal($"3.0.{size - 1}", first.Items[^1].Version);
+            Assert.True(first.HasMore);
+            Assert.False(first.IsComplete);
+            Assert.Equal([Version], first.SelectableVersions);
+            Assert.Equal(Enumerable.Range(1, expectedRequests), upstream.Requests);
+
+            var second = await workspace.ReadAsync(1, size, null, "all", null, null, false, first.DiscoveryId, default);
+            Assert.Equal(size, second.Items.Count);
+            Assert.Equal($"3.0.{size}", second.Items[0].Version);
+            Assert.Empty(first.Items.Select(row => row.Version).Intersect(second.Items.Select(row => row.Version)));
+            Assert.True(upstream.NotModified > 0, "Extension conditionally verifies the previously loaded source boundary.");
+            var requests = upstream.Requests.Count;
+            var back = await workspace.ReadAsync(0, size, null, "all", null, null, false, first.DiscoveryId, default);
+            Assert.Equal(first.Items.Select(row => row.Version), back.Items.Select(row => row.Version));
+            Assert.Equal(requests, upstream.Requests.Count);
+
+            var local = await workspace.ReadAsync(0, size, Version, "stable", "linux-x64", "local", false, default);
+            Assert.Equal(Version, Assert.Single(local.Items).Version);
+            Assert.Equal([Version], local.SelectableVersions);
+            Assert.Equal(requests, upstream.Requests.Count);
+        }
+
+        using var sparse = new GitHubClientReleaseCatalogTests.SyntheticCatalogue();
+        using var sparseHttp = new HttpClient(sparse) { BaseAddress = new("https://api.github.com/") };
+        var service = new ClientReleaseWorkspaceService(db, Artifacts(db), GitHubClientReleaseCatalogTests.Catalog(sparseHttp));
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        var empty = await service.ReadAsync(0, 20, "3.0.39", "stable", null, null, false, default);
+        Console.WriteLine($"Cold sparse first slice: {sparse.Requests.Count} requests, {sparse.BytesTransferred} bytes, {clock.ElapsedMilliseconds} ms in the synthetic fixture.");
+        Assert.Empty(empty.Items);
+        Assert.True(empty.HasMore);
+        Assert.Single(sparse.Requests);
+        var found = await service.ReadAsync(1, 20, "3.0.39", "stable", null, null, false, empty.DiscoveryId, default);
+        Assert.Equal("3.0.39", Assert.Single(found.Items).Version);
+        Assert.True(found.HasMore);
+        Assert.Equal([1, 2, 1], sparse.Requests);
+
+        var beforePublication = await service.ReadAsync(2, 20, null, "all", null, null, false, empty.DiscoveryId, default);
+        sparse.Publish(301);
+        var restarted = await service.ReadAsync(3, 20, null, "all", null, null, false, beforePublication.DiscoveryId, default);
+        Assert.Equal(0, restarted.Page);
+        Assert.NotEqual(beforePublication.DiscoveryId, restarted.DiscoveryId);
+        Assert.Contains("discovery changed", restarted.Warning);
+        Assert.Equal("3.0.301", restarted.Items[1].Version);
+    }
+
     private sealed class OfflineCatalog : IGitHubClientReleaseCatalog
     {
         public Task<GitHubClientReleasePage> ListAsync(string channel, int page, bool refresh, CancellationToken ct) => throw new HttpRequestException("fixture offline");

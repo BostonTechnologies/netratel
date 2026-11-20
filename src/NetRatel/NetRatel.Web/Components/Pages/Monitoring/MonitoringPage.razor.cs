@@ -52,7 +52,6 @@ public partial class MonitoringPage
     private static string DetailId(MonitoringSeriesState row) => "monitoring-detail-" + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes($"{row.Series.TenantId}/{row.Series.RuleId:D}/{row.Series.AgentId:D}/{row.Series.ResourceKey}/{row.Occurrence?.OccurrenceId:D}")))[..24].ToLowerInvariant();
     private bool Expanded(MonitoringSeriesState row) => _expanded.Contains(DetailKey(row));
     private void ToggleDetails(MonitoringSeriesState row) { var key = DetailKey(row); if (!_expanded.Remove(key)) _expanded.Add(key); }
-    private void PruneExpansion() => _expanded.IntersectWith(ActiveRows.Select(DetailKey));
     private ElementReference _scrollRegion;
     private IJSObjectReference? _resultsModule, _resultsSizer;
     private Guid? _appliedQueryAlert;
@@ -164,7 +163,7 @@ public partial class MonitoringPage
         try
         {
             var query = BuildQuery(State.TenantId).Normalize();
-            _filterError = null; FenceAlert(); _expanded.Clear(); PersistFilters();
+            _filterError = null; FenceAlert(); PersistFilters();
             await State.SetQueryAsync(query);
         }
         catch (ArgumentException error) { FenceAlert(); _expanded.Clear(); State.ClearScope(State.TenantId); _filterError = error.Message == "invalid_monitoring_query" ? "Check the selected filters and dates." : error.Message; }
@@ -239,10 +238,11 @@ public partial class MonitoringPage
         if (_busy || _tenants.Count == 0 ||
             (_appliedQueryTenant == RequestedTenantId && _appliedQueryClient == RequestedClientId && _appliedQueryState == RequestedState && _appliedQueryAlert == RequestedAlertId && _appliedQuerySearch == RequestedSearch && _appliedFilters == QuerySignature)) return false;
         FenceAlert();
-        var tenant = RequestedTenantId is { } requested ? _tenants.Any(item => item.TenantId == requested) ? requested : 0 : State.TenantId > 0 ? State.TenantId : _tenants[0].TenantId;
+        var tenant = RequestedTenantId is { } requested ? _tenants.Any(item => item.TenantId == requested) ? requested : 0 : _tenants[0].TenantId;
         var stateChanged = _appliedQueryState != RequestedState;
         RememberQuery();
-        CloseEditor(); ReadQueryFields(); _expanded.Clear();
+        CloseEditor(); ReadQueryFields();
+        if (State.TenantId != tenant) _expanded.Clear();
         if (tenant == 0) { _startupError = "The linked tenant does not grant Monitoring access."; _state?.Dispose(); _state = new(Api); return true; }
         _startupError = null;
         if (stateChanged || State.TenantId != tenant) _stateFilter = NormalizeStateFilter(RequestedState);
@@ -337,9 +337,9 @@ public partial class MonitoringPage
         }
 
     }
-    private async Task ChangeTenant(ChangeEventArgs args)
+    private async Task ChangeTenant(int tenant)
     {
-        if (_editor is not null || !int.TryParse(args.Value?.ToString(), out var tenant) || !_tenants.Any(t => t.TenantId == tenant)) return;
+        if (_editor is not null || tenant == State.TenantId || !_tenants.Any(t => t.TenantId == tenant)) return;
         FenceAlert(); CloseEditor(); _expanded.Clear(); _search = ""; _severity = _fromDate = _toDate = _filterError = null; _stateFilter = "firing"; RequestedTenantId = tenant; RequestedClientId = null; RequestedState = null; RequestedAlertId = null; RequestedSearch = null;
         State.ClientFilter = null; State.Query = BuildQuery(tenant); _pendingWatchAtSaveRevision = null; _successMessage = null;
         if (_tab == "Metrics")
@@ -355,10 +355,10 @@ public partial class MonitoringPage
     {
         try { State.Query = BuildQuery(State.TenantId).Normalize(); _filterError = null; }
         catch (ArgumentException error) { FenceAlert(); State.ClearScope(State.TenantId); _filterError = error.Message; return; }
-        FenceAlert(); await State.RefreshAsync(); PruneExpansion(); await LoadRequestedAlert();
+        FenceAlert(); await State.RefreshAsync(); await LoadRequestedAlert();
     }
-    private async Task PageSeries(string? cursor) { await State.NextSeriesPageAsync(cursor); if (State.Error is null) _expanded.Clear(); }
-    private async Task PreviousSeries() { await State.PreviousSeriesPageAsync(); if (State.Error is null) _expanded.Clear(); }
+    private Task PageSeries(string? cursor) => State.NextSeriesPageAsync(cursor);
+    private Task PreviousSeries() => State.PreviousSeriesPageAsync();
     private Task PageHistory(string? cursor) => State.NextHistoryPageAsync(cursor);
     private Task PreviousHistory() => State.PreviousHistoryPageAsync();
 

@@ -4,10 +4,13 @@
 @inject ISoftwareInventoryApiService Api
 @inject IDialogService Dialogs
 
-<section class="software-inventory" aria-label="Software Inventory" data-testid="software-inventory">
+<section class="software-inventory @(AgentId.HasValue ? "" : "tenant-inventory")" aria-label="Software Inventory" data-testid="software-inventory">
     @if (_summary is { } summary)
     {
-        <div class="overview-heading"><span>Tenant overview</span><span>Last complete scan: @Time(summary.LatestScanUtc)</span></div>
+        <div class="overview-heading">
+            <span>Last complete scan: @Time(summary.LatestScanUtc)</span>
+            <span>@summary.Stale inventoried devices outside the 30-minute live-query cache</span>
+        </div>
         <div class="inventory-overview" data-testid="inventory-overview">
             <div class="metric"><span>Inventoried devices</span><strong>@summary.Inventoried <small>/ @summary.Clients</small></strong><span>Completed at least one scan</span></div>
             <div class="metric"><span>Software products</span><strong>@summary.Products.ToString("N0")</strong><span>Distinct name, publisher and source</span></div>
@@ -16,7 +19,6 @@
             <div class="metric"><span>Active scans</span><strong>@summary.ActiveScans</strong><span>Queued or receiving inventory</span></div>
             <div class="metric"><span>Needs attention</span><strong>@summary.FailedScans</strong><span>Failed, incomplete or timed out</span></div>
         </div>
-        <p class="inventory-caption">@summary.Stale inventoried devices are outside the 30-minute live-query cache. Scheduled collection still follows the tenant policy.</p>
     }
     @if (_summaryError is not null) { <MudAlert Severity="Severity.Warning" Dense="true">@_summaryError</MudAlert> }
     @if (_status is { } status)

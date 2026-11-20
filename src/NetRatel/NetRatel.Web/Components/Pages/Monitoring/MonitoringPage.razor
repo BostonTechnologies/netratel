@@ -5,16 +5,23 @@
 @using NetRatel.Shared.Contracts.Services
 @using NetRatel.Web.Services.Monitoring
 @using NetRatel.Web.Components.Shared.Monitoring
+@using NetRatel.Web.Components.Shared.Navigation
 @inject IMonitoringApiService Api
 @inject NetRatel.Web.Services.Services.IClientServicesApiService ServicesApi
 
 <PageTitle>Monitoring</PageTitle>
 <section class="monitoring-page" data-testid="monitoring-page" @onkeydown="HandleKey">
     @if (_interactive) { <span hidden data-testid="monitoring-interactive"></span> }
-    <header class="monitoring-heading">
-        <MudText Typo="Typo.h5">Monitoring</MudText>
+    <WorkspaceHeader Area="WorkspaceArea.Monitoring" TenantId="State.TenantId" RequestedTenantId="RequestedTenantId">
+        <TenantContext>
+            <WorkspaceTenantPicker Value="State.TenantId" ValueChanged="ChangeTenant" Disabled="@(_editor is not null)" TestId="monitoring-tenant"
+                                   Options="@_tenants.Select(tenant => (tenant.TenantId, tenant.Name)).ToArray()" />
+        </TenantContext>
+    </WorkspaceHeader>
+    @ViewTabs
+    @if (_tab != "Metrics")
+    {
         <div class="monitoring-toolbar">
-            <label>Tenant<select data-testid="monitoring-tenant" value="@State.TenantId" @onchange="ChangeTenant" disabled="@(_editor is not null)"><option value="0">Select tenant</option>@foreach (var tenant in _tenants) { <option value="@tenant.TenantId">@tenant.Name</option> }</select></label>
             @if (_tab is "Active" or "History")
             {
             <label>Search alerts<input type="search" value="@_search" @oninput="SearchChanged" maxlength="256" placeholder="Computer, rule or resource" data-testid="monitoring-search" /></label>
@@ -29,12 +36,11 @@
                 </div>
             </details>
             }
-            @if (_tab != "Metrics") { <MudTooltip Text="Refresh monitoring"><MudIconButton Icon="@Icons.Material.Filled.Refresh" OnClick="Refresh" Disabled="@(State.Loading || _busy)" aria-label="Refresh monitoring" data-testid="monitoring-refresh" /></MudTooltip> }
+            <MudTooltip Text="Refresh monitoring"><MudIconButton Icon="@Icons.Material.Filled.Refresh" OnClick="Refresh" Disabled="@(State.Loading || _busy)" aria-label="Refresh monitoring" data-testid="monitoring-refresh" /></MudTooltip>
         </div>
-    </header>
+    }
     @if (_tab == "Metrics" && State.TenantId > 0 && _startupError is null)
     {
-        @ViewTabs
         <MonitoringMetricsWorkspace @key="State.TenantId" TenantId="State.TenantId" AgentId="RequestedMetricsClient" Range="@RequestedMetricsRange"
             From="@RequestedMetricsFrom" To="@RequestedMetricsTo" InterfaceKey="@RequestedMetricsInterface" DiskId="RequestedMetricsDisk"
             ServiceId="RequestedMetricsService" AlertResource="@RequestedMetricsResource" Zone="_timeZone" />
@@ -43,7 +49,7 @@
     {
     @if (_startupError is not null || State.Error is not null) { <MudAlert Severity="Severity.Error" data-testid="monitoring-read-error">@(_startupError ?? State.Error)</MudAlert> }
     @if (_filterError is not null) { <MudAlert Severity="Severity.Error" data-testid="monitoring-filter-error">@_filterError</MudAlert> }
-    @if (_tab != "Manage" && FilterCount > 0)
+    @if (_tab is "Active" or "History" && FilterCount > 0)
     {
         <div class="monitoring-filter-chips" aria-label="Active filters" data-testid="monitoring-filter-chips">
             <span>@FilterCount active filters</span>
@@ -86,7 +92,7 @@
     {
         @if (_pendingWatchAtSaveTenant == State.TenantId && _pendingWatchAtSaveRevision is { } savedRevision) { <MudAlert Severity="Severity.Warning" data-testid="monitoring-watch-pending-at-save">Configuration revision @savedRevision was saved. The server reported selected service watch updates pending at save time. This notice does not confirm their current activation; fresh service evidence is still required.</MudAlert> }
         @if (snapshot.Configuration.WatchPolicyUpdatePending) { <MudAlert Severity="Severity.Warning" data-testid="monitoring-watch-pending">Configuration is saved. Selected service watch activation is pending; current service evidence remains unknown until the policy is accepted.</MudAlert> }
-        @if (_tab != "Manage")
+        @if (_tab is "Active" or "History")
         {
         @if (State.ClientFilter is { } filteredClient)
         {
@@ -102,18 +108,16 @@
             <MudText Typo="Typo.caption">Tenant totals · @_timeZone.Id</MudText>
         </div>
         }
-        @ViewTabs
         @if (_tab == "Active")
         {
             <MudPaper Class="monitoring-panel monitoring-results pa-3">
                 <div class="monitoring-filter-heading" data-testid="monitoring-active-filter"><strong>@ActiveFilterLabel</strong><span>Filters apply to all authorized matching results</span></div>
-                <div @ref="_scrollRegion" class="monitoring-table-wrap" tabindex="0" role="region" aria-label="Scrollable alert results" data-testid="monitoring-table-scroll"><table class="monitoring-table"><caption class="monitoring-visually-hidden">Current alert occurrences and evidence</caption><thead><tr><th>Alert details</th><th>Client / host</th><th>Rule</th><th>Severity / state</th><th>Latest reading</th><th>Since / acknowledged</th><th>Actions</th></tr></thead><tbody>
+                <div @ref="_scrollRegion" class="monitoring-table-wrap" tabindex="0" role="region" aria-label="Scrollable alert results" data-testid="monitoring-table-scroll"><table class="monitoring-table monitoring-alert-table"><caption class="monitoring-visually-hidden">Current alert occurrences and evidence</caption><thead><tr><th scope="col"><span class="monitoring-visually-hidden">Alert details</span></th><th>Client / host</th><th>Rule</th><th>Severity / state</th><th>Latest reading</th><th>Since / acknowledged</th><th>Actions</th></tr></thead><tbody>
                     @foreach (var row in ActiveRows)
                     {
                         <tr @key="DetailKey(row)" data-testid="monitoring-series-row" data-health="@Health(row)">
-                            <td data-label="Alert details"><button type="button" class="monitoring-alert-disclosure" aria-expanded="@Expanded(row).ToString().ToLowerInvariant()" aria-controls="@DetailId(row)" aria-label="@($"Alert details for {RuleName(row.Series.RuleId)} on {ClientName(row.Series.AgentId)}")" @onclick="() => ToggleDetails(row)" data-testid="monitoring-alert-details">
-                                <span class="monitoring-detail-title"><MudIcon Icon="@Icons.Material.Outlined.Info" Size="Size.Small" /><strong>Alert details</strong><span class="monitoring-secondary">@RuleName(row.Series.RuleId)</span></span>
-                                <span class="monitoring-detail-chevron"><MudIcon Icon="@Icons.Material.Filled.ExpandMore" Size="Size.Small" /></span>
+                            <td data-label="Alert details"><button type="button" class="monitoring-alert-disclosure" title="Alert details" aria-expanded="@Expanded(row).ToString().ToLowerInvariant()" aria-controls="@DetailId(row)" aria-label="@($"Alert details for {RuleName(row.Series.RuleId)} on {ClientName(row.Series.AgentId)}")" @onclick="() => ToggleDetails(row)" data-testid="monitoring-alert-details">
+                                <MudIcon Icon="@(Expanded(row) ? Icons.Material.Filled.ExpandMore : Icons.Material.Filled.ChevronRight)" Size="Size.Small" />
                             </button></td>
                             <td data-label="Client / host">
                                 @if (MonitoringOfflinePresentation.IsSeries(row.Series))
@@ -131,7 +135,7 @@
                                 }
                                 else { <ClientIdentity Identity="@State.ClientIdentity(row.Series.AgentId)" /> }
                             </td>
-                            <td data-label="Rule"><strong>@RuleName(row.Series.RuleId)</strong><div class="monitoring-secondary">@row.Series.ResourceKey</div></td>
+                            <td data-label="Rule"><strong>@RuleName(row.Series.RuleId)</strong><div class="monitoring-secondary monitoring-resource-preview" title="@row.Series.ResourceKey">@row.Series.ResourceKey</div></td>
                             <td data-label="Severity / state"><MudChip T="string" Size="Size.Small" Color="@SeverityColor(SeverityFor(row))" Variant="Variant.Outlined">@Label(SeverityFor(row))</MudChip><div class="monitoring-health" data-state="@Health(row)">@(row.Suppressed ? "Suppressed" : Health(row) == "Unknown" ? "Unknown" : Label(row.Phase))</div></td>
                             <td data-label="Latest reading">@EvidenceValue(row)<div class="monitoring-secondary">@Time(row.LatestEvidence?.ObservedAtUtc)</div></td>
                             <td data-label="Since / acknowledged">@Time(row.Occurrence?.BreachSinceAtUtc ?? row.WindowStartedAtUtc)<div class="monitoring-secondary">@(row.Occurrence?.AcknowledgedAtUtc is { } at ? $"Acknowledged {Time(at)}" : row.Occurrence is not null ? "Unacknowledged" : "—")</div></td>
@@ -245,7 +249,7 @@
                     {
                     @if (history.Event is { } item)
                     {
-                        <tr data-testid="monitoring-history-row"><td data-label="Action">@Label(item.Kind)<div class="monitoring-secondary">@Label(item.ClosureDisposition)</div></td><td data-label="Rule / client">@item.PinnedRule.Name@if (item.Evidence.OfflineSummary is { } offline) { <div>@offline.Summary</div> } else { <ClientIdentity Identity="@(item.ClientIdentity ?? State.ClientIdentity(item.Series.AgentId))" /> }<details class="monitoring-details"><summary>Technical details</summary><div>@item.Series.ResourceKey</div>@if (item.ClientIdentity is null && !MonitoringOfflinePresentation.IsSeries(item.Series)) { <div>Historical client details were not recorded for this legacy event.</div> }<code>@item.OccurrenceId</code></details></td><td data-label="Performed by">@HistoryActor(item)</td><td data-label="Reason">@(item.Reason ?? "—")</td><td data-label="When">@Time(item.AtUtc)<div class="monitoring-secondary">@_timeZone.Id</div></td></tr>
+                        <tr data-testid="monitoring-history-row"><td data-label="Action">@Label(item.Kind)<div class="monitoring-secondary">@Label(item.ClosureDisposition)</div></td><td data-label="Rule / client">@item.PinnedRule.Name@if (item.Evidence.OfflineSummary is { } offline) { <div>@offline.Summary</div> } else { <ClientIdentity Identity="@(item.ClientIdentity ?? State.ClientIdentity(item.Series.AgentId))" /> }@if (item.ClientIdentity is null && !MonitoringOfflinePresentation.IsSeries(item.Series)) { <div class="monitoring-secondary">Historical client details were not recorded for this legacy event.</div> }</td><td data-label="Performed by">@HistoryActor(item)</td><td data-label="Reason">@(item.Reason ?? "—")</td><td data-label="When">@Time(item.AtUtc)<div class="monitoring-secondary">@_timeZone.Id</div></td></tr>
                     }
                     else if (history.Audit is { } audit)
                     {
@@ -343,7 +347,7 @@
 
 
 @code {
-    private RenderFragment ViewTabs => @<nav class="monitoring-tabs" role="tablist" aria-label="Monitoring views">
+    private RenderFragment ViewTabs => @<nav class="monitoring-tabs" role="tablist" aria-label="Monitoring views" data-testid="monitoring-view-tabs">
         @foreach (var tab in new[] { "Active", "Manage", "History", "Metrics" })
         {
             <MudButton ButtonType="ButtonType.Button" role="tab" Variant="@(_tab == tab ? Variant.Filled : Variant.Text)" Color="Color.Primary"

@@ -1,0 +1,41 @@
+@inject NavigationManager Navigation
+
+<header class="workspace-header">
+    <div class="workspace-heading">
+        <h1 id="@HeadingId" tabindex="@(HeadingId is null ? null : "-1")">@Title</h1>
+        @TenantContext
+    </div>
+    <nav class="workspace-tabs" aria-label="@Title" data-testid="@(Area == WorkspaceArea.Monitoring ? "signals-workspace-tabs" : "ai-ops-workspace-tabs")">
+        @foreach (var (route, label) in Tabs)
+        {
+            var current = route == ActiveTab;
+            <a href="@Destination(route, current)" aria-current="@(current ? "page" : null)">@label</a>
+        }
+    </nav>
+</header>
+
+@code {
+    private static readonly (string Route, string Label)[] MonitoringTabs = [("/monitoring", "Monitoring"), ("/flows", "Flows")];
+    private static readonly (string Route, string Label)[] AiOpsTabs = [("/ai/chat", "Chat"), ("/ai/ops", "Investigations"), ("/ai/prompts", "Prompts")];
+
+    [CascadingParameter] public WorkspaceNavigation? Workspace { get; set; }
+    [Parameter] public WorkspaceArea Area { get; set; }
+    [Parameter] public int TenantId { get; set; }
+    [Parameter] public int? RequestedTenantId { get; set; }
+    [Parameter] public string? HeadingId { get; set; }
+    [Parameter] public RenderFragment? TenantContext { get; set; }
+
+    private string Title => Area == WorkspaceArea.Monitoring ? "Monitoring" : "AI Ops";
+    private (string Route, string Label)[] Tabs => Area == WorkspaceArea.Monitoring ? MonitoringTabs : AiOpsTabs;
+    private string? ActiveTab => WorkspaceNavigation.TabFor(new Uri(Navigation.Uri).AbsolutePath);
+    private int ContextTenant => RequestedTenantId ?? TenantId;
+
+    protected override void OnParametersSet()
+    {
+        if (Tabs.Any(tab => tab.Route == ActiveTab)) Workspace?.Remember(new Uri(Navigation.Uri), TenantId);
+    }
+
+    private string Destination(string route, bool current) => current
+        ? new Uri(Navigation.Uri).PathAndQuery
+        : Workspace?.Destination(route, ContextTenant) ?? WorkspaceNavigation.WithTenant(route, ContextTenant);
+}

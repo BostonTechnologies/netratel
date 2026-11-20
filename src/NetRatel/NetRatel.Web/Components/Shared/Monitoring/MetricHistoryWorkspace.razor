@@ -16,7 +16,8 @@
         }
         else
         {
-            <div class="metrics-controls">
+            <div class="metrics-controls metrics-primary-controls">
+                @if (State.Loading) { <MudProgressLinear Class="metrics-loading" Indeterminate="true" aria-label="Loading historical metrics" /> }
                 @if (!State.PermissionDenied)
                 {
                     @ClientPicker
@@ -24,7 +25,9 @@
                         @foreach (var option in Ranges) { <option value="@option.Key">@option.Value.Label</option> }
                         <option value="custom">Custom</option>
                     </select></label>
-                    <MudButton Variant="Variant.Outlined" OnClick="RefreshAsync" Disabled="@State.Loading">Refresh metrics</MudButton>
+                    <MudTooltip Text="Refresh metrics">
+                        <MudIconButton Icon="@Icons.Material.Filled.Refresh" aria-label="Refresh metrics" OnClick="RefreshAsync" Disabled="@State.Loading" />
+                    </MudTooltip>
                 }
             </div>
             @if (Preset == "custom" && !State.PermissionDenied)
@@ -39,10 +42,9 @@
             @if (_dateError is not null) { <p role="alert">@_dateError</p> }
             @if (State.PermissionDenied) { <MudAlert Severity="Severity.Warning">You do not have permission to read this tenant’s metrics.</MudAlert> }
             else if (State.Error is not null) { <MudAlert Severity="Severity.Error">@State.Error</MudAlert> }
-            else if (State.Loading) { <MudProgressLinear Indeterminate="true" aria-label="Loading historical metrics" /> }
-            else if (AgentId is null) { <p>Select a computer to view its metrics.</p> }
+            else if (AgentId is null && !State.Loading) { <p>Select a computer to view its metrics.</p> }
 
-            @if ((State.History?.Status ?? State.Catalogue?.Status) is { } status)
+            @if ((State.Catalogue?.Status ?? State.History?.Status) is { } status)
             {
                 <div class="metrics-status" data-testid="metrics-collection-status">
                     <strong>@(status.Enabled ? "Collection enabled" : "Collection disabled")</strong>
@@ -68,46 +70,54 @@
                 }
             }
 
-            @if (State.Catalogue is { Series.Count: > 0 })
+            @if (State.HasReadAccess && !State.PermissionDenied && AgentId is not null)
             {
-                var interfaces = Interfaces.ToArray();
-                <div class="metrics-controls">
-                    <label>Disk volume<select value="@State.SelectedDisk" @onchange="ChangeDisk"><option value="">Select a volume</option>
-                        @foreach (var disk in Available(MetricHistoryKind.DiskUsedPercent)) { <option value="@disk.Id">@disk.DisplayName</option> }
-                    </select></label>
-                    <label>Network interface<select value="@State.SelectedInterface" @onchange="ChangeInterface" data-testid="metrics-interface"><option value="">Select an interface</option>
-                        @foreach (var item in interfaces)
-                        { <option value="@item.ResourceKey">@InterfaceLabel(item, interfaces)</option> }
-                    </select></label>
-                    <label>Watched service<select value="@State.SelectedService" @onchange="ChangeService"><option value="">Select a service</option>
-                        @foreach (var item in Available(MetricHistoryKind.ServiceState)) { <option value="@item.Id">@item.DisplayName</option> }
-                    </select></label>
-                </div>
-            }
+                var history = State.History;
+                @if (history is not null)
+                {
+                    <p class="metrics-range-note">
+                        @if (State.Error is not null) { <strong>Last successfully loaded · </strong> }
+                        @Time(history.FromUtc) to @Time(history.ToExclusiveUtc) · @Zone.Id · @Duration(history.ResolutionSeconds * 1_000_000L) intervals
+                    </p>
+                    @if (history.Disposition == "outside_retention") { <MudAlert Severity="Severity.Info">This range is outside the tenant’s retention policy.</MudAlert> }
+                    else if (history.Disposition == "no_observations") { <p>No observations were retained in this range.</p> }
+                }
 
-            @if (State.History is { } history)
-            {
-                <p class="metrics-range-note">
-                    @Time(history.FromUtc) to @Time(history.ToExclusiveUtc) · @Zone.Id · @Duration(history.ResolutionSeconds * 1_000_000L) intervals
-                </p>
-                @if (history.Disposition == "outside_retention") { <MudAlert Severity="Severity.Info">This range is outside the tenant’s retention policy.</MudAlert> }
-                else if (history.Disposition == "no_observations") { <p>No observations were retained in this range.</p> }
+                var disks = Available(MetricHistoryKind.DiskUsedPercent).ToArray();
+                var interfaces = Interfaces.ToArray();
+                var services = Available(MetricHistoryKind.ServiceState).ToArray();
                 <div class="metrics-grid">
                     <MetricHistoryChart Title="CPU utilization" Series="@Series(MetricHistoryKind.CpuPercent)" History="history" Zone="Zone" />
                     <MetricHistoryChart Title="Memory utilization" Series="@Series(MetricHistoryKind.MemoryPercent)" History="history" Zone="Zone" />
                     <MetricHistoryChart Title="Memory used and capacity" Series="@Series(MetricHistoryKind.MemoryUsedBytes, MetricHistoryKind.MemoryTotalBytes)" History="history" Zone="Zone" />
-                    <MetricHistoryChart Title="@DiskTitle" Series="@Series(MetricHistoryKind.DiskUsedPercent)" History="history" Zone="Zone" />
+                    <MetricHistoryChart Title="Disk usage" CardId="metrics-disk-card" Series="@Series(MetricHistoryKind.DiskUsedPercent)" History="history" Zone="Zone">
+                        <Controls>
+                            <label class="metrics-resource">Disk volume<select value="@State.SelectedDisk" @onchange="ChangeDisk" disabled="@(disks.Length == 0)" data-testid="metrics-disk">
+                                <option value="">@(disks.Length == 0 ? "No retained volumes" : "Select a volume")</option>
+                                @foreach (var disk in disks) { <option value="@disk.Id">@disk.DisplayName</option> }
+                            </select></label>
+                        </Controls>
+                    </MetricHistoryChart>
                     <div class="metrics-wide">
-                        <MetricHistoryChart Title="Network RX/TX" Series="@Series(MetricHistoryKind.NetworkRx, MetricHistoryKind.NetworkTx)" History="history" Zone="Zone" />
+                        <MetricHistoryChart Title="Network RX/TX" CardId="metrics-network-card" Series="@Series(MetricHistoryKind.NetworkRx, MetricHistoryKind.NetworkTx)" History="history" Zone="Zone">
+                            <Controls>
+                                <label class="metrics-resource">Network interface<select value="@State.SelectedInterface" @onchange="ChangeInterface" disabled="@(interfaces.Length == 0)" data-testid="metrics-interface">
+                                    <option value="">@(interfaces.Length == 0 ? "No retained interfaces" : "Select an interface")</option>
+                                    @foreach (var item in interfaces) { <option value="@item.ResourceKey">@InterfaceLabel(item, interfaces)</option> }
+                                </select></label>
+                            </Controls>
+                        </MetricHistoryChart>
                     </div>
-                    @if (Series(MetricHistoryKind.ServiceState).FirstOrDefault() is { } service)
-                    {
-                        <MetricHistoryServicePanel Series="service" History="history" Zone="Zone" />
-                    }
-                    else
-                    {
-                        <MudPaper Class="pa-4 metrics-wide"><MudText Typo="Typo.h6">Watched services</MudText><p>No retained watched-service evidence for this selection.</p></MudPaper>
-                    }
+                    <div class="metrics-wide">
+                        <MetricHistoryServicePanel Series="@Series(MetricHistoryKind.ServiceState).FirstOrDefault()" History="history" Zone="Zone">
+                            <Controls>
+                                <label class="metrics-resource">Watched service<select value="@State.SelectedService" @onchange="ChangeService" disabled="@(services.Length == 0)" data-testid="metrics-service">
+                                    <option value="">@(services.Length == 0 ? "No retained watched services" : "Select a service")</option>
+                                    @foreach (var item in services) { <option value="@item.Id">@item.DisplayName</option> }
+                                </select></label>
+                            </Controls>
+                        </MetricHistoryServicePanel>
+                    </div>
                 </div>
             }
         }
@@ -158,8 +168,16 @@
     }
 
     private MetricHistorySeries[] Series(params MetricHistoryKind[] kinds) =>
-        State.History?.Series.Where(item => kinds.Contains(item.Series.Kind)).OrderBy(item => item.Series.Kind).ToArray() ?? [];
-    private string DiskTitle => Series(MetricHistoryKind.DiskUsedPercent).FirstOrDefault() is { } disk ? $"Disk usage · {disk.Series.DisplayName}" : "Disk usage";
+        State.History?.Series.Where(item => kinds.Contains(item.Series.Kind) && MatchesSelection(item.Series))
+            .OrderBy(item => item.Series.Kind).ToArray() ?? [];
+
+    private bool MatchesSelection(MetricSeriesDescription series) => series.Kind switch
+    {
+        MetricHistoryKind.DiskUsedPercent => series.Id == State.SelectedDisk,
+        MetricHistoryKind.NetworkRx or MetricHistoryKind.NetworkTx => series.ResourceKey == State.SelectedInterface,
+        MetricHistoryKind.ServiceState => series.Id == State.SelectedService,
+        _ => true
+    };
 
     protected override Task OnParametersSetAsync()
     {

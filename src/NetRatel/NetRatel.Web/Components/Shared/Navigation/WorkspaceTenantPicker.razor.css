@@ -1,0 +1,2 @@
+.workspace-tenant { display:flex; align-items:center; gap:.45rem; max-width:100%; }
+.workspace-tenant select { min-width:0; max-width:100%; padding:.35rem .5rem; border:1px solid var(--mud-palette-divider); border-radius:5px; background:var(--mud-palette-surface); color:var(--mud-palette-text-primary); }

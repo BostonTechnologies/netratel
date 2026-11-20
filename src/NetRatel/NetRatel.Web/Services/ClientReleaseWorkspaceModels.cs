@@ -7,6 +7,10 @@ public sealed class ClientReleaseWorkspacePageModel
     public int PageSize { get; set; } = 20;
     public bool CanManageCleanup { get; set; } = true;
     public int Total { get; set; }
+    public Guid? DiscoveryId { get; set; }
+    public bool? HasMore { get; set; }
+    public bool IsComplete { get; set; }
+    public bool SourcePaged { get; set; }
     public DateTimeOffset RefreshedAtUtc { get; set; }
     public string? Warning { get; set; }
     public string[] SelectableVersions { get; set; } = [];

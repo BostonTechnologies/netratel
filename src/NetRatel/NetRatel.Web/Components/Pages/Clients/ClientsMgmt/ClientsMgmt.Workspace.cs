@@ -9,6 +9,7 @@ public partial class ClientsMgmt
     private const int ActivityTab = 1;
     private const int SuspendedTab = 2;
     private ClientReleaseWorkspacePageModel? _workspace;
+    private bool WorkspaceHasMore => _workspace?.HasMore ?? ((long)_githubPageNumber + 1) * _githubPageSize < (_workspace?.Total ?? 0);
     private string? _workspaceSearch;
     private string _workspaceRuntime = "", _workspaceLocalState = "";
     private readonly HashSet<string> _expandedVersions = new(StringComparer.Ordinal);

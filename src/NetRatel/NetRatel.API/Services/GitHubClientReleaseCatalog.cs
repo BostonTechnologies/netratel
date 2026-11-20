@@ -1,4 +1,5 @@
 using System.Net;
+using System.Collections.Immutable;
 using System.Net.Http.Headers;
 using System.Globalization;
 using System.Text.Json;
@@ -33,11 +34,24 @@ public sealed record GitHubClientReleasePage(
     DateTimeOffset RefreshedAtUtc,
     string? Warning);
 
+public sealed record GitHubReleaseDiscoverySlice(
+    IReadOnlyList<GitHubClientRelease> Items,
+    ImmutableDictionary<string, GitHubClientRelease> DiscoveredVersions,
+    Guid? DiscoveryId,
+    bool HasMore,
+    bool Complete,
+    bool Restart,
+    DateTimeOffset CheckedAtUtc,
+    string? Warning);
+
 public interface IGitHubClientReleaseCatalog
 {
     Task<GitHubClientReleasePage> ListAsync(string channel, int page, bool refresh, CancellationToken cancellationToken);
     Task<GitHubClientRelease?> FindAsync(long releaseId, CancellationToken cancellationToken);
     Task<string> ResolveTagCommitAsync(string tag, CancellationToken cancellationToken);
+    Task<GitHubReleaseDiscoverySlice> DiscoverAsync(int offset, int count, Guid? discoveryId, bool refresh, CancellationToken cancellationToken) =>
+        Task.FromResult(new GitHubReleaseDiscoverySlice([], ImmutableDictionary<string, GitHubClientRelease>.Empty,
+            null, false, false, false, default, "GitHub discovery is unavailable."));
 }
 
 /// <summary>
@@ -66,6 +80,77 @@ public sealed class GitHubClientReleaseCatalog(
     private DateTimeOffset _retryAfterUtc;
     private string? _warning;
     private int _consecutiveFailures;
+    private Discovery _discovery = new();
+
+    // Workspace offsets count GitHub source rows. Incompatible and duplicate versions
+    // consume a slot, so neither sparse filters nor malformed metadata widen a read.
+    // The legacy 20-row filtered catalogue and its consumers keep their own contract.
+    public async Task<GitHubReleaseDiscoverySlice> DiscoverAsync(int offset, int count, Guid? discoveryId, bool refresh,
+        CancellationToken cancellationToken)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(offset);
+        if (count is < 0 or > 100) throw new ArgumentOutOfRangeException(nameof(count));
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (refresh || (offset == 0 && discoveryId is null && _discovery.LastPage is { } last &&
+                            clock.GetUtcNow() - last.FetchedAtUtc >= CacheLifetime))
+                _discovery = new Discovery();
+            var discovery = _discovery;
+            if ((!refresh && discoveryId is { } id && id != discovery.Id) || offset > discovery.Slots.Count)
+                return DiscoverySlice(discovery, 0, 0, restart: true);
+
+            var end = (long)offset + count;
+            if (!discovery.Complete && end > discovery.Slots.Count)
+            {
+                var pages = new List<CachedPage>();
+                var nextSourcePage = discovery.NextPage;
+                var needed = end - discovery.Slots.Count;
+                while (needed > 0)
+                {
+                    var cached = await GetUpstreamPageAsync(nextSourcePage, refresh || nextSourcePage > 1, cancellationToken).ConfigureAwait(false);
+                    if (cached is null || (_warning is not null && nextSourcePage > 1)) break;
+                    pages.Add(cached);
+                    nextSourcePage++;
+                    needed -= UpstreamPageSize;
+                    if (!cached.HasNext) break;
+                }
+
+                // A publication or deletion ahead of our boundary can shift REST
+                // pages. Check the last known page after fetching the extension.
+                // Previously served slices stay coherent until the operator restarts.
+                if (pages.Count > 0 && discovery.LastPage is { } previous)
+                {
+                    var boundary = await GetUpstreamPageAsync(discovery.NextPage - 1, true, cancellationToken).ConfigureAwait(false);
+                    if (boundary is null || _warning is not null)
+                        return DiscoverySlice(discovery, offset, count);
+                    if (!boundary.SourceIds.SequenceEqual(previous.SourceIds) || !boundary.HasNext)
+                    {
+                        _discovery = new Discovery();
+                        return DiscoverySlice(_discovery, 0, 0, restart: true);
+                    }
+                }
+
+                foreach (var page in pages) discovery.Append(page);
+            }
+
+            return DiscoverySlice(discovery, offset, count);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    private GitHubReleaseDiscoverySlice DiscoverySlice(Discovery discovery, int offset, int count, bool restart = false)
+    {
+        var end = (long)offset + count;
+        return new(discovery.Slots.Skip(offset).Take(count).OfType<GitHubClientRelease>().ToArray(),
+            discovery.Versions, discovery.Id, !restart && (end < discovery.Slots.Count ||
+                discovery.Slots.Count >= end && !discovery.Complete && _warning is null),
+            discovery.Complete && _warning is null, restart, discovery.LastPage?.FetchedAtUtc ?? default,
+            restart ? "GitHub release discovery changed. Showing the first page of the new discovery order." : _warning);
+    }
 
     public async Task<GitHubClientReleasePage> ListAsync(string channel, int page, bool refresh, CancellationToken cancellationToken)
     {
@@ -81,7 +166,6 @@ public sealed class GitHubClientReleaseCatalog(
             var filtered = new List<GitHubClientRelease>();
             var upstreamHasNext = true;
             var scannedPages = 0;
-            var now = clock.GetUtcNow();
             string? requestWarning = null;
             for (var upstreamPage = 1; upstreamPage <= MaxUpstreamPages && upstreamHasNext && filtered.Count < desiredCount; upstreamPage++)
             {
@@ -220,16 +304,13 @@ public sealed class GitHubClientReleaseCatalog(
             using var document = await JsonDocument.ParseAsync(stream, new JsonDocumentOptions { MaxDepth = 32 }, cancellationToken).ConfigureAwait(false);
             if (document.RootElement.ValueKind != JsonValueKind.Array)
                 throw new JsonException("GitHub release list must be an array.");
-            var releases = document.RootElement.EnumerateArray()
-                .Select(TryParseRelease)
-                .Where(x => x is not null)
-                .Cast<GitHubClientRelease>()
-                .ToArray();
+            var slots = document.RootElement.EnumerateArray().Select(TryParseRelease).ToArray();
+            var sourceIds = document.RootElement.EnumerateArray().Select(ReadSourceId).ToArray();
             var hasNext = response.Headers.TryGetValues("Link", out var links) &&
                           links.Any(x => x.Contains("rel=\"next\"", StringComparison.Ordinal));
             _consecutiveFailures = 0;
             _warning = null;
-            return _pages[page] = new CachedPage(releases, hasNext, response.Headers.ETag, now);
+            return _pages[page] = new CachedPage(slots, sourceIds, hasNext, response.Headers.ETag, now);
         }
         catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or JsonException)
         {
@@ -320,7 +401,43 @@ public sealed class GitHubClientReleaseCatalog(
             value.TryGetProperty("digest", out var digest) ? digest.GetString() : null);
     }
 
-    private sealed record CachedPage(IReadOnlyList<GitHubClientRelease> Releases, bool HasNext, EntityTagHeaderValue? ETag, DateTimeOffset FetchedAtUtc);
+    private static long ReadSourceId(JsonElement item) => item.ValueKind == JsonValueKind.Object &&
+        item.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.Number && id.TryGetInt64(out var value) ? value : 0;
+
+    private sealed record CachedPage(GitHubClientRelease?[] Slots, long[] SourceIds, bool HasNext,
+        EntityTagHeaderValue? ETag, DateTimeOffset FetchedAtUtc)
+    {
+        public IEnumerable<GitHubClientRelease> Releases => Slots.OfType<GitHubClientRelease>();
+    }
+
+    private sealed class Discovery
+    {
+        public Guid Id { get; } = Guid.NewGuid();
+        public List<GitHubClientRelease?> Slots { get; } = [];
+        public ImmutableDictionary<string, GitHubClientRelease> Versions { get; private set; } =
+            ImmutableDictionary.Create<string, GitHubClientRelease>(StringComparer.Ordinal);
+        public CachedPage? LastPage { get; private set; }
+        public int NextPage { get; private set; } = 1;
+        public bool Complete { get; private set; }
+
+        public void Append(CachedPage page)
+        {
+            foreach (var release in page.Slots)
+            {
+                var unique = release is not null && !Versions.ContainsKey(release.Version);
+                Slots.Add(unique ? release : null);
+                if (release is not null && unique) Versions = Versions.Add(release.Version, release);
+            }
+
+            // Page arithmetic uses the transport's 30 raw slots, even if GitHub
+            // yields a short page with a continuation link.
+            if (page.HasNext && page.Slots.Length < UpstreamPageSize)
+                Slots.AddRange(new GitHubClientRelease?[UpstreamPageSize - page.Slots.Length]);
+            LastPage = page;
+            NextPage++;
+            Complete = !page.HasNext;
+        }
+    }
 }
 
 public sealed class GitHubReleaseMissingException(string message) : IOException(message);

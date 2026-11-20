@@ -15,7 +15,7 @@ public sealed class NetclawChatAcceptanceTests(ClientsManagementBrowserFixture b
     [Fact]
     public async Task Unsent_multiline_chat_draft_survives_back_and_reload_without_sending()
     {
-        var api = new ChatFixture();
+        var api = new ChatFixture(allowInvestigationDirectory: true);
         await using var host = await ClientsManagementFixtureHost.StartAsync(services => services.AddSingleton<INetclawApiService>(api));
         await using var context = await browserFixture.Browser.NewContextAsync();
         var page = await context.NewPageAsync();
@@ -25,6 +25,12 @@ public sealed class NetclawChatAcceptanceTests(ClientsManagementBrowserFixture b
         await composer.PressAsync("Alt+Enter");
         await composer.PressSequentiallyAsync("Second draft line");
         const string draft = "First draft line\nSecond draft line";
+        await Assertions.Expect(composer).ToHaveValueAsync(draft);
+
+        var tabs = page.GetByTestId("ai-ops-workspace-tabs");
+        await tabs.GetByRole(AriaRole.Link, new() { Name = "Investigations", Exact = true }).ClickAsync();
+        await Assertions.Expect(page.GetByTestId("investigation-tenant")).ToHaveValueAsync("17");
+        await tabs.GetByRole(AriaRole.Link, new() { Name = "Chat", Exact = true }).ClickAsync();
         await Assertions.Expect(composer).ToHaveValueAsync(draft);
 
         await page.GotoAsync(host.BaseAddress + "/");
@@ -392,9 +398,12 @@ public sealed class NetclawChatAcceptanceTests(ClientsManagementBrowserFixture b
         public int Recoveries => Volatile.Read(ref _recoveries);
         public Guid Id => _id;
         private readonly bool _investigation;
-        public ChatFixture(bool? investigation = null, bool dense = false, InvestigationState state = InvestigationState.Idle, InvestigationRecoveryDto? recovery = null, bool incremental = false)
+        private readonly bool _allowInvestigationDirectory;
+        public ChatFixture(bool? investigation = null, bool dense = false, InvestigationState state = InvestigationState.Idle, InvestigationRecoveryDto? recovery = null,
+            bool incremental = false, bool allowInvestigationDirectory = false)
         {
             _investigation = investigation == true; _dense = dense; _incremental = incremental;
+            _allowInvestigationDirectory = allowInvestigationDirectory;
             if (investigation is null) return;
             var now = DateTimeOffset.UtcNow;
             InvestigationEventDto[] events = [new(1, "assistant", "## Saved answer\n\n" + DiskTable + "\n\n```sh\necho safe\n```", null, null, null, now),
@@ -470,7 +479,7 @@ public sealed class NetclawChatAcceptanceTests(ClientsManagementBrowserFixture b
         }
         private InvestigationSnapshotDto ProcessingSnapshot() => _saved is { Investigation.State: InvestigationState.Processing } saved
             ? saved : throw new InvalidOperationException("The fixture has no admitted streaming response.");
-        public Task<IReadOnlyList<InvestigationClientDto>> ClientsAsync(int tenantId, CancellationToken ct = default) => _investigation ? Task.FromResult<IReadOnlyList<InvestigationClientDto>>([]) : throw new NotSupportedException("Chat must not request systems.");
+        public Task<IReadOnlyList<InvestigationClientDto>> ClientsAsync(int tenantId, CancellationToken ct = default) => _investigation || _allowInvestigationDirectory ? Task.FromResult<IReadOnlyList<InvestigationClientDto>>([]) : throw new NotSupportedException("Chat must not request systems.");
         public Task<IReadOnlyList<InvestigationSummaryDto>> ListAsync(int tenantId, CancellationToken ct = default) => Task.FromResult<IReadOnlyList<InvestigationSummaryDto>>(History());
         public Task<InvestigationSnapshotDto> CreateAsync(int tenantId, InvestigationCreateRequest request, CancellationToken ct = default) => throw new NotSupportedException();
         public Task<NetclawTestResult> PairAsync(int tenantId, NetclawPairRequest request, CancellationToken ct = default) => throw new NotSupportedException();

@@ -11,4 +11,7 @@
 .metrics-legend span::before { display:inline-block; border-radius:2px; content:""; width:.85rem; height:.27rem; margin:0 .4rem .14rem 0; }
 .metric-line-primary::before { background:var(--mud-palette-primary); }
 .metric-line-secondary::before { background:var(--mud-palette-tertiary); }
-.metric-tooltip,.metric-empty { min-height:1.3rem; font-size:.875rem; color:var(--mud-palette-text-secondary); }
+.metric-tooltip,.metric-empty { font-size:.875rem; color:var(--mud-palette-text-secondary); }
+.metric-tooltip { block-size:4rem; overflow:auto; scrollbar-gutter:stable; overflow-wrap:anywhere; }
+.metric-tooltip p { margin:0; }
+.metric-tooltip:focus-visible { outline:2px solid var(--mud-palette-primary); outline-offset:2px; }

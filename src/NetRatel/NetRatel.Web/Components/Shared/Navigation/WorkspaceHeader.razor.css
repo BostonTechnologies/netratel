@@ -1,0 +1,7 @@
+.workspace-header { display:grid; gap:.4rem; min-width:0; }
+.workspace-heading { display:flex; align-items:center; flex-wrap:wrap; gap:.4rem 1rem; }
+.workspace-heading h1 { margin:0; font-size:1.375rem; font-weight:600; }
+.workspace-tabs { display:flex; flex-wrap:wrap; gap:.2rem .4rem; border-bottom:1px solid var(--mud-palette-divider); }
+.workspace-tabs a { color:var(--mud-palette-text-secondary); padding:.45rem .7rem; border-bottom:2px solid transparent; border-radius:4px 4px 0 0; text-decoration:none; }
+.workspace-tabs a:hover, .workspace-tabs a:focus-visible { background:var(--mud-palette-action-default-hover); }
+.workspace-tabs a[aria-current=page] { border-bottom-color:var(--mud-palette-primary); color:var(--mud-palette-primary); font-weight:600; }

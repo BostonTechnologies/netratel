@@ -38,6 +38,30 @@ public sealed class MonitoringMetricsTests : AsyncBunitContext
     }
 
     [Fact]
+    public async Task Pending_and_failed_resource_selection_never_relabels_a_retained_chart()
+    {
+        JSInterop.Mode = JSRuntimeMode.Loose;
+        Services.AddMudServices(options => options.PopoverOptions.CheckForPopoverProvider = false);
+        var api = new MetricsApi();
+        Services.AddSingleton<IMonitoringApiService>(api);
+        var cut = Render<MetricHistoryWorkspace>(parameters => parameters.Add(item => item.TenantId, 1)
+            .Add(item => item.AgentId, Agent).Add(item => item.Selection, new MetricHistorySelection(Interface: "eth1")));
+        cut.WaitForAssertion(() => Assert.Single(cut.FindAll("[data-testid=metrics-received]")));
+        var before = cut.FindComponents<MetricHistoryChart>().Single(chart => chart.Instance.CardId == "metrics-network-card").Instance;
+
+        cut.Render(parameters => parameters.Add(item => item.Selection, new MetricHistorySelection(Interface: "eth0")));
+        await api.FirstQuery.Task;
+        Assert.Same(before, cut.FindComponents<MetricHistoryChart>().Single(chart => chart.Instance.CardId == "metrics-network-card").Instance);
+        Assert.Single(cut.FindAll("[data-testid=metrics-network-card] select"));
+        Assert.Empty(cut.FindAll("[data-testid=metrics-received]"));
+
+        api.SlowReply.SetException(new HttpRequestException("Synthetic metrics outage"));
+        await cut.WaitForAssertionAsync(() => Assert.Contains("Last successfully loaded", cut.Markup));
+        Assert.Empty(cut.FindAll("[data-testid=metrics-received]"));
+        Assert.False(cut.Find("[data-testid=metrics-interface]").HasAttribute("disabled"));
+    }
+
+    [Fact]
     public void Network_cards_display_server_summary_bytes_and_distinguish_zero_from_unavailable()
     {
         JSInterop.Mode = JSRuntimeMode.Loose;

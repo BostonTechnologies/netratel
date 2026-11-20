@@ -27,6 +27,7 @@ public sealed class ReleaseDeletionComponentTests : AsyncBunitContext
         JSInterop.Mode = JSRuntimeMode.Loose;
         Services.AddMudServices(options => options.PopoverOptions.CheckForPopoverProvider = false);
         Services.AddLogging();
+        Services.AddSingleton(TimeProvider.System);
         Services.AddSingleton<IClientArtifactsService>(_artifacts);
         Services.AddSingleton<ITenantApiService, TenantFixture>();
         Services.AddSingleton<IClientUpdateActivityStream, InactiveActivityStream>();
