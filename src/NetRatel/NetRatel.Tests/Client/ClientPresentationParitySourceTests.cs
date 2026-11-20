@@ -83,7 +83,7 @@ public sealed class ClientPresentationParitySourceTests
     {
         var source = ReadRepositoryFile("NetRatel.Web", "Components", "Dialogs", "GatewayTelemetryDialog.razor");
 
-        source.Should().Contain("CadenceLabel=\"@_streamState\"");
+        source.Should().Contain("CadenceLabel=\"@(IsFresh ? _streamState : \"Last received\")\"");
     }
 
     [Fact]
