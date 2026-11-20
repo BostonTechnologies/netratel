@@ -77,11 +77,11 @@
         <div class="inventory-toolbar">
             <div class="inventory-views" role="tablist" aria-label="Inventory views">
                 @if (!AgentId.HasValue)
-                { <MudButton role="tab" aria-selected="@(_view == "aggregate")" Color="Color.Primary" Variant="@(_view == "aggregate" ? Variant.Filled : Variant.Text)" OnClick='() => ChangeViewAsync("aggregate")'>Software</MudButton> }
-                <MudButton role="tab" aria-selected="@(_view == "installations")" Color="Color.Primary" Variant="@(_view == "installations" ? Variant.Filled : Variant.Text)" OnClick='() => ChangeViewAsync("installations")'>Installations</MudButton>
+                { <MudButton role="tab" aria-selected="@(_view == "aggregate" ? "true" : "false")" Color="Color.Primary" Variant="@(_view == "aggregate" ? Variant.Filled : Variant.Text)" OnClick='() => ChangeViewAsync("aggregate")'>Software</MudButton> }
+                <MudButton role="tab" aria-selected="@(_view == "installations" ? "true" : "false")" Color="Color.Primary" Variant="@(_view == "installations" ? Variant.Filled : Variant.Text)" OnClick='() => ChangeViewAsync("installations")'>Installations</MudButton>
                 @if (!AgentId.HasValue)
-                { <MudButton role="tab" aria-selected="@(_view == "devices")" Color="Color.Primary" Variant="@(_view == "devices" ? Variant.Filled : Variant.Text)" OnClick='() => ChangeViewAsync("devices")'>Devices</MudButton> }
-                <MudButton role="tab" aria-selected="@(_view == "changes")" Color="Color.Primary" Variant="@(_view == "changes" ? Variant.Filled : Variant.Text)" OnClick='() => ChangeViewAsync("changes")'>Changes</MudButton>
+                { <MudButton role="tab" aria-selected="@(_view == "devices" ? "true" : "false")" Color="Color.Primary" Variant="@(_view == "devices" ? Variant.Filled : Variant.Text)" OnClick='() => ChangeViewAsync("devices")'>Devices</MudButton> }
+                <MudButton role="tab" aria-selected="@(_view == "changes" ? "true" : "false")" Color="Color.Primary" Variant="@(_view == "changes" ? Variant.Filled : Variant.Text)" OnClick='() => ChangeViewAsync("changes")'>Changes</MudButton>
             </div>
             <div class="inventory-actions">
                 <MudButton StartIcon="@Icons.Material.Filled.Refresh" OnClick="ReloadAsync" Disabled="_loading">Reload data</MudButton>

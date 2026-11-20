@@ -30,6 +30,11 @@ public sealed class SoftwareInventoryPanelTests : AsyncBunitContext
         summary.QuerySelectorAll("strong").Should().HaveCount(6);
         cut.Markup.Should().Contain("Last complete scan").And.NotContain("Collection policy").And.NotContain("Asset intelligence");
         cut.FindAll("a").Should().Contain(link => link.TextContent.Contains("Export installations", StringComparison.Ordinal));
+        cut.FindAll("[role=tab]").Select(tab => tab.GetAttribute("aria-selected")).Should()
+            .Equal("true", "false", "false", "false");
+        cut.FindAll("[role=tab]").Single(tab => tab.TextContent.Trim() == "Installations").Click();
+        cut.WaitForAssertion(() => cut.FindAll("[role=tab]").Select(tab => tab.GetAttribute("aria-selected")).Should()
+            .Equal("false", "true", "false", "false"));
     }
     [Theory]
     [InlineData(true)]
