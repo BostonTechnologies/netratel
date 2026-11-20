@@ -98,8 +98,11 @@ public sealed class PromptLibraryTests : AsyncBunitContext
         await Button(cut, "Keep editing").ClickAsync(new());
 
         var navigation = Services.GetRequiredService<NavigationManager>();
-        await cut.InvokeAsync(() => navigation.NavigateTo("/tasks/new"));
-        Assert.DoesNotContain("/tasks/new", navigation.Uri);
+        var chat = Assert.Single(cut.FindAll("[data-testid=ai-ops-workspace-tabs] a"), link => link.TextContent == "Chat");
+        var chatUrl = chat.GetAttribute("href") ?? throw new InvalidOperationException("Chat tab is missing a route.");
+        Assert.Equal("/ai/chat?tenantId=17", chatUrl);
+        await cut.InvokeAsync(() => navigation.NavigateTo(chatUrl));
+        Assert.DoesNotContain(chatUrl, navigation.Uri);
         Assert.Contains("Discard unsaved prompt changes", cut.Markup);
         Assert.Equal("Keep this draft", cut.Find("[data-testid=prompt-name]").GetAttribute("value"));
         await Button(cut, "Keep editing").ClickAsync(new());

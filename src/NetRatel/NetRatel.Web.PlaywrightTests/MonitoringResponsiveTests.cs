@@ -65,8 +65,8 @@ public sealed class MonitoringResponsiveTests(ClientsManagementBrowserFixture br
         }
         await page.GetByTestId("monitoring-filters").Locator("summary").ClickAsync();
         await page.GetByTestId("monitoring-client-search").FillAsync("beta-host-260");
-        await Assertions.Expect(page.GetByTestId("monitoring-client-select").Locator("option")).ToHaveCountAsync(2);
-        await page.GetByTestId("monitoring-client-select").SelectOptionAsync(_api.PagingAgent.ToString());
+        await page.Locator(".monitoring-computer-option").Filter(new() { HasText = "Client 260" }).ClickAsync();
+        await Assertions.Expect(page.GetByTestId("monitoring-client-search")).ToHaveValueAsync(new System.Text.RegularExpressions.Regex("Client 260"));
         await page.GetByTestId("monitoring-severity").SelectOptionAsync("Warning");
         await page.GetByTestId("monitoring-from").FillAsync("2026-11-07");
         await page.GetByTestId("monitoring-to").FillAsync("2026-11-07");
@@ -83,6 +83,7 @@ public sealed class MonitoringResponsiveTests(ClientsManagementBrowserFixture br
         Assert.Equal(DateTimeOffset.Parse("2026-11-06T22:00:00Z"), _api.QueryReads.Last().FromUtc);
         await Assertions.Expect(page.GetByTestId("monitoring-filter-chips")).ToContainTextAsync("5 active filters");
         await page.ReloadAsync();
+        await page.GetByTestId("monitoring-interactive").WaitForAsync(new() { State = WaitForSelectorState.Attached });
         await Assertions.Expect(page.GetByTestId("monitoring-page-size")).ToHaveValueAsync("100");
         await Assertions.Expect(page.GetByTestId("monitoring-series-row")).ToHaveCountAsync(100);
         await page.GetByTestId("monitoring-clear-filters").ClickAsync();
@@ -93,6 +94,90 @@ public sealed class MonitoringResponsiveTests(ClientsManagementBrowserFixture br
         var evidence = EvidenceRoot(); Directory.CreateDirectory(evidence);
         await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, $"monitoring-paging-{width}-{height}.png"), Animations = ScreenshotAnimations.Disabled });
     }
+    [Theory]
+    [Trait("Category", "ManualBrowserAcceptance")]
+    [InlineData(1280, 800)]
+    [InlineData(390, 844)]
+    public async Task Workspace_tabs_and_metric_point_inspection_keep_their_geometry(int width, int height)
+    {
+        await using var context = await browserFixture.Browser.NewContextAsync(new() { ViewportSize = new() { Width = width, Height = height } });
+        var page = await context.NewPageAsync();
+        await page.GotoAsync(_host!.BaseAddress + "/monitoring?tenantId=1");
+        await page.GetByTestId("monitoring-interactive").WaitForAsync(new() { State = WaitForSelectorState.Attached });
+        var views = page.GetByTestId("monitoring-view-tabs");
+        var top = await DocumentTopAsync(views);
+        foreach (var name in new[] { "manage", "history", "metrics" })
+        {
+            var tab = page.GetByTestId("monitoring-tab-" + name);
+            await tab.ClickAsync();
+            await Assertions.Expect(tab).ToHaveAttributeAsync("aria-selected", "true");
+            Assert.InRange(Math.Abs(await DocumentTopAsync(views) - top), 0, 1);
+        }
+        await Assertions.Expect(page.GetByTestId("metrics-disk-card").GetByTestId("metrics-disk")).ToBeVisibleAsync();
+        await Assertions.Expect(page.GetByTestId("metrics-service-card").GetByTestId("metrics-service")).ToBeVisibleAsync();
+        var network = page.GetByTestId("metrics-network-card");
+        await Assertions.Expect(network.GetByTestId("metrics-interface")).ToHaveValueAsync("eth0");
+        var canvas = network.Locator("canvas");
+        await canvas.WaitForAsync();
+        var dimensions = await ChartDimensionsAsync(network);
+        await canvas.HoverAsync();
+        await Assertions.Expect(network.GetByRole(AriaRole.Status)).ToContainTextAsync("coverage");
+        Assert.Equal(dimensions, await ChartDimensionsAsync(network));
+        await canvas.PressAsync("ArrowRight");
+        await Assertions.Expect(network.GetByRole(AriaRole.Status)).ToContainTextAsync("coverage");
+        Assert.Equal(dimensions, await ChartDimensionsAsync(network));
+        await page.Mouse.MoveAsync(0, 0);
+        await Assertions.Expect(network.GetByRole(AriaRole.Status)).ToContainTextAsync("Hover over the chart");
+        Assert.Equal(dimensions, await ChartDimensionsAsync(network));
+        var evidence = EvidenceRoot();
+        Directory.CreateDirectory(evidence);
+        await page.ScreenshotAsync(new() { Path = Path.Combine(evidence, $"monitoring-metrics-{width}.png"), FullPage = true, Animations = ScreenshotAnimations.Disabled });
+        testOutputHelper.WriteLine($"Monitoring view strip at {width} px: {top:F1} px. Card and canvas dimensions: {dimensions}.");
+
+        var tabs = page.GetByTestId("signals-workspace-tabs");
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            await tabs.GetByRole(AriaRole.Link, new() { Name = "Flows", Exact = true }).ClickAsync();
+            await Assertions.Expect(page.GetByTestId("flow-tenant")).ToBeVisibleAsync();
+            await Assertions.Expect(tabs.GetByRole(AriaRole.Link, new() { Name = "Flows", Exact = true })).ToHaveAttributeAsync("aria-current", "page");
+            await tabs.GetByRole(AriaRole.Link, new() { Name = "Monitoring", Exact = true }).ClickAsync();
+            await Assertions.Expect(page.GetByTestId("monitoring-tenant")).ToHaveValueAsync("1");
+            await Assertions.Expect(page.GetByTestId("monitoring-tab-metrics")).ToHaveAttributeAsync("aria-selected", "true");
+        }
+        await page.GetByTestId("monitoring-tenant").SelectOptionAsync("2");
+        await tabs.GetByRole(AriaRole.Link, new() { Name = "Flows", Exact = true }).ClickAsync();
+        await Assertions.Expect(page.GetByTestId("flows-no-access")).ToContainTextAsync("Choose an authorized tenant");
+        Assert.Contains("tenantId=2", page.Url);
+        await Assertions.Expect(page.GetByTestId("flow-tenant")).ToHaveValueAsync("0");
+        Assert.False(await page.Locator("#blazor-error-ui").IsVisibleAsync());
+    }
+
+    [Fact]
+    [Trait("Category", "ManualBrowserAcceptance")]
+    public async Task Signals_navigation_opens_Flows_when_Monitoring_access_is_unavailable()
+    {
+        _api.AllowMonitoring = false;
+        await using var context = await browserFixture.Browser.NewContextAsync(new() { ViewportSize = new() { Width = 1366, Height = 900 } });
+        var page = await context.NewPageAsync();
+        await page.GotoAsync(_host!.BaseAddress + "/monitoring?tenantId=1");
+        await page.GetByTestId("monitoring-interactive").WaitForAsync(new() { State = WaitForSelectorState.Attached });
+        var menu = page.GetByRole(AriaRole.Navigation, new() { Name = "Primary navigation", Exact = true });
+        var entry = menu.GetByRole(AriaRole.Link, new() { Name = "Monitoring", Exact = true });
+        await Assertions.Expect(entry).ToHaveAttributeAsync("href", "/flows");
+        await entry.ClickAsync();
+        await Assertions.Expect(page.GetByTestId("flow-tenant")).ToHaveValueAsync("1");
+        await Assertions.Expect(menu.Locator("a.active")).ToHaveTextAsync("Monitoring");
+    }
+
+    private static Task<double> DocumentTopAsync(ILocator element) => element.EvaluateAsync<double>("e => e.getBoundingClientRect().top + window.scrollY");
+
+    private static Task<string> ChartDimensionsAsync(ILocator card) => card.EvaluateAsync<string>("""
+        card => JSON.stringify([card, card.querySelector('canvas')].map(e => {
+            const rect = e.getBoundingClientRect();
+            return [rect.width, rect.height];
+        }))
+        """);
+
     [Theory]
     [InlineData(1280, 800, "light", 1d)]
     [InlineData(1280, 800, "dark", 1d)]
@@ -478,7 +563,11 @@ public sealed class MonitoringResponsiveTests(ClientsManagementBrowserFixture br
     }
     private static string EvidenceRoot() => Environment.GetEnvironmentVariable("NETRATEL_PLAYWRIGHT_ARTIFACT_ROOT") ?? Path.GetFullPath("TestResults/playwright");
     public async ValueTask InitializeAsync() => _host = await ClientsManagementFixtureHost.StartAsync(services =>
-    { services.AddSingleton(_api); services.AddSingleton<IMonitoringApiService>(_api); });
+    {
+        services.AddSingleton(_api);
+        services.AddSingleton<IMonitoringApiService>(_api);
+        services.AddSingleton<NetRatel.Web.Services.Flows.IFlowApiService>(new FixtureFlowApiService(tenantId: 1));
+    });
     public async ValueTask DisposeAsync() { if (_host is not null) await _host.DisposeAsync(); }
 }
 
@@ -495,6 +584,7 @@ internal sealed class FixtureMonitoringApi : IMonitoringApiService
     public MonitoringSeriesState Active { get; private set; }
     public int Writes { get; private set; }
     public bool PagingDataset { get; set; }
+    public bool AllowMonitoring { get; set; } = true;
     public bool ManagementDataset { get; set; }
     public Guid PagingAgent => _estate[260].AgentId;
     public List<MonitoringQueryDto> QueryReads { get; } = [];
@@ -540,7 +630,8 @@ internal sealed class FixtureMonitoringApi : IMonitoringApiService
             FlowOutcome = new(runId, MonitoringFlowOutcomeKind.Succeeded, DateTimeOffset.UtcNow, "incident-created", receipt)
         } };
     }
-    public Task<IReadOnlyList<MonitoringTenantDto>> GetTenantsAsync(CancellationToken token = default) => Task.FromResult<IReadOnlyList<MonitoringTenantDto>>([new(1, "SQL tenant"), new(2, "Other tenant")]);
+    public Task<IReadOnlyList<MonitoringTenantDto>> GetTenantsAsync(CancellationToken token = default) =>
+        Task.FromResult<IReadOnlyList<MonitoringTenantDto>>(AllowMonitoring ? [new(1, "SQL tenant"), new(2, "Other tenant")] : []);
     public Task<MonitoringPermissionsDto> GetPermissionsAsync(int tenantId, CancellationToken token = default) => Task.FromResult(new MonitoringPermissionsDto(tenantId, true, true, true, true, true, true));
     private static readonly MetricCollectionStatus MetricStatus =
         new(false, null, null, null, null, null, 2, 1000, 10000, 0, 0, null, 0, 0, 0, null, null);
@@ -548,11 +639,18 @@ internal sealed class FixtureMonitoringApi : IMonitoringApiService
         Task.FromResult(new MetricHistorySettings(MetricHistoryPolicy.Default, MetricStatus, []));
     public Task<MetricCatalogue> GetMetricCatalogueAsync(int tenantId, Guid agentId, string? cursor = null, CancellationToken token = default) =>
         Task.FromResult(new MetricCatalogue([NetworkSeries(agentId)], null, MetricStatus, ClientOnline: false));
-    public Task<MetricHistoryResponse> QueryMetricsAsync(int tenantId, Guid agentId, MetricHistoryRange range, CancellationToken token = default) =>
-        Task.FromResult(new MetricHistoryResponse(range.FromUtc, range.ToExclusiveUtc, 60, range.FromUtc.AddDays(-1),
+    public Task<MetricHistoryResponse> QueryMetricsAsync(int tenantId, Guid agentId, MetricHistoryRange range, CancellationToken token = default)
+    {
+        var shortPoint = new MetricHistoryStatistics(1, 512, range.FromUtc, 512, 512, 512, 60_000_000, "128000",
+            null, null, MetricHistoryQuality.None, null);
+        var middle = range.FromUtc + (range.ToExclusiveUtc - range.FromUtc) / 2;
+        var longPoint = shortPoint with { Quality = MetricHistoryQuality.PartialCoverage | MetricHistoryQuality.Reset |
+            MetricHistoryQuality.Missing | MetricHistoryQuality.Legacy | MetricHistoryQuality.Failed };
+        return Task.FromResult(new MetricHistoryResponse(range.FromUtc, range.ToExclusiveUtc, 60, range.FromUtc.AddDays(-1),
             range.FromUtc.AddDays(-1), "available", MetricStatus,
-            [new(NetworkSeries(agentId), new(1, 512, range.FromUtc, 512, 512, 512, 60_000_000, "128000", null, null,
-                MetricHistoryQuality.None, null), [], [], false)]));
+            [new(NetworkSeries(agentId), shortPoint,
+                [new(range.FromUtc, middle, shortPoint), new(middle, range.ToExclusiveUtc, longPoint)], [], false)]));
+    }
     private static MetricSeriesDescription NetworkSeries(Guid agentId) =>
         new(1, agentId, MetricHistoryKind.NetworkRx, "eth0", "eth0", "B/s", DateTimeOffset.UtcNow.AddDays(-14),
             DateTimeOffset.UtcNow, MetricHistoryQuality.None, false);

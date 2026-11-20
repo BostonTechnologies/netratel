@@ -1,10 +1,55 @@
 @page "/flows/connectors"
 @page "/flows/rateldesk-connectors"
 @rendermode InteractiveServer
+@attribute [Authorize]
+@using NetRatel.Shared.Contracts.Flows
+@using NetRatel.Web.Components.Shared.Navigation
+@using NetRatel.Web.Services.Flows
+@inject IFlowApiService Api
+@inject NavigationManager Navigation
+@implements IDisposable
 
 <PageTitle>RatelDesk connections</PageTitle>
-<MudContainer MaxWidth="MaxWidth.Medium" Class="py-6" data-testid="rateldesk-connections-page">
+<div class="pa-4" data-testid="rateldesk-connections-page">
+    <WorkspaceHeader Area="WorkspaceArea.Monitoring" TenantId="TenantId" RequestedTenantId="RequestedTenantId">
+        <TenantContext>
+            <WorkspaceTenantPicker Value="TenantId" ValueChanged="ChooseTenant" TestId="flow-tenant"
+                                   Options="@_tenants.Select(tenant => (tenant.TenantId, tenant.TenantName)).ToArray()" />
+        </TenantContext>
+    </WorkspaceHeader>
     <MudText Typo="Typo.h4" Class="mb-3">RatelDesk connections</MudText>
-    <MudText Typo="Typo.body1" Class="mb-4">Pair your systems and save a tenant mapping with Create incidents enabled. Save provisions the tenant's Flow connector automatically.</MudText>
-    <MudButton Href="/account/integration-credentials" StartIcon="@Icons.Material.Filled.Link" Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" data-testid="manage-system-connections">Manage system connections</MudButton>
-</MudContainer>
+    @if (_error is not null) { <MudAlert Severity="Severity.Warning" Dense="true">@_error</MudAlert> }
+    else if (_loading) { <p role="status">Loading authorized tenants…</p> }
+    else if (TenantId == 0) { <p role="status">Choose a tenant that grants Flows access to manage its connections.</p> }
+    else
+    {
+        <MudLink Href="@BackToFlows">Back to flows</MudLink>
+        <MudText Typo="Typo.body1" Class="mb-4">Pair your systems and save a tenant mapping with Create incidents enabled. Save provisions the tenant's Flow connector automatically.</MudText>
+        <MudButton Href="/account/integration-credentials" StartIcon="@Icons.Material.Filled.Link" Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" data-testid="manage-system-connections">Manage system connections</MudButton>
+    }
+</div>
+
+@code {
+    [CascadingParameter] public WorkspaceNavigation? Workspace { get; set; }
+    private string BackToFlows => Workspace?.Destination("/flows", TenantId) ?? WorkspaceNavigation.WithTenant("/flows", TenantId);
+    [SupplyParameterFromQuery(Name = "tenantId")] public int? RequestedTenantId { get; set; }
+    private readonly CancellationTokenSource _lifetime = new();
+    private IReadOnlyList<FlowTenantAccessDto> _tenants = [];
+    private bool _loading = true;
+    private string? _error;
+    private int TenantId => RequestedTenantId is { } tenant
+        ? _tenants.FirstOrDefault(item => item.TenantId == tenant)?.TenantId ?? 0
+        : _tenants.FirstOrDefault()?.TenantId ?? 0;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try { _tenants = await Api.GetTenantsAsync(_lifetime.Token); }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { return; }
+        catch (HttpRequestException) { _error = "Authorized Flows tenants could not be loaded."; }
+        finally { _loading = false; }
+    }
+
+    private void ChooseTenant(int tenant) => Navigation.NavigateTo(Navigation.GetUriWithQueryParameter("tenantId", tenant));
+
+    public void Dispose() { _lifetime.Cancel(); _lifetime.Dispose(); }
+}

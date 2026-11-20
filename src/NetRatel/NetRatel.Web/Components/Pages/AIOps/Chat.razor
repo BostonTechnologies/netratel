@@ -4,6 +4,7 @@
 @using Microsoft.AspNetCore.Components.Authorization
 @using NetRatel.Shared.Contracts.Netclaw
 @using NetRatel.Web.Components.Shared.Netclaw
+@using NetRatel.Web.Components.Shared.Navigation
 @implements IAsyncDisposable
 @inject NetRatel.Web.Services.INetclawApiService Api
 @inject NavigationManager Navigation
@@ -14,25 +15,18 @@
 <PageTitle>Chat · NetRatel</PageTitle>
 
 <main class="chat-page" data-testid="netclaw-chat">
-    <header class="chat-page-heading">
-        <div>
-            <p class="chat-eyebrow">AI OPERATIONS</p>
-            <h1>Chat</h1>
-            <p class="chat-page-description">A place to work things through with Netclaw.</p>
-        </div>
-        <div class="chat-workspace-controls">
-            <label class="chat-tenant">Tenant
-                <select value="@_tenant" @onchange="ChooseTenant" disabled="@(_busy || _tenants.Count == 0)" data-testid="chat-tenant">
-                    @if (_tenant == 0) { <option value="0">Select a tenant</option> }
-                    @foreach (var tenant in _tenants) { <option value="@tenant.TenantId">@tenant.TenantName</option> }
-                </select>
-            </label>
-            @if (_tenant > 0)
-            {
-                <NetclawConnectionStatus TenantId="_tenant" TenantName="@(Access?.TenantName)" Connection="_connection" />
-            }
-        </div>
-    </header>
+    <WorkspaceHeader Area="WorkspaceArea.AiOps" TenantId="_tenant" RequestedTenantId="RequestedTenant">
+        <TenantContext>
+            <div class="chat-workspace-controls">
+                <WorkspaceTenantPicker Value="_tenant" ValueChanged="ChooseTenant" Disabled="_busy" TestId="chat-tenant"
+                                       Options="@_tenants.Select(tenant => (tenant.TenantId, tenant.TenantName)).ToArray()" />
+                @if (_tenant > 0)
+                {
+                    <NetclawConnectionStatus TenantId="_tenant" TenantName="@(Access?.TenantName)" Connection="_connection" />
+                }
+            </div>
+        </TenantContext>
+    </WorkspaceHeader>
 
     @if (_error is not null && _snapshot is null)
     {

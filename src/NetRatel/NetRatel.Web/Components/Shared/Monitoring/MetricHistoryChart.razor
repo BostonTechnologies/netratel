@@ -2,13 +2,15 @@
 @using NetRatel.Shared.Contracts.Monitoring
 @using NetRatel.Web.Services.Monitoring
 @inject IJSRuntime JS
+@inject ILogger<MetricHistoryChart> Logger
 @implements IAsyncDisposable
 
-<MudPaper Class="pa-4 metric-chart" Outlined="true">
+<MudPaper Class="pa-4 metric-chart" Outlined="true" data-testid="@CardId">
     <MudText Typo="Typo.h6">@Title</MudText>
+    @Controls
     @if (Series.Length == 0)
     {
-        <p class="metric-empty">@(Title == "Network RX/TX" ? "Select an interface with retained history." : "No retained series for this selection.")</p>
+        <p class="metric-empty">No loaded measurements for this selection.</p>
     }
     else
     {
@@ -54,7 +56,9 @@
                     }
                 </figcaption>
                 <canvas @ref="_canvas" tabindex="0" aria-label="@($"{Title} by time. Use arrow keys to inspect points.")"></canvas>
-                <p @ref="_detail" class="metric-tooltip" role="status">Hover over the chart or use the arrow keys to inspect a point.</p>
+                <div class="metric-tooltip" tabindex="0" role="region" aria-label="Chart point details">
+                    <p @ref="_detail" role="status" aria-atomic="true">Hover over the chart or use the arrow keys to inspect a point.</p>
+                </div>
             </figure>
         }
         else { <p class="metric-empty">No measured values in this range. @MetricHistoryPresentation.Quality(Series.Aggregate(MetricHistoryQuality.None, (quality, row) => quality | row.Summary.Quality))</p> }
@@ -64,12 +68,16 @@
 @code {
     [Parameter, EditorRequired] public string Title { get; set; } = "";
     [Parameter, EditorRequired] public MetricHistorySeries[] Series { get; set; } = [];
-    [Parameter, EditorRequired] public MetricHistoryResponse History { get; set; } = default!;
+    [Parameter] public string? CardId { get; set; }
+    [Parameter] public RenderFragment? Controls { get; set; }
+    [Parameter, EditorRequired] public MetricHistoryResponse? History { get; set; }
     [Parameter, EditorRequired] public TimeZoneInfo Zone { get; set; } = TimeZoneInfo.Utc;
     private IJSObjectReference? _module, _chart;
-    private MetricHistoryResponse? _drawn;
+    private MetricHistoryResponse? _drawnHistory;
+    private MetricHistorySeries[] _drawnSeries = [];
+    private string? _drawnZone;
     private ElementReference _canvas, _detail;
-    private bool _disposed;
+    private bool _disposed, _drawing;
 
     private static string SeriesLabel(MetricHistorySeries row) => row.Series.Kind switch
     {
@@ -83,18 +91,36 @@
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        if (_disposed || ReferenceEquals(_drawn, History)) return;
-        _drawn = History;
+        if (_disposed || _drawing || (ReferenceEquals(_drawnHistory, History) &&
+            _drawnZone == Zone.Id && _drawnSeries.SequenceEqual(Series))) return;
+        _drawing = true;
+        var history = History;
+        var series = Series;
+        var zone = Zone;
+        var canvas = _canvas;
+        var detail = _detail;
+        bool Current() => !_disposed && ReferenceEquals(history, History) && zone.Id == Zone.Id && series.SequenceEqual(Series);
         try
         {
-            if (_chart is not null) { await _chart.InvokeVoidAsync("dispose"); await _chart.DisposeAsync(); _chart = null; }
-            if (!Series.Any(row => row.Points.Any(point => Plotted(point) is not null))) return;
-            _module ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/monitoring-metrics.js");
-            if (_disposed || _module is null) return;
-            var timespan = History.ToExclusiveUtc - History.FromUtc;
+            var previous = _chart;
+            _chart = null;
+            await NetRatel.Web.Services.BrowserInteropCleanup.ReleaseAsync(Logger, previous);
+            if (!Current() || history is null || !series.Any(row => row.Points.Any(point => Plotted(point) is not null))) return;
+            if (_module is null)
+            {
+                var module = await JS.InvokeAsync<IJSObjectReference>("import", "./js/monitoring-metrics.js");
+                if (_disposed)
+                {
+                    await NetRatel.Web.Services.BrowserInteropCleanup.ReleaseAsync(Logger, null, module);
+                    return;
+                }
+                _module = module;
+            }
+            if (!Current() || _module is null) return;
+            var timespan = history.ToExclusiveUtc - history.FromUtc;
             var ticks = Enumerable.Range(0, 5)
-                .Select(i => TimeZoneInfo.ConvertTime(History.FromUtc + timespan * (i / 4d), Zone).ToString(timespan.TotalHours <= 24 ? "HH:mm" : "dd MMM")).ToArray();
-            var plots = Series.Select(row => new
+                .Select(i => TimeZoneInfo.ConvertTime(history.FromUtc + timespan * (i / 4d), zone).ToString(timespan.TotalHours <= 24 ? "HH:mm" : "dd MMM")).ToArray();
+            var plots = series.Select(row => new
             {
                 name = SeriesLabel(row),
                 points = row.Points.Where(point => Plotted(point) is not null).Select(point => new
@@ -103,28 +129,36 @@
                     y = Plotted(point), min = point.Statistics.Minimum, max = point.Statistics.Maximum,
                     continuous = (point.Statistics.Quality & (MetricHistoryQuality.PartialCoverage | MetricHistoryQuality.Reset |
                         MetricHistoryQuality.Missing | MetricHistoryQuality.Failed)) == 0,
-                    description = $"{MetricHistoryPresentation.Time(point.FromUtc, Zone)} to {MetricHistoryPresentation.Time(point.ToExclusiveUtc, Zone)} · " +
+                    description = $"{MetricHistoryPresentation.Time(point.FromUtc, zone)} to {MetricHistoryPresentation.Time(point.ToExclusiveUtc, zone)} · " +
                         $"{SeriesLabel(row)} {Value(Plotted(point), row)} · coverage {MetricHistoryPresentation.Duration(point.Statistics.CoveredMicroseconds)} · " +
                         MetricHistoryPresentation.Quality(point.Statistics.Quality)
                 }).ToArray()
             }).ToArray();
-            var peak = Series.SelectMany(row => row.Points.Select(point => point.Statistics.Maximum ?? Plotted(point) ?? 0)).DefaultIfEmpty(0).Max();
-            var yMax = Series[0].Series.Unit == "%" ? 100 : Math.Max(1, peak);
-            var labels = Enumerable.Range(0, 4).Select(i => MetricHistoryPresentation.Value(yMax * (i / 3d), Series[0].Series.Unit)).ToArray();
-            _chart = await _module.InvokeAsync<IJSObjectReference>("draw", _canvas, _detail, History.FromUtc.ToUnixTimeMilliseconds(),
-                History.ToExclusiveUtc.ToUnixTimeMilliseconds(), yMax, labels, ticks, plots);
+            var peak = series.SelectMany(row => row.Points.Select(point => point.Statistics.Maximum ?? Plotted(point) ?? 0)).DefaultIfEmpty(0).Max();
+            var yMax = series[0].Series.Unit == "%" ? 100 : Math.Max(1, peak);
+            var labels = Enumerable.Range(0, 4).Select(i => MetricHistoryPresentation.Value(yMax * (i / 3d), series[0].Series.Unit)).ToArray();
+            var chart = await _module.InvokeAsync<IJSObjectReference>("draw", canvas, detail, history.FromUtc.ToUnixTimeMilliseconds(),
+                history.ToExclusiveUtc.ToUnixTimeMilliseconds(), yMax, labels, ticks, plots);
+            if (Current()) _chart = chart;
+            else await NetRatel.Web.Services.BrowserInteropCleanup.ReleaseAsync(Logger, chart);
         }
-        catch (JSException) { return; }
+        catch (Exception error) when (error is JSException or JSDisconnectedException or OperationCanceledException)
+        {
+            Logger.LogDebug("Metric chart interop ended ({FailureType}).", error.GetType().Name);
+        }
+        finally
+        {
+            _drawnHistory = history;
+            _drawnSeries = series;
+            _drawnZone = zone.Id;
+            _drawing = false;
+            if (!_disposed && !Current()) StateHasChanged();
+        }
     }
 
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
     {
         _disposed = true;
-        try
-        {
-            if (_chart is not null) { await _chart.InvokeVoidAsync("dispose"); await _chart.DisposeAsync(); }
-            if (_module is not null) await _module.DisposeAsync();
-        }
-        catch (JSDisconnectedException) { return; }
+        return NetRatel.Web.Services.BrowserInteropCleanup.ReleaseAsync(Logger, _chart, _module);
     }
 }

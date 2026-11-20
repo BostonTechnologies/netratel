@@ -1,0 +1,18 @@
+<label class="workspace-tenant">Tenant
+    <select @bind:get="Value" @bind:set="ChooseAsync" disabled="@(Disabled || Options.Count == 0)" data-testid="@TestId">
+        @if (Value == 0) { <option value="0" disabled>Choose an authorized tenant</option> }
+        @foreach (var (id, name) in Options) { <option value="@id">@name</option> }
+    </select>
+</label>
+
+@code {
+    [Parameter] public int Value { get; set; }
+    [Parameter] public EventCallback<int> ValueChanged { get; set; }
+    [Parameter] public bool Disabled { get; set; }
+    [Parameter] public string? TestId { get; set; }
+    [Parameter] public IReadOnlyList<(int Id, string Name)> Options { get; set; } = [];
+
+    private Task ChooseAsync(int id) => Options.Any(tenant => tenant.Id == id)
+        ? ValueChanged.InvokeAsync(id)
+        : Task.CompletedTask;
+}

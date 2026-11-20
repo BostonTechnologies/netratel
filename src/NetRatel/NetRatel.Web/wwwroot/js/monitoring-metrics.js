@@ -35,6 +35,9 @@ export function draw(canvas, tooltip, from, to, maximum, yLabels, xLabels, serie
     const context = canvas.getContext("2d");
     if (!context) return { dispose() {} };
     const points = series.flatMap(line => line.points).sort((left, right) => left.x - right.x);
+    const instruction = "Hover over the chart or use the arrow keys to inspect a point.";
+    tooltip.textContent = instruction;
+    tooltip.title = "";
     let selected = -1;
     let left = 82;
     let right = 0;
@@ -116,7 +119,10 @@ export function draw(canvas, tooltip, from, to, maximum, yLabels, xLabels, serie
     const show = index => {
         if (!points.length || selected === index) return;
         selected = index;
-        tooltip.textContent = points[index]?.description ?? "Hover over the chart or use the arrow keys to inspect a point.";
+        const description = points[index]?.description;
+        tooltip.textContent = description ?? instruction;
+        tooltip.title = description ?? "";
+        if (tooltip.parentElement) tooltip.parentElement.scrollTop = 0;
         render();
     };
     const move = event => {

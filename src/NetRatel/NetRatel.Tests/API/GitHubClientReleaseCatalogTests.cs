@@ -145,7 +145,7 @@ public sealed class GitHubClientReleaseCatalogTests
         Assert.Equal(DateTimeOffset.MinValue, page.RefreshedAtUtc);
     }
 
-    private static GitHubClientReleaseCatalog Catalog(HttpClient client) => new(
+    internal static GitHubClientReleaseCatalog Catalog(HttpClient client) => new(
         client, new ConfigurationBuilder().Build(), TimeProvider.System,
         NullLogger<GitHubClientReleaseCatalog>.Instance);
 
@@ -164,6 +164,40 @@ public sealed class GitHubClientReleaseCatalogTests
            {{(complete ? ",{\"id\":12,\"name\":\"publication.json\",\"state\":\"uploaded\",\"size\":1},{\"id\":13,\"name\":\"SHA256SUMS\",\"state\":\"uploaded\",\"size\":1}" : "")}}
          ]}
         """;
+
+    internal sealed class SyntheticCatalogue : HttpMessageHandler
+    {
+        private readonly List<int> _releaseIds = Enumerable.Range(1, 300).ToList();
+        public List<int> Requests { get; } = [];
+        public long BytesTransferred { get; private set; }
+        public int NotModified { get; private set; }
+
+        public void Publish(int id) => _releaseIds.Insert(0, id);
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            ct.ThrowIfCancellationRequested();
+            var parameters = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(request.RequestUri!.Query);
+            var size = int.Parse(parameters["per_page"].ToString());
+            var page = int.Parse(parameters["page"].ToString());
+            Requests.Add(page);
+            var ids = _releaseIds.Skip((page - 1) * size).Take(size).ToArray();
+            var etag = $"\"{ids.FirstOrDefault()}-{ids.LastOrDefault()}\"";
+            if (request.Headers.IfNoneMatch.Any(value => value.Tag == etag))
+            {
+                NotModified++;
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotModified));
+            }
+
+            var json = "[" + string.Join(",", ids.Select(id => Release(id, $"v3.0.{id}", false, true))) + "]";
+            BytesTransferred += System.Text.Encoding.UTF8.GetByteCount(json);
+            var response = Json(json);
+            response.Headers.ETag = new(etag);
+            if (page * size < _releaseIds.Count)
+                response.Headers.TryAddWithoutValidation("Link", $"<https://api.github.com/releases?page={page + 1}>; rel=\"next\"");
+            return Task.FromResult(response);
+        }
+    }
 
     private sealed class StubHandler(Func<HttpRequestMessage, HttpResponseMessage> callback) : HttpMessageHandler
     {

@@ -4,15 +4,25 @@
 @inject IMonitoringApiService Api
 
 <div class="monitoring-client-picker" data-testid="monitoring-client-filter">
-    <label>Find computer<input type="search" value="@_search" @oninput="Search" maxlength="256" placeholder="Name or hostname" data-testid="monitoring-client-search" /></label>
-    <label>Computer<select value="@Value" @onchange="Select" aria-busy="@_loading" data-testid="monitoring-client-select">
-        <option value="">@EmptyLabel</option>
-        @if (Value is { } selected && !_page.Items.Any(client => client.AgentId == selected)) { <option value="@selected">@ClientIdentityPresentation.Name(_selectedIdentity)</option> }
-        @foreach (var client in _page.Items) { <option value="@client.AgentId">@Name(client)</option> }
-    </select></label>
-    <button type="button" class="monitoring-button" disabled="@(_loading || _page.NextCursor is null)" @onclick="Next" data-testid="monitoring-client-more">More computers</button>
-    @if (_loading) { <small role="status">Searching tenant directory…</small> }
-    @if (_error is not null) { <span role="alert">@_error</span><button type="button" class="monitoring-button" @onclick="() => Read(null)">Retry directory</button> }
+    <MudAutocomplete @key="TenantId" T="ComputerOption" @ref="_picker" Label="Computer" Placeholder="@EmptyLabel"
+                     Value="_selection" ValueChanged="SelectAsync" TextChanged="TextChanged" SearchFunc="SearchAsync"
+                     ToStringFunc="@(computer => computer?.Name)" Strict="false" Clearable="true" ResetValueOnEmptyText="true"
+                     DebounceInterval="300" MinCharacters="0" MaxItems="25" MaxLength="256" Disabled="@(TenantId <= 0)"
+                     Variant="Variant.Outlined" Margin="Margin.Dense" Dense="true" ShowProgressIndicator="true" ListItemClass="monitoring-computer-option"
+                     data-testid="monitoring-client-search">
+        <AfterItemsTemplate>
+            @if (_nextCursor is not null) { <MudButton Size="Size.Small" OnClick="NextAsync">More computers</MudButton> }
+        </AfterItemsTemplate>
+        <NoItemsTemplate>
+            @if (_nextCursor is not null) { <MudButton Size="Size.Small" OnClick="NextAsync">More computers</MudButton> }
+            else if (_error is null) { <MudText Class="pa-2" Typo="Typo.body2">No matching computers</MudText> }
+        </NoItemsTemplate>
+    </MudAutocomplete>
+    @if (_error is not null)
+    {
+        <span role="alert">@_error</span>
+        <MudButton Size="Size.Small" OnClick="RetryAsync">Retry directory</MudButton>
+    }
 </div>
 
 @code {
@@ -21,51 +31,150 @@
     [Parameter] public bool SelectFirst { get; set; }
     [Parameter] public Guid? Value { get; set; }
     [Parameter] public EventCallback<Guid?> ValueChanged { get; set; }
+
+    private sealed record ComputerOption(Guid AgentId, string Name);
+    private MudAutocomplete<ComputerOption>? _picker;
+    private ComputerOption? _selection;
+    private IReadOnlyList<ComputerOption> _results = [];
+    private CancellationTokenSource? _searchRead, _identityRead;
     private int _tenant;
     private Guid? _requestedIdentity;
-    private string? _search, _error;
-    private MonitoringClientIdentityDto? _selectedIdentity;
-    private MonitoringClientPageDto _page = new([], null, 0);
-    private bool _loading, _disposed;
-    private long _generation;
-    private CancellationTokenSource? _read;
-    private static string Name(MonitoringClientDto client) => ClientIdentityPresentation.Name(client.Identity ?? new(client.AgentId, client.DisplayName ?? "Client metadata unavailable"));
+    private string _query = "";
+    private string? _nextCursor, _continuation, _error;
+    private bool _disposed, _typed;
+
     protected override async Task OnParametersSetAsync()
     {
-        if (TenantId <= 0) return;
-        if (_tenant != TenantId) { _page = new([], null, 0); _error = null; _tenant = TenantId; _search = null; _selectedIdentity = null; _requestedIdentity = null; await Read(null);
-            if (SelectFirst && Value is null && _page.Items.FirstOrDefault() is { } first && _tenant == TenantId && !_disposed)
-                await ValueChanged.InvokeAsync(first.AgentId);
-        }
-        if (Value is not { } value || _requestedIdentity == value) return;
-        _requestedIdentity = value; var tenant = _tenant; var generation = _generation;
-        _selectedIdentity = _page.Items.FirstOrDefault(item => item.AgentId == value)?.Identity;
-        try
+        var tenant = TenantId;
+        if (_tenant != tenant)
         {
-            var identities = await Api.GetClientIdentitiesAsync(tenant, [value], _read?.Token ?? default);
-            if (!_disposed && tenant == _tenant && generation == _generation && Value == value) _selectedIdentity = identities.FirstOrDefault(identity => identity.AgentId == value);
+            _searchRead?.Cancel();
+            _identityRead?.Cancel();
+            _tenant = tenant;
+            _results = [];
+            _error = _nextCursor = _continuation = null;
+            _selection = null;
+            _requestedIdentity = null;
+            _typed = false;
+            if (tenant > 0 && SelectFirst && Value is null)
+            {
+                var initial = await SearchAsync(null, CancellationToken.None);
+                if (!_disposed && tenant == TenantId && !_typed && Value is null && initial.FirstOrDefault() is { } first)
+                    await SelectAsync(first);
+            }
         }
-        catch (OperationCanceledException) { return; }
-        catch (HttpRequestException) { if (!_disposed && tenant == _tenant) _error = "Selected computer metadata is unavailable; the computer filter is retained."; }
+
+        await ReadIdentityAsync();
     }
-    private Task Search(ChangeEventArgs args) { _search = args.Value?.ToString(); return Read(null); }
-    private Task Select(ChangeEventArgs args) => ValueChanged.InvokeAsync(Guid.TryParse(args.Value?.ToString(), out var value) ? value : null);
-    private Task Next() => _page.NextCursor is null ? Task.CompletedTask : Read(_page.NextCursor);
-    private async Task Read(string? cursor)
+
+    private async Task ReadIdentityAsync()
     {
-        _read?.Cancel(); _read?.Dispose(); _read = new();
-        var token = _read.Token; var generation = ++_generation; var tenant = _tenant;
-        _loading = true; _error = null;
+        if (_disposed || _tenant <= 0 || _requestedIdentity == Value) return;
+        _identityRead?.Cancel();
+        _identityRead?.Dispose();
+        _identityRead = null;
+        _requestedIdentity = Value;
+
+        if (Value is not { } agent)
+        {
+            _selection = null;
+            return;
+        }
+
+        if (_selection?.AgentId == agent) return;
+        _selection = _results.FirstOrDefault(item => item.AgentId == agent);
+        if (_selection is not null) return;
+
+        var tenant = _tenant;
+        _selection = new(agent, "Selected computer");
+        using var read = new CancellationTokenSource();
+        _identityRead = read;
+        var token = read.Token;
         try
         {
-            var page = await Api.SearchClientsAsync(tenant, _search, cursor, token);
-            if (_disposed || generation != _generation || tenant != _tenant) return;
-            _page = page;
+            var identities = await Api.GetClientIdentitiesAsync(tenant, [agent], token).WaitAsync(token);
+            if (!_disposed && tenant == TenantId && Value == agent && identities.FirstOrDefault(item => item.AgentId == agent) is { } identity)
+                _selection = new(agent, ClientIdentityPresentation.Name(identity));
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested) { return; }
-        catch (Exception error) when (error is HttpRequestException or System.Text.Json.JsonException)
-        { if (!_disposed && generation == _generation && tenant == _tenant) _error = "Could not search this tenant's directory."; }
-        finally { if (!_disposed && generation == _generation && tenant == _tenant) _loading = false; }
+        catch (Exception error) when (error is HttpRequestException or System.Text.Json.JsonException or OperationCanceledException)
+        {
+            if (!_disposed && tenant == TenantId && Value == agent) _selection = new(agent, "Selected computer · metadata unavailable");
+        }
+        finally
+        {
+            if (ReferenceEquals(_identityRead, read)) _identityRead = null;
+        }
     }
-    public void Dispose() { _disposed = true; ++_generation; _read?.Cancel(); _read?.Dispose(); }
+
+    private void TextChanged(string? text)
+    {
+        if (text == _selection?.Name || (_selection is null && string.IsNullOrEmpty(text))) return;
+        _typed = true;
+        _searchRead?.Cancel();
+        _nextCursor = _continuation = null;
+    }
+
+    private async Task<IEnumerable<ComputerOption>> SearchAsync(string? text, CancellationToken cancellationToken)
+    {
+        if (_tenant <= 0 || _disposed) return [];
+        _searchRead?.Cancel();
+        var tenant = _tenant;
+        var query = text?.Trim() ?? "";
+        var cursor = query == _query ? _continuation : null;
+        _query = query;
+        _continuation = null;
+        _nextCursor = null;
+        _error = null;
+
+        using var read = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        _searchRead = read;
+        var token = read.Token;
+        try
+        {
+            var page = await Api.SearchClientsAsync(tenant, query.Length == 0 ? null : query, cursor, token).WaitAsync(token);
+            if (!Current()) return _results;
+            _results = page.Items.DistinctBy(client => client.AgentId).Select(client => new ComputerOption(
+                client.AgentId, ClientIdentityPresentation.Name(client.Identity ?? new(client.AgentId, client.DisplayName ?? "Client metadata unavailable")))).ToArray();
+            _nextCursor = page.NextCursor;
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { return _results; }
+        catch (Exception error) when (error is HttpRequestException or System.Text.Json.JsonException or OperationCanceledException)
+        {
+            if (Current())
+            {
+                _results = [];
+                _error = "Could not search this tenant’s directory.";
+            }
+        }
+        finally
+        {
+            if (ReferenceEquals(_searchRead, read)) _searchRead = null;
+        }
+        return _results;
+
+        bool Current() => !_disposed && tenant == TenantId && ReferenceEquals(_searchRead, read) && !token.IsCancellationRequested;
+    }
+
+    private Task SelectAsync(ComputerOption? option)
+    {
+        _selection = option;
+        return option?.AgentId == Value ? Task.CompletedTask : ValueChanged.InvokeAsync(option?.AgentId);
+    }
+
+    private async Task NextAsync()
+    {
+        if (_picker is null || _nextCursor is null) return;
+        _continuation = _nextCursor;
+        await _picker.OpenMenuAsync();
+    }
+
+    private Task RetryAsync() => _picker?.OpenMenuAsync() ?? Task.CompletedTask;
+
+    public void Dispose()
+    {
+        _disposed = true;
+        _searchRead?.Cancel();
+        _identityRead?.Cancel();
+    }
 }

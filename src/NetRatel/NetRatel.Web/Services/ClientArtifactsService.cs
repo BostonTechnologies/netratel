@@ -18,6 +18,9 @@ public interface IClientArtifactsService
 {
     Task<ClientReleaseWorkspacePageModel> GetReleaseWorkspaceAsync(int page, int pageSize, string? search, string channel,
         string? runtime, string? localState, bool refresh, CancellationToken ct = default) => throw new NotSupportedException();
+    Task<ClientReleaseWorkspacePageModel> GetReleaseWorkspaceAsync(int page, int pageSize, string? search, string channel,
+        string? runtime, string? localState, bool refresh, Guid? discoveryId, CancellationToken ct) =>
+        GetReleaseWorkspaceAsync(page, pageSize, search, channel, runtime, localState, refresh, ct);
     Task<List<ClientReleaseDeletionPlanModel>> PreviewReleaseBatchAsync(string[] versions, CancellationToken ct = default) => throw new NotSupportedException();
     Task<List<ClientReleaseBatchResultModel>> DeleteReleaseBatchAsync(ClientReleaseDeletionPlanModel[] plans, bool disableAllRuntimes, CancellationToken ct = default) => throw new NotSupportedException();
     Task RetireReleaseAttemptAsync(string version, Guid attemptId, string reason, CancellationToken ct = default) => throw new NotSupportedException();
@@ -130,13 +133,18 @@ public class ClientArtifactsService : IClientArtifactsService
         _jsRuntime = jsRuntime;
     }
 
+    public Task<ClientReleaseWorkspacePageModel> GetReleaseWorkspaceAsync(int page, int pageSize, string? search,
+        string channel, string? runtime, string? localState, bool refresh, CancellationToken ct = default) =>
+        GetReleaseWorkspaceAsync(page, pageSize, search, channel, runtime, localState, refresh, null, ct);
+
     public async Task<ClientReleaseWorkspacePageModel> GetReleaseWorkspaceAsync(int page, int pageSize, string? search,
-        string channel, string? runtime, string? localState, bool refresh, CancellationToken ct = default)
+        string channel, string? runtime, string? localState, bool refresh, Guid? discoveryId, CancellationToken ct)
     {
         var uri = $"/api/v1/client-updates/local-releases/catalogue?page={page}&pageSize={pageSize}&channel={Uri.EscapeDataString(channel)}&refresh={refresh.ToString().ToLowerInvariant()}";
         if (!string.IsNullOrWhiteSpace(search)) uri += "&search=" + Uri.EscapeDataString(search);
         if (!string.IsNullOrWhiteSpace(runtime)) uri += "&runtime=" + Uri.EscapeDataString(runtime);
         if (!string.IsNullOrWhiteSpace(localState)) uri += "&localState=" + Uri.EscapeDataString(localState);
+        if (discoveryId is { } id) uri += $"&discoveryId={id:D}";
         return await _uploads.Http.GetFromJsonAsync<ClientReleaseWorkspacePageModel>(uri, ct)
             ?? throw new HttpRequestException("The release workspace response was empty.");
     }

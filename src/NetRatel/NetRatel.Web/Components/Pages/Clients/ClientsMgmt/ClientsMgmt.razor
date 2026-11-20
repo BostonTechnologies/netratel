@@ -22,7 +22,6 @@
         <MudText Typo="Typo.h6">Agent Installers &amp; Updates</MudText>
         <MudText Typo="Typo.caption" Color="Color.Secondary">Release catalogue, installers and rollout activity.</MudText>
     </div>
-    <div class="client-mgmt-policy"><TenantUpdatePolicySummary Tenants="_tenants" /></div>
     <MudStack Row="true" Class="flex-wrap client-mgmt-header-actions" Spacing="1">
         <MudButton @ref="_automationOpener" Size="Size.Small" Color="Color.Primary" Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Tune" OnClick="OpenAutomationDrawer" data-testid="automation-settings-button">Automation @if (_automationDirty) { <MudChip T="string" Size="Size.Small" Color="Color.Warning" Class="ml-1">Unsaved</MudChip> }</MudButton>
         <MudMenu Dense="true" Size="Size.Small" Variant="Variant.Outlined" Label="Advanced" AriaLabel="Advanced: upload artifact" StartIcon="@Icons.Material.Filled.MoreHoriz" data-testid="advanced-client-actions">
@@ -58,6 +57,7 @@
                     <MudTooltip Text="Refresh remote discovery and local inventory"><MudIconButton Icon="@Icons.Material.Filled.Refresh" aria-label="Refresh release catalogue" Disabled="_githubLoading" OnClick="@(() => LoadGitHubAsync(true))" /></MudTooltip>
                 </MudStack>
                 @if (_workspace?.RefreshedAtUtc > DateTimeOffset.MinValue) { <MudText Typo="Typo.caption">Upstream checked @_workspace.RefreshedAtUtc.ToUniversalTime().ToString("g") UTC</MudText> }
+                @if (_workspace?.SourcePaged == true) { <MudText Typo="Typo.caption">Matching local versions first, then GitHub discovery order. Filters can leave a page with fewer matches.</MudText> }
                 @if (_githubLoading) { <MudProgressLinear Indeterminate="true" aria-label="Loading release catalogue" /> }
                 @if (_githubError is not null) { <MudAlert Severity="Severity.Error">@_githubError</MudAlert> }
                 @if (_importsError is not null) { <MudAlert Severity="Severity.Warning">@_importsError</MudAlert> }
@@ -168,54 +168,62 @@
                     </ChildRowContent>
                     <NoRecordsContent><MudText Typo="Typo.body2">@(_githubError is null ? "No releases or local versions match these filters." : "Release inventory unavailable. Refresh to retry.")</MudText></NoRecordsContent>
                 </MudTable>
-                <ClientManagementPager Label="GitHub releases" Page="_githubPageNumber" PageSize="_githubPageSize" ItemCount="@(_workspace?.Items.Count ?? 0)" Total="@(_workspace?.Total ?? 0)" HasMore="@((_githubPageNumber + 1) * _githubPageSize < (_workspace?.Total ?? 0))" Busy="_githubLoading" PageChanged="ChangeGitHubPageAsync" PageSizeChanged="ChangeGitHubPageSizeAsync" />
+                <ClientManagementPager Label="GitHub releases" Page="_githubPageNumber" PageSize="_githubPageSize" ItemCount="@(_workspace?.Items.Count ?? 0)"
+                                       Total="@(_workspace?.Total)" SourcePaged="@(_workspace?.SourcePaged == true)" HasMore="WorkspaceHasMore"
+                                       Busy="_githubLoading" PageChanged="ChangeGitHubPageAsync" PageSizeChanged="ChangeGitHubPageSizeAsync" />
             </MudStack>
         </MudTabPanel>
 
         <MudTabPanel Text="Activity">
                 <MudStack Spacing="2" data-testid="attempt-management-panel">
                     <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween" Class="flex-wrap" Spacing="1">
-                        <MudText Typo="Typo.caption" role="status" aria-live="polite" data-testid="activity-live-status">@_activityStatus@if (_activityUpdatedAt is { } updated) { <span> · Updated @ActivityTime(updated)</span> }</MudText>
-                        <MudButton Size="Size.Small" Variant="Variant.Text" StartIcon="@Icons.Material.Filled.Refresh" Disabled="_attemptsLoading" OnClick="RefreshActivityAsync" data-testid="activity-refresh">Refresh</MudButton>
+                        <MudText Typo="Typo.caption" role="status" aria-live="polite" data-testid="activity-live-status">@_activityStatus@if (_activityRefreshPending) { <span> · Updates pending</span> }@if (_activityUpdatedAt is { } updated) { <span> · Updated @ActivityTime(updated)</span> }</MudText>
+                        <MudButton Size="Size.Small" Variant="Variant.Text" StartIcon="@Icons.Material.Filled.Refresh" OnClick="RefreshActivityAsync" data-testid="activity-refresh">Refresh</MudButton>
                     </MudStack>
                     @if (!string.IsNullOrWhiteSpace(_activityError)) { <MudAlert Severity="Severity.Warning" Dense="true" data-testid="activity-refresh-error">@_activityError</MudAlert> }
                     <MudText Typo="Typo.caption" Color="Color.Secondary">Groups count this filtered page.</MudText>
                     <MudGrid Spacing="2">
                         <MudItem xs="12" md="4"><MudTextField T="string" Value="@_attemptSearch" ValueChanged="OnAttemptSearchChanged" Immediate="true" Label="Search attempts" Placeholder="Hostname, tenant, version, status" Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search" Clearable="true" data-testid="attempt-search" /></MudItem>
-                        <MudItem xs="12" sm="6" md="2"><MudSelect T="int?" Value="_attemptTenantId" ValueChanged="OnAttemptTenantChanged" Label="Tenant"><MudSelectItem T="int?" Value="@null">All tenants</MudSelectItem>@foreach (var tenant in _tenants) { <MudSelectItem T="int?" Value="@tenant.TenantId">@tenant.Name</MudSelectItem> }</MudSelect></MudItem>
-                        <MudItem xs="12" sm="6" md="2"><MudSelect T="string" Value="@_attemptRid" ValueChanged="OnAttemptRidChanged" Label="Runtime"><MudSelectItem Value="@string.Empty">All runtimes</MudSelectItem>@foreach (var runtimeId in RuntimeIds) { <MudSelectItem Value="@runtimeId">@runtimeId</MudSelectItem> }</MudSelect></MudItem>
+                        <MudItem xs="12" sm="6" md="2"><MudSelect T="int?" Value="_attemptTenantId" ValueChanged="OnAttemptTenantChanged" Label="Tenant" OpenChanged='open => SetActivityPopup("tenant", open)'><MudSelectItem T="int?" Value="@null">All tenants</MudSelectItem>@foreach (var tenant in _tenants) { <MudSelectItem T="int?" Value="@tenant.TenantId">@tenant.Name</MudSelectItem> }</MudSelect></MudItem>
+                        <MudItem xs="12" sm="6" md="2"><MudSelect T="string" Value="@_attemptRid" ValueChanged="OnAttemptRidChanged" Label="Runtime" OpenChanged='open => SetActivityPopup("runtime", open)'><MudSelectItem Value="@string.Empty">All runtimes</MudSelectItem>@foreach (var runtimeId in RuntimeIds) { <MudSelectItem Value="@runtimeId">@runtimeId</MudSelectItem> }</MudSelect></MudItem>
                         <MudItem xs="12" sm="6" md="2"><MudTextField T="string" Value="@_attemptVersion" ValueChanged="OnAttemptVersionChanged" Immediate="true" Label="Version" Clearable="true" /></MudItem>
-                        <MudItem xs="12" sm="6" md="2"><MudSelect T="string" Value="@_attemptStatus" ValueChanged="OnAttemptStatusChanged" Label="Status"><MudSelectItem Value="@string.Empty">All states</MudSelectItem>@foreach (var state in UpdateStatuses) { <MudSelectItem Value="@state">@state</MudSelectItem> }</MudSelect></MudItem>
-                        <MudItem xs="12" sm="6" md="3"><MudSelect T="string" Value="@_attemptGrouping" ValueChanged="OnAttemptGroupingChanged" Label="Group current page" data-testid="attempt-grouping"><MudSelectItem Value="@("None")">None</MudSelectItem><MudSelectItem Value="@("Tenant")">Tenant</MudSelectItem><MudSelectItem Value="@("Version")">Version</MudSelectItem><MudSelectItem Value="@("RID")">RID</MudSelectItem><MudSelectItem Value="@("Status")">Status</MudSelectItem></MudSelect></MudItem>
+                        <MudItem xs="12" sm="6" md="2"><MudSelect T="string" Value="@_attemptStatus" ValueChanged="OnAttemptStatusChanged" Label="Status" OpenChanged='open => SetActivityPopup("status", open)'><MudSelectItem Value="@string.Empty">All states</MudSelectItem>@foreach (var state in UpdateStatuses) { <MudSelectItem Value="@state">@state</MudSelectItem> }</MudSelect></MudItem>
+                        <MudItem xs="12" sm="6" md="3"><MudSelect T="string" Value="@_attemptGrouping" ValueChanged="OnAttemptGroupingChanged" Label="Group current page" OpenChanged='open => SetActivityPopup("group", open)'  data-testid="attempt-grouping"><MudSelectItem Value="@("None")">None</MudSelectItem><MudSelectItem Value="@("Tenant")">Tenant</MudSelectItem><MudSelectItem Value="@("Version")">Version</MudSelectItem><MudSelectItem Value="@("RID")">RID</MudSelectItem><MudSelectItem Value="@("Status")">Status</MudSelectItem></MudSelect></MudItem>
                     </MudGrid>
                     <div class="client-activity-table">
-                    <MudTable T="ClientUpdateHistoryItemModel" @ref="_attemptTable" RowsPerPage="20" ServerData="LoadAttemptsAsync" GroupBy="AttemptGroup" RowStyleFunc="ActivityRowStyle" Dense="true" Hover="true" Loading="_attemptsLoading" Breakpoint="Breakpoint.Sm" data-testid="attempt-table">
+                    <MudTable T="ActivityRow" Items="_activityItems" RowsPerPage="_activityPageSize" GroupBy="AttemptGroup" RowStyleFunc="ActivityRowStyle" Dense="true" Hover="true" Loading="@(!_activityHasSnapshot && _activityRead is not null)" Breakpoint="Breakpoint.Sm" data-testid="attempt-table">
                         <HeaderContent><MudTh>Client</MudTh><MudTh>Release</MudTh><MudTh>Status</MudTh><MudTh>Failure</MudTh><MudTh>Updated</MudTh></HeaderContent>
                         <GroupHeaderTemplate><td colspan="5"><MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1"><MudIconButton Class="mud-table-row-expander" Size="Size.Small" Icon="@(IsActivityGroupExpanded(context.Key) ? Icons.Material.Filled.ExpandMore : Icons.Material.Filled.ChevronRight)" OnClick="@(() => ToggleActivityGroup(context.Key))" aria-label="@(IsActivityGroupExpanded(context.Key) ? "Collapse group" : "Expand group")" aria-expanded="@IsActivityGroupExpanded(context.Key).ToString().ToLowerInvariant()" /><MudText Typo="Typo.subtitle2">@context.Key <span class="text-secondary">(@context.Items.Count() on this page)</span></MudText></MudStack></td></GroupHeaderTemplate>
                         <RowTemplate>
-                            <MudTd DataLabel="Client"><MudTooltip Text="@context.AgentId.ToString()"><MudStack Spacing="0"><MudText Typo="Typo.body2">@ClientTarget(context.ClientHostName, context.ClientDisplayName, context.AgentId)</MudText><MudText Typo="Typo.caption" Color="Color.Secondary">@(context.TenantName ?? $"Tenant {context.TenantId}")@(DisplaySecondaryName(context.ClientHostName, context.ClientDisplayName))</MudText></MudStack></MudTooltip></MudTd>
-                            <MudTd DataLabel="Release"><MudText Typo="Typo.body2">@context.RuntimeId · Target @context.TargetVersion</MudText><MudText Typo="Typo.caption" Color="Color.Secondary">Running observed: @(context.ObservedRunningVersion ?? "unknown")@(context.ObservedRunningVersion is null ? string.Empty : context.PresenceActive ? " · online" : " · last known")</MudText>@if (context.LocalPackagePurged) { <MudText Typo="Typo.caption" Color="Color.Secondary">Historical · local package deleted</MudText> }</MudTd>
-                            <MudTd DataLabel="Status"><MudChip T="string" Size="Size.Small" Color="@UpdateStatusColor(context.Status)">@context.Status</MudChip><MudText Typo="Typo.caption">@InstallationSummary(context)</MudText><MudText Typo="Typo.caption">@ServerReportSummary(context)</MudText>@if (context.ReconciliationState is not null) { <MudText Typo="Typo.caption" Color="Color.Warning">Reconciliation required</MudText> }@if (context.SuspendedAtUtc is not null) { <MudText Typo="Typo.caption" Color="Color.Warning">Automatic updates suspended</MudText> }</MudTd>
+                            @{ var attempt = context.Item; }
+                            <MudTd DataLabel="Client"><MudTooltip Text="@attempt.AgentId.ToString()"><MudStack Spacing="0"><MudText Typo="Typo.body2">@ClientTarget(attempt.ClientHostName, attempt.ClientDisplayName, attempt.AgentId)</MudText><MudText Typo="Typo.caption" Color="Color.Secondary">@(attempt.TenantName ?? $"Tenant {attempt.TenantId}")@(DisplaySecondaryName(attempt.ClientHostName, attempt.ClientDisplayName))</MudText></MudStack></MudTooltip></MudTd>
+                            <MudTd DataLabel="Release"><MudText Typo="Typo.body2">@attempt.RuntimeId · Target @attempt.TargetVersion</MudText><MudText Typo="Typo.caption" Color="Color.Secondary">Running observed: @(attempt.ObservedRunningVersion ?? "unknown")@(attempt.ObservedRunningVersion is null ? string.Empty : attempt.PresenceActive ? " · online" : " · last known")</MudText>@if (attempt.LocalPackagePurged) { <MudText Typo="Typo.caption" Color="Color.Secondary">Historical · local package deleted</MudText> }</MudTd>
+                            <MudTd DataLabel="Status"><MudChip T="string" Size="Size.Small" Color="@UpdateStatusColor(attempt.Status)">@attempt.Status</MudChip><MudText Typo="Typo.caption">@InstallationSummary(attempt)</MudText><MudText Typo="Typo.caption">@ServerReportSummary(attempt)</MudText>@if (attempt.ReconciliationState is not null) { <MudText Typo="Typo.caption" Color="Color.Warning">Reconciliation required</MudText> }@if (attempt.SuspendedAtUtc is not null) { <MudText Typo="Typo.caption" Color="Color.Warning">Automatic updates suspended</MudText> }</MudTd>
                             <MudTd DataLabel="Failure">
-                                <MudTooltip Text="@(context.ReportedMessage ?? context.Message ?? context.ReportedFailureCode ?? context.FailureCode ?? "No failure detail")"><span class="client-mgmt-clamp">@(context.ReportedFailureCode ?? context.FailureCode ?? context.ReportedMessage ?? context.Message ?? "—")</span></MudTooltip>
-                                <button type="button" class="client-activity-details-toggle" @ref="_activityDetailLaunchers[context.AttemptId]" @onclick="() => ToggleActivityDetails(context.AttemptId)" aria-expanded="@_expandedActivityAttempts.Contains(context.AttemptId).ToString().ToLowerInvariant()" aria-controls="@($"attempt-details-{context.AttemptId:D}")" data-testid="attempt-details-toggle">
-                                    <MudIcon Icon="@(_expandedActivityAttempts.Contains(context.AttemptId) ? Icons.Material.Filled.ExpandLess : Icons.Material.Filled.ExpandMore)" Size="Size.Small" />Details
+                                <MudTooltip Text="@(attempt.ReportedMessage ?? attempt.Message ?? attempt.ReportedFailureCode ?? attempt.FailureCode ?? "No failure detail")"><span class="client-mgmt-clamp">@(attempt.ReportedFailureCode ?? attempt.FailureCode ?? attempt.ReportedMessage ?? attempt.Message ?? "—")</span></MudTooltip>
+                                <button type="button" class="client-activity-details-toggle" @ref="_activityDetailLaunchers[attempt.AttemptId]" @onclick="() => ToggleActivityDetails(attempt.AttemptId)" aria-expanded="@_expandedActivityAttempts.Contains(attempt.AttemptId).ToString().ToLowerInvariant()" aria-controls="@($"attempt-details-{attempt.AttemptId:D}")" data-testid="attempt-details-toggle">
+                                    <MudIcon Icon="@(_expandedActivityAttempts.Contains(attempt.AttemptId) ? Icons.Material.Filled.ExpandLess : Icons.Material.Filled.ExpandMore)" Size="Size.Small" />Details
                                 </button>
                             </MudTd>
-                            <MudTd DataLabel="Updated">@ActivityTime(context.UpdatedAtUtc)</MudTd>
+                            <MudTd DataLabel="Updated">@ActivityTime(attempt.UpdatedAtUtc)</MudTd>
                         </RowTemplate>
                         <ChildRowContent>
-                            @if (_expandedActivityAttempts.Contains(context.AttemptId))
+                            @if (_expandedActivityAttempts.Contains(context.Item.AttemptId))
                             {
-                                <MudTr @key="context.AttemptId" Class="client-activity-details-row" Style="@ActivityRowStyle(context, 0)" data-testid="attempt-details-row">
+                                <MudTr @key="context.Item.AttemptId" Class="client-activity-details-row" Style="@ActivityRowStyle(context, 0)" data-testid="attempt-details-row">
                                     <td colspan="5" class="client-activity-details-cell">
-                                        <ClientUpdateAttemptDetails Item="context" OperatorAction="@OperatorAction(context)" ExpandedChanged="expanded => SetActivityDetailsExpanded(context.AttemptId, expanded)" />
+                                        <ClientUpdateAttemptDetails Item="context.Item" OperatorAction="@OperatorAction(context.Item)" ExpandedChanged="expanded => SetActivityDetailsExpanded(context.Item.AttemptId, expanded)" />
                                     </td>
                                 </MudTr>
                             }
                         </ChildRowContent>
                         <NoRecordsContent><MudText Typo="Typo.body2" Color="Color.Secondary">@(_activityError is null ? "No update attempts match the active filters." : "Activity is unavailable. Use Refresh to retry.")</MudText></NoRecordsContent>
-                        <PagerContent><MudTablePager PageSizeOptions="PageSizes" InfoFormat="@ActivityCountFormat" /></PagerContent>
+                        <PagerContent>
+                            <ClientManagementPager Label="Activity" Page="_activityPage" PageSize="_activityPageSize" ItemCount="_activityItems.Count"
+                                                   Total="@(_activityHasSnapshot ? _activityTotal : null)" HasMore="@((_activityPage + 1L) * _activityPageSize < _activityTotal)"
+                                                   PageChanged="ChangeActivityPageAsync" PageSizeChanged="ChangeActivityPageSizeAsync"
+                                                   SizeOpenChanged='open => SetActivityPopup("rows", open)' />
+                        </PagerContent>
                     </MudTable>
                     </div>
                 </MudStack>
@@ -477,10 +485,8 @@
     private string? _githubError;
     private int _githubPageNumber;
     private bool _githubLoading;
-    private MudTable<ClientUpdateHistoryItemModel>? _attemptTable;
     private MudTable<AgentClientUpdateStateModel>? _suspendedTable;
     private int _activeTab;
-    private bool _attemptsLoading;
     private bool _suspendedLoading;
     private string _artifactRid = string.Empty;
     private string? _attemptSearch;
@@ -607,9 +613,10 @@
             return;
         }
 
-        await StopActivityAsync();
         _activeTab = index;
-        _pendingTabReload = index;
+        if (index != 0) _githubLoadCancellation?.Cancel();
+        await StopActivityAsync();
+        if (_activeTab == index) _pendingTabReload = index;
         return;
     }
 
@@ -621,9 +628,9 @@
                 await LoadGitHubAsync(false);
                 await LoadAutomationAsync();
                 return true;
-            case ActivityTab when _attemptTable is not null:
+            case ActivityTab:
                 await StartActivityAsync();
-                await _attemptTable.ReloadServerData();
+                await RefreshActivityAsync();
                 return true;
             case SuspendedTab when _suspendedTable is not null:
                 await _suspendedTable.ReloadServerData();
@@ -648,6 +655,7 @@
 
     private async Task LoadGitHubAsync(bool refresh)
     {
+        if (_activeTab != 0 || _automationDisposed) return;
         _githubLoadCancellation?.Cancel();
         using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(_importPolling.Token);
         _githubLoadCancellation = cancellation;
@@ -660,14 +668,14 @@
         try
         {
             var page = await Artifacts.GetReleaseWorkspaceAsync(pageNumber, pageSize, _workspaceSearch,
-                channel, _workspaceRuntime, _workspaceLocalState, refresh, cancellation.Token);
+                channel, _workspaceRuntime, _workspaceLocalState, refresh, _workspace?.DiscoveryId, cancellation.Token);
             if (_automationDisposed || generation != _githubLoadGeneration || cancellation.IsCancellationRequested) return;
             _workspace = page; _githubPageNumber = page.Page;
             _githubImports = page.Items.SelectMany(x => x.Imports).GroupBy(x => x.GitHubReleaseId).ToDictionary(x => x.Key, x => x.First());
             _localDeletions = page.Items.Where(x => x.Cleanup is not null).Select(x => x.Cleanup!).ToList();
 
         }
-        catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { return; }
         catch (HttpRequestException)
         {
             if (!_automationDisposed && generation == _githubLoadGeneration)
@@ -924,7 +932,7 @@
     }
     private async Task ChangeGitHubPageAsync(int page)
     {
-        if (_githubLoading || page < 0 || page == _githubPageNumber || (page > _githubPageNumber && (page * _githubPageSize >= (_workspace?.Total ?? 0)))) return;
+        if (_githubLoading || page < 0 || page == _githubPageNumber || (page > _githubPageNumber && !WorkspaceHasMore)) return;
         _githubPageNumber = page;
         await LoadGitHubAsync(false);
     }
@@ -956,7 +964,7 @@
             _githubImports[releaseId] = operation;
             await LoadGitHubAsync(false);
         }
-        catch (OperationCanceledException) when (_importPolling.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (_importPolling.IsCancellationRequested) { return; }
         catch (HttpRequestException) { _importsError = "Could not queue the release import. Check the release evidence and try again."; }
         finally { _importActionBusy = false; }
     }
@@ -966,7 +974,7 @@
         if (_importActionBusy || _automationDisposed) return;
         _importActionBusy = true;
         try { await Artifacts.CancelReleaseImportAsync(id, _importPolling.Token); await RefreshImportsAsync(); }
-        catch (OperationCanceledException) when (_importPolling.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (_importPolling.IsCancellationRequested) { return; }
         catch (HttpRequestException) { _importsError = "Could not cancel the import. Refresh its status and try again."; }
         finally { _importActionBusy = false; }
     }
@@ -976,7 +984,7 @@
         if (_importActionBusy || _automationDisposed) return;
         _importActionBusy = true;
         try { await Artifacts.RetryReleaseImportAsync(id, _importPolling.Token); await RefreshImportsAsync(); }
-        catch (OperationCanceledException) when (_importPolling.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (_importPolling.IsCancellationRequested) { return; }
         catch (HttpRequestException) { _importsError = "Could not retry the import. Refresh its status and try again."; }
         finally { _importActionBusy = false; }
     }
@@ -998,7 +1006,7 @@
             await Artifacts.PublishReleaseImportAsync(id, isPrerelease, _importPolling.Token);
             await RefreshImportsAsync();
         }
-        catch (OperationCanceledException) when (_importPolling.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (_importPolling.IsCancellationRequested) { return; }
         catch (HttpRequestException)
         {
             _importsError = "Could not publish the client pack. Refresh its status and inspect the imported artifacts.";
@@ -1041,13 +1049,13 @@
     {
         var changed = EmptyToNull(_attemptSearch) != EmptyToNull(value);
         _attemptSearch = value;
-        return changed ? ActivityScopeChangedAsync() : Task.CompletedTask;
+        return changed ? ActivityScopeChangedAsync(editing: true) : Task.CompletedTask;
     }
     private Task OnAttemptTenantChanged(int? value)
     {
         if (_attemptTenantId == value) return Task.CompletedTask;
         _attemptTenantId = value;
-        return ActivityScopeChangedAsync();
+        return ActivityScopeChangedAsync(tenantChanged: true);
     }
     private Task OnAttemptRidChanged(string value)
     {
@@ -1059,7 +1067,7 @@
     {
         var changed = EmptyToNull(_attemptVersion) != EmptyToNull(value);
         _attemptVersion = value;
-        return changed ? ActivityScopeChangedAsync() : Task.CompletedTask;
+        return changed ? ActivityScopeChangedAsync(editing: true) : Task.CompletedTask;
     }
     private Task OnAttemptStatusChanged(string value)
     {
@@ -1084,18 +1092,18 @@
         await table.ReloadServerData();
     }
 
-    private TableGroupDefinition<ClientUpdateHistoryItemModel>? AttemptGroup => _activityGroup ??= BuildAttemptGroup();
+    private TableGroupDefinition<ActivityRow>? AttemptGroup => _activityGroup ??= BuildAttemptGroup();
 
-    private TableGroupDefinition<ClientUpdateHistoryItemModel>? BuildAttemptGroup() => _attemptGrouping switch
+    private TableGroupDefinition<ActivityRow>? BuildAttemptGroup() => _attemptGrouping switch
     {
-        "Tenant" => NewAttemptGroup("Tenant", item => item.TenantName ?? $"Tenant {item.TenantId}"),
-        "Version" => NewAttemptGroup("Version", item => item.TargetVersion),
-        "RID" => NewAttemptGroup("RID", item => item.RuntimeId),
-        "Status" => NewAttemptGroup("Status", item => item.Status),
+        "Tenant" => NewAttemptGroup("Tenant", row => row.Item.TenantName ?? $"Tenant {row.Item.TenantId}"),
+        "Version" => NewAttemptGroup("Version", row => row.Item.TargetVersion),
+        "RID" => NewAttemptGroup("RID", row => row.Item.RuntimeId),
+        "Status" => NewAttemptGroup("Status", row => row.Item.Status),
         _ => null
     };
 
-    private static TableGroupDefinition<ClientUpdateHistoryItemModel> NewAttemptGroup(string name, Func<ClientUpdateHistoryItemModel, object> selector) => new(selector) { GroupName = name, Expandable = false, IsInitiallyExpanded = true, Indentation = false };
+    private static TableGroupDefinition<ActivityRow> NewAttemptGroup(string name, Func<ActivityRow, object> selector) => new(selector) { GroupName = name, Expandable = false, IsInitiallyExpanded = true, Indentation = false };
 
     private Task OpenUpload() => Artifacts.OpenUploadDialogAsync(_artifactRid, OnUploaded);
     private Task OnUploaded() => LoadGitHubAsync(false);
@@ -1261,10 +1269,8 @@
 
 <style>
     .client-mgmt-workspace { width: 100%; max-width: 1600px; margin: 0 auto; min-width: 0; }
-    .client-mgmt-header { display: grid; grid-template-columns: minmax(15rem, 1fr) minmax(18rem, 34rem) auto; align-items: start; gap: .75rem 1rem; padding: .25rem .25rem .75rem; }
-    .client-mgmt-identity { padding-top: .5rem; min-width: 0; }
-    .client-mgmt-policy { min-width: 0; }
-    .client-mgmt-header-actions { padding-top: .5rem; }
+    .client-mgmt-header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: .5rem 1rem; padding: .25rem .25rem .5rem; }
+    .client-mgmt-identity { min-width: 0; }
     .client-mgmt-surface { border: 1px solid var(--mud-palette-divider); border-radius: var(--netratel-radius-surface, 7px); min-width: 0; }
     .client-mgmt-tab-panel { min-width: 0; }
     .client-mgmt-clamp { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
@@ -1291,14 +1297,7 @@
     .client-deployment-dialog .mud-dialog-content { min-width: 0; max-height: calc(100dvh - 160px); overflow-y: auto; overflow-wrap: anywhere; }
     .client-deployment-dialog .mud-dialog-actions { flex-wrap: wrap; }
 
-    @@media (max-width: 1100px) {
-        .client-mgmt-header { grid-template-columns: minmax(0, 1fr) auto; }
-        .client-mgmt-policy { grid-column: 1 / -1; grid-row: 2; }
-    }
     @@media (max-width: 600px) {
-        .client-mgmt-header { grid-template-columns: minmax(0, 1fr); gap: .5rem; }
-        .client-mgmt-header-actions { grid-row: 2; padding-top: 0; }
-        .client-mgmt-policy { grid-row: 3; }
         .client-mgmt-surface { padding-left: 0.5rem !important; padding-right: 0.5rem !important; }
         .client-mgmt-channel-filter { min-width: min(190px, 100%); max-width: 100%; }
         .client-github-table .mud-table-cell { padding-inline: 10px; }

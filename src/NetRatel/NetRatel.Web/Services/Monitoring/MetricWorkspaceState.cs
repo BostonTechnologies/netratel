@@ -21,6 +21,7 @@ public sealed class MetricWorkspaceState(IMonitoringApiService api) : IDisposabl
     private string? _soleInterface;
     public bool Loading { get; private set; }
     public bool PermissionDenied { get; private set; }
+    public bool HasReadAccess { get; private set; }
     public bool CheckingAccess { get; private set; }
     public string? Error { get; private set; }
     public MetricCatalogue? Catalogue { get; private set; }
@@ -42,8 +43,9 @@ public sealed class MetricWorkspaceState(IMonitoringApiService api) : IDisposabl
         {
             _client = (tenant, scope.Agent);
             ClearResults();
+            HasReadAccess = false;
         }
-        if (scope is not null) History = null;
+        if (scope is not null && Catalogue is { } retained) ResolveSelection(scope, retained.Series);
         CheckingAccess = scope is null;
         Loading = true;
         Error = null;
@@ -57,6 +59,7 @@ public sealed class MetricWorkspaceState(IMonitoringApiService api) : IDisposabl
                 LoseRead();
                 return;
             }
+            HasReadAccess = true;
             if (scope?.Agent is not { } agent) return;
             var catalogue = await api.GetMetricCatalogueAsync(tenant, agent, token: token);
             if (!Current()) return;
@@ -70,7 +73,11 @@ public sealed class MetricWorkspaceState(IMonitoringApiService api) : IDisposabl
                 throw new HttpRequestException("The catalogue returned a different computer.");
             Catalogue = catalogue;
             var ids = ResolveSelection(scope, catalogue.Series);
-            if (ids.Length == 0) return;
+            if (ids.Length == 0)
+            {
+                History = null;
+                return;
+            }
             var history = await api.QueryMetricsAsync(tenant, agent,
                 new(ids, scope.From, scope.To, MaximumPointsPerSeries: 500), token);
             if (!Current()) return;
@@ -81,12 +88,13 @@ public sealed class MetricWorkspaceState(IMonitoringApiService api) : IDisposabl
         catch (OperationCanceledException) when (token.IsCancellationRequested) { return; }
         catch (Exception error) when (error is ReauthRequiredException or HttpRequestException { StatusCode: HttpStatusCode.Forbidden or HttpStatusCode.Unauthorized })
         { if (Current()) LoseRead(); }
-        catch (Exception error) when (error is HttpRequestException or System.Text.Json.JsonException)
+        catch (Exception error) when (error is HttpRequestException or System.Text.Json.JsonException or OperationCanceledException)
         {
             if (Current())
             {
-                ClearResults();
-                Error = error is HttpRequestException { StatusCode: HttpStatusCode.NotFound }
+                var notFound = error is HttpRequestException { StatusCode: HttpStatusCode.NotFound };
+                if (notFound) ClearResults();
+                Error = notFound
                     ? "This computer or a selected metric is no longer available." : "Could not load historical metrics. Refresh to try again.";
             }
         }
@@ -128,6 +136,7 @@ public sealed class MetricWorkspaceState(IMonitoringApiService api) : IDisposabl
     private void LoseRead()
     {
         PermissionDenied = true;
+        HasReadAccess = false;
         ClearResults();
     }
 

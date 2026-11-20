@@ -6,6 +6,7 @@
 @using NetRatel.Shared.Contracts.Netclaw
 @using NetRatel.Web.Services
 @using NetRatel.Web.Components.Shared
+@using NetRatel.Web.Components.Shared.Navigation
 @implements IDisposable
 @inject IPromptLibraryApiService Api
 @inject NavigationManager Navigation
@@ -13,23 +14,26 @@
 <PageTitle>AI Ops · Prompts</PageTitle>
 <NavigationLock ConfirmExternalNavigation="@Dirty" OnBeforeInternalNavigation="BeforeNavigationAsync" />
 <main class="prompt-library" data-testid="prompt-library">
-    <header class="prompt-toolbar">
-        <h1>Prompts</h1>
-        <div class="prompt-tenant-field">
-            <MudSelect T="int" Label="Tenant" Value="_tenant" ValueChanged="ChooseTenantAsync" Dense="true" Margin="Margin.Dense" Variant="Variant.Outlined" Disabled="@(_tenants.Count == 0)" data-testid="prompt-tenant">
-                @foreach (var tenant in _tenants) { <MudSelectItem T="int" Value="tenant.TenantId">@tenant.TenantName</MudSelectItem> }
-            </MudSelect>
-        </div>
+    <WorkspaceHeader Area="WorkspaceArea.AiOps" TenantId="_tenant" RequestedTenantId="RequestedTenant">
+        <TenantContext>
+            <div class="prompt-tenant-field">
+                <MudSelect T="int" Label="Tenant" Value="_tenant" ValueChanged="ChooseTenant" Dense="true" Margin="Margin.Dense" Variant="Variant.Outlined" Disabled="@(_tenants.Count == 0)" data-testid="prompt-tenant">
+                    @foreach (var tenant in _tenants) { <MudSelectItem T="int" Value="tenant.TenantId">@tenant.TenantName</MudSelectItem> }
+                </MudSelect>
+            </div>
+        </TenantContext>
+    </WorkspaceHeader>
+    <div class="prompt-toolbar" aria-label="Prompt actions">
         <div class="prompt-search-field">
             <MudTextField T="string" Label="Search prompts" @bind-Value="_search" Immediate="true" MaxLength="128" Margin="Margin.Dense" Variant="Variant.Outlined" Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search" OnKeyDown="SearchKeyDownAsync" />
         </div>
         <MudTooltip Text="Search / refresh"><MudIconButton Icon="@Icons.Material.Filled.Refresh" Size="Size.Small" OnClick="ReloadAsync" Disabled="@(_busy || _tenant == 0)" aria-label="Search / refresh" /></MudTooltip>
         <MudCheckBox T="bool" Value="_includeArchived" ValueChanged="ArchivedFilterChangedAsync" Label="Archived" Size="Size.Small" Dense="true" Disabled="@(_busy || _tenant == 0)" />
         <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small" StartIcon="@Icons.Material.Filled.Add" OnClick="NewPrompt" Disabled="@(_busy || !CanManage)" data-testid="prompt-new">New</MudButton>
-    </header>
+    </div>
     @if (_error is not null) { <MudAlert Severity="Severity.Error" Dense="true" Class="prompt-notice" role="alert">@_error</MudAlert> }
     @if (_loading) { <p role="status">Loading authorized tenant prompts…</p> }
-    else if (_tenants.Count == 0) { <p>No prompt access. A tenant role with read telemetry permission grants access to this library.</p> }
+    else if (_tenant == 0) { <p>No prompt access. A tenant role with read telemetry permission grants access to this library.</p> }
     else
     {
         @if (_discard)
@@ -151,6 +155,7 @@
     private string _search = "", _name = "", _description = "", _body = "", _initialName = "", _initialDescription = "", _initialBody = "";
     private string? _error;
     private bool _loading = true, _busy, _saving, _editing, _includeArchived, _discard, _disposed, _confirmArchive, _removeDefaultOnArchive, _initializedPage;
+    private bool _appliedTenant;
     private bool CanManage => _tenants.FirstOrDefault(x => x.TenantId == _tenant)?.CanManage == true;
     private bool Dirty => _editing && (_name != _initialName || _description != _initialDescription || _body != _initialBody);
     protected override async Task OnInitializedAsync()
@@ -165,28 +170,39 @@
                 if (!string.IsNullOrWhiteSpace(subject) && !string.IsNullOrWhiteSpace(name) && name != subject) _actorNames[subject] = name;
             }
             _tenants = await Api.TenantsAsync(_scope.Token);
-            _tenant = RequestedTenant is { } requested ? _tenants.FirstOrDefault(x => x.TenantId == requested)?.TenantId ?? 0 : _tenants.FirstOrDefault()?.TenantId ?? 0;
-            if (_tenant > 0) _list = await Api.ListAsync(_tenant, ct: _scope.Token);
-            else if (RequestedTenant is not null) _error = "The linked tenant is unavailable to this account.";
         }
         catch (HttpRequestException e) { _error = e.Message; }
-        catch (OperationCanceledException) { if (!_disposed) _error = "The prompt request timed out. Refresh to retry."; }
-        finally { _loading = false; _initializedPage = true; _appliedRequestedTenant = RequestedTenant; }
+        catch (OperationCanceledException) when (_disposed) { return; }
+        catch (OperationCanceledException) { _error = "The prompt request timed out. Refresh to retry."; }
+        finally { _loading = false; _initializedPage = true; }
     }
     protected override async Task OnParametersSetAsync()
     {
-        if (!_initializedPage || _disposed || _appliedRequestedTenant == RequestedTenant) return;
+        if (!_initializedPage || _disposed || (_appliedTenant && _appliedRequestedTenant == RequestedTenant)) return;
+        _appliedTenant = true;
         _appliedRequestedTenant = RequestedTenant;
-        if (RequestedTenant is not { } tenant || tenant == _tenant) return;
+        var tenant = RequestedTenant ?? _tenants.FirstOrDefault()?.TenantId ?? 0;
+        if (tenant == _tenant) return;
         if (Dirty) { KeepEditing(); _nextTenant = tenant; _discard = true; return; }
         await SwitchTenantAsync(tenant);
     }
     private bool Current(int tenant, int generation) => !_disposed && tenant == _tenant && generation == _generation;
-    private async Task ChooseTenantAsync(int tenant)
+    private Task ChooseTenant(int tenant)
     {
-        if (tenant == _tenant || !_tenants.Any(x => x.TenantId == tenant)) return;
-        if (Dirty) { KeepEditing(); _nextTenant = tenant; _discard = true; return; }
-        await SwitchTenantAsync(tenant);
+        if (tenant == _tenant || !_tenants.Any(x => x.TenantId == tenant)) return Task.CompletedTask;
+        if (Dirty)
+        {
+            KeepEditing(); _nextTenant = tenant; _discard = true;
+            return Task.CompletedTask;
+        }
+        return SelectTenantAsync(tenant);
+    }
+
+    private Task SelectTenantAsync(int tenant)
+    {
+        RequestedTenant = _appliedRequestedTenant = tenant;
+        Navigation.NavigateTo(WorkspaceNavigation.WithTenant("/ai/prompts", tenant));
+        return SwitchTenantAsync(tenant);
     }
     private string ActorName(string id) => _actorNames.GetValueOrDefault(id) ?? "Unresolved operator";
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -221,7 +237,7 @@
         var tenant = _tenant; var generation = _generation; var ct = _scope.Token;
         _busy = true; _saving = lockEditor; _error = null;
         try { await action(tenant, generation, ct); }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
         catch (OperationCanceledException) { if (Current(tenant, generation)) _error = "The request timed out. Refresh the saved state before retrying."; }
         catch (HttpRequestException e) { if (Current(tenant, generation)) _error = e.Message; }
         finally { if (Current(tenant, generation)) { _busy = false; _saving = false; } }
@@ -283,7 +299,7 @@
     {
         var tenant = _nextTenant; var prompt = _nextPrompt; var navigation = _nextNavigation; var newPrompt = _nextNew;
         ClearEditor();
-        if (tenant is { } tenantId) await SwitchTenantAsync(tenantId);
+        if (tenant is { } tenantId) await SelectTenantAsync(tenantId);
         else if (prompt is { } promptId) await OpenAsync(promptId);
         else if (newPrompt) NewPrompt();
         else if (navigation is not null) Navigation.NavigateTo(navigation);

@@ -3,6 +3,7 @@
 @attribute [Authorize]
 @using NetRatel.Shared.Contracts.Flows
 @using NetRatel.Web.Services.Flows
+@using NetRatel.Web.Components.Shared.Navigation
 @implements IAsyncDisposable
 @inject IFlowApiService Api
 @inject IJSRuntime JS
@@ -11,13 +12,13 @@
 
 <PageTitle>Flows</PageTitle>
 <main class="flows-page" data-testid="flows-page">
-    <header class="flows-heading"><div><h1 id="flows-heading" tabindex="-1">Flows</h1><p>Build workflows from monitoring and committed execution outcomes.</p></div>
-        <label>Tenant<select @bind:get="_tenantId" @bind:set="TenantChosenAsync" disabled="@(_loadingTenants || _tenants.Count == 0)" data-testid="flow-tenant">
-            @if (_tenantId == 0) { <option value="0" disabled>Choose an authorized tenant</option> }
-            @foreach (var tenant in _tenants) { <option value="@tenant.TenantId">@tenant.TenantName</option> }
-        </select></label>
-        @if (_tenantId > 0) { <a href="@($"/flows/connectors?tenantId={_tenantId}")">RatelDesk connectors</a> }
-    </header>
+    <WorkspaceHeader Area="WorkspaceArea.Monitoring" TenantId="_tenantId" RequestedTenantId="RequestedTenantId" HeadingId="flows-heading">
+        <TenantContext>
+            <WorkspaceTenantPicker Value="_tenantId" ValueChanged="TenantChosenAsync" Disabled="_loadingTenants" TestId="flow-tenant"
+                                   Options="@_tenants.Select(tenant => (tenant.TenantId, tenant.TenantName)).ToArray()" />
+        </TenantContext>
+    </WorkspaceHeader>
+    @if (_tenantId > 0) { <a class="flows-connectors-link" href="@WorkspaceNavigation.WithTenant("/flows/connectors", _tenantId)">RatelDesk connectors</a> }
     @if (_error is not null) { <div role="alert" class="flow-error" data-testid="flows-error">@_error<button type="button" @onclick="RetryReadAsync" data-testid="flows-retry">Retry</button></div> }
     @if (_loadingTenants) { <p role="status">Loading authorized tenants…</p> }
     else if (_tenants.Count == 0) { <p role="status" data-testid="flows-no-access">No tenants grant access to Flows.</p> }
@@ -203,11 +204,12 @@
         if (_processedQuery == query || _loadingTenants || _disposed) return;
         if (_dirty) return;
         _processedQuery = query;
-        if (RequestedTenantId is { } tenant && tenant != _tenantId)
+        var targetTenant = RequestedTenantId ?? _tenants.FirstOrDefault()?.TenantId ?? 0;
+        if (targetTenant != _tenantId)
         {
-            if (!_tenants.Any(t => t.TenantId == tenant))
+            if (!_tenants.Any(t => t.TenantId == targetTenant))
             { ResetScope(); _tenantId = 0; _pageData = new() { Items = [], TotalItems = 0 }; _error = "The linked tenant does not grant Flows access. Choose an authorized tenant."; return; }
-            await ChangeTenantAsync(tenant);
+            await ChangeTenantAsync(targetTenant, fromRoute: true);
             if (_processedQuery != query || _disposed) return;
         }
         // A new result link is a new read scope even when its tenant is unchanged.
@@ -319,9 +321,17 @@
         _editor = null; _busy = false; _error = null; _showCreate = false;
         _historyError = null; _historyOpen = _historyLoading = _runLoading = _restoreHistoryFocus = false; ++_historyGeneration;
     }
-    private async Task ChangeTenantAsync(int tenant)
+    private async Task ChangeTenantAsync(int tenant, bool fromRoute = false)
     {
-        ResetScope(); _tenantId = tenant; _query = _query with { PageIndex = 0 }; PersistQuery(); _pageData = new() { Items = [], TotalItems = 0 };
+        ResetScope();
+        _tenantId = tenant;
+        _pageData = new() { Items = [], TotalItems = 0 };
+        if (!fromRoute)
+        {
+            _query = new(PageSize: _query.PageSize);
+            _search = "";
+            PersistQuery(clearDetails: true);
+        }
         await ReloadAsync();
     }
     private Task CreateAsync(bool template) => ScopeCommandAsync(async (tenant, generation, token) =>

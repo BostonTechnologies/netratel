@@ -4,6 +4,7 @@ using Microsoft.Extensions.DependencyInjection;
 using MudBlazor.Services;
 using NetRatel.Shared.Contracts.SoftwareInventory;
 using NetRatel.Web.Components.SoftwareInventory;
+using NetRatel.Web.Components.Pages.Clients;
 using NetRatel.Web.Services.SoftwareInventory;
 using Xunit;
 
@@ -18,6 +19,22 @@ public sealed class SoftwareInventoryPanelTests : AsyncBunitContext
         JSInterop.Mode = JSRuntimeMode.Loose;
         Services.AddMudServices(options => options.PopoverOptions.CheckForPopoverProvider = false);
         Services.AddSingleton<ISoftwareInventoryApiService>(_api);
+    }
+    [Fact]
+    public void Tenant_inventory_loads_the_data_workspace_directly()
+    {
+        var cut = Render<SoftwareInventoryPage>();
+        cut.WaitForAssertion(() => cut.FindAll("[role=tab]").Select(tab => tab.TextContent.Trim())
+            .Should().Equal("Software", "Installations", "Devices", "Changes"));
+        var summary = cut.Find("[data-testid=inventory-overview]");
+        summary.QuerySelectorAll("strong").Should().HaveCount(6);
+        cut.Markup.Should().Contain("Last complete scan").And.NotContain("Collection policy").And.NotContain("Asset intelligence");
+        cut.FindAll("a").Should().Contain(link => link.TextContent.Contains("Export installations", StringComparison.Ordinal));
+        cut.FindAll("[role=tab]").Select(tab => tab.GetAttribute("aria-selected")).Should()
+            .Equal("true", "false", "false", "false");
+        cut.FindAll("[role=tab]").Single(tab => tab.TextContent.Trim() == "Installations").Click();
+        cut.WaitForAssertion(() => cut.FindAll("[role=tab]").Select(tab => tab.GetAttribute("aria-selected")).Should()
+            .Equal("false", "true", "false", "false"));
     }
     [Theory]
     [InlineData(true)]
@@ -168,6 +185,8 @@ public sealed class SoftwareInventoryPanelTests : AsyncBunitContext
             Empty ? [] : Items, Empty ? 0 : Items.Count, 0, 50, Empty ? 0 : Items.Select(item => item.AgentId).Distinct().Count()));
         public Task<SoftwarePage<SoftwarePrevalenceDto>> AggregateAsync(int tenant, SoftwareInventoryQuery query, CancellationToken ct) =>
             Task.FromResult(new SoftwarePage<SoftwarePrevalenceDto>([], 0, 0, 50));
+        public Task<SoftwarePage<SoftwareInventoryTenant>> TenantsAsync(int page, CancellationToken ct) =>
+            Task.FromResult(new SoftwarePage<SoftwareInventoryTenant>([new(7, "Canary")], 1, 0, 100));
         public Task<SoftwareInventorySummary> SummaryAsync(int tenant, CancellationToken ct) =>
             Task.FromResult(new SoftwareInventorySummary(0, 0, 0, 0, 0, 0, 0, 0, null));
     }
