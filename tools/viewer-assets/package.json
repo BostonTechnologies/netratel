@@ -7,7 +7,7 @@
   },
   "dependencies": {
     "docx-preview": "0.3.3",
-    "jszip": "3.10.1",
+    "jszip": "3.10.2",
     "pdfjs-dist": "6.5.438"
   },
   "overrides": {
