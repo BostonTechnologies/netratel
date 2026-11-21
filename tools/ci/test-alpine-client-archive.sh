@@ -42,7 +42,8 @@ test "$actual" = "$1+$2"
 echo "Version passed ($actual)"
 
 status=0
-timeout 40 ./NetRatel.Client </dev/null > "$work/startup.log" 2>&1 || status=$?
+# Enable the informational startup line for this headless enrollment probe.
+NetRatel__Logging__MinimumLevel=Information timeout 40 ./NetRatel.Client </dev/null > "$work/startup.log" 2>&1 || status=$?
 if [ "$status" != 11 ] ||
    ! grep -F "Application $actual starting." "$work/startup.log" ||
    ! grep -F "Enrollment code is required for first run." "$work/startup.log"; then
