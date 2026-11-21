@@ -205,7 +205,7 @@ jobs:
         run: |
           sdk="$(jq -er '.sdk.version' global.json)"
           alpine_packages="$RUNNER_TEMP/alpine-nuget"
-          mkdir -p "$alpine_packages"
+          mkdir -p "$alpine_packages" artifacts
           docker run --rm --platform linux/amd64 \
             --volume "$PWD:/src" --workdir /src \
             --volume "$alpine_packages:$alpine_packages" --env NUGET_PACKAGES="$alpine_packages" \
