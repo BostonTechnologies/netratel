@@ -41,20 +41,23 @@ public sealed class NavigationResponsiveTests
             var page = await context.NewPageAsync();
             await page.GotoAsync($"{fixture.BaseAddress}/clients/mgmt");
             var drawer = page.GetByTestId("app-navigation-drawer");
-            var estate = drawer.Locator(".mud-nav-group[aria-label='Estate Management'] > button");
-            await estate.WaitForAsync(new() { State = WaitForSelectorState.Attached });
+            var orchestration = drawer.Locator(".mud-nav-group[aria-label='Orchestration'] > button");
+            await orchestration.WaitForAsync(new() { State = WaitForSelectorState.Attached });
             if (await drawer.EvaluateAsync<bool>("element => element.classList.contains('mud-drawer--closed')"))
                 await page.GetByTestId("navigation-toggle").ClickAsync();
             await Assertions.Expect(drawer).ToBeVisibleAsync();
-            await estate.ClickAsync();
-            await Assertions.Expect(estate).ToHaveAttributeAsync("aria-expanded", "true");
+            if (await orchestration.GetAttributeAsync("aria-expanded") != "true")
+                await orchestration.ClickAsync();
+            await Assertions.Expect(orchestration).ToHaveAttributeAsync("aria-expanded", "true");
+            await Assertions.Expect(drawer.GetByRole(AriaRole.Link, new() { Name = "Fleet", Exact = true })).ToHaveCountAsync(1);
+            await Assertions.Expect(drawer.GetByRole(AriaRole.Link, new() { Name = "Tasks", Exact = true })).ToHaveCountAsync(1);
             var admin = drawer.Locator(".mud-nav-group[aria-label='Admin'] > button");
             await admin.ClickAsync();
             await Assertions.Expect(admin).ToHaveAttributeAsync("aria-expanded", "true");
             await page.EvaluateAsync("scale => document.documentElement.style.fontSize = `${16 * scale / 100}px`", textScale);
 
             await Assertions.Expect(drawer.Locator("a[href='/account/integration-credentials']")).ToHaveCountAsync(1);
-            Assert.Equal(new[] { "/account/integration-credentials", "/admin/access", "/admin/branding", "/admin/app-settings", "/clients/settings" },
+            Assert.Equal(new[] { "/account/integration-credentials", "/admin/operator-policies", "/admin/access", "/admin/branding", "/admin/app-settings", "/clients/settings" },
                 await drawer.Locator(".mud-nav-group[aria-label='Admin'] a").EvaluateAllAsync<string[]>("links => links.map(link => link.getAttribute('href'))"));
             var violations = await drawer.EvaluateAsync<string[]>("""
                 drawer => {
@@ -89,28 +92,37 @@ public sealed class NavigationResponsiveTests
             Assert.Empty(violations);
             if (textScale == 100)
             {
-                Assert.True(await estate.Locator(".mud-nav-link-text").EvaluateAsync<bool>("label => label.scrollWidth <= label.clientWidth"),
-                    "Estate Management must fit without truncation at the normal desktop width, including the scrollbar.");
+                Assert.True(await orchestration.Locator(".mud-nav-link-text").EvaluateAsync<bool>("label => label.scrollWidth <= label.clientWidth"),
+                    "Orchestration must fit without truncation at the normal desktop width, including the scrollbar.");
             }
             var account = drawer.Locator("a[href='/account/security']");
             await Assertions.Expect(account).ToHaveAccessibleNameAsync(LongAccountAuthenticationStateProvider.AccountName);
             Assert.True(await account.Locator(".mud-nav-link-text").EvaluateAsync<bool>("label => label.scrollWidth > label.clientWidth"),
                 "The long-account fixture must exercise truncation.");
-            await estate.FocusAsync();
+            await orchestration.FocusAsync();
             await page.Keyboard.PressAsync("Space");
-            await Assertions.Expect(estate).ToHaveAttributeAsync("aria-expanded", "false");
+            await Assertions.Expect(orchestration).ToHaveAttributeAsync("aria-expanded", "false");
             await page.Keyboard.PressAsync("Space");
-            await Assertions.Expect(estate).ToHaveAttributeAsync("aria-expanded", "true");
-            Assert.True(await estate.EvaluateAsync<bool>("button => button === document.activeElement"), "Expansion must retain keyboard focus.");
-            await AssertKeyboardDisclosureAsync(estate, "Estate Management");
-            await page.ScreenshotAsync(new() { Path = Path.Combine(evidenceDirectory, $"navigation-{name}-estate.png"), Animations = ScreenshotAnimations.Disabled });
-            await drawer.Locator("a[href='/clients']").ClickAsync();
+            await Assertions.Expect(orchestration).ToHaveAttributeAsync("aria-expanded", "true");
+            Assert.True(await orchestration.EvaluateAsync<bool>("button => button === document.activeElement"), "Expansion must retain keyboard focus.");
+            await AssertKeyboardDisclosureAsync(orchestration, "Orchestration");
+            await page.ScreenshotAsync(new() { Path = Path.Combine(evidenceDirectory, $"navigation-{name}-orchestration.png"), Animations = ScreenshotAnimations.Disabled });
+            if (width < 1280)
+            {
+                var bounds = (await drawer.BoundingBoxAsync())!;
+                var contentWidth = await page.EvaluateAsync<int>("() => document.documentElement.clientWidth");
+                await page.Mouse.ClickAsync((float)((bounds.X + bounds.Width + contentWidth) / 2), 300);
+                await Assertions.Expect(drawer).ToHaveClassAsync(new System.Text.RegularExpressions.Regex("mud-drawer--closed"));
+            }
+            var fleetTabs = page.GetByTestId("fleet-workspace-tabs");
+            await Assertions.Expect(fleetTabs.Locator("a[aria-current=page]")).ToHaveTextAsync("Install & Update");
+            await fleetTabs.GetByRole(AriaRole.Link, new() { Name = "Clients", Exact = true }).ClickAsync();
             await Assertions.Expect(drawer.Locator("a.active")).ToHaveAttributeAsync("href", "/clients");
             await page.GoBackAsync();
             await Assertions.Expect(drawer.Locator("a.active")).ToHaveAttributeAsync("href", "/clients/mgmt");
             await page.GoForwardAsync();
             await Assertions.Expect(drawer.Locator("a.active")).ToHaveAttributeAsync("href", "/clients");
-            await Assertions.Expect(estate).ToHaveAttributeAsync("aria-expanded", "true");
+            await Assertions.Expect(orchestration).ToHaveAttributeAsync("aria-expanded", "true");
             if (await drawer.EvaluateAsync<bool>("element => element.classList.contains('mud-drawer--closed')"))
                 await page.GetByTestId("navigation-toggle").ClickAsync();
 

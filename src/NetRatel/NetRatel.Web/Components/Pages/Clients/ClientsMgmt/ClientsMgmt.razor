@@ -3,6 +3,7 @@
 @using Microsoft.AspNetCore.Components.Routing
 @using NetRatel.Shared
 @using NetRatel.Shared.Contracts
+@using NetRatel.Web.Components.Shared.Navigation
 @using NetRatel.Web.Services
 @using NetRatel.Web.Services.Tenants
 @inject IClientArtifactsService Artifacts
@@ -16,12 +17,10 @@
     <span data-testid="clients-mgmt-interactive" hidden></span>
 }
 <NavigationLock OnBeforeInternalNavigation="GuardAutomationNavigationAsync" ConfirmExternalNavigation="@_automationDirty" />
+<PageTitle>Install &amp; Update · Fleet</PageTitle>
 <div class="client-mgmt-workspace" data-testid="client-management-workspace">
+<WorkspaceHeader Area="WorkspaceArea.Fleet" />
 <header class="client-mgmt-header" data-testid="client-management-header">
-    <div class="client-mgmt-identity">
-        <MudText Typo="Typo.h6">Agent Installers &amp; Updates</MudText>
-        <MudText Typo="Typo.caption" Color="Color.Secondary">Release catalogue, installers and rollout activity.</MudText>
-    </div>
     <MudStack Row="true" Class="flex-wrap client-mgmt-header-actions" Spacing="1">
         <MudButton @ref="_automationOpener" Size="Size.Small" Color="Color.Primary" Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.Tune" OnClick="OpenAutomationDrawer" data-testid="automation-settings-button">Automation @if (_automationDirty) { <MudChip T="string" Size="Size.Small" Color="Color.Warning" Class="ml-1">Unsaved</MudChip> }</MudButton>
         <MudMenu Dense="true" Size="Size.Small" Variant="Variant.Outlined" Label="Advanced" AriaLabel="Advanced: upload artifact" StartIcon="@Icons.Material.Filled.MoreHoriz" data-testid="advanced-client-actions">
@@ -57,7 +56,7 @@
                     <MudTooltip Text="Refresh remote discovery and local inventory"><MudIconButton Icon="@Icons.Material.Filled.Refresh" aria-label="Refresh release catalogue" Disabled="_githubLoading" OnClick="@(() => LoadGitHubAsync(true))" /></MudTooltip>
                 </MudStack>
                 @if (_workspace?.RefreshedAtUtc > DateTimeOffset.MinValue) { <MudText Typo="Typo.caption">Upstream checked @_workspace.RefreshedAtUtc.ToUniversalTime().ToString("g") UTC</MudText> }
-                @if (_workspace?.SourcePaged == true) { <MudText Typo="Typo.caption">Matching local versions first, then GitHub discovery order. Filters can leave a page with fewer matches.</MudText> }
+                @if (_workspace?.SourcePaged == true) { <MudText Typo="Typo.caption">GitHub releases appear first in source order. Use Local state to search stored versions and cleanup receipts. Filters may return fewer rows.</MudText> }
                 @if (_githubLoading) { <MudProgressLinear Indeterminate="true" aria-label="Loading release catalogue" /> }
                 @if (_githubError is not null) { <MudAlert Severity="Severity.Error">@_githubError</MudAlert> }
                 @if (_importsError is not null) { <MudAlert Severity="Severity.Warning">@_importsError</MudAlert> }
@@ -75,18 +74,25 @@
                     }
                 </MudStack>
                 <MudTable T="ClientReleaseWorkspaceRowModel" Items="@(_workspace?.Items ?? [])" RowsPerPage="_githubPageSize" Dense="true" Hover="true" Breakpoint="Breakpoint.Sm" Class="client-github-table" data-testid="github-release-table">
-                    <HeaderContent><MudTh>Details / select</MudTh><MudTh>Release</MudTh><MudTh>Source / local state</MudTh><MudTh>Runtimes / storage</MudTh><MudTh>Actions</MudTh></HeaderContent>
+                    <HeaderContent><MudTh Class="release-select-column">Select</MudTh><MudTh>Release</MudTh><MudTh>Source / local state</MudTh><MudTh>Runtimes / storage</MudTh><MudTh>Actions</MudTh></HeaderContent>
                     <RowTemplate>
-                        <MudTd DataLabel="Details / select"><div class="release-cell-content">
-                            <MudIconButton @ref="_releaseLaunchers[context.Version]" Icon="@(_expandedVersions.Contains(context.Version) ? Icons.Material.Filled.ExpandMore : Icons.Material.Filled.ChevronRight)" Size="Size.Small" aria-label="@($"Details for {context.Version}")" aria-expanded="@_expandedVersions.Contains(context.Version).ToString().ToLowerInvariant()" OnClick="@(() => ToggleReleaseDetailsAsync(context.Version))" data-testid="release-details-toggle" />
+                        <MudTd DataLabel="Select" Class="release-select-column">
                             <MudCheckBox T="bool" Value="@_selectedVersions.Contains(context.Version)" ValueChanged="@(value => SelectVersion(context.Version, value))" Disabled="@(_workspace?.CanManageCleanup != true || !context.HasLocal && context.Cleanup?.State is not ("Pending" or "Failed"))" aria-label="@($"Select local version {context.Version}")" Size="Size.Small" />
-                        </div></MudTd>
-                        <MudTd DataLabel="Release"><div class="release-cell-content">
-                            <MudText Typo="Typo.subtitle2" data-testid="github-release-name">@context.Name</MudText>
-                            <MudText Typo="Typo.caption">@context.Version · @context.Channel @context.PublishedAtUtc?.ToUniversalTime().ToString("g")</MudText>
-                            @if (context.Remote is not null) { <MudLink Href="@context.Remote.DetailsUrl" Target="_blank" rel="noopener noreferrer" Typo="Typo.caption">Upstream release</MudLink> }
-                            else { <MudText Typo="Typo.caption">Local only · upstream availability unconfirmed</MudText> }
-                        </div></MudTd>
+                        </MudTd>
+                        <MudTd DataLabel="Release">
+                            <div class="release-name-cell">
+                                <MudIconButton @ref="_releaseLaunchers[context.Version]" Icon="@(_expandedVersions.Contains(context.Version) ? Icons.Material.Filled.ExpandMore : Icons.Material.Filled.ChevronRight)"
+                                               Size="Size.Small" Class="release-details-toggle" aria-label="@($"Details for {context.Version}")"
+                                               aria-expanded="@_expandedVersions.Contains(context.Version).ToString().ToLowerInvariant()" aria-controls="@($"release-details-{context.Version}")"
+                                               OnClick="@(() => ToggleReleaseDetailsAsync(context.Version))" data-testid="release-details-toggle" />
+                                <div class="release-cell-content">
+                                    <MudText Typo="Typo.subtitle2" data-testid="github-release-name">@context.Name</MudText>
+                                    <MudText Typo="Typo.caption">@context.Version · @context.Channel @context.PublishedAtUtc?.ToUniversalTime().ToString("g")</MudText>
+                                    @if (context.Remote is not null) { <MudLink Href="@context.Remote.DetailsUrl" Target="_blank" rel="noopener noreferrer" Typo="Typo.caption">Upstream release</MudLink> }
+                                    else { <MudText Typo="Typo.caption">Local only · upstream availability unconfirmed</MudText> }
+                                </div>
+                            </div>
+                        </MudTd>
                         <MudTd DataLabel="Source / local state"><div class="release-cell-content">
                             <MudText Typo="Typo.caption">Source: @(_sourceStates.GetValueOrDefault(context.Version)?.State ?? context.SourceState)</MudText>
                             @if (context.Cleanup is not null) { <MudText Typo="Typo.caption">Cleanup: @context.Cleanup.State · @(context.Cleanup.Suppressed ? "automatic re-import suppressed" : "re-import allowed")</MudText> }
@@ -131,7 +137,7 @@
                     <ChildRowContent>
                         @if (_expandedVersions.Contains(context.Version))
                         {
-                            <MudTr @key="context.Version" Class="release-details-row" data-testid="release-details-row"><td colspan="5" class="release-details-cell">
+                            <MudTr @key="context.Version" id="@($"release-details-{context.Version}")" Class="release-details-row" data-testid="release-details-row"><td colspan="5" class="release-details-cell">
                             <MudExpansionPanels Elevation="0" Outlined="true"><MudExpansionPanel Expanded="true" ExpandedChanged="@(expanded => SetReleaseExpandedAsync(context.Version, expanded))" Class="release-details-panel">
                                 <TitleContent><div class="release-details-heading"><MudIcon Icon="@Icons.Material.Outlined.Inventory2" Color="Color.Primary" Size="Size.Small" /><strong>Local assets</strong><span>@context.Version · all runtime packages</span></div></TitleContent>
                                 <ChildContent>

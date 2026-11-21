@@ -71,7 +71,9 @@
     .chat-avatar { display: none; }
     .chat-transcript { padding: .75rem; }
     .chat-composer-area { padding: .35rem .65rem; }
-    .chat-composer textarea { min-height: 44px; max-height: 20dvh; }
+    .chat-composer textarea { min-height: 44px; max-height: 20dvh; font-size: 1rem; }
+    .chat-composer-toolbar { flex-wrap: wrap; gap: .35rem; }
+    .chat-send-button { margin-left: auto; }
     .chat-composer-hint { margin: .3rem 0; }
     .chat-notice, .chat-approval { margin-left: .65rem; margin-right: .65rem; }
 }

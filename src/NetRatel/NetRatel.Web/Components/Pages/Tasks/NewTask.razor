@@ -7,6 +7,7 @@
 @using NetRatel.Shared.Contracts.Scripts
 @using NetRatel.Shared.Contracts.Tasks
 @using NetRatel.Web.Models.Clients
+@using NetRatel.Web.Components.Shared.Navigation
 @using NetRatel.Web.Services.Clients
 @implements IDisposable
 @inject ITenantApiService TenantApi
@@ -17,11 +18,11 @@
 @inject ISnackbar Snackbar
 @inject IDialogService DialogService
 
+<PageTitle>Tasks</PageTitle>
 <div class="task-console">
+    <WorkspaceHeader Area="WorkspaceArea.Tasks" />
     <div class="task-toolbar">
-        <MudText Typo="Typo.h6">New Task</MudText>
         <MudText Typo="Typo.body2" Class="task-scope">@(_selectedTenant?.Name ?? "Select tenant") · @_environment.ToShortLabel() · @GetSelectedTargetDisplay()</MudText>
-        <MudButton Size="Size.Small" Variant="Variant.Text" Href="/tasks/history" StartIcon="@Icons.Material.Filled.History">History</MudButton>
     </div>
 
     <div class="task-workspace">
@@ -477,7 +478,7 @@
                 await LoadClientsAsync();
             }
         }
-        catch (OperationCanceledException) { }
+        catch (OperationCanceledException) { return; }
         catch (Exception ex)
         {
             Snackbar.Add($"Failed to load tenants: {ex.Message}", Severity.Error);
@@ -609,7 +610,7 @@
             _clients.AddRange(matches.Skip((pageNumber - 1) * ClientPageSize).Take(ClientPageSize));
             _clientTotalCount = matches.Count;
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
         catch (Exception ex)
         {
             if (generation != _clientLoadGeneration) return;
@@ -658,7 +659,7 @@
             _recentUnavailable = false;
             _recentUpdatedAt = DateTimeOffset.UtcNow;
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
         catch (Exception)
         {
             if (generation == _recentLoadGeneration) _recentUnavailable = true;
@@ -886,7 +887,7 @@
                 Snackbar.Add("Task was not accepted. Check execution permissions and input before retrying.", Severity.Error);
             }
         }
-        catch (OperationCanceledException) { }
+        catch (OperationCanceledException) { return; }
         catch (Exception ex)
         {
             Snackbar.Add($"Failed to create task: {ex.Message}", Severity.Error);
@@ -983,7 +984,7 @@
             if (task is not null) _launchedTask = task;
             _launchStatusUnavailable = task is null;
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
         catch (Exception)
         {
             if (requestId == _launchedRequestId) _launchStatusUnavailable = true;
@@ -1011,7 +1012,7 @@
                 if (!await timer.WaitForNextTickAsync(ct)) return;
             }
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
     }
 
     private static bool IsTerminal(TaskDto? task) => task?.Status is "Completed" or "Failed" or "Cancelled";

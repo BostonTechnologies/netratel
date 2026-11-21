@@ -185,7 +185,7 @@ public sealed class SoftwareInventoryPanelTests : AsyncBunitContext
             Empty ? [] : Items, Empty ? 0 : Items.Count, 0, 50, Empty ? 0 : Items.Select(item => item.AgentId).Distinct().Count()));
         public Task<SoftwarePage<SoftwarePrevalenceDto>> AggregateAsync(int tenant, SoftwareInventoryQuery query, CancellationToken ct) =>
             Task.FromResult(new SoftwarePage<SoftwarePrevalenceDto>([], 0, 0, 50));
-        public Task<SoftwarePage<SoftwareInventoryTenant>> TenantsAsync(int page, CancellationToken ct) =>
+        public Task<SoftwarePage<SoftwareInventoryTenant>> TenantsAsync(int page, CancellationToken ct, string? search = null, int pageSize = 100) =>
             Task.FromResult(new SoftwarePage<SoftwareInventoryTenant>([new(7, "Canary")], 1, 0, 100));
         public Task<SoftwareInventorySummary> SummaryAsync(int tenant, CancellationToken ct) =>
             Task.FromResult(new SoftwareInventorySummary(0, 0, 0, 0, 0, 0, 0, 0, null));

@@ -38,6 +38,7 @@ public sealed class NetRatelNotificationDisplaySanitizer(IClientDisplayNameResol
         {
             CorrelationId = ReplaceClientIdentities(notification.CorrelationId, displayNames) ?? string.Empty,
             EntityId = ReplaceClientIdentities(notification.EntityId, displayNames),
+            ClientName = ReplaceClientIdentities(notification.ClientName, displayNames),
             Message = ReplaceClientIdentities(notification.Message, displayNames),
             PayloadJson = SanitizePayloadJson(notification.PayloadJson, displayNames)
         };
@@ -51,6 +52,11 @@ public sealed class NetRatelNotificationDisplaySanitizer(IClientDisplayNameResol
         }
 
         foreach (var identity in ExtractClientIdentities(notification.EntityId))
+        {
+            yield return identity;
+        }
+
+        foreach (var identity in ExtractClientIdentities(notification.ClientName))
         {
             yield return identity;
         }

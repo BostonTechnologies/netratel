@@ -27,6 +27,24 @@ public sealed class NotificationsPageTests : AsyncBunitContext
     }
 
     [Fact]
+    public async Task Event_rows_show_client_names_and_keep_actions_in_the_table()
+    {
+        const string agent = "11111111-2222-4333-8444-555555555555";
+        _notifications.PageItems = [
+            NewNotification($"Agent {agent} decommissioned.", DateTimeOffset.UtcNow) with { EntityId = agent, ClientName = "fixture-client" },
+            NewNotification($"Agent {agent} decommissioned.", DateTimeOffset.UtcNow) with { EntityId = agent }
+        ];
+        var cut = RenderNotificationsPage();
+        await WaitForInitialLoadAsync(cut);
+        cut.WaitForAssertion(() => cut.FindAll("[data-testid=notification-event]").Should().HaveCount(2));
+
+        var table = cut.Find(".notifications-table");
+        table.QuerySelectorAll("th").Select(cell => cell.TextContent.Trim()).Should().NotContain("Entity").And.NotContain("Correlation");
+        table.TextContent.Should().Contain("fixture-client decommissioned.").And.Contain("Client decommissioned.")
+            .And.NotContain(agent).And.Contain("Mark Read");
+    }
+
+    [Fact]
     public async Task NotificationsPage_AppliesOccurredRangeToPageQuery()
     {
         var cut = RenderNotificationsPage();

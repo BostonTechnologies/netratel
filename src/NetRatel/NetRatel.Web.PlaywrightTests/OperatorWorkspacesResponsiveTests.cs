@@ -2,8 +2,15 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Playwright;
 using System.Collections.Concurrent;
 using System.Text.Json;
+using NetRatel.Application.Notifications;
+using NetRatel.Shared.Contracts;
 using NetRatel.Shared.Contracts.Netclaw;
+using NetRatel.Shared.Contracts.SoftwareInventory;
 using NetRatel.Web.Services;
+using NetRatel.Web.Services.Authentication;
+using NetRatel.Web.Services.Notifications;
+using NetRatel.Web.Services.SoftwareInventory;
+using NetRatel.Web.Services.Terminal;
 
 namespace NetRatel.Web.PlaywrightTests;
 
@@ -13,6 +20,79 @@ public sealed class OperatorWorkspacesResponsiveTests(ClientsManagementBrowserFi
 {
     private ClientsManagementFixtureHost? _fixture;
     private readonly ScriptLibraryWorkspaceFixture _scripts = new();
+
+    [Theory]
+    [InlineData(1366, 768)]
+    [InlineData(360, 640)]
+    public async Task Tasks_Fleet_and_Notifications_keep_their_navigation_and_actions_reachable(int width, int height)
+    {
+        await using var context = await browserFixture.Browser.NewContextAsync(new()
+        { ViewportSize = new() { Width = width, Height = height } });
+        var page = await context.NewPageAsync();
+
+        await OpenAsync(page, "/tasks/new", width);
+        var taskTabs = page.GetByTestId("tasks-workspace-tabs");
+        await Assertions.Expect(taskTabs.Locator("[aria-current=page]")).ToHaveTextAsync("Tasks");
+        await taskTabs.GetByRole(AriaRole.Link, new() { Name = "History", Exact = true }).ClickAsync();
+        await Assertions.Expect(taskTabs.Locator("[aria-current=page]")).ToHaveTextAsync("History");
+        await Assertions.Expect(page.GetByTestId("task-history-count")).ToBeVisibleAsync();
+
+        await OpenAsync(page, "/clients", width);
+        await page.GetByTestId("clients-page-interactive").WaitForAsync(new() { State = WaitForSelectorState.Attached });
+        var fleet = page.GetByTestId("fleet-workspace-tabs");
+        await Assertions.Expect(fleet.GetByRole(AriaRole.Link)).ToHaveCountAsync(4);
+        await fleet.GetByRole(AriaRole.Link, new() { Name = "Tenants", Exact = true }).ClickAsync();
+        await Assertions.Expect(fleet.Locator("[aria-current=page]")).ToHaveTextAsync("Tenants");
+        await Assertions.Expect(page.GetByRole(AriaRole.Button, new() { Name = "Add Tenant", Exact = true })).ToBeVisibleAsync();
+        await fleet.GetByRole(AriaRole.Link, new() { Name = "Installed Software", Exact = true }).ClickAsync();
+        var tenant = page.GetByTestId("inventory-tenant-selector").GetByLabel("Tenant", new() { Exact = true });
+        await Assertions.Expect(tenant).ToBeEnabledAsync();
+        await tenant.FillAsync("zebra");
+        await page.Locator(".mud-popover-open").GetByText("Zebra Operations", new() { Exact = true }).WaitForAsync();
+        await tenant.PressAsync("ArrowDown");
+        await tenant.PressAsync("Enter");
+        await Assertions.Expect(tenant).ToHaveValueAsync("Zebra Operations");
+        await Assertions.Expect(page.GetByText("Inventory for tenant 97", new() { Exact = true })).ToBeVisibleAsync();
+        await CaptureAsync(page, $"fleet-inventory-{width}x{height}");
+
+        await OpenAsync(page, "/notifications", width);
+        await Assertions.Expect(page.GetByTestId("notification-event")).ToContainTextAsync("fixture-client decommissioned");
+        var table = page.Locator(".notifications-table");
+        await Assertions.Expect(table.GetByRole(AriaRole.Columnheader, new() { Name = "Entity", Exact = true })).ToHaveCountAsync(0);
+        await Assertions.Expect(table.GetByRole(AriaRole.Columnheader, new() { Name = "Correlation", Exact = true })).ToHaveCountAsync(0);
+        var markRead = table.GetByRole(AriaRole.Button, new() { Name = "Mark Read", Exact = true });
+        await ReachableAsync(markRead, width, height);
+        await CaptureAsync(page, $"notifications-actions-{width}x{height}");
+    }
+
+    [Fact]
+    public async Task Portrait_client_cards_open_and_close_a_compact_terminal()
+    {
+        var directory = (_fixture ?? throw new InvalidOperationException("Fixture unavailable")).ClientDirectory;
+        directory.EnableTerminalSession = true;
+        await using var context = await browserFixture.Browser.NewContextAsync(new()
+        { ViewportSize = new() { Width = 360, Height = 640 } });
+        var page = await context.NewPageAsync();
+        await OpenAsync(page, "/clients", 360);
+        await page.GetByTestId("clients-page-interactive").WaitForAsync(new() { State = WaitForSelectorState.Attached });
+        var launcher = page.GetByTestId("client-card-item").Locator("button[aria-label='Open terminal']:enabled");
+        await launcher.ClickAsync();
+        await page.Locator(".mud-popover-open").GetByText("Bash", new() { Exact = true }).ClickAsync();
+        var header = page.GetByTestId("client-terminal-session-header");
+        await Assertions.Expect(header).ToContainTextAsync("Terminal");
+        await Assertions.Expect(page.Locator(".xterm-rows")).ToBeVisibleAsync();
+        await Assertions.Expect(page.Locator(".client-terminal-session-status").GetByText("connected", new() { Exact = true })).ToBeVisibleAsync();
+        var close = header.GetByRole(AriaRole.Button, new() { Name = "Close terminal", Exact = true });
+        await InViewportAsync(close);
+        Assert.InRange(await close.EvaluateAsync<int>("element => element.offsetWidth"), 32, 40);
+        Assert.InRange(await close.EvaluateAsync<int>("element => element.offsetHeight"), 32, 40);
+        Assert.InRange(await header.EvaluateAsync<int>("element => element.offsetHeight"), 36, 90);
+        await CaptureAsync(page, "portrait-terminal-header", fullPage: false);
+        await close.ClickAsync();
+        await Assertions.Expect(header).ToBeHiddenAsync();
+        Assert.Equal(1, directory.TerminalCloses);
+        Assert.False(await page.Locator("#blazor-error-ui").IsVisibleAsync());
+    }
 
     [Theory]
     [InlineData(1366, 768, "light", 1d, Traits = new[] { "Viewport", "DesktopLight" })]
@@ -191,7 +271,17 @@ public sealed class OperatorWorkspacesResponsiveTests(ClientsManagementBrowserFi
     private async Task OpenAsync(IPage page, string route, int width)
     {
         // Match the existing fixture's bounded cold-start allowance; interactions retain the 15s default.
-        var response = await page.GotoAsync(_fixture!.BaseAddress + route, new() { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 30_000 });
+        var fixture = _fixture ?? throw new InvalidOperationException("Fixture unavailable");
+        IResponse? response;
+        try
+        {
+            response = await page.GotoAsync(fixture.BaseAddress + route, new() { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 30_000 });
+        }
+        catch (PlaywrightException error)
+        {
+            var diagnostics = string.Join(Environment.NewLine, fixture.StartupServerDiagnostics.TakeLast(8));
+            throw new InvalidOperationException($"Fixture route {route} did not open. {diagnostics}", error);
+        }
         Assert.True(response?.Ok == true, $"Fixture route {route} returned {response?.Status}.");
         await page.GetByTestId("app-main-content").WaitForAsync(new() { Timeout = 90_000 });
         var drawer = page.GetByTestId("app-navigation-drawer");
@@ -208,12 +298,12 @@ public sealed class OperatorWorkspacesResponsiveTests(ClientsManagementBrowserFi
         Assert.InRange(bounds.Y, -1, height); Assert.True(bounds.Y + bounds.Height <= height + 1);
         Assert.True(await control.EvaluateAsync<bool>("e => {const r=e.getBoundingClientRect(),hit=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2);return hit===e||e.contains(hit)||(e.matches(':disabled')&&hit?.contains(e));}"), "Workspace control must be reachable without a covering app bar or drawer.");
     }
-    private static async Task CaptureAsync(IPage page, string name, bool validateOverflow = true)
+    private static async Task CaptureAsync(IPage page, string name, bool validateOverflow = true, bool fullPage = true)
     {
         if (validateOverflow) Assert.False(await page.EvaluateAsync<bool>("() => document.documentElement.scrollWidth > innerWidth + 1"), "Workspace must not overflow horizontally.");
         var root = Environment.GetEnvironmentVariable("NETRATEL_PLAYWRIGHT_ARTIFACT_ROOT") ?? Path.Combine(Directory.GetCurrentDirectory(), "TestResults", "playwright");
         Directory.CreateDirectory(root);
-        await page.ScreenshotAsync(new() { Path = Path.Combine(root, name + ".png"), FullPage = true, Animations = ScreenshotAnimations.Disabled });
+        await page.ScreenshotAsync(new() { Path = Path.Combine(root, name + ".png"), FullPage = fullPage, Animations = ScreenshotAnimations.Disabled });
     }
     public async ValueTask InitializeAsync() => _fixture = await ClientsManagementFixtureHost.StartAsync(services =>
     {
@@ -221,8 +311,61 @@ public sealed class OperatorWorkspacesResponsiveTests(ClientsManagementBrowserFi
         _scripts.Register(services);
         JobsWorkspaceFixture.Configure(services);
         services.AddSingleton<IPromptLibraryApiService, PromptWorkspaceFixture>();
+        services.AddSingleton<ISoftwareInventoryApiService, InventoryWorkspaceFixture>();
+        services.AddSingleton<INetRatelNotificationApiClient, NotificationWorkspaceFixture>();
+        services.AddScoped<NetRatelNotificationStreamService>();
+        services.AddHttpContextAccessor();
+        services.AddSingleton<ISystemTokenService, SystemTokenService>();
+        services.AddScoped<ITokenService, TokenService>();
+        services.AddScoped<OperatorApiCredentialState>();
+        services.AddScoped<OperatorApiCredentialProvider>();
+        services.AddScoped<AkkaAuthorityFanoutClient>();
+        services.AddScoped<ITerminalService, TerminalService>();
     });
     public async ValueTask DisposeAsync() { if (_fixture is not null) await _fixture.DisposeAsync(); }
+
+    private sealed class InventoryWorkspaceFixture : ISoftwareInventoryApiService
+    {
+        private static readonly SoftwareInventoryTenant[] Tenants =
+            [.. Enumerable.Range(1, 40).Select(id => new SoftwareInventoryTenant(id, $"Fixture tenant {id:D2}")), new(97, "Zebra Operations")];
+
+        public Task<SoftwarePage<SoftwareInventoryTenant>> TenantsAsync(int page, CancellationToken ct, string? search = null, int pageSize = 100)
+        {
+            var matches = Tenants.Where(tenant => tenant.Name.Contains(search ?? "", StringComparison.OrdinalIgnoreCase)).ToArray();
+            return Task.FromResult(new SoftwarePage<SoftwareInventoryTenant>(matches.Skip(page * pageSize).Take(pageSize).ToArray(), matches.Length, page, pageSize));
+        }
+
+        public Task<SoftwarePage<SoftwarePrevalenceDto>> AggregateAsync(int tenant, SoftwareInventoryQuery query, CancellationToken ct) =>
+            Task.FromResult(new SoftwarePage<SoftwarePrevalenceDto>([new($"Inventory for tenant {tenant}", "1", "Fixture", "rpm", 1, 1)], 1, 0, 50));
+        public Task<SoftwareInventorySummary> SummaryAsync(int tenant, CancellationToken ct) => Task.FromResult(new SoftwareInventorySummary(1, 1, 0, 0, 0, 0, 1, 1, DateTimeOffset.UtcNow));
+        public Task<SoftwareInventoryStatus> StatusAsync(int tenant, Guid agent, CancellationToken ct) => throw new NotSupportedException();
+        public Task<SoftwareInventoryStatus> RefreshAsync(int tenant, Guid agent, bool force, CancellationToken ct) => throw new NotSupportedException();
+        public Task<SoftwarePage<SoftwareInstallationDto>> InstallationsAsync(int tenant, SoftwareInventoryQuery query, CancellationToken ct) =>
+            Task.FromResult(new SoftwarePage<SoftwareInstallationDto>([], 0, 0, 50));
+    }
+
+    private sealed class NotificationWorkspaceFixture : INetRatelNotificationApiClient
+    {
+        private const string Agent = "11111111-2222-4333-8444-555555555555";
+        private static readonly NetRatelNotificationDto Row = new()
+        {
+            Id = Guid.Parse("11111111-2222-4333-8444-999999999999"), TenantId = "1",
+            EventType = "DomainEvent.Orchestration.Agent.WentOffline", Source = "Agent",
+            EntityId = Agent, CorrelationId = "synthetic-notification",
+            ClientName = "fixture-client", Message = $"Agent {Agent} decommissioned after a long diagnostic description about a scheduled change in a synthetic tenant.",
+            Severity = NetRatelNotificationSeverity.Warning, Status = "Published", OccurredUtc = DateTimeOffset.UtcNow
+        };
+
+        public Task<PagedResult<NetRatelNotificationDto>> GetPageAsync(int page = 1, int pageSize = 20, string? eventType = null,
+            string? correlationId = null, string? entityId = null, string? status = null, DateTimeOffset? from = null, DateTimeOffset? to = null,
+            string? searchTerm = null, string? source = null, NetRatelNotificationSeverity? severity = null, CancellationToken ct = default) =>
+            Task.FromResult(new PagedResult<NetRatelNotificationDto>([Row], page, pageSize, 1));
+        public Task<NetRatelNotificationDto?> GetByIdAsync(Guid id, CancellationToken ct = default) => Task.FromResult<NetRatelNotificationDto?>(id == Row.Id ? Row : null);
+        public Task<IReadOnlyList<NetRatelNotificationDto>> GetUnreadErrorsAsync(int take = 20, CancellationToken ct = default) => Task.FromResult<IReadOnlyList<NetRatelNotificationDto>>([]);
+        public Task<NetRatelNotificationSummaryDto> GetSummaryAsync(CancellationToken ct = default) => Task.FromResult(new NetRatelNotificationSummaryDto { TotalCount = 1, UnreadCount = 1 });
+        public Task<int> MarkReadBulkAsync(IEnumerable<Guid> ids, CancellationToken ct = default) => Task.FromResult(ids.Count());
+        public Task RetryAsync(Guid id, CancellationToken ct = default) => Task.CompletedTask;
+    }
 
     private sealed class PromptWorkspaceFixture : IPromptLibraryApiService
     {

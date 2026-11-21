@@ -2,7 +2,7 @@ using Microsoft.AspNetCore.WebUtilities;
 
 namespace NetRatel.Web.Components.Shared.Navigation;
 
-public enum WorkspaceArea { Monitoring, AiOps }
+public enum WorkspaceArea { Monitoring, AiOps, Tasks, Fleet }
 
 public sealed class WorkspaceNavigation
 {
@@ -15,6 +15,14 @@ public sealed class WorkspaceNavigation
         "ai/chat" => "/ai/chat",
         "ai/ops" => "/ai/ops",
         "ai/prompts" => "/ai/prompts",
+        "tasks/new" => "/tasks/new",
+        "tasks/history" => "/tasks/history",
+        "clients" => "/clients",
+        "clients/mgmt" => "/clients/mgmt",
+        "tenants" => "/tenants",
+        "software-inventory" => "/software-inventory",
+        var route when route.StartsWith("clients/detail/", StringComparison.Ordinal) => "/clients",
+        var route when route.StartsWith("tenants/", StringComparison.Ordinal) => "/tenants",
         _ => null
     };
 

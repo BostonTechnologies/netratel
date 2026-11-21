@@ -29,6 +29,7 @@ using NetRatel.Application.Notifications;
 using NetRatel.Infrastructure.Identity.Branding;
 using NetRatel.Shared.Contracts;
 using NetRatel.Shared.Contracts.Requests;
+using NetRatel.Shared.Contracts.Terminals;
 using NetRatel.Web.Components.Layout;
 using NetRatel.Web.Components.Pages.Clients.ClientsMgmt;
 using NetRatel.Web.Services;
@@ -92,6 +93,10 @@ public sealed class ClientsManagementResponsiveTests : IClassFixture<ClientsMana
         await page.GetByTestId("clients-mgmt-interactive").WaitForAsync(new() { State = WaitForSelectorState.Attached });
         Assert.Equal(3, await page.GetByRole(AriaRole.Tab).CountAsync());
         var toggle = page.GetByRole(AriaRole.Button, new() { Name = "Details for 0.4.101", Exact = true });
+        await Assertions.Expect(toggle).ToBeVisibleAsync();
+        var toggleBounds = (await toggle.BoundingBoxAsync())!;
+        Assert.InRange(toggleBounds.Width, 30, 34);
+        Assert.InRange(toggleBounds.Height, 30, 34);
         await toggle.ClickAsync();
         var details = page.GetByTestId("release-details-row");
         await Assertions.Expect(details.GetByText("netratel-client-with-a-long-filename-and-retained-provenance-windows.zip", new() { Exact = false })).ToBeVisibleAsync();
@@ -1539,6 +1544,7 @@ public sealed class ClientsManagementBrowserFixture : IAsyncLifetime
 [Route("/ai/ops")]
 [Route("/scriptlibrary")]
 [Route("/tasks/new")]
+[Route("/notifications")]
 [Route("/jobs")]
 [Route("/jobs/42/runs/9")]
 [Route("/account/integration-credentials")]
@@ -1562,6 +1568,7 @@ public sealed class ClientsManagementFixtureApp : ComponentBase
         AddStylesheet(builder, "/_content/MudBlazor/MudBlazor.min.css");
         AddStylesheet(builder, "/_content/MudBlazor.Extensions/mudBlazorExtensions.min.css");
         AddStylesheet(builder, "/_content/VeloxDev.Razor/veloxdev.workflow.css");
+        AddStylesheet(builder, "/_content/XtermBlazor/XtermBlazor.min.css");
         builder.OpenElement(17, "script");
         builder.AddAttribute(18, "src", "/js/theme-preference.js");
         builder.CloseElement();
@@ -1573,6 +1580,9 @@ public sealed class ClientsManagementFixtureApp : ComponentBase
         builder.OpenElement(26, "script");
         builder.AddAttribute(27, "src", "/js/global-search-hotkeys.js");
         builder.CloseElement();
+        AddScript(builder, "/js/xterm/addon-fit-0.11.0.min.js");
+        AddScript(builder, "/_content/XtermBlazor/XtermBlazor.min.js");
+        builder.AddMarkupContent(27, "<script>XtermBlazor.registerAddons({'addon-fit':new FitAddon.FitAddon()});</script>");
         AddScript(builder, "/_content/BlazorMonaco/jsInterop.js");
         AddScript(builder, "/_content/BlazorMonaco/lib/monaco-editor/min/vs/loader.js");
         AddScript(builder, "/_content/BlazorMonaco/lib/monaco-editor/min/vs/editor/editor.main.js");
@@ -2233,6 +2243,8 @@ internal enum ClientDirectoryFixtureMode
 
 internal sealed class ClientDirectoryFixtureData
 {
+    private const string TerminalSession = "fixture-terminal-session";
+    internal const string TerminalPath = "/api/v2/gateway-terminal/" + TerminalSession;
     private static readonly Guid OnlineAgentId = Guid.Parse("4886c6c0-e486-4f59-a006-40e4043a4a46");
     private static readonly Guid OfflineAgentId = Guid.Parse("99f5a0b0-5e61-4039-8d09-6c9d44c7c100");
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
@@ -2240,6 +2252,10 @@ internal sealed class ClientDirectoryFixtureData
     private TaskCompletionSource<int> _requestChanged = NewSignal<int>();
     private ClientDirectoryFixtureMode _mode = ClientDirectoryFixtureMode.Populated;
     private int _requestCount;
+    private int _terminalCloses;
+
+    public bool EnableTerminalSession { get; set; }
+    public int TerminalCloses => Volatile.Read(ref _terminalCloses);
 
     public int RequestCount
     {
@@ -2325,6 +2341,27 @@ internal sealed class ClientDirectoryFixtureData
         if (request.RequestUri?.AbsolutePath.EndsWith("/telemetry", StringComparison.Ordinal) == true)
             return new HttpResponseMessage(HttpStatusCode.NotFound);
 
+        if (request.RequestUri?.AbsolutePath == "/api/v1/notifications/stream")
+            return new HttpResponseMessage(HttpStatusCode.ServiceUnavailable);
+
+        if (EnableTerminalSession)
+        {
+            var path = request.RequestUri?.AbsolutePath;
+            if (path == $"/api/v2/agents/3/{OnlineAgentId:D}/terminal/sessions" && request.Method == HttpMethod.Post)
+                return Json(HttpStatusCode.OK, new TerminalOpenResponse("fixture-open", TerminalSession, "Opened"));
+            if (path == TerminalPath && request.Method == HttpMethod.Get)
+            {
+                var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+                return Json(HttpStatusCode.OK, new TerminalSessionDto(TerminalSession, OnlineAgentId.ToString("N"), "bash",
+                    "opened", false, now, now, null, "agent-pty", 40, 20));
+            }
+            if (path == TerminalPath + "/close" && request.Method == HttpMethod.Post)
+            {
+                Interlocked.Increment(ref _terminalCloses);
+                return Json(HttpStatusCode.OK, new TerminalActionResponse("fixture-close", "Closed", TerminalSession));
+            }
+        }
+
         return Json(HttpStatusCode.OK, Array.Empty<object>());
     }
 
@@ -2340,13 +2377,21 @@ internal sealed class ClientDirectoryFixtureHttpClientFactory(ClientDirectoryFix
 {
     public HttpClient CreateClient(string name) => new(new Handler(directory))
     {
-        BaseAddress = new Uri("https://netratel.test")
+        BaseAddress = new Uri(directory.EnableTerminalSession ? "http://127.0.0.1:1" : "https://netratel.test")
     };
 
     private sealed class Handler(ClientDirectoryFixtureData directory) : HttpMessageHandler
     {
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
-            Task.FromResult(directory.Respond(request));
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            if (directory.EnableTerminalSession && request.RequestUri?.AbsolutePath == ClientDirectoryFixtureData.TerminalPath + "/stream")
+            {
+                // Keep the stream open until the dialog cancels its subscription.
+                var stream = new TaskCompletionSource<HttpResponseMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
+                return stream.Task.WaitAsync(cancellationToken);
+            }
+            return Task.FromResult(directory.Respond(request));
+        }
     }
 }
 

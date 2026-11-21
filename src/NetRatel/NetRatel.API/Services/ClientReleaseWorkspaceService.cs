@@ -94,52 +94,46 @@ public sealed class ClientReleaseWorkspaceService(OrchestratorDbContext db, ICli
             ? localMatches.Where(x => x.HasLocal || x.Cleanup?.State is "Pending" or "Failed")
                 .Select(x => x.Version).Take(101).ToArray()
             : Array.Empty<string>();
-        var localOnly = localState is "local" or "enabled" or "disabled" or "cleanup";
-        if (localOnly)
-        {
-            page = Math.Min(page, Math.Max(0, (localMatches.Length - 1) / pageSize));
-            var offset = page * pageSize;
-            return new(localMatches.Skip(offset).Take(pageSize).ToArray(), page, pageSize, localMatches.Length,
-                default, storageWarning, selectable, includeManagement)
-            { HasMore = (long)offset + pageSize < localMatches.Length, IsComplete = true };
-        }
 
-        // Local matches form the first part of the workspace independently of
-        // discovery. The rest follows GitHub source slots, before filtering.
+        ClientReleaseWorkspacePage ReadLocalPage(int requestedPage, bool complete, string? warning)
+        {
+            var localPage = Math.Min(requestedPage, Math.Max(0, (localMatches.Length - 1) / pageSize));
+            var offset = localPage * pageSize;
+            return new(localMatches.Skip(offset).Take(pageSize).ToArray(), localPage, pageSize, localMatches.Length,
+                default, warning ?? storageWarning, selectable, includeManagement)
+            { HasMore = (long)offset + pageSize < localMatches.Length, IsComplete = complete };
+        }
+        if (localState is "local" or "enabled" or "disabled" or "cleanup")
+            return ReadLocalPage(page, true, null);
+
+        // Keep the upstream head first. Local records enrich source rows in place.
+        // Only a complete source snapshot can identify the retained-only tail.
         if (refresh) page = 0;
-        var localMatchVersions = localMatches.Select(x => x.Version).ToHashSet(StringComparer.Ordinal);
-        IReadOnlyList<ClientReleaseWorkspaceRow> LocalPage() => localMatches.Skip(page * pageSize).Take(pageSize).ToArray();
-        var localPage = LocalPage();
-
-        async Task<GitHubReleaseDiscoverySlice> DiscoverAsync(bool force, Guid? id)
-        {
-            var sourceOffset = Math.Max(0, page * pageSize - localMatches.Length);
-            // Check one source slot on the first page even when local matches
-            // fill it. Later local-only slices reuse the same discovery.
-            var count = page == 0 ? Math.Max(1, pageSize - localPage.Count) : pageSize - localPage.Count;
-            return await upstream.DiscoverAsync(sourceOffset, count, id, force, ct);
-        }
-
-        var remote = await DiscoverAsync(refresh, discoveryId);
+        var requestedPage = page;
+        var remote = await upstream.DiscoverAsync(page * pageSize, pageSize, discoveryId, refresh, ct);
         var warning = remote.Warning;
         if (remote.Restart)
         {
             page = 0;
-            localPage = LocalPage();
-            remote = await DiscoverAsync(true, null);
+            remote = await upstream.DiscoverAsync(0, pageSize, null, true, ct);
         }
+        if (remote.CheckedAtUtc == default && !remote.Complete)
+            return ReadLocalPage(requestedPage, false, remote.Warning ?? warning);
 
         ClientReleaseWorkspaceRow RemoteRow(GitHubClientRelease source) =>
             WithSource(localRows.GetValueOrDefault(source.Version) ?? CreateLocalRow(source.Version), source);
-        bool IsAdditional(GitHubClientRelease source) => !localMatchVersions.Contains(source.Version);
 
-        var rows = localPage.Select(row => WithSource(row, remote.DiscoveredVersions.GetValueOrDefault(row.Version)))
-            .Concat(remote.Items.Where(IsAdditional).Select(RemoteRow).Where(Matches))
-            .Take(pageSize).ToArray();
-        var moreLocal = ((long)page + 1) * pageSize < localMatches.Length;
+        var offset = page * pageSize;
+        var retainedOnly = remote.Complete
+            ? localMatches.Where(row => !remote.DiscoveredVersions.ContainsKey(row.Version)).ToArray()
+            : [];
+        var sourceSlotsOnPage = Math.Clamp(remote.SourceSlotCount - offset, 0, pageSize);
+        var rows = remote.Items.Select(RemoteRow).Where(Matches).Concat(retainedOnly
+            .Skip(Math.Max(0, offset - remote.SourceSlotCount)).Take(pageSize - sourceSlotsOnPage)).ToArray();
+        var moreLocal = remote.Complete && (long)offset + pageSize < (long)remote.SourceSlotCount + retainedOnly.Length;
         var total = remote.Complete
-            ? localMatches.Length + remote.DiscoveredVersions.Values.Where(IsAdditional).Select(RemoteRow).Count(Matches)
-            : localMatches.Length + rows.Length - localPage.Count;
+            ? remote.DiscoveredVersions.Values.Select(RemoteRow).Count(Matches) + retainedOnly.Length
+            : rows.Length;
         return new(rows, page, pageSize, total, remote.CheckedAtUtc, remote.Warning ?? warning ?? storageWarning,
             selectable, includeManagement)
         {

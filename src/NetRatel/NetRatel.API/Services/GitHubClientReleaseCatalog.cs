@@ -42,7 +42,10 @@ public sealed record GitHubReleaseDiscoverySlice(
     bool Complete,
     bool Restart,
     DateTimeOffset CheckedAtUtc,
-    string? Warning);
+    string? Warning)
+{
+    public int SourceSlotCount { get; init; }
+}
 
 public interface IGitHubClientReleaseCatalog
 {
@@ -97,7 +100,8 @@ public sealed class GitHubClientReleaseCatalog(
                             clock.GetUtcNow() - last.FetchedAtUtc >= CacheLifetime))
                 _discovery = new Discovery();
             var discovery = _discovery;
-            if ((!refresh && discoveryId is { } id && id != discovery.Id) || offset > discovery.Slots.Count)
+            if ((!refresh && discoveryId is { } id && id != discovery.Id) ||
+                (!discovery.Complete && offset > discovery.Slots.Count))
                 return DiscoverySlice(discovery, 0, 0, restart: true);
 
             var end = (long)offset + count;
@@ -149,7 +153,8 @@ public sealed class GitHubClientReleaseCatalog(
             discovery.Versions, discovery.Id, !restart && (end < discovery.Slots.Count ||
                 discovery.Slots.Count >= end && !discovery.Complete && _warning is null),
             discovery.Complete && _warning is null, restart, discovery.LastPage?.FetchedAtUtc ?? default,
-            restart ? "GitHub release discovery changed. Showing the first page of the new discovery order." : _warning);
+            restart ? "GitHub release discovery changed. Showing the first page of the new discovery order." : _warning)
+        { SourceSlotCount = discovery.Slots.Count };
     }
 
     public async Task<GitHubClientReleasePage> ListAsync(string channel, int page, bool refresh, CancellationToken cancellationToken)

@@ -5,3 +5,8 @@
 .workspace-tabs a { color:var(--mud-palette-text-secondary); padding:.45rem .7rem; border-bottom:2px solid transparent; border-radius:4px 4px 0 0; text-decoration:none; }
 .workspace-tabs a:hover, .workspace-tabs a:focus-visible { background:var(--mud-palette-action-default-hover); }
 .workspace-tabs a[aria-current=page] { border-bottom-color:var(--mud-palette-primary); color:var(--mud-palette-primary); font-weight:600; }
+
+@media (max-width: 600px) {
+    .fleet-tabs { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); }
+    .fleet-tabs a { text-align:center; overflow-wrap:anywhere; }
+}

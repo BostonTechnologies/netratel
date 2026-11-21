@@ -220,7 +220,7 @@
         }
         @if (_view == "aggregate")
         {
-            <div class="table-heading"><h3>Software across the estate</h3><span>@(_aggregate?.Total ?? 0) software/version groups · @(_aggregate?.Devices ?? 0) devices in these results</span></div>
+            <div class="table-heading"><h3>Software across clients</h3><span>@(_aggregate?.Total ?? 0) software/version groups · @(_aggregate?.Devices ?? 0) devices in these results</span></div>
             <MudTable T="SoftwarePrevalenceDto" Items="@(_aggregate?.Items ?? Array.Empty<SoftwarePrevalenceDto>())" Dense="true" Hover="true" Elevation="0" Breakpoint="Breakpoint.Sm" Class="inventory-data">
                 <HeaderContent><MudTh>Software</MudTh><MudTh>Version</MudTh><MudTh>Publisher</MudTh><MudTh Class="source-cell">Source</MudTh><MudTh>Devices</MudTh><MudTh>Installed entries</MudTh><MudTh></MudTh></HeaderContent>
                 <RowTemplate>

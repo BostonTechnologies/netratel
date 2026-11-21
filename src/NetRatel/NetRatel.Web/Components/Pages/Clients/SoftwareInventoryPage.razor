@@ -2,30 +2,30 @@
 @using NetRatel.Shared.Contracts.SoftwareInventory
 @using NetRatel.Web.Services.SoftwareInventory
 @using NetRatel.Web.Components.SoftwareInventory
+@using NetRatel.Web.Components.Shared.Navigation
 @implements IDisposable
 @inject ISoftwareInventoryApiService Api
 
-<PageTitle>Software Inventory</PageTitle>
+<PageTitle>Installed Software · Fleet</PageTitle>
 <div class="pa-4">
-    <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween" Wrap="Wrap.Wrap" Class="mb-3" Spacing="2">
-        <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
-            <MudIcon Icon="@Icons.Material.Filled.Inventory2" Color="Color.Primary" Size="Size.Large" />
-            <MudText Typo="Typo.h5">Software Inventory</MudText>
-        </MudStack>
-        <div style="width:320px;max-width:100%">
-            <MudSelect T="int" Label="Tenant" Value="_tenant" ValueChanged="SelectTenant" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_loading">
-                @foreach (var tenant in _tenants) { <MudSelectItem T="int" Value="tenant.TenantId">@tenant.Name</MudSelectItem> }
-            </MudSelect>
-            @if (_more) { <MudButton Size="Size.Small" OnClick="MoreTenantsAsync" Disabled="_loading">Load more tenants</MudButton> }
-        </div>
-    </MudStack>
+    <WorkspaceHeader Area="WorkspaceArea.Fleet" />
+    <div class="inventory-tenant-selector" data-testid="inventory-tenant-selector">
+        <MudAutocomplete T="SoftwareInventoryTenant" Label="Tenant" Value="_tenant" ValueChanged="SelectTenant"
+                         SearchFunc="FindTenantsAsync" ToStringFunc="@(tenant => tenant?.Name ?? string.Empty)"
+                         Strict="false" CoerceValue="false" MinCharacters="0" DebounceInterval="250"
+                         MaxItems="TenantOptions" MaxLength="128" Dense="true" Variant="Variant.Outlined"
+                         Margin="Margin.Dense" Disabled="_loading">
+            <NoItemsTemplate><MudText Typo="Typo.caption" Class="pa-3">No matching tenants.</MudText></NoItemsTemplate>
+            <MoreItemsTemplate><MudText Typo="Typo.caption" Class="pa-3">Type more to narrow the results.</MudText></MoreItemsTemplate>
+        </MudAutocomplete>
+    </div>
     @if (_loading) { <MudProgressLinear Indeterminate="true" Color="Color.Primary" aria-label="Loading authorized tenants" /> }
-    @if (_error is not null) { <MudAlert Severity="Severity.Warning">@_error <MudButton OnClick="MoreTenantsAsync">Retry</MudButton></MudAlert> }
-    @if (_tenant > 0)
+    @if (_error is not null) { <MudAlert Severity="Severity.Warning" Dense="true">@_error <MudButton OnClick="LoadInitialTenantAsync">Retry</MudButton></MudAlert> }
+    @if (_tenant is { } selected)
     {
-        <SoftwareInventoryPanel @key="_tenant" TenantId="_tenant" />
+        <SoftwareInventoryPanel @key="selected.TenantId" TenantId="selected.TenantId" />
     }
-    else if (!_loading && _tenants.Count == 0 && _error is null)
+    else if (!_loading && _error is null)
     {
         <MudPaper Outlined="true" Elevation="0" Class="pa-8">
             <MudText Typo="Typo.h6">No accessible tenants</MudText>
@@ -35,28 +35,55 @@
 </div>
 
 @code {
-    private readonly List<SoftwareInventoryTenant> _tenants = [];
+    private const int TenantOptions = 25;
     private readonly CancellationTokenSource _lifetime = new();
-    private int _tenant, _tenantPage;
-    private bool _more, _loading;
+    private SoftwareInventoryTenant? _tenant;
+    private bool _loading = true;
     private string? _error;
-    protected override Task OnInitializedAsync() => MoreTenantsAsync();
-    private void SelectTenant(int tenant) => _tenant = tenant;
-    private async Task MoreTenantsAsync()
+
+    protected override Task OnInitializedAsync() => LoadInitialTenantAsync();
+
+    private async Task LoadInitialTenantAsync()
     {
-        if (_loading) return;
-        _loading = true; _error = null;
+        _loading = true;
         try
         {
-            var page = await Api.TenantsAsync(_tenantPage, _lifetime.Token);
-            _lifetime.Token.ThrowIfCancellationRequested();
-            _tenants.AddRange(page.Items); _tenantPage++;
-            _more = _tenants.Count < page.Total;
-            if (_tenant == 0 && _tenants.Count > 0) _tenant = _tenants[0].TenantId;
+            var tenants = await FindTenantsAsync(null, _lifetime.Token);
+            _tenant ??= tenants.FirstOrDefault();
         }
-        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { return; }
-        catch (Exception error) when (error is HttpRequestException or OperationCanceledException) { _error = "Unable to load authorized tenants. Check your access and connection."; }
         finally { _loading = false; }
     }
+
+    private void SelectTenant(SoftwareInventoryTenant? tenant)
+    {
+        if (tenant is not null) _tenant = tenant;
+    }
+
+    private async Task<IEnumerable<SoftwareInventoryTenant>> FindTenantsAsync(string? search, CancellationToken token)
+    {
+        using var request = CancellationTokenSource.CreateLinkedTokenSource(token, _lifetime.Token);
+        try
+        {
+            var tenants = await Api.TenantsAsync(0, request.Token, search, TenantOptions + 1);
+            request.Token.ThrowIfCancellationRequested();
+            if (_error is not null)
+            {
+                _error = null;
+                await InvokeAsync(StateHasChanged);
+            }
+            return tenants.Items;
+        }
+        catch (OperationCanceledException) when (request.IsCancellationRequested) { return []; }
+        catch (Exception error) when (error is HttpRequestException or OperationCanceledException)
+        {
+            if (!request.IsCancellationRequested)
+            {
+                _error = "Unable to load authorized tenants. Check your access and connection.";
+                await InvokeAsync(StateHasChanged);
+            }
+            return [];
+        }
+    }
+
     public void Dispose() { _lifetime.Cancel(); _lifetime.Dispose(); }
 }

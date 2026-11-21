@@ -6,7 +6,7 @@ namespace NetRatel.Web.Services.SoftwareInventory;
 
 public interface ISoftwareInventoryApiService
 {
-    Task<SoftwarePage<SoftwareInventoryTenant>> TenantsAsync(int page, CancellationToken ct) => throw new NotSupportedException();
+    Task<SoftwarePage<SoftwareInventoryTenant>> TenantsAsync(int page, CancellationToken ct, string? search = null, int pageSize = 100) => throw new NotSupportedException();
     Task<SoftwareInventoryStatus> StatusAsync(int tenant, Guid agent, CancellationToken ct);
     Task<SoftwareInventoryStatus> RefreshAsync(int tenant, Guid agent, bool force, CancellationToken ct);
     Task<SoftwarePage<SoftwareInstallationDto>> InstallationsAsync(int tenant, SoftwareInventoryQuery query, CancellationToken ct);
@@ -21,7 +21,9 @@ public interface ISoftwareInventoryApiService
 public sealed class SoftwareInventoryApiService(IHttpClientFactory factory) : ISoftwareInventoryApiService
 {
     private readonly HttpClient _http = factory.CreateClient("OrchestratorApi");
-    public Task<SoftwarePage<SoftwareInventoryTenant>> TenantsAsync(int page, CancellationToken ct) => GetAsync<SoftwarePage<SoftwareInventoryTenant>>($"/api/v2/software-inventory/tenants?page={page}&pageSize=100", ct);
+    public Task<SoftwarePage<SoftwareInventoryTenant>> TenantsAsync(int page, CancellationToken ct, string? search = null, int pageSize = 100) =>
+        GetAsync<SoftwarePage<SoftwareInventoryTenant>>($"/api/v2/software-inventory/tenants?page={page}&pageSize={pageSize}" +
+            (string.IsNullOrWhiteSpace(search) ? "" : "&search=" + Uri.EscapeDataString(search)), ct);
     public Task<SoftwareInventoryStatus> StatusAsync(int tenant, Guid agent, CancellationToken ct) => GetAsync<SoftwareInventoryStatus>($"/api/v2/agents/{tenant}/{agent:D}/software-inventory", ct);
     public async Task<SoftwareInventoryStatus> RefreshAsync(int tenant, Guid agent, bool force, CancellationToken ct)
     {

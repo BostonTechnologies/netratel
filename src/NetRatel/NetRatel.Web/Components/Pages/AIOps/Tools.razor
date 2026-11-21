@@ -13,7 +13,7 @@
 @inject ILogger<Tools> Logger
 
 <PageTitle>AI Ops · Investigations</PageTitle>
-<main class="ai-ops @(_creating ? "is-creating" : "")" data-testid="ai-ops">
+<main class="ai-ops @(_creating ? "is-creating" : "") @(!ShowInvestigationList ? "is-viewing-investigation" : "")" data-testid="ai-ops">
     <WorkspaceHeader Area="WorkspaceArea.AiOps" TenantId="_tenant" RequestedTenantId="RequestedTenant">
         <TenantContext>
             <WorkspaceTenantPicker Value="_tenant" ValueChanged="ChooseTenant" Disabled="@(_loading || _busy)" TestId="investigation-tenant"
@@ -58,8 +58,17 @@
                 <div class="ai-actions"><button type="button" class="ai-primary" disabled="@(_busy || _selectedClients.Count == 0 || string.IsNullOrWhiteSpace(_title))" @onclick="CreateAsync">Open investigation</button><button type="button" @onclick="() => _creating = false" disabled="@_busy">Cancel</button></div>
             </section>
         }
-        <div class="ai-workspace">
-            <aside class="ai-investigation-list" aria-label="Recent investigations">
+        @if (_snapshot is not null)
+        {
+            <button type="button" class="ai-mobile-switch" aria-controls="investigation-list-panel"
+                    aria-expanded="@(ShowInvestigationList ? "true" : "false")" @onclick="() => _showInvestigationList = !_showInvestigationList"
+                    data-testid="investigation-mobile-switch">
+                <MudIcon Icon="@Icons.Material.Filled.ArrowBack" Size="Size.Small" />
+                @(ShowInvestigationList ? "Back to investigation" : "Investigations")
+            </button>
+        }
+        <div class="ai-workspace @(ShowInvestigationList ? "is-browsing" : "")">
+            <aside id="investigation-list-panel" class="ai-investigation-list" aria-label="Recent investigations">
                 <label>Find investigations<input @bind="_search" @bind:event="oninput" placeholder="Title or client" /></label>
                 <label>Status<select @bind="_filter"><option value="all">All recent investigations</option><option value="active">Active</option><option value="approval">Waiting for approval</option><option value="recovery">Needs recovery</option><option value="archived">Archived</option></select></label>
                 @if (!FilteredItems.Any()) { <p class="ai-muted">No matching investigations. Open one or add an AI investigation action to a monitoring Flow.</p> }
@@ -139,6 +148,8 @@
     private string _search = "", _systemSearch = "", _filter = "all", _title = "", _message = "";
     private int _tenant, _generation;
     private bool _loading = true, _busy, _creating, _disposed, _acknowledgeRemote;
+    private bool _showInvestigationList;
+    private bool ShowInvestigationList => _snapshot is null || _showInvestigationList;
     private Guid _createRequestId = Guid.NewGuid();
     private InvestigationMessageRequest? _pendingMessage;
     [Inject] private Microsoft.JSInterop.IJSRuntime JS { get; set; } = default!;
@@ -210,7 +221,7 @@
         _scope = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
         ++_generation;
         _tenant = tenant;
-        _busy = _creating = _acknowledgeRemote = false;
+        _busy = _creating = _acknowledgeRemote = _showInvestigationList = false;
         _snapshot = null; _events.Clear(); _items = []; _clients = []; _selectedClients.Clear(); _connection = null;
         _knownClients.Clear(); _selectedPrompts = []; _systemSearch = ""; _clientNextOffset = null;
         ++_clientSearchRevision; _clientSearchScope?.Cancel();
@@ -294,10 +305,19 @@
     });
     private Task OpenAsync(Guid id) => CommandAsync(async () =>
     {
+        if (_snapshot?.Investigation.Id == id)
+        {
+            _showInvestigationList = false;
+            return;
+        }
         var tenant = _tenant;
         var generation = _generation;
         await OpenCoreAsync(id);
-        if (Current(tenant, generation) && _snapshot?.Investigation.Id == id) RememberInvestigation(tenant, id);
+        if (Current(tenant, generation) && _snapshot?.Investigation.Id == id)
+        {
+            _showInvestigationList = false;
+            RememberInvestigation(tenant, id);
+        }
     });
 
     private void RememberInvestigation(int tenant, Guid id)
@@ -363,7 +383,7 @@
         var request = new InvestigationCreateRequest(_createRequestId, _title, _selectedClients.ToArray(), RequestedTenant == tenant ? RequestedOccurrence : null, _selectedPrompts);
         var snapshot = await Api.CreateAsync(tenant, request, _scope.Token);
         if (!Current(tenant, generation) || snapshot.Investigation.TenantId != tenant) return;
-        _events.Clear(); _snapshot = null; Apply(snapshot); _creating = false; _createRequestId = Guid.NewGuid(); _title = "";
+        _events.Clear(); _snapshot = null; Apply(snapshot); _creating = _showInvestigationList = false; _createRequestId = Guid.NewGuid(); _title = "";
         RememberInvestigation(tenant, snapshot.Investigation.Id);
     });
 

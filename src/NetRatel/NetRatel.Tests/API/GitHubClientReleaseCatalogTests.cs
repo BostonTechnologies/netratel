@@ -165,14 +165,19 @@ public sealed class GitHubClientReleaseCatalogTests
          ]}
         """;
 
-    internal sealed class SyntheticCatalogue : HttpMessageHandler
+    internal sealed class SyntheticCatalogue(int initialCount = 300) : HttpMessageHandler
     {
-        private readonly List<int> _releaseIds = Enumerable.Range(1, 300).ToList();
+        private readonly List<int> _releaseIds = Enumerable.Range(1, initialCount).ToList();
+        private readonly HashSet<int> _prereleases = [];
         public List<int> Requests { get; } = [];
         public long BytesTransferred { get; private set; }
         public int NotModified { get; private set; }
 
-        public void Publish(int id) => _releaseIds.Insert(0, id);
+        public void Publish(int id, bool prerelease = false)
+        {
+            _releaseIds.Insert(0, id);
+            if (prerelease) _prereleases.Add(id);
+        }
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
@@ -189,7 +194,9 @@ public sealed class GitHubClientReleaseCatalogTests
                 return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotModified));
             }
 
-            var json = "[" + string.Join(",", ids.Select(id => Release(id, $"v3.0.{id}", false, true))) + "]";
+            var json = "[" + string.Join(",", ids.Select(id => _prereleases.Contains(id)
+                ? Release(id, $"v3.0.{id}-beta.1", true, true)
+                : Release(id, $"v3.0.{id}", false, true))) + "]";
             BytesTransferred += System.Text.Encoding.UTF8.GetByteCount(json);
             var response = Json(json);
             response.Headers.ETag = new(etag);

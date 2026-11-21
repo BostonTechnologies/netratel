@@ -368,6 +368,60 @@ public sealed class NetclawChatAcceptanceTests(ClientsManagementBrowserFixture b
         await AssertHealthyAsync(page);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Portrait_workspace_searches_saved_work_and_keeps_the_composer_reachable(bool investigation)
+    {
+        var api = new ChatFixture(investigation, dense: true);
+        await using var host = await ClientsManagementFixtureHost.StartAsync(services => services.AddSingleton<INetclawApiService>(api));
+        await using var context = await browserFixture.Browser.NewContextAsync(new() { ViewportSize = new() { Width = 360, Height = 640 } });
+        var page = await context.NewPageAsync();
+        await page.GotoAsync(host.BaseAddress + (investigation ? "/ai/ops?tenantId=17" : "/ai/chat?tenantId=17"));
+        await CloseNavigationAsync(page, 360, 640);
+
+        var browse = page.GetByTestId(investigation ? "investigation-mobile-switch" : "chat-mobile-switch");
+        if (!investigation) await browse.ClickAsync();
+        var list = page.GetByRole(AriaRole.Complementary, new() { Name = investigation ? "Recent investigations" : "Chat history" });
+        var search = list.GetByLabel(investigation ? "Find investigations" : "Search recent chats");
+        await ExpectationsForListAsync();
+        await search.FillAsync("Saved fixture");
+        await list.GetByRole(investigation ? AriaRole.Button : AriaRole.Link, new() { NameRegex = new Regex("Saved fixture conversation") }).ClickAsync();
+
+        var conversation = page.GetByTestId("netclaw-conversation");
+        await Assertions.Expect(conversation).ToBeVisibleAsync();
+        await Assertions.Expect(list).ToBeHiddenAsync();
+        var message = conversation.GetByTestId("chat-message");
+        await Assertions.Expect(message).ToBeEnabledAsync();
+        await message.FillAsync("Unsent portrait draft");
+
+        await browse.ClickAsync();
+        await Assertions.Expect(list).ToBeVisibleAsync();
+        await Assertions.Expect(search).ToHaveValueAsync("Saved fixture");
+        await Assertions.Expect(conversation).ToBeHiddenAsync();
+        await browse.ClickAsync();
+        await Assertions.Expect(message).ToHaveValueAsync("Unsent portrait draft");
+
+        await page.SetViewportSizeAsync(360, 480);
+        var send = conversation.GetByTestId("chat-send");
+        await send.ScrollIntoViewIfNeededAsync();
+        await Assertions.Expect(send).ToBeInViewportAsync(new() { Ratio = 1 });
+        Assert.Equal(0, api.Sends);
+        Assert.Equal(0, api.Creates);
+        await AssertHealthyAsync(page);
+
+        async Task ExpectationsForListAsync()
+        {
+            await Assertions.Expect(search).ToBeVisibleAsync();
+            var titles = list.GetByText(new Regex("Previous conversation [0-9]+"), new() { Exact = false });
+            var first = await titles.First.BoundingBoxAsync();
+            var second = await titles.Nth(1).BoundingBoxAsync();
+            Assert.NotNull(first);
+            Assert.NotNull(second);
+            Assert.True(second.Y > first.Y + first.Height);
+        }
+    }
+
     private static async Task CloseNavigationAsync(IPage page, int width, int height)
     {
         if (width >= 1280) return;

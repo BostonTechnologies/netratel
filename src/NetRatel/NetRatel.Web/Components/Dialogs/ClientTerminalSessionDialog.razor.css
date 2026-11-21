@@ -26,14 +26,48 @@
 .client-terminal-session-header {
     width: 100%;
     min-width: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: .4rem;
 }
 
 .client-terminal-session-title {
     min-width: 0;
+    display: grid;
+    line-height: 1.35;
+}
+
+.client-terminal-session-title strong,
+.client-terminal-session-host {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.client-terminal-session-host {
+    color: var(--mud-palette-text-secondary);
+    font-size: .75rem;
+}
+
+.client-terminal-session-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: .125rem;
+}
+
+.client-terminal-session-actions ::deep .mud-icon-button {
+    width: 2.25rem;
+    height: 2.25rem;
+    padding: 0;
 }
 
 .client-terminal-session-chip-row {
+    display: flex;
     flex-wrap: wrap;
+    align-items: center;
+    gap: .35rem;
 }
 
 .client-terminal-session-body {
@@ -134,4 +168,8 @@
         padding-left: max(14px, env(safe-area-inset-left));
         padding-right: max(14px, env(safe-area-inset-right));
     }
+}
+
+@media (max-width: 360px) {
+    .client-terminal-session-header { grid-template-columns: minmax(0, 1fr); gap: .2rem; }
 }

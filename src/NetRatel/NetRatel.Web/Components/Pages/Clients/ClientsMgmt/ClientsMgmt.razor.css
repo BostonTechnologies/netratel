@@ -39,11 +39,18 @@
 @media(max-width:600px) { .release-details-cell { display:block; width:100%; } }
 
 .release-cell-content { display:flex; flex-direction:column; gap:.25rem; min-width:0; width:100%; }
+.client-mgmt-header { margin:.5rem 0; }
+.client-mgmt-header ::deep .client-mgmt-header-actions { margin-left:auto; justify-content:flex-end; }
+.client-github-table ::deep .release-select-column { width:4rem; }
+.release-name-cell { display:grid; grid-template-columns:auto minmax(0,1fr); align-items:start; gap:.35rem; min-width:0; }
+.release-name-cell .release-cell-content { width:100%; }
+.release-name-cell ::deep .release-details-toggle { width:2rem; height:2rem; padding:0; flex:none; }
 .release-details-card h3 { overflow-wrap:anywhere; word-break:break-word; }
 .release-details-card ::deep .mud-typography-caption { display:block; margin:.25rem 0; }
 .release-details-cell code { white-space:normal; overflow-wrap:anywhere; word-break:break-word; font-size:.75rem; }
 @media(max-width:600px) {
   .client-github-table ::deep .mud-table-cell { align-items:flex-start; gap:.5rem; }
+  .client-github-table ::deep .release-select-column { width:100%; }
   .client-github-table ::deep .mud-table-cell::before { flex:0 0 32%; }
   .release-cell-content { flex:1 1 0; width:0; overflow-wrap:anywhere; }
   .release-cell-content ::deep .mud-chip { max-width:100%; }

@@ -11,6 +11,7 @@
 @using NetRatel.Shared.Contracts.Monitoring
 @using NetRatel.Shared.Contracts.Requests
 @using NetRatel.Web.Components.Dialogs
+@using NetRatel.Web.Components.Shared.Navigation
 @using NetRatel.Web.Services.Tenants
 @using NetRatel.Web.Services.Monitoring
 @using NetRatel.Web.Services.Authentication
@@ -21,13 +22,13 @@
 @inject IDialogService DialogService
 @inject NavigationManager Nav
 
-<PageTitle>Tenants</PageTitle>
+<PageTitle>Tenants · Fleet</PageTitle>
 
 <MudContainer MaxWidth="MaxWidth.False" Class="mt-4">
+    <div class="mb-3"><WorkspaceHeader Area="WorkspaceArea.Fleet" /></div>
     @if (IsScopedEntry || _profileListUnavailable)
     {
-        <MudPaper Class="tenants-hero pa-4">
-            <MudText Typo="Typo.h4">Tenants</MudText>
+        <MudPaper Class="pa-3">
             @if (_isLoading)
             {
                 <p role="status">Checking metrics access…</p>
@@ -63,45 +64,6 @@
     else
     {
     <MudStack Spacing="3">
-        <MudPaper Class="tenants-hero pa-4">
-            <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="flex-wrap" Spacing="2">
-                <div>
-                    <MudText Typo="Typo.h4">Tenants</MudText>
-                    <MudText Typo="Typo.body2" Color="Color.Secondary">
-                        Manage customer profiles, enrollment access, and tenant navigation from one place.
-                    </MudText>
-                </div>
-
-                <MudButton Variant="Variant.Filled"
-                           Color="Color.Primary"
-                           StartIcon="@Icons.Material.Filled.AddBusiness"
-                           OnClick="OpenAddDialogAsync">
-                    Add Tenant
-                </MudButton>
-            </MudStack>
-
-            <MudGrid Spacing="2" Class="mt-2">
-                <MudItem xs="12" md="4">
-                    <MudPaper Class="tenant-summary-card pa-3" Outlined="true">
-                        <MudText Typo="Typo.caption" Class="tenant-summary-label">Tenants</MudText>
-                        <MudText Typo="Typo.h5">@_tenants.Count</MudText>
-                    </MudPaper>
-                </MudItem>
-                <MudItem xs="12" md="4">
-                    <MudPaper Class="tenant-summary-card pa-3" Outlined="true">
-                        <MudText Typo="Typo.caption" Class="tenant-summary-label">Domains</MudText>
-                        <MudText Typo="Typo.h5">@_tenants.Sum(x => x.Domains?.Count ?? 0)</MudText>
-                    </MudPaper>
-                </MudItem>
-                <MudItem xs="12" md="4">
-                    <MudPaper Class="tenant-summary-card pa-3" Outlined="true">
-                        <MudText Typo="Typo.caption" Class="tenant-summary-label">Last Refresh</MudText>
-                        <MudText Typo="Typo.h5">@(_lastLoadedUtc?.ToLocalTime().ToString("HH:mm:ss") ?? "n/a")</MudText>
-                    </MudPaper>
-                </MudItem>
-            </MudGrid>
-        </MudPaper>
-
         <MudPaper Class="pa-3">
             <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center" Class="flex-wrap" Spacing="2">
                 <MudTextField @bind-Value="_searchText"
@@ -113,7 +75,9 @@
                               AdornmentIcon="@Icons.Material.Filled.Search"
                               Class="tenants-search" />
 
-                <MudStack Row="true" Spacing="1">
+                <MudStack Row="true" AlignItems="AlignItems.Center" Wrap="Wrap.Wrap" Spacing="1">
+                    <MudButton Variant="Variant.Filled" Color="Color.Primary" Size="Size.Small"
+                               StartIcon="@Icons.Material.Filled.AddBusiness" OnClick="OpenAddDialogAsync">Add Tenant</MudButton>
                     <MudChip T="string" Variant="@GetFilterVariant(string.IsNullOrWhiteSpace(_searchText))" Color="Color.Primary">
                         @FilteredTenants.Count result@(FilteredTenants.Count == 1 ? string.Empty : "s")
                     </MudChip>
@@ -244,25 +208,6 @@
 </MudContainer>
 
 <style>
-    .tenants-hero {
-        background: var(--mud-palette-surface);
-        border: 1px solid var(--mud-palette-divider);
-        border-left: 3px solid var(--mud-palette-primary);
-        border-radius: var(--netratel-radius-surface, 7px);
-    }
-
-    .tenant-summary-card {
-        border-radius: var(--netratel-radius-surface, 7px);
-        background: var(--mud-palette-background-gray);
-        border-color: var(--mud-palette-divider);
-    }
-
-    .tenant-summary-label {
-        color: var(--mud-palette-text-secondary);
-        letter-spacing: 0.05em;
-        text-transform: uppercase;
-    }
-
     .tenants-search {
         min-width: min(100%, 420px);
     }
@@ -308,7 +253,6 @@
     private List<TenantDto> _tenants = new();
     private bool _isLoading = true;
     private string _searchText = string.Empty;
-    private DateTimeOffset? _lastLoadedUtc;
     private bool _profileListUnavailable, _initialized, _openScoped;
     private IReadOnlyList<MonitoringTenantDto> _metricsTenants = [];
     private string? _requestedTenant, _metricsError;
@@ -395,7 +339,6 @@
             if (token.IsCancellationRequested) return;
             _tenants = tenants.ToList();
             _profileListUnavailable = false;
-            _lastLoadedUtc = DateTimeOffset.UtcNow;
         }
         catch (HttpRequestException error) when (error.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.Unauthorized)
         {

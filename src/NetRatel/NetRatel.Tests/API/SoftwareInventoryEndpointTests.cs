@@ -14,6 +14,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using NetRatel.API.Endpoints.Client;
+using NetRatel.API.Security.Authorization;
 using NetRatel.API.Services;
 using NetRatel.Application.Events;
 using NetRatel.Infrastructure.Identity.Authorization;
@@ -84,6 +85,28 @@ public sealed class SoftwareInventoryEndpointTests
         host.Services.GetRequiredService<Events>().Items.Should().Contain(item => item.EventType == "SoftwareInventory.summary.read");
     }
 
+    [Fact]
+    public async Task Tenant_search_finds_names_before_paging_and_keeps_unauthorized_tenants_out()
+    {
+        using var host = await StartAsync();
+        using var scope = host.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+        db.Add(new Tenant { Id = 9, Name = "Zebra Operations" });
+        (await db.Tenants.FindAsync(8))!.Name = "Zebra Private";
+        await db.SaveChangesAsync();
+        using var http = host.GetTestClient();
+        http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Test", "reader");
+
+        const string route = "/api/v2/software-inventory/tenants?pageSize=1";
+        var first = await http.GetFromJsonAsync<SoftwarePage<SoftwareInventoryTenant>>(route);
+        first!.Items.Should().ContainSingle().Which.TenantId.Should().Be(7);
+        var search = await http.GetFromJsonAsync<SoftwarePage<SoftwareInventoryTenant>>(route + "&search=zEbRa");
+        search!.Items.Should().ContainSingle().Which.TenantId.Should().Be(9);
+        search.Total.Should().Be(1);
+        var unauthorized = await http.GetFromJsonAsync<SoftwarePage<SoftwareInventoryTenant>>(route + "&search=Private");
+        unauthorized!.Items.Should().BeEmpty();
+    }
+
     private static async Task<IHost> StartAsync()
     {
         var database = Guid.NewGuid().ToString();
@@ -93,15 +116,16 @@ public sealed class SoftwareInventoryEndpointTests
             web.ConfigureServices(services =>
             {
                 services.AddRouting();
-                services.AddAuthentication("Test").AddScheme<AuthenticationSchemeOptions, Authentication>("Test", _ => { });
+                services.AddAuthentication("Bearer").AddScheme<AuthenticationSchemeOptions, Authentication>("Bearer", _ => { });
                 services.AddAuthorization(options =>
                 {
                     options.AddPolicy("TelemetryReader", policy => policy.RequireAuthenticatedUser());
                     options.AddPolicy("ClientManager", policy => policy.RequireAuthenticatedUser().RequireClaim("manage", "true"));
                     options.AddPolicy("TenantAdministrator", policy => policy.RequireAuthenticatedUser().RequireClaim("manage", "true"));
-                    options.AddPolicy("SoftwareInventoryDiscovery", policy => policy.RequireAuthenticatedUser());
+                    MonitoringFlowPermissionAuthorization.AddDiscoveryPolicy(options, "SoftwareInventoryDiscovery", NetRatelPermissions.TelemetryRead);
                     options.AddPolicy("AgentGatewayAccess", policy => policy.RequireAuthenticatedUser().RequireClaim("role", "agent"));
                 });
+                MonitoringFlowPermissionAuthorization.AddHandlers(services);
                 services.AddDbContext<OrchestratorDbContext>(options => options.UseInMemoryDatabase(database));
                 services.AddScoped<SoftwareInventoryService>();
                 services.AddSingleton<TimeProvider>(TimeProvider.System);
@@ -134,13 +158,16 @@ public sealed class SoftwareInventoryEndpointTests
             if (actor == "manager") claims.Add(new("manage", "true"));
             if (actor.StartsWith("agent", StringComparison.Ordinal))
                 claims.AddRange([new("sub", AgentId.ToString()), new("agent_id", AgentId.ToString()), new("tenant_id", actor[5..]), new("role", "agent"), new("scope", "netratel:connect")]);
-            return Task.FromResult(AuthenticateResult.Success(new(new ClaimsPrincipal(new ClaimsIdentity(claims, "Test")), "Test")));
+            var authenticationType = actor.StartsWith("agent", StringComparison.Ordinal) ? "Agent" : "Oidc";
+            return Task.FromResult(AuthenticateResult.Success(new(new ClaimsPrincipal(new ClaimsIdentity(claims, authenticationType)), Scheme.Name)));
         }
     }
     private sealed class Access : IEffectiveAccessService
     {
         public Task<bool> AuthorizeAsync(ClaimsPrincipal principal, string permission, int? tenantId, CancellationToken cancellationToken = default) =>
-            Task.FromResult(tenantId == 7 && (permission == NetRatelPermissions.TelemetryRead || principal.HasClaim("manage", "true")));
+            Task.FromResult(tenantId is 7 or 9 && (permission == NetRatelPermissions.TelemetryRead || principal.HasClaim("manage", "true")));
+        public Task<int[]?> GetAuthorizedTenantIdsAsync(ClaimsPrincipal principal, string permission, CancellationToken cancellationToken = default) =>
+            Task.FromResult<int[]?>(permission == NetRatelPermissions.TelemetryRead ? [7, 9] : []);
         public Task<EffectiveAccessSnapshot> GetSnapshotAsync(ClaimsPrincipal principal, int? tenantId, CancellationToken cancellationToken = default) => throw new NotSupportedException();
         public Task ReconcileBuiltInRolesAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
     }

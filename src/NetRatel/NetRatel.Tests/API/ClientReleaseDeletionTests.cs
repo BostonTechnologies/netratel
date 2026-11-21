@@ -361,9 +361,12 @@ public sealed class ClientReleaseDeletionTests(PostgreSqlPersistenceFixture post
         await using var db = new OrchestratorDbContext(_options);
         await SeedAsync(db);
         for (var index = 0; index < 121; index++)
-            db.ClientReleaseImportOperations.Add(new() { Id = Guid.NewGuid(), GitHubReleaseId = 1000 + index,
-                Tag = $"v2.0.{index}", Version = $"2.0.{index}", State = ClientReleaseImportState.Imported,
+        {
+            var version = index == 120 ? "3.0.1" : $"2.0.{index}";
+            db.ClientReleaseImportOperations.Add(new() { Id = Guid.NewGuid(), GitHubReleaseId = index == 120 ? 1 : 1000 + index,
+                Tag = $"v{version}", Version = version, State = ClientReleaseImportState.Imported,
                 RequestedBy = "fixture", CreatedAtUtc = DateTimeOffset.UtcNow, UpdatedAtUtc = DateTimeOffset.UtcNow });
+        }
         await db.SaveChangesAsync();
         var workspace = new ClientReleaseWorkspaceService(db, Artifacts(db), new OfflineCatalog());
         var seen = new List<string>();
@@ -378,6 +381,32 @@ public sealed class ClientReleaseDeletionTests(PostgreSqlPersistenceFixture post
         Assert.Equal(Version, Assert.Single(exact.Items).Version);
         Assert.Equal("Unknown", exact.Items[0].SourceState);
         Assert.Single(exact.Items[0].Packages); Assert.Single(exact.Items[0].Imports);
+
+        var fallback = await workspace.ReadAsync(2, 20, null, "all", null, null, false, default);
+        Assert.Equal(2, fallback.Page);
+        Assert.Equal(seen.Skip(40).Take(20), fallback.Items.Select(row => row.Version));
+        Assert.False(fallback.IsComplete);
+        Assert.NotNull(fallback.Warning);
+        Assert.Equal(seen.Take(101), fallback.SelectableVersions);
+
+        using var upstream = new GitHubClientReleaseCatalogTests.SyntheticCatalogue(1);
+        upstream.Publish(2, prerelease: true);
+        using var http = new HttpClient(upstream) { BaseAddress = new("https://api.github.com/") };
+        var mixed = new ClientReleaseWorkspaceService(db, Artifacts(db), GitHubClientReleaseCatalogTests.Catalog(http));
+        var head = await mixed.ReadAsync(0, 20, null, "all", null, null, false, default);
+        Assert.Equal("3.0.2-beta.1", head.Items[0].Version);
+        Assert.Equal("prerelease", head.Items[0].Channel);
+        Assert.Equal("3.0.1", head.Items[1].Version);
+        Assert.True(head.Items[1].HasLocal);
+        var retainedOnly = seen.Where(version => version != "3.0.1");
+        Assert.Equal(retainedOnly.Take(18), head.Items.Skip(2).Select(row => row.Version));
+        Assert.True(head.IsComplete);
+        Assert.Equal(123, head.Total);
+        Assert.True(head.HasMore);
+        var tail = await mixed.ReadAsync(1, 20, null, "all", null, null, false, head.DiscoveryId, default);
+        Assert.Equal(retainedOnly.Skip(18).Take(20), tail.Items.Select(row => row.Version));
+        Assert.Equal(head.DiscoveryId, tail.DiscoveryId);
+        Assert.Single(upstream.Requests);
     }
     [Fact]
     public async Task Workspace_demands_bounded_source_pages_without_scanning_for_search_or_cleanup()
@@ -392,9 +421,8 @@ public sealed class ClientReleaseDeletionTests(PostgreSqlPersistenceFixture post
 
             var first = await workspace.ReadAsync(0, size, null, "all", null, null, false, default);
             Assert.Equal(size, first.Items.Count);
-            Assert.Equal(Version, first.Items[0].Version);
-            Assert.Equal("3.0.1", first.Items[1].Version);
-            Assert.Equal($"3.0.{size - 1}", first.Items[^1].Version);
+            Assert.Equal("3.0.1", first.Items[0].Version);
+            Assert.Equal($"3.0.{size}", first.Items[^1].Version);
             Assert.True(first.HasMore);
             Assert.False(first.IsComplete);
             Assert.Equal([Version], first.SelectableVersions);
@@ -402,7 +430,7 @@ public sealed class ClientReleaseDeletionTests(PostgreSqlPersistenceFixture post
 
             var second = await workspace.ReadAsync(1, size, null, "all", null, null, false, first.DiscoveryId, default);
             Assert.Equal(size, second.Items.Count);
-            Assert.Equal($"3.0.{size}", second.Items[0].Version);
+            Assert.Equal($"3.0.{size + 1}", second.Items[0].Version);
             Assert.Empty(first.Items.Select(row => row.Version).Intersect(second.Items.Select(row => row.Version)));
             Assert.True(upstream.NotModified > 0, "Extension conditionally verifies the previously loaded source boundary.");
             var requests = upstream.Requests.Count;
@@ -431,12 +459,12 @@ public sealed class ClientReleaseDeletionTests(PostgreSqlPersistenceFixture post
         Assert.Equal([1, 2, 1], sparse.Requests);
 
         var beforePublication = await service.ReadAsync(2, 20, null, "all", null, null, false, empty.DiscoveryId, default);
-        sparse.Publish(301);
+        sparse.Publish(301, prerelease: true);
         var restarted = await service.ReadAsync(3, 20, null, "all", null, null, false, beforePublication.DiscoveryId, default);
         Assert.Equal(0, restarted.Page);
         Assert.NotEqual(beforePublication.DiscoveryId, restarted.DiscoveryId);
         Assert.Contains("discovery changed", restarted.Warning);
-        Assert.Equal("3.0.301", restarted.Items[1].Version);
+        Assert.Equal("3.0.301-beta.1", restarted.Items[0].Version);
     }
 
     private sealed class OfflineCatalog : IGitHubClientReleaseCatalog

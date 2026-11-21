@@ -13,13 +13,14 @@
 @inject NavigationManager Navigation
 @inject IJSRuntime JS
 @inject ISnackbar Snackbar
+@inject ILogger<Notifications> Logger
 
 <PageTitle>Notifications</PageTitle>
 
 <MudPaper Class="pa-4">
-    <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween" Class="mb-3">
+    <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween" Wrap="Wrap.Wrap" Class="mb-3">
         <MudText Typo="Typo.h5">Notifications</MudText>
-        <MudStack Row="true" Spacing="1" AlignItems="AlignItems.Center">
+        <MudStack Row="true" Spacing="1" AlignItems="AlignItems.Center" Wrap="Wrap.Wrap">
             <MudChip T="string" Variant="Variant.Outlined" Color="Color.Primary">@summary.UnreadCount unread / @summary.TotalCount total</MudChip>
             <MudChip T="string" Color="@(streamConnected ? Color.Success : Color.Error)" Variant="Variant.Outlined">@(streamConnected ? "LIVE" : "DISCONNECTED")</MudChip>
             <MudChip T="string" Variant="Variant.Outlined">Last event: @(lastSseReceivedUtc?.ToLocalTime().ToString("g") ?? "-")</MudChip>
@@ -62,69 +63,67 @@
                 }
             </MudSelect>
         </MudItem>
-        <MudItem xs="12" sm="4" md="1">
-            <MudButton Variant="Variant.Outlined"
-                       Color="@(HasOccurredFilter ? Color.Primary : Color.Default)"
-                       StartIcon="@Icons.Material.Filled.DateRange"
-                       OnClick="OpenOccurredPopover"
-                       title="@OccurredFilterSummary"
-                       Class="notifications-occurred-button">
-                @OccurredFilterLabel
-            </MudButton>
-            <MudPopover Open="occurredPopoverOpen"
-                        AnchorOrigin="Origin.BottomCenter"
-                        TransformOrigin="Origin.TopCenter"
-                        Class="pa-4 notifications-occurred-popover">
-                <MudStack Spacing="2">
-                    <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween">
-                        <MudText Typo="Typo.subtitle2">Occurred</MudText>
-                        <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small" OnClick="CloseOccurredPopover" />
+        <MudItem xs="12" lg="3" Class="notification-filter-actions">
+            <div>
+                <MudButton Variant="Variant.Outlined"
+                           Color="@(HasOccurredFilter ? Color.Primary : Color.Default)"
+                           StartIcon="@Icons.Material.Filled.DateRange"
+                           OnClick="OpenOccurredPopover"
+                           title="@OccurredFilterSummary"
+                           Class="notifications-occurred-button">
+                    @OccurredFilterLabel
+                </MudButton>
+                <MudPopover Open="occurredPopoverOpen"
+                            AnchorOrigin="Origin.BottomCenter"
+                            TransformOrigin="Origin.TopCenter"
+                            Class="pa-4 notifications-occurred-popover">
+                    <MudStack Spacing="2">
+                        <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween">
+                            <MudText Typo="Typo.subtitle2">Occurred</MudText>
+                            <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small" OnClick="CloseOccurredPopover" />
+                        </MudStack>
+                        <MudGrid Spacing="2">
+                            <MudItem xs="12" sm="7">
+                                <MudDatePicker Label="From date"
+                                               Date="pendingFromDate"
+                                               DateChanged="OnPendingFromDateChanged"
+                                               Clearable="true" />
+                            </MudItem>
+                            <MudItem xs="12" sm="5">
+                                <MudTimePicker Label="From time"
+                                               Time="pendingFromTime"
+                                               TimeChanged="OnPendingFromTimeChanged"
+                                               Clearable="true"
+                                               Disabled="@(!pendingFromDate.HasValue)" />
+                            </MudItem>
+                            <MudItem xs="12" sm="7">
+                                <MudDatePicker Label="To date"
+                                               Date="pendingToDate"
+                                               DateChanged="OnPendingToDateChanged"
+                                               Clearable="true" />
+                            </MudItem>
+                            <MudItem xs="12" sm="5">
+                                <MudTimePicker Label="To time"
+                                               Time="pendingToTime"
+                                               TimeChanged="OnPendingToTimeChanged"
+                                               Clearable="true"
+                                               Disabled="@(!pendingToDate.HasValue)" />
+                            </MudItem>
+                        </MudGrid>
+                        <MudStack Row="true" Justify="Justify.FlexEnd" Spacing="1">
+                            <MudButton Variant="Variant.Text" OnClick="ClearOccurredFilterAsync">Clear</MudButton>
+                            <MudButton Variant="Variant.Outlined" OnClick="CloseOccurredPopover">Cancel</MudButton>
+                            <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="ApplyOccurredFilterAsync">Apply</MudButton>
+                        </MudStack>
                     </MudStack>
-                    <MudGrid Spacing="2">
-                        <MudItem xs="12" sm="7">
-                            <MudDatePicker Label="From date"
-                                           Date="pendingFromDate"
-                                           DateChanged="OnPendingFromDateChanged"
-                                           Clearable="true" />
-                        </MudItem>
-                        <MudItem xs="12" sm="5">
-                            <MudTimePicker Label="From time"
-                                           Time="pendingFromTime"
-                                           TimeChanged="OnPendingFromTimeChanged"
-                                           Clearable="true"
-                                           Disabled="@(!pendingFromDate.HasValue)" />
-                        </MudItem>
-                        <MudItem xs="12" sm="7">
-                            <MudDatePicker Label="To date"
-                                           Date="pendingToDate"
-                                           DateChanged="OnPendingToDateChanged"
-                                           Clearable="true" />
-                        </MudItem>
-                        <MudItem xs="12" sm="5">
-                            <MudTimePicker Label="To time"
-                                           Time="pendingToTime"
-                                           TimeChanged="OnPendingToTimeChanged"
-                                           Clearable="true"
-                                           Disabled="@(!pendingToDate.HasValue)" />
-                        </MudItem>
-                    </MudGrid>
-                    <MudStack Row="true" Justify="Justify.FlexEnd" Spacing="1">
-                        <MudButton Variant="Variant.Text" OnClick="ClearOccurredFilterAsync">Clear</MudButton>
-                        <MudButton Variant="Variant.Outlined" OnClick="CloseOccurredPopover">Cancel</MudButton>
-                        <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="ApplyOccurredFilterAsync">Apply</MudButton>
-                    </MudStack>
-                </MudStack>
-            </MudPopover>
-        </MudItem>
-        <MudItem xs="12" sm="6" md="1">
+                </MudPopover>
+            </div>
             <MudButton Variant="Variant.Outlined" OnClick="ClearFiltersAsync">Clear</MudButton>
-        </MudItem>
-        <MudItem xs="12" sm="6" md="1">
             <MudButton Variant="Variant.Outlined" OnClick="RefreshTableAsync">Refresh</MudButton>
         </MudItem>
     </MudGrid>
 
-    <MudStack Row="true" Spacing="2" Class="mb-2" AlignItems="AlignItems.Center">
+    <MudStack Row="true" Spacing="2" Class="mb-2" AlignItems="AlignItems.Center" Wrap="Wrap.Wrap">
         <MudButton Variant="Variant.Filled" Color="Color.Primary" Disabled="@(selectedIds.Count == 0)" OnClick="MarkSelectedReadAsync">
             Mark Selected Read (@selectedIds.Count)
         </MudButton>
@@ -137,15 +136,25 @@
               ServerData="LoadServerData"
               Dense="true"
               Hover="true"
-              Breakpoint="Breakpoint.Sm"
+              Breakpoint="Breakpoint.Md"
               Loading="tableLoading"
               RowClassFunc="GetRowClass"
               OnRowClick="OnRowClicked"
               RowsPerPage="20">
+        <ColGroup>
+            <col class="notification-selection-column" />
+            <col class="notification-severity-column" />
+            <col />
+            <col class="notification-source-column" />
+            <col class="notification-time-column" />
+            <col class="notification-status-column" />
+            <col class="notification-actions-column" />
+        </ColGroup>
         <HeaderContent>
             <MudTh>
                 <div @onclick:stopPropagation="true">
                     <MudCheckBox T="bool"
+                                 aria-label="Select unread notifications on this page"
                                  Disabled="@(UnreadOnPageCount == 0)"
                                  Value="AreAllUnreadSelected"
                                  ValueChanged="ToggleSelectAllUnread" />
@@ -154,66 +163,39 @@
             <MudTh>Severity</MudTh>
             <MudTh>Event</MudTh>
             <MudTh>Source</MudTh>
-            <MudTh>Entity</MudTh>
-            <MudTh>Correlation</MudTh>
             <MudTh>Occurred</MudTh>
             <MudTh>Status</MudTh>
             <MudTh>Actions</MudTh>
         </HeaderContent>
         <RowTemplate>
-            <MudTd @attributes="GetCellAttributes(context)">
+            <MudTd DataLabel="Select" @attributes="GetCellAttributes(context)">
                 <div @onclick:stopPropagation="true">
                     <MudCheckBox T="bool"
+                                 aria-label="Select notification"
                                  Disabled="@context.IsRead"
                                  Value="@selectedIds.Contains(context.Id)"
                                  ValueChanged="@((bool value) => ToggleSelection(context.Id, value))" />
                 </div>
             </MudTd>
-            <MudTd>
+            <MudTd DataLabel="Severity">
                 <MudChip T="string" Size="Size.Small" Color="@SeverityColor(context.Severity)">@context.Severity</MudChip>
             </MudTd>
-            <MudTd>
-                <MudTooltip Text="@context.EventType" Placement="Placement.Top">
-                    <MudText Class="cell-ellipsis">@FriendlyEvent(context.EventType)</MudText>
-                </MudTooltip>
-                <MudTooltip Text="@(context.Message ?? "-")" Placement="Placement.Top">
-                    <MudText Typo="Typo.caption" Color="Color.Secondary" Class="cell-ellipsis">@(context.Message ?? "-")</MudText>
-                </MudTooltip>
-            </MudTd>
-            <MudTd>
-                <MudTooltip Text="@context.Source" Placement="Placement.Top">
-                    <MudText Class="cell-ellipsis">@context.Source</MudText>
-                </MudTooltip>
-            </MudTd>
-            <MudTd>
-                <MudStack Row="true" Spacing="1" AlignItems="AlignItems.Center" @onclick:stopPropagation="true">
-                    <MudTooltip Text="@(context.EntityId ?? "-")" Placement="Placement.Top">
-                        <MudText Class="cell-ellipsis">@(ShortId(context.EntityId) ?? "-")</MudText>
-                    </MudTooltip>
-                    @if (!string.IsNullOrWhiteSpace(context.EntityId))
+            <MudTd DataLabel="Event">
+                <div class="notification-event" data-testid="notification-event">
+                    <MudText Class="cell-ellipsis" title="@context.EventType">@FriendlyEvent(context.EventType)</MudText>
+                    @if (EventPreview(context) is { Length: > 0 } preview)
                     {
-                        <MudTooltip Text="Copy entity">
-                            <MudIconButton Icon="@Icons.Material.Filled.ContentCopy" Size="Size.Small" OnClick='@((MouseEventArgs _) => CopyToClipboardAsync(context.EntityId!, "Entity ID"))' />
-                        </MudTooltip>
+                        <MudText Typo="Typo.caption" Color="Color.Secondary" Class="notification-event-preview" title="@preview">@preview</MudText>
                     }
-                </MudStack>
+                </div>
             </MudTd>
-            <MudTd>
-                <MudStack Row="true" Spacing="1" AlignItems="AlignItems.Center" @onclick:stopPropagation="true">
-                    <MudTooltip Text="@context.CorrelationId" Placement="Placement.Top">
-                        <MudText Class="cell-ellipsis">@ShortId(context.CorrelationId)</MudText>
-                    </MudTooltip>
-                    <MudTooltip Text="Copy correlation">
-                        <MudIconButton Icon="@Icons.Material.Filled.ContentCopy" Size="Size.Small" OnClick='@((MouseEventArgs _) => CopyToClipboardAsync(context.CorrelationId, "Correlation ID"))' />
-                    </MudTooltip>
-                </MudStack>
-            </MudTd>
-            <MudTd>@context.OccurredUtc.ToLocalTime().ToString("g")</MudTd>
-            <MudTd>
+            <MudTd DataLabel="Source"><MudText Class="cell-ellipsis" title="@context.Source">@context.Source</MudText></MudTd>
+            <MudTd DataLabel="Occurred">@context.OccurredUtc.ToLocalTime().ToString("g")</MudTd>
+            <MudTd DataLabel="Status">
                 <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined">@context.Status</MudChip>
             </MudTd>
-            <MudTd>
-                <MudStack Row="true" Spacing="1" @onclick:stopPropagation="true">
+            <MudTd DataLabel="Actions">
+                <div class="notification-actions" @onclick:stopPropagation="true">
                     @if (context.EventType == NetRatelNotificationAudience.PairingFailure)
                     {
                         <MudButton Size="Size.Small" Variant="Variant.Outlined" Href="/account/integration-credentials">Open connection setup</MudButton>
@@ -232,7 +214,7 @@
                     {
                         <MudButton Size="Size.Small" Variant="Variant.Outlined" OnClick="@((MouseEventArgs _) => MarkReadAsync(context))">Mark Read</MudButton>
                     }
-                </MudStack>
+                </div>
             </MudTd>
         </RowTemplate>
         <NoRecordsContent>
@@ -312,17 +294,27 @@
 </MudDrawer>
 
 <style>
-    .notifications-table .mud-table {
-        table-layout: fixed;
+    .notification-filter-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .35rem; }
+    .notifications-table .mud-table-root { table-layout: fixed; width: 100%; }
+    .notification-selection-column { width: 3rem; }
+    .notification-severity-column { width: 6rem; }
+    .notification-source-column { width: 7.5rem; }
+    .notification-time-column { width: 7rem; }
+    .notification-status-column { width: 6.75rem; }
+    .notification-actions-column { width: 11rem; }
+    .notification-event { min-width: 0; max-width: 100%; }
+    .notification-event-preview {
+        display: -webkit-box;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 2;
+        overflow: hidden;
+        overflow-wrap: anywhere;
     }
-
-    .notifications-table .mud-table-container {
-        overflow-x: hidden;
-    }
-
-    .notifications-table .mud-table td,
-    .notifications-table .mud-table th {
-        word-break: break-word;
+    .notification-actions { display: flex; flex-wrap: wrap; gap: .35rem; justify-content: end; }
+    @@media (max-width: 1280px) {
+        .notifications-table .mud-table-cell { gap: .6rem; min-width: 0; overflow-wrap: anywhere; }
+        .notifications-table .mud-table-cell::before { flex: 0 0 auto; white-space: nowrap; }
+        .notification-event { flex: 1 1 auto; }
     }
 
     .cell-ellipsis {
@@ -643,7 +635,7 @@
         }
         catch (TaskCanceledException)
         {
-            // no-op
+            return;
         }
     }
 
@@ -895,9 +887,9 @@
                     StateHasChanged();
                 });
             }
-            catch
+            catch (Exception error)
             {
-                // Ignore lifecycle races.
+                Logger.LogDebug(error, "Notification highlight could not be cleared.");
             }
         });
     }
@@ -932,15 +924,22 @@
         _ => Color.Info
     };
 
-    private static string? ShortId(string? value, int head = 10, int tail = 6)
+    private static readonly Regex EventIdentifier = new(
+        @"\b(?<client>agent\s+)?(?<id>[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}|[0-9a-f]{32})\b",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    private static string? EventPreview(NetRatelNotificationDto notification)
     {
-        if (string.IsNullOrWhiteSpace(value))
-            return null;
-
-        if (value.Length <= head + tail + 3)
-            return value;
-
-        return $"{value[..head]}...{value[^tail..]}";
+        if (string.IsNullOrWhiteSpace(notification.Message)) return notification.ClientName;
+        var client = notification.Source == "Agent" && Guid.TryParse(notification.EntityId, out var id)
+            ? id
+            : (Guid?)null;
+        return EventIdentifier.Replace(notification.Message, match =>
+        {
+            if (client is { } agent && Guid.TryParse(match.Groups["id"].Value, out var reference) && reference == agent)
+                return notification.ClientName ?? (match.Index == 0 ? "Client" : "client");
+            return match.Groups["client"].Success ? "client" : "reference";
+        });
     }
 
     private static string FriendlyEvent(string eventType)
@@ -1013,9 +1012,9 @@
                     }
                 }
             }
-            catch
+            catch (JsonException)
             {
-                // ignored
+                structuredFields.Clear();
             }
         }
 
