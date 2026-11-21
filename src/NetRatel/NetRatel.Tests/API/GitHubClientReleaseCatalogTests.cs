@@ -13,7 +13,7 @@ public sealed class GitHubClientReleaseCatalogTests
     public async Task ListsTheGlibcAndMuslArchivesWithTheirExactRuntimeIds()
     {
         using var client = Client(_ => Json("""
-            [{"id":1,"tag_name":"v1.2.3","draft":false,"prerelease":false,"published_at":"2026-08-01T00:00:00Z",
+            [{"id":1,"tag_name":"v1.2.3","name":"NetRatel 1.2.3","draft":false,"prerelease":false,"published_at":"2026-08-01T00:00:00Z",
               "assets":[
                 {"id":11,"name":"netratel-client-1.2.3-linux-x64.tar.gz","state":"uploaded","size":100},
                 {"id":12,"name":"netratel-client-1.2.3-linux-musl-x64.tar.gz","state":"uploaded","size":101},
