@@ -2382,11 +2382,15 @@ internal sealed class ClientDirectoryFixtureHttpClientFactory(ClientDirectoryFix
 
     private sealed class Handler(ClientDirectoryFixtureData directory) : HttpMessageHandler
     {
-        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             if (directory.EnableTerminalSession && request.RequestUri?.AbsolutePath == ClientDirectoryFixtureData.TerminalPath + "/stream")
-                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
-            return directory.Respond(request);
+            {
+                // Keep the stream open until the dialog cancels its subscription.
+                var stream = new TaskCompletionSource<HttpResponseMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
+                return stream.Task.WaitAsync(cancellationToken);
+            }
+            return Task.FromResult(directory.Respond(request));
         }
     }
 }
