@@ -205,14 +205,17 @@ jobs:
         run: |
           sdk="$(jq -er '.sdk.version' global.json)"
           alpine_packages="$RUNNER_TEMP/alpine-nuget"
-          mkdir -p "$alpine_packages"
+          mkdir -p "$alpine_packages" artifacts
           docker run --rm --platform linux/amd64 \
             --volume "$PWD:/src" --workdir /src \
             --volume "$alpine_packages:$alpine_packages" --env NUGET_PACKAGES="$alpine_packages" \
             --env CI --env PublicSourceRevision \
             --env GIT_CONFIG_COUNT=1 --env GIT_CONFIG_KEY_0=safe.directory --env GIT_CONFIG_VALUE_0=/src \
             "mcr.microsoft.com/dotnet/sdk:$sdk-alpine3.24" /bin/sh -euc '
-              apk add --no-cache build-base
+              # Grpc.Tools ships glibc executables for linux_x64. Use the Alpine
+              # compilers for protobuf generation in this musl build.
+              apk add --no-cache build-base protobuf grpc-plugins
+              export PROTOBUF_PROTOC=/usr/bin/protoc GRPC_PROTOC_PLUGIN=/usr/bin/grpc_csharp_plugin
               project=src/NetRatel/NetRatel.Client/NetRatel.Client.csproj
               distribution=artifacts/netratel-client-linux-musl-x64
               dotnet restore "$project" --runtime linux-musl-x64 -p:SelfContained=true
