@@ -19,11 +19,9 @@
         </TenantContext>
     </WorkspaceHeader>
     @ViewTabs
-    @if (_tab != "Metrics")
+    @if (_tab is "Active" or "History")
     {
         <div class="monitoring-toolbar">
-            @if (_tab is "Active" or "History")
-            {
             <label>Search alerts<input type="search" value="@_search" @oninput="SearchChanged" maxlength="256" placeholder="Computer, rule or resource" data-testid="monitoring-search" /></label>
             <details class="monitoring-filters" data-testid="monitoring-filters" open="@_filtersOpen" @onkeydown="FiltersKey" @onkeydown:stopPropagation>
                 <summary @ref="_filtersSummary" @onclick="ToggleFilters" @onclick:preventDefault>Filters (@FilterCount)</summary>
@@ -35,7 +33,6 @@
                     <small>Dates use @_timeZone.Id. Rows without a raised date are excluded by Active date filters. History uses event / audit time.</small>
                 </div>
             </details>
-            }
             <MudTooltip Text="Refresh monitoring"><MudIconButton Icon="@Icons.Material.Filled.Refresh" OnClick="Refresh" Disabled="@(State.Loading || _busy)" aria-label="Refresh monitoring" data-testid="monitoring-refresh" /></MudTooltip>
         </div>
     }

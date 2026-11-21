@@ -397,7 +397,8 @@ public sealed class MonitoringPageTests : AsyncBunitContext
         cut.WaitForAssertion(() => Assert.Contains("pending at save time", cut.Find("[data-testid='monitoring-watch-pending-at-save']").TextContent));
         Assert.Empty(cut.FindAll("[data-testid='monitoring-editor']"));
         Assert.Empty(cut.FindAll("[data-testid='monitoring-watch-pending']"));
-        cut.Find("[data-testid='monitoring-refresh']").Click();
+        Assert.Empty(cut.FindAll("[data-testid='monitoring-refresh']"));
+        cut.Find("button[aria-label='Refresh configuration']").Click();
         cut.WaitForAssertion(() => Assert.Contains("revision 2", cut.Find("[data-testid='monitoring-watch-pending-at-save']").TextContent));
         cut.Find("[data-testid='monitoring-tenant']").Change("2");
         cut.WaitForAssertion(() => Assert.Empty(cut.FindAll("[data-testid='monitoring-watch-pending-at-save']")));

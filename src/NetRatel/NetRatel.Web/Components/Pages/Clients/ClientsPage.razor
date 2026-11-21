@@ -5,6 +5,7 @@
 @using NetRatel.Web.Models.Clients
 @using NetRatel.Web.Services.Clients
 @using NetRatel.Web.Components.Dialogs
+@using NetRatel.Web.Components.Shared.Navigation
 
 @inject ClientPresentationService ClientPresentation
 @inject NavigationManager Navigation
@@ -23,6 +24,7 @@
               data-load-count="@_loadCount"
               data-last-load-trigger="@_lastLoadTrigger"
               data-loading="@(_isLoading ? "true" : "false")">
+    <div class="mb-3"><WorkspaceHeader Area="WorkspaceArea.Fleet" /></div>
     <MudPaper Elevation="2" Class="pa-4 mb-4">
         <MudGrid Spacing="3" Justify="Justify.FlexStart">
             <MudItem xs="12" sm="6" md="3">

@@ -198,7 +198,9 @@ public class MainLayoutTests : AsyncBunitContext
     [InlineData("/clients/mgmt?tab=activity", "/clients/mgmt")]
     [InlineData("/clients/settings", "/clients/settings")]
     [InlineData("/clients/detail/fixture-agent", "/clients")]
-    public void Navigation_SelectsOnlyTheIntendedClientLeaf(string route, string expectedHref)
+    [InlineData("/tenants/1/enrollment", "/tenants")]
+    [InlineData("/software-inventory", "/software-inventory")]
+    public void Navigation_SelectsOnlyTheIntendedFleetOrSettingsLink(string route, string expectedHref)
     {
         var authorization = AddAuthorization();
         authorization.SetAuthorized("An operator with a long account name");
@@ -210,10 +212,11 @@ public class MainLayoutTests : AsyncBunitContext
 
         cut.WaitForAssertion(() =>
         {
-            cut.FindAll(".netratel-nav a.active[href^='/clients']")
+            cut.FindAll(".netratel-nav a.active")
                 .Select(link => link.GetAttribute("href")).Should().Equal(expectedHref);
-            cut.FindAll(".netratel-nav a[aria-current='page'][href^='/clients']")
+            cut.FindAll(".netratel-nav a[aria-current='page']")
                 .Select(link => link.GetAttribute("href")).Should().Equal(expectedHref);
+            Assert.Single(cut.FindAll(".netratel-nav a[aria-label='Fleet']"));
             cut.FindAll(".netratel-nav-brand").Should().BeEmpty();
             cut.Find("nav[aria-label='Primary navigation']").Should().NotBeNull();
             cut.Find(".netratel-nav a[href='/logout']").Should().NotBeNull();
@@ -268,8 +271,8 @@ public class MainLayoutTests : AsyncBunitContext
     [InlineData("/admin/access", "Admin")]
     [InlineData("/admin/operator-policies", "Admin")]
     [InlineData("/clients/settings", "Admin")]
-    [InlineData("/clients/detail/fixture-agent", "Estate Management")]
-    [InlineData("/tenants", "Estate Management")]
+    [InlineData("/tasks/new", "Orchestration")]
+    [InlineData("/tasks/history", "Orchestration")]
     [InlineData("/ai/prompts", "Orchestration")]
     public void Navigation_DeepLinksExpandTheirGroupAndUserChoicesSurviveRenders(string route, string groupTitle)
     {
@@ -301,9 +304,10 @@ public class MainLayoutTests : AsyncBunitContext
         }
         if (groupTitle == "Orchestration")
         {
-            var aiOps = Assert.Single(cut.FindAll(".netratel-nav a[aria-label='AI Ops']"));
-            aiOps.Closest(".mud-nav-group")!.GetAttribute("aria-label").Should().Be("Orchestration");
-            aiOps.GetAttribute("aria-current").Should().Be("page");
+            var label = route.StartsWith("/tasks/", StringComparison.Ordinal) ? "Tasks" : "AI Ops";
+            var link = Assert.Single(cut.FindAll($".netratel-nav a[aria-label='{label}']"));
+            link.Closest(".mud-nav-group")!.GetAttribute("aria-label").Should().Be("Orchestration");
+            link.GetAttribute("aria-current").Should().Be("page");
         }
     }
 

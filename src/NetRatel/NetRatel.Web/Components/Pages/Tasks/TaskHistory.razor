@@ -2,22 +2,19 @@
 
 @using NetRatel.Shared.Contracts.Tasks
 @using NetRatel.Web.Services.ClientTasks
+@using NetRatel.Web.Components.Shared.Navigation
 
 @inject TaskApiService TaskApi
 @inject ISnackbar Snackbar
 
 @implements IDisposable
 
+<PageTitle>History · Tasks</PageTitle>
 <MudStack Spacing="2" Class="task-history-page">
+    <WorkspaceHeader Area="WorkspaceArea.Tasks" />
     <MudStack Row="true" AlignItems="AlignItems.Center" Justify="Justify.SpaceBetween">
-        <MudStack Spacing="0">
-            <MudText Typo="Typo.h5">Task history</MudText>
-            <MudText Typo="Typo.caption" Color="Color.Secondary" data-testid="task-history-count">@_total matching runs · @_items.Count on this page</MudText>
-        </MudStack>
-        <MudStack Row="true" Spacing="1">
-            <MudButton Variant="Variant.Text" Size="Size.Small" Href="/tasks/new">New task</MudButton>
-            <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.Refresh" OnClick="ReloadFromFirstPageAsync" Disabled="_isLoading">Refresh</MudButton>
-        </MudStack>
+        <MudText Typo="Typo.caption" Color="Color.Secondary" data-testid="task-history-count">@_total matching runs · @_items.Count on this page</MudText>
+        <MudButton Variant="Variant.Outlined" Size="Size.Small" StartIcon="@Icons.Material.Filled.Refresh" OnClick="ReloadFromFirstPageAsync" Disabled="_isLoading">Refresh</MudButton>
     </MudStack>
 
     <MudPaper Class="task-history-surface pa-3" Elevation="0">

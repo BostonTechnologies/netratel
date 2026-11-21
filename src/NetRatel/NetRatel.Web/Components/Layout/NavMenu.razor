@@ -1,4 +1,5 @@
 @implements IDisposable
+@using NetRatel.Web.Components.Shared.Navigation
 @inject NavigationManager NavigationManager
 @inject AuthenticationStateProvider AuthenticationStateProvider
 @inject NetRatel.Web.Services.Access.IAccessAdministrationApiService AccessApi
@@ -15,20 +16,13 @@
             <MudNavGroup Title="Orchestration" UserAttributes="@(Disclosure("Orchestration"))" @bind-Expanded="orchestrationExpanded" Icon="@Icons.Material.Filled.Workspaces">
                 <MudNavLink Href="/jobs" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Work" aria-label="Jobs" title="Jobs">Jobs</MudNavLink>
                 <MudNavLink Href="/requests" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Stream" aria-label="Requests" title="Requests">Requests</MudNavLink>
-                <MudNavLink Href="/tasks/new" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.AddTask" aria-label="New Task" title="New Task">New Task</MudNavLink>
-                <MudNavLink Href="/tasks/history" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.History" aria-label="Task History" title="Task History">Task History</MudNavLink>
+                <MudNavLink Href="@TasksHref" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.TaskAlt" aria-label="Tasks" title="Tasks">Tasks</MudNavLink>
                 <MudNavLink Href="@AiOpsHref" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.ChatBubbleOutline" aria-label="AI Ops" title="AI Ops">AI Ops</MudNavLink>
             </MudNavGroup>
 
             <MudNavLink Href="/scriptlibrary" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Code" aria-label="Script Library" title="Script Library">Script Library</MudNavLink>
 
-            <div class="nav-section-heading"><span>Estate</span></div>
-            <MudNavGroup Title="Estate Management" UserAttributes="@(Disclosure("Estate Management"))" @bind-Expanded="estateExpanded" Icon="@Icons.Material.Filled.Business">
-                <MudNavLink Href="/clients" Match="@(IsClientInventoryRoute ? NavLinkMatch.Prefix : NavLinkMatch.All)" Icon="@Icons.Material.Filled.Devices" aria-label="Clients" title="Clients">Clients</MudNavLink>
-                <MudNavLink Href="/tenants" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.People" aria-label="Tenants" title="Tenants">Tenants</MudNavLink>
-            </MudNavGroup>
-            <MudNavLink Href="/clients/mgmt" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.RocketLaunch" aria-label="Agent Installers" title="Agent Installers">Agent Installers</MudNavLink>
-            <MudNavLink Href="/software-inventory" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Inventory2" aria-label="Software Inventory" title="Software Inventory">Software Inventory</MudNavLink>
+            <MudNavLink Href="@FleetHref" Match="@FleetMatch" Icon="@Icons.Material.Filled.Devices" aria-label="Fleet" title="Fleet">Fleet</MudNavLink>
 
             <div class="nav-section-heading"><span>Signals</span></div>
             <MudNavLink Href="/notifications" Match="NavLinkMatch.Prefix" Icon="@Icons.Material.Filled.Notifications" aria-label="Notifications" title="Notifications">Notifications</MudNavLink>
@@ -80,25 +74,18 @@
     private bool canReadFlows;
     private bool canReadMonitoring;
     private bool orchestrationExpanded = true;
-    private bool estateExpanded;
     private bool adminExpanded;
 
     private string CurrentPath => (currentUrl ?? string.Empty).Split('?', '#')[0].TrimEnd('/');
     private string MonitoringHref => canReadFlows && (IsRouteBranch(CurrentPath, "flows") || !canReadMonitoring)
         ? "/flows" : "/monitoring";
     private string AiOpsHref => IsRouteBranch(CurrentPath, "ai") ? "/" + CurrentPath : "/ai/chat";
-    // Client detail routes belong to inventory; management and runtime settings
-    // have their own leaves and must never also highlight Clients.
-    private bool IsClientInventoryRoute
-    {
-        get
-        {
-            var path = CurrentPath;
-            return path.Equals("clients", StringComparison.OrdinalIgnoreCase) ||
-                (path.StartsWith("clients/", StringComparison.OrdinalIgnoreCase) &&
-                 !IsRouteBranch(path, "clients/mgmt") && !IsRouteBranch(path, "clients/settings"));
-        }
-    }
+    private string? ActiveWorkspaceTab => WorkspaceNavigation.TabFor(CurrentPath);
+    private string TasksHref => ActiveWorkspaceTab == "/tasks/history" ? "/tasks/history" : "/tasks/new";
+    private string FleetHref => ActiveWorkspaceTab is "/tenants" or "/clients/mgmt" or "/software-inventory"
+        ? ActiveWorkspaceTab : "/clients";
+    private NavLinkMatch FleetMatch => ActiveWorkspaceTab is "/clients" or "/tenants" or "/clients/mgmt" or "/software-inventory"
+        ? NavLinkMatch.Prefix : NavLinkMatch.All;
 
     private static bool IsRouteBranch(string path, string route) =>
         path.Equals(route, StringComparison.OrdinalIgnoreCase) ||
@@ -150,8 +137,6 @@
         var path = CurrentPath;
         if (new[] { "jobs", "requests", "tasks/new", "tasks/history", "ai" }.Any(route => IsRouteBranch(path, route)))
             orchestrationExpanded = true;
-        if (IsClientInventoryRoute || IsRouteBranch(path, "tenants"))
-            estateExpanded = true;
         if (new[] { "account/integration-credentials", "admin/access", "admin/operator-policies", "admin/branding", "admin/app-settings", "clients/settings" }
             .Any(route => IsRouteBranch(path, route)))
             adminExpanded = true;

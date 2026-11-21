@@ -16,14 +16,16 @@ public static class SoftwareInventoryEndpoints
 {
     public static IEndpointRouteBuilder MapSoftwareInventoryEndpoints(this IEndpointRouteBuilder app)
     {
-        app.MapGet("/api/v2/software-inventory/tenants", async (int? page, int? pageSize, HttpContext http, IEffectiveAccessService access, OrchestratorDbContext db, CancellationToken ct) =>
+        app.MapGet("/api/v2/software-inventory/tenants", async (int? page, int? pageSize, string? search, HttpContext http, IEffectiveAccessService access, OrchestratorDbContext db, CancellationToken ct) =>
         {
             var skip = page ?? 0;
             var size = pageSize ?? 100;
-            if (skip < 0 || skip > 100_000 || size < 1 || size > 100) return Results.BadRequest();
+            var term = search?.Trim().ToLowerInvariant();
+            if (skip < 0 || skip > 100_000 || size < 1 || size > 100 || term is { Length: > 128 }) return Results.BadRequest();
             var scope = await access.GetAuthorizedTenantIdsAsync(http.User, NetRatelPermissions.TelemetryRead, ct);
             scope = NetRatel.API.Security.Authorization.MonitoringFlowPermissionAuthorization.RestrictDiscoveryTenantIds(http, NetRatelPermissions.TelemetryRead, scope);
             var tenants = db.Tenants.AsNoTracking().Where(row => scope == null || scope.Contains(row.Id));
+            if (!string.IsNullOrEmpty(term)) tenants = tenants.Where(row => row.Name.ToLower().Contains(term));
             var total = await tenants.CountAsync(ct);
             var items = await tenants.OrderBy(row => row.Name).ThenBy(row => row.Id).Skip(skip * size).Take(size)
                 .Select(row => new SoftwareInventoryTenant(row.Id, row.Name)).ToListAsync(ct);

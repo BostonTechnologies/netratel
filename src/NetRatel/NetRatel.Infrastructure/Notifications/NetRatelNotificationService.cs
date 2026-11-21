@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using NetRatel.Application.Notifications;
+using NetRatel.Application.Presence;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Infrastructure.Flows;
 using NetRatel.Shared.Contracts;
@@ -93,9 +94,41 @@ public sealed class NetRatelNotificationService(
             .ToListAsync(ct);
 
         var readLookup = readSet.ToHashSet();
-        var items = _displaySanitizer.SanitizeMany(pageItems.Select(x => ToDto(x, readLookup.Contains(x.Id))));
+        var clientNames = await ReadClientNamesAsync(pageItems, ct);
+        var items = _displaySanitizer.SanitizeMany(pageItems.Select(message =>
+            ToDto(message, readLookup.Contains(message.Id), EventClient(message) is { } key
+                ? clientNames.GetValueOrDefault(key)
+                : null)));
 
         return new PagedResult<NetRatelNotificationDto>(items, safePage, safePageSize, total);
+    }
+
+    private async Task<Dictionary<ClientKey, string?>> ReadClientNamesAsync(IReadOnlyList<OutboxMessage> messages, CancellationToken ct)
+    {
+        var clients = messages.Select(EventClient).Where(key => key.HasValue).Select(key => key.GetValueOrDefault()).ToArray();
+        if (clients.Length == 0) return [];
+
+        var ids = clients.Select(client => client.AgentId).Distinct().ToArray();
+        var tenants = clients.Select(client => client.TenantId).Distinct().ToArray();
+        // Historical lifecycle events may refer to a decommissioned client.
+        // Resolve only the matching event's tenant and agent identity.
+        return await _db.Agents.IgnoreQueryFilters().AsNoTracking()
+            .Where(agent => ids.Contains(agent.Id) && tenants.Contains(agent.TenantId))
+            .Select(agent => new { agent.TenantId, agent.Id, agent.Name, agent.FriendlyName })
+            .ToDictionaryAsync(agent => new ClientKey(agent.TenantId, agent.Id),
+                agent => FirstReadableClientName(agent.Name, agent.FriendlyName), ct);
+    }
+
+    private static ClientKey? EventClient(OutboxMessage message) =>
+        message.Source == "Agent" && Guid.TryParse(message.EntityId, out var client) &&
+        int.TryParse(message.TenantId, out var tenant) && tenant > 0
+            ? new ClientKey(tenant, client)
+            : null;
+
+    private static string? FirstReadableClientName(string? hostName, string? friendlyName)
+    {
+        if (!string.IsNullOrWhiteSpace(hostName) && !Guid.TryParse(hostName, out _)) return hostName;
+        return !string.IsNullOrWhiteSpace(friendlyName) && !Guid.TryParse(friendlyName, out _) ? friendlyName : null;
     }
 
     public async Task<NetRatelNotificationDto?> GetByIdAsync(Guid id, string userId, CancellationToken ct)
@@ -227,7 +260,7 @@ public sealed class NetRatelNotificationService(
             throw new ArgumentException("User ID is required.", nameof(userId));
     }
 
-    private static NetRatelNotificationDto ToDto(OutboxMessage message, bool isRead)
+    private static NetRatelNotificationDto ToDto(OutboxMessage message, bool isRead, string? clientName = null)
         => new()
         {
             Id = message.Id,
@@ -238,6 +271,7 @@ public sealed class NetRatelNotificationService(
             TenantId = message.TenantId,
             EntityId = message.EntityId,
             Severity = ParseSeverity(message.Severity),
+            ClientName = clientName,
             Message = message.Message,
             PayloadJson = message.PayloadJson,
             Status = message.Status,

@@ -109,6 +109,37 @@ public sealed class OutboxProcessorPostgresTests(PostgreSqlPersistenceFixture fi
         Assert.Null(stored.LockedUntilUtc);
     }
 
+    [Fact]
+    public async Task Notification_search_keeps_identifiers_and_resolves_decommissioned_client_names_in_scope()
+    {
+        var agent = Guid.NewGuid();
+        var matching = Message();
+        matching.Source = "Agent";
+        matching.TenantId = "7";
+        matching.EntityId = agent.ToString("D");
+        matching.Message = $"Agent {agent:D} decommissioned.";
+        var other = Message();
+        other.Source = "Agent";
+        other.TenantId = "8";
+        other.EntityId = matching.EntityId;
+        other.Message = matching.Message;
+        var connection = await SeedAsync(matching, other);
+        await using var db = Database(connection);
+        db.AddRange(new Tenant { Id = 7, Name = "Fixture" }, new Tenant { Id = 8, Name = "Other fixture" });
+        db.Agents.Add(new Agent { Id = agent, TenantId = 7, Name = "fixture-client", DeletedAtUtc = matching.OccurredUtc });
+        await db.SaveChangesAsync();
+
+        var service = new NetRatelNotificationService(db, new NetRatelNotificationDisplaySanitizer(new Names()));
+        var byEntity = await service.GetPageAsync("operator", 1, 20, null, null, null, null, null, null, matching.EntityId, null, null, default);
+        Assert.Equal(2, byEntity.TotalCount);
+        Assert.Equal("fixture-client", Assert.Single(byEntity.Items, row => row.Id == matching.Id).ClientName);
+        Assert.Null(Assert.Single(byEntity.Items, row => row.Id == other.Id).ClientName);
+        var byCorrelation = await service.GetPageAsync("operator", 1, 20, null, null, null, null, null, null, matching.CorrelationId, null, null, default);
+        var row = Assert.Single(byCorrelation.Items);
+        Assert.Equal(matching.EntityId, row.EntityId);
+        Assert.Equal(matching.Message, row.Message);
+    }
+
     private async Task<string> SeedAsync(params OutboxMessage[] messages)
     {
         var connection = await fixture.CreateDatabaseAsync();

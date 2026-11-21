@@ -5,7 +5,7 @@
         <h1 id="@HeadingId" tabindex="@(HeadingId is null ? null : "-1")">@Title</h1>
         @TenantContext
     </div>
-    <nav class="workspace-tabs" aria-label="@Title" data-testid="@(Area == WorkspaceArea.Monitoring ? "signals-workspace-tabs" : "ai-ops-workspace-tabs")">
+    <nav class="workspace-tabs @(Area == WorkspaceArea.Fleet ? "fleet-tabs" : null)" aria-label="@Title" data-testid="@TabStripId">
         @foreach (var (route, label) in Tabs)
         {
             var current = route == ActiveTab;
@@ -17,6 +17,9 @@
 @code {
     private static readonly (string Route, string Label)[] MonitoringTabs = [("/monitoring", "Monitoring"), ("/flows", "Flows")];
     private static readonly (string Route, string Label)[] AiOpsTabs = [("/ai/chat", "Chat"), ("/ai/ops", "Investigations"), ("/ai/prompts", "Prompts")];
+    private static readonly (string Route, string Label)[] TaskTabs = [("/tasks/new", "Tasks"), ("/tasks/history", "History")];
+    private static readonly (string Route, string Label)[] FleetTabs = [
+        ("/clients", "Clients"), ("/tenants", "Tenants"), ("/clients/mgmt", "Install & Update"), ("/software-inventory", "Installed Software")];
 
     [CascadingParameter] public WorkspaceNavigation? Workspace { get; set; }
     [Parameter] public WorkspaceArea Area { get; set; }
@@ -25,8 +28,17 @@
     [Parameter] public string? HeadingId { get; set; }
     [Parameter] public RenderFragment? TenantContext { get; set; }
 
-    private string Title => Area == WorkspaceArea.Monitoring ? "Monitoring" : "AI Ops";
-    private (string Route, string Label)[] Tabs => Area == WorkspaceArea.Monitoring ? MonitoringTabs : AiOpsTabs;
+    private (string Title, string TabStripId, (string Route, string Label)[] Tabs) Definition => Area switch
+    {
+        WorkspaceArea.Monitoring => ("Monitoring", "signals-workspace-tabs", MonitoringTabs),
+        WorkspaceArea.AiOps => ("AI Ops", "ai-ops-workspace-tabs", AiOpsTabs),
+        WorkspaceArea.Tasks => ("Tasks", "tasks-workspace-tabs", TaskTabs),
+        WorkspaceArea.Fleet => ("Fleet", "fleet-workspace-tabs", FleetTabs),
+        _ => throw new ArgumentOutOfRangeException(nameof(Area))
+    };
+    private string Title => Definition.Title;
+    private string TabStripId => Definition.TabStripId;
+    private (string Route, string Label)[] Tabs => Definition.Tabs;
     private string? ActiveTab => WorkspaceNavigation.TabFor(new Uri(Navigation.Uri).AbsolutePath);
     private int ContextTenant => RequestedTenantId ?? TenantId;
 

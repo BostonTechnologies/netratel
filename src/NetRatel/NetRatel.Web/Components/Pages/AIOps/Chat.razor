@@ -42,8 +42,14 @@
     }
     else
     {
-        <div class="chat-workspace">
-            <aside class="chat-history" aria-label="Chat history">
+        <button type="button" class="chat-mobile-switch" aria-controls="chat-history-panel"
+                aria-expanded="@(_showChatList ? "true" : "false")" @onclick="() => _showChatList = !_showChatList"
+                data-testid="chat-mobile-switch">
+            <MudIcon Icon="@(_showChatList ? Icons.Material.Filled.ArrowBack : Icons.Material.Outlined.Forum)" Size="Size.Small" />
+            @(_showChatList ? "Back to chat" : "Conversations")
+        </button>
+        <div class="chat-workspace @(_showChatList ? "is-browsing" : "")">
+            <aside id="chat-history-panel" class="chat-history" aria-label="Chat history">
                 <button type="button" class="chat-new-button" @onclick="NewChat" disabled="@(_busy || !CanStart)" data-testid="chat-new">
                     <MudIcon Icon="@Icons.Material.Outlined.Add" Size="Size.Small" /><span>New chat</span>
                 </button>
@@ -56,7 +62,8 @@
                     }
                     @foreach (var item in FilteredItems)
                     {
-                        <a @key="item.Id" href="@ChatUrl(_tenant, item.Id)" class="chat-history-item @(_snapshot?.Investigation.Id == item.Id ? "selected" : "")" aria-current="@(_snapshot?.Investigation.Id == item.Id ? "page" : null)">
+                        <a @key="item.Id" href="@ChatUrl(_tenant, item.Id)" @onclick="() => _showChatList = false"
+                           class="chat-history-item @(_snapshot?.Investigation.Id == item.Id ? "selected" : "")" aria-current="@(_snapshot?.Investigation.Id == item.Id ? "page" : null)">
                             <MudIcon Icon="@Icons.Material.Outlined.ChatBubbleOutline" Size="Size.Small" />
                             <span><strong>@item.Title</strong><small><span class="chat-state-dot @StateClass(item.State)"></span>@StateLabel(item.State)<span class="chat-history-time" title="@TimestampTitle(item.LastActivityUtc)">@HistoryDate(item.LastActivityUtc)</span></small></span>
                         </a>
@@ -66,6 +73,7 @@
                 <a class="chat-settings-link" href="@ConnectionUrl"><MudIcon Icon="@Icons.Material.Outlined.Settings" Size="Size.Small" />Netclaw connection</a>
             </aside>
 
+            <div class="chat-thread">
             @if (_snapshot is not null)
             {
                 <NetclawConversation @key="_snapshot.Investigation.Id" Snapshot="_snapshot" Events="_events" TenantName="@(Access?.TenantName)"
@@ -122,6 +130,7 @@
                     }
                 </section>
             }
+            </div>
         </div>
     }
 </main>

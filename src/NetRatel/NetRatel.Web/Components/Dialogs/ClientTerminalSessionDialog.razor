@@ -11,44 +11,47 @@
 
 <MudDialog Class="client-terminal-session-dialog netratel-terminal-dialog">
   <TitleContent>
-    <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2" Class="client-terminal-session-header">
-      <MudStack Spacing="0" Class="client-terminal-session-title">
-        <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
-          <MudText Typo="Typo.h6">Terminal @Shell</MudText>
-          <MudText Typo="Typo.caption" Class="client-terminal-session-host">@HostLabel</MudText>
-        </MudStack>
-      </MudStack>
-      <MudSpacer />
+    <div class="client-terminal-session-header" data-testid="client-terminal-session-header">
+      <div class="client-terminal-session-title">
+        <strong>Terminal @Shell</strong>
+        <span class="client-terminal-session-host" title="@HostLabel">@HostLabel</span>
+      </div>
+      <div class="client-terminal-session-actions" role="group" aria-label="Terminal actions">
       <MudTooltip Text="Fit terminal">
-        <MudIconButton Icon="@Icons.Material.Filled.CenterFocusStrong"
+        <MudIconButton Icon="@Icons.Material.Filled.CenterFocusStrong" Size="Size.Small" aria-label="Fit terminal"
                        Disabled="@(_console is null)"
                        OnClick="FitTerminalAsync" />
       </MudTooltip>
       <MudTooltip Text="@(_isFullscreen ? "Exit fullscreen" : "Enter fullscreen")">
-        <MudIconButton Icon="@(_isFullscreen ? Icons.Material.Filled.FullscreenExit : Icons.Material.Filled.Fullscreen)"
+        <MudIconButton Icon="@(_isFullscreen ? Icons.Material.Filled.FullscreenExit : Icons.Material.Filled.Fullscreen)" Size="Size.Small"
+                       aria-label="@(_isFullscreen ? "Exit fullscreen" : "Enter fullscreen")"
                        Disabled="@(_console is null)"
                        OnClick="ToggleFullscreenAsync" />
       </MudTooltip>
       <MudTooltip Text="Clear terminal">
-        <MudIconButton Icon="@Icons.Material.Filled.ClearAll"
+        <MudIconButton Icon="@Icons.Material.Filled.ClearAll" Size="Size.Small" aria-label="Clear terminal"
                        Disabled="@(_console is null)"
                        OnClick="ClearTerminalAsync" />
       </MudTooltip>
       @if (_canReconnect)
       {
-        <MudButton OnClick="ReconnectAsync" Disabled="@_recoveryRunning" StartIcon="@Icons.Material.Filled.Refresh">Reconnect</MudButton>
+        <MudTooltip Text="Reconnect terminal">
+          <MudIconButton Icon="@Icons.Material.Filled.Refresh" Size="Size.Small" aria-label="Reconnect terminal"
+                         OnClick="ReconnectAsync" Disabled="@_recoveryRunning" />
+        </MudTooltip>
       }
-      <MudButton Variant="Variant.Filled"
-                 Color="Color.Error"
-                 StartIcon="@Icons.Material.Filled.Close"
-                 OnClick="CloseAndExitAsync">Close</MudButton>
-    </MudStack>
+      <MudTooltip Text="Close terminal">
+        <MudIconButton Icon="@Icons.Material.Filled.Close" Color="Color.Error" Size="Size.Small"
+                       aria-label="Close terminal" OnClick="CloseAndExitAsync" />
+      </MudTooltip>
+      </div>
+    </div>
   </TitleContent>
 
   <DialogContent>
     <div class="client-terminal-session-body">
       <div class="client-terminal-session-status">
-        <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1" Class="client-terminal-session-chip-row">
+        <div class="client-terminal-session-chip-row">
           <MudChip @key="_connectionLabel"
                    T="string"
                    Size="Size.Small"
@@ -70,7 +73,7 @@
           {
             <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Warning">@_terminalNotice</MudChip>
           }
-        </MudStack>
+        </div>
       </div>
       <div class="client-terminal-session-console">
         <TerminalConsole @ref="_console"
@@ -743,6 +746,7 @@
     }
     catch (OperationCanceledException) when (ct.IsCancellationRequested)
     {
+      return;
     }
     catch (Exception)
     {

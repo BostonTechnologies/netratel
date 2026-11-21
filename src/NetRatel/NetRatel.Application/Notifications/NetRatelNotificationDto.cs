@@ -10,6 +10,7 @@ public sealed record NetRatelNotificationDto
     public string? TenantId { get; init; }
     public string? EntityId { get; init; }
     public NetRatelNotificationSeverity Severity { get; init; } = NetRatelNotificationSeverity.Info;
+    public string? ClientName { get; init; }
     public string? Message { get; init; }
     public string PayloadJson { get; init; } = string.Empty;
     public string Status { get; init; } = string.Empty;

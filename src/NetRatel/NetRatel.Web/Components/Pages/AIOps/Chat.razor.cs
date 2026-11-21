@@ -32,6 +32,7 @@ public partial class Chat
     private string? _error, _liveError;
     private int _tenant, _generation;
     private bool _initialized, _loading = true, _busy, _disposed, _showArchived, _acknowledgeRemote;
+    private bool _showChatList;
     private bool _timeLoaded;
     private ChatDraftStorage? _draftStorage;
     private string? _draftActor;
@@ -88,14 +89,20 @@ public partial class Chat
         _selectionScope = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
         var ct = _selectionScope.Token;
         var generation = ++_generation;
+        var previousTenant = _tenant;
         _tenant = RequestedTenant is { } requested
             ? _tenants.FirstOrDefault(x => x.TenantId == requested)?.TenantId ?? 0
             : _tenants.FirstOrDefault()?.TenantId ?? 0;
         var tenant = _tenant;
         _snapshot = null; _events.Clear(); _items = []; _connection = null;
-        _message = _search = ""; _pendingMessage = null; _pendingCreate = null;
+        _message = ""; _pendingMessage = null; _pendingCreate = null;
         _draftRestored = _restoringDraft = _draftAcknowledged = false;
-        _busy = _acknowledgeRemote = _showArchived = false;
+        _busy = _acknowledgeRemote = _showChatList = false;
+        if (tenant != previousTenant)
+        {
+            _search = "";
+            _showArchived = false;
+        }
         _liveError = null; _loading = true;
         if (_tenant == 0)
         {
@@ -137,6 +144,7 @@ public partial class Chat
     private void NewChat()
     {
         if (_busy || !CanStart) return;
+        _showChatList = false;
         if (_snapshot is null && RequestedChat is null) return;
         Navigation.NavigateTo(ChatUrl(_tenant));
     }
