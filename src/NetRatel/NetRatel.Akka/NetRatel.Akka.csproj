@@ -15,8 +15,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Akka.Cluster.Hosting" Version="1.5.74" />
-    <PackageReference Include="Akka.Hosting" Version="1.5.74" />
+    <PackageReference Include="Akka.Cluster.Hosting" Version="1.5.75" />
+    <PackageReference Include="Akka.Hosting" Version="1.5.75" />
     <PackageReference Include="OpenTelemetry.Api" Version="1.21.0" />
   </ItemGroup>
 
