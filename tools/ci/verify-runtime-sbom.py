@@ -8,8 +8,8 @@ import re
 from viewer_runtime import METADATA, sha256, viewer_notices, viewer_packages
 
 
-def verify_browser_inventory(document, root, inventoried):
-    distributions = [path.parent for path in root.rglob("NetRatel.Web.deps.json")]
+def verify_browser_inventory(document, inventoried):
+    distributions = sorted({path.parent for path in inventoried if path.name == "NetRatel.Web.deps.json"})
     if document.get("name") == "NetRatel.Web" and not distributions:
         raise ValueError("Missing Web runtime distribution")
     for distribution in distributions:
@@ -72,7 +72,7 @@ def verify(document, root):
         if checksums[0] != sha256(path):
             raise ValueError(f"Incorrect SBOM digest: {item['fileName']}")
         inventoried.add(path)
-    verify_browser_inventory(document, root, inventoried)
+    verify_browser_inventory(document, inventoried)
     print(f"Verified {len(packages)} packages and {len(document['files'])} distribution file digests.")
 
 

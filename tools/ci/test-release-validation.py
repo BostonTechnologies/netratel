@@ -4015,6 +4015,9 @@ class DistributionTests(unittest.TestCase):
         (distribution / "NetRatel.Web.deps.json").write_text(json.dumps({"runtimeTarget": {"name": "net10.0"},
             "targets": {"net10.0": {"NetRatel.Web/1.0.0": {}, "Example.Web/1.0.0": {}}},
             "libraries": {"NetRatel.Web/1.0.0": {"type": "project"}, "Example.Web/1.0.0": {"type": "package"}}}))
+        build = self.root / "build"
+        build.mkdir()
+        shutil.copyfile(distribution / "NetRatel.Web.deps.json", build / "NetRatel.Web.deps.json")
         output = self.root / "runtime.spdx.json"
         command = [sys.executable, str(ROOT / "tools/ci/generate-runtime-sbom.py"),
             "--project-assets", str(asset), "--distribution", str(distribution),
