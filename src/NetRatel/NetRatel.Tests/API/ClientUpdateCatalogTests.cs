@@ -33,7 +33,8 @@ public sealed class ClientUpdateCatalogTests
             db.ClientUpdateCatalogRevisions.Add(new ClientUpdateCatalogRevision { Id = 1, Revision = 9, UpdatedAtUtc = now });
             db.ClientUpdateReleases.AddRange(
                 Release("0.4.102", "stable", 8),
-                Release("0.4.103-rc.1", "prerelease", 9));
+                Release("0.4.103-rc.1", "prerelease", 9),
+                Release("0.4.101", "stable", 9, "linux-musl-x64"));
             await db.SaveChangesAsync();
         }
 
@@ -53,6 +54,12 @@ public sealed class ClientUpdateCatalogTests
         var prerelease = catalog.GetOffer(tenantId, agentId, "linux-x64", "0.4.102-rc.1", "prerelease");
         prerelease.Should().NotBeNull();
         prerelease!.Version.Should().Be("0.4.103-rc.1");
+        var alpine = catalog.GetOffer(74, agentId, "linux-musl-x64", "0.4.100", "stable");
+        alpine.Should().NotBeNull();
+        alpine!.RuntimeId.Should().Be("linux-musl-x64");
+        alpine.Version.Should().Be("0.4.101");
+        catalog.GetOffer(74, agentId, "linux-musl-x64", "0.4.101", "stable").Should().BeNull();
+        catalog.GetOffer(tenantId, agentId, "linux-musl-x64", "0.4.100", "prerelease").Should().BeNull();
 
         var offered = 0;
         for (var index = 0; index < 10_000; index++)
@@ -120,14 +127,14 @@ public sealed class ClientUpdateCatalogTests
             "resume retains the failed immutable release suppression");
     }
 
-    private static ClientUpdateReleaseRecord Release(string version, string channel, long revision) => new()
+    private static ClientUpdateReleaseRecord Release(string version, string channel, long revision, string runtimeId = "linux-x64") => new()
     {
         PublicId = Guid.NewGuid(),
         Revision = revision,
-        RuntimeId = "linux-x64",
+        RuntimeId = runtimeId,
         Version = version,
         Channel = channel,
-        ArtifactKey = $"linux-x64/{version}/client.zip",
+        ArtifactKey = $"{runtimeId}/{version}/client.zip",
         Sha256 = new string('a', 64),
         SizeBytes = 1024,
         ManifestJson = "{}",

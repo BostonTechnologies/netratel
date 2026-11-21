@@ -75,7 +75,7 @@ public sealed class GitHubClientReleaseCatalog(
     private static readonly TimeSpan CacheLifetime = TimeSpan.FromMinutes(10);
     private static readonly HashSet<string> SupportedRuntimes = new(StringComparer.Ordinal)
     {
-        "win-x64", "win-arm64", "linux-x64", "osx-x64", "osx-arm64"
+        "win-x64", "win-arm64", "linux-x64", "linux-musl-x64", "osx-x64", "osx-arm64"
     };
 
     private readonly SemaphoreSlim _gate = new(1, 1);

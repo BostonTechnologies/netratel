@@ -98,6 +98,7 @@ public sealed class ClientArtifactsService : IClientArtifactsService
         "win-x64",
         "win-arm64",
         "linux-x64",
+        "linux-musl-x64",
         "osx-x64",
         "osx-arm64"
     };

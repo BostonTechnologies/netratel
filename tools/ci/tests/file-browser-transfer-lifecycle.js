@@ -7,7 +7,9 @@ const path = require("node:path");
 const test = require("node:test");
 const vm = require("node:vm");
 
-const sourcePath = process.argv[2] || path.resolve(__dirname, "../../../src/NetRatel/NetRatel.Web/wwwroot/download.js");
+const webRoot = process.argv[2] ? path.dirname(path.resolve(process.argv[2]))
+  : path.resolve(__dirname, "../../../src/NetRatel/NetRatel.Web/wwwroot");
+const sourcePath = process.argv[2] || path.join(webRoot, "download.js");
 const source = fs.readFileSync(sourcePath, "utf8");
 
 for (const scenario of ["network-error", "unexpected-abort", "marked-session-loss", "explicit-cancel", "success"]) {
@@ -73,7 +75,7 @@ for (const scenario of ["network-error", "unexpected-abort", "marked-session-los
 }
 
 test("closed document ignores late browser stream completion before creating a sandbox", async () => {
-  const explorerSource = fs.readFileSync(path.resolve(__dirname, "../../../src/NetRatel/NetRatel.Web/wwwroot/js/full-explorer.js"), "utf8");
+  const explorerSource = fs.readFileSync(path.join(webRoot, "js/full-explorer.js"), "utf8");
   const window = { addEventListener() {} };
   let finishRead;
   const stream = { arrayBuffer: () => new Promise(resolve => { finishRead = resolve; }) };
@@ -89,7 +91,7 @@ test("closed document ignores late browser stream completion before creating a s
 });
 
 test("cancelled upload preparation never creates a late native write", async () => {
-  const explorerSource = fs.readFileSync(path.resolve(__dirname, "../../../src/NetRatel/NetRatel.Web/wwwroot/js/full-explorer.js"), "utf8");
+  const explorerSource = fs.readFileSync(path.join(webRoot, "js/full-explorer.js"), "utf8");
   let writes = 0;
   const window = { addEventListener() {}, netratelFileTransfers: { cancel() {}, upload() { writes++; return Promise.resolve(); } } };
   const fetch = (_, options) => new Promise((resolve, reject) => options.signal.addEventListener('abort', () => reject(new Error('preparation aborted'))));
@@ -101,7 +103,7 @@ test("cancelled upload preparation never creates a late native write", async () 
 });
 
 test("popout bridge preserves delegated UI events without replaying document startup", () => {
-  const lifecycleSource = fs.readFileSync(path.resolve(__dirname, "../../../src/NetRatel/NetRatel.Web/wwwroot/js/explorer-popout-lifecycle.js"), "utf8");
+  const lifecycleSource = fs.readFileSync(path.join(webRoot, "js/explorer-popout-lifecycle.js"), "utf8");
   const native = [], bridged = [];
   class EventTarget { addEventListener(type) { native.push(type); } }
   const document = new EventTarget();
@@ -112,4 +114,19 @@ test("popout bridge preserves delegated UI events without replaying document sta
     document.addEventListener(type, () => {});
   assert.deepEqual(native, ['DOMContentLoaded', 'readystatechange', 'visibilitychange']);
   assert.deepEqual(bridged, ['click', 'keydown', 'load']);
+});
+
+test("the shipped JSZip normalizes archive names and looks up prototype-sensitive names as entries", async () => {
+  const shipped = path.join(webRoot, "js/viewers/jszip");
+  const [version] = fs.readdirSync(shipped);
+  const JSZip = require(path.join(shipped, version, "jszip.min.js"));
+  const fixture = new JSZip();
+  fixture.file("folder/../note.txt", "synthetic note", { createFolders: false });
+  fixture.file("constructor", "ordinary entry");
+  const loaded = await JSZip.loadAsync(await fixture.generateAsync({ type: "uint8array" }));
+
+  assert.equal(loaded.file("folder/../note.txt"), null);
+  assert.equal(await loaded.file("note.txt").async("string"), "synthetic note");
+  assert.equal(Object.getPrototypeOf(loaded.files), null);
+  assert.equal(await loaded.file("constructor").async("string"), "ordinary entry");
 });

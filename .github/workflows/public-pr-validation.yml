@@ -51,6 +51,15 @@ jobs:
           global-json-file: global.json
       - name: Validate release scripts and workflow contracts
         run: python3 tools/ci/test-release-validation.py
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+      - name: Verify and audit the shipped viewers
+        run: |
+          npm --prefix tools/viewer-assets ci --ignore-scripts --omit=optional --no-audit
+          npm --prefix tools/viewer-assets audit --omit=optional
+          npm --prefix tools/viewer-assets run verify-assets
+          node --test tools/ci/tests/file-browser-transfer-lifecycle.js
 
   dotnet:
     name: .NET build and tests
@@ -89,7 +98,7 @@ jobs:
       - name: Validate PostgreSQL-only configuration
         run: bash tools/ci/check-postgresql-only.sh
       - name: Restore solution
-        run: dotnet restore NetRatel.sln
+        run: dotnet restore NetRatel.sln -p:NuGetAudit=true -p:NuGetAuditMode=all '-p:WarningsAsErrors=NU1900%3BNU1901%3BNU1902%3BNU1903%3BNU1904%3BNU1905'
       - name: Build Release solution
         run: dotnet build NetRatel.sln --configuration Release --no-restore
       - name: Prepare fast regression containers

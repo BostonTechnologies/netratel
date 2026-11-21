@@ -21,6 +21,41 @@ them between machines or use an operator OIDC credential in their place. A
 Client that has not enrolled exits rather than starting an unauthenticated
 service.
 
+## Alpine x86-64 client archive
+
+Download the release's `netratel-client-<version>-linux-musl-x64.tar.gz` and
+matching `SHA256SUMS`. On Alpine 3.24 x86_64, install the system libraries and
+bash with `apk` from an Alpine administrator terminal.
+
+```sh
+apk add --no-cache bash ca-certificates icu-data-full icu-libs krb5 libgcc libssl3 libstdc++ tzdata
+```
+
+In the Alpine terminal for the account that will run the client, start in the
+downloads directory. Substitute the downloaded release version and use Alpine's
+bundled `sha256sum` and `tar`.
+
+```sh
+version='<version>'
+archive="netratel-client-$version-linux-musl-x64.tar.gz"
+awk -v name="$archive" '$2 == name { print }' SHA256SUMS | sha256sum -c - &&
+  tar -xzf "$archive" && cd netratel-client-linux-musl-x64
+```
+
+From the extracted directory, check the client and its native terminal helper.
+
+```sh
+export NetRatel_CLIENT_LOG_DIR="$PWD/logs"
+./NetRatel.Client --version
+./NetRatel.Client --terminal-pty-self-test-native
+```
+
+Enroll the client with the command above using `./NetRatel.Client`, then start it
+in the foreground with `./NetRatel.Client`. The archive includes .NET and uses
+Alpine's native musl loader. Bash is required for the forced-native PTY check.
+Install and update this archive manually. OpenRC installation and service-managed
+updates remain follow-up work.
+
 ## Installation identity
 
 Each machine must enroll independently. Cloning an enrolled installation also

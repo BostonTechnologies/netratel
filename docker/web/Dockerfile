@@ -42,6 +42,7 @@ ARG BUILD_CONFIGURATION=Release
 RUN dotnet publish "./NetRatel.Web.csproj" -c "$BUILD_CONFIGURATION" -o /app/publish /p:UseAppHost=false
 RUN apt-get update && apt-get install -y --no-install-recommends python3
 RUN python3 /src/tools/ci/generate-runtime-sbom.py --project-assets obj/project.assets.json --distribution /app/publish --name NetRatel.Web --version "$(dotnet msbuild NetRatel.Web.csproj -nologo -getProperty:Version)" --output /app/publish/runtime.spdx.json
+RUN python3 /src/tools/ci/verify-runtime-sbom.py --sbom /app/publish/runtime.spdx.json --root /app
 
 # --- Final
 FROM base AS final

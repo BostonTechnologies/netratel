@@ -3994,11 +3994,6 @@ class DistributionTests(unittest.TestCase):
             assets += ["--project-assets", str(asset)]
             distributions += ["--distribution", str(path)]
         output = self.root / "runtime.spdx.json"
-        browser = distribution / "wwwroot/js/viewers/fixture-renderer/1.2.3"
-        browser.mkdir(parents=True)
-        (browser / "package.json").write_text(json.dumps({"name": "fixture-renderer", "version": "1.2.3", "license": "MIT"}))
-        (browser / "LICENSE").write_text("Fixture license text")
-        (browser / "renderer.js").write_text("/* fixture runtime */")
         result = subprocess.run([sys.executable, str(ROOT / "tools/ci/generate-runtime-sbom.py"),
             *assets, *distributions, "--distribution-root", str(distribution), "--name", "NetRatel.Mcp.Http", "--version", "1.0.0", "--output", str(output)],
             capture_output=True, text=True)
@@ -4009,11 +4004,41 @@ class DistributionTests(unittest.TestCase):
         self.assertIn("./out/tooling/cli/NetRatel.Cli.dll", file_names)
         self.assertIn("./out/tooling/stdio/NetRatel.Mcp.dll", file_names)
         self.assertTrue({"Example.Http", "Example.Terminal", "Example.Protocol"}.issubset({item["name"] for item in document["packages"]}))
-        renderer = next(item for item in document["packages"] if item["name"] == "fixture-renderer")
-        self.assertEqual("1.2.3", renderer["versionInfo"])
-        self.assertEqual("pkg:npm/fixture-renderer@1.2.3", renderer["externalRefs"][0]["referenceLocator"])
-        self.assertIn("Fixture license text", (distribution / "THIRD-PARTY-NOTICES.txt").read_text())
         self.verifier.verify(document, self.root)
+
+    def test_web_sbom_requires_the_shipped_viewer_provenance_and_inventory(self):
+        distribution = self.root / "web"
+        viewers = distribution / "wwwroot/js/viewers"
+        shutil.copytree(ROOT / "src/NetRatel/NetRatel.Web/wwwroot/js/viewers", viewers)
+        asset = self.root / "web.assets.json"
+        asset.write_text(json.dumps({"project": {"restore": {"projectName": "NetRatel.Web"}}, "packageFolders": {}}))
+        (distribution / "NetRatel.Web.deps.json").write_text(json.dumps({"runtimeTarget": {"name": "net10.0"},
+            "targets": {"net10.0": {"NetRatel.Web/1.0.0": {}, "Example.Web/1.0.0": {}}},
+            "libraries": {"NetRatel.Web/1.0.0": {"type": "project"}, "Example.Web/1.0.0": {"type": "package"}}}))
+        output = self.root / "runtime.spdx.json"
+        command = [sys.executable, str(ROOT / "tools/ci/generate-runtime-sbom.py"),
+            "--project-assets", str(asset), "--distribution", str(distribution),
+            "--name", "NetRatel.Web", "--version", "1.0.0", "--output", str(output)]
+        result = subprocess.run(command, capture_output=True, text=True)
+        self.assertEqual(0, result.returncode, result.stderr)
+        document = json.loads(output.read_text())
+        self.verifier.verify(document, self.root)
+
+        # Omit a viewer while keeping every SPDX ID reference valid.
+        pdf = next(item for item in document["packages"] if item["name"] == "pdfjs-dist")
+        without_pdf = document | {
+            "packages": [item for item in document["packages"] if item != pdf],
+            "relationships": [edge for edge in document["relationships"]
+                              if pdf["SPDXID"] not in (edge["spdxElementId"], edge["relatedSpdxElement"])],
+        }
+        with self.assertRaisesRegex(ValueError, "browser SBOM package pkg:npm/pdfjs-dist@"):
+            self.verifier.verify(without_pdf, self.root)
+
+        provenance = next((viewers / "docx-preview").glob("*/runtime-package.json"))
+        provenance.unlink()
+        result = subprocess.run(command, capture_output=True, text=True)
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("Missing runtime provenance", result.stderr)
 
     def test_paginated_gh_json_is_parsed_without_slurp(self):
         self.assertEqual(
@@ -4036,6 +4061,16 @@ class DistributionTests(unittest.TestCase):
         sums.write_text("0" * 64 + "  cli/nested.nupkg\n")
         with self.assertRaisesRegex(ValueError, "flat safe"):
             self.promotion.stage(inputs, self.root / "output", "0.1.0-rc.3")
+
+    def test_alpine_archive_is_required_for_source_with_the_musl_publish_profile(self):
+        version = "1.2.3"
+        archive = f"netratel-client-{version}-linux-musl-x64.tar.gz"
+        sbom = f"netratel-client-{version}-linux-musl-x64.spdx.json"
+        self.assertTrue({archive, sbom} <= set(self.promotion.required_artifacts(version)))
+        self.assertEqual(self.promotion.artifact_group(archive, version), f"netratel-client-{version}-linux-musl-x64")
+        with patch.object(self.promotion, "ROOT", self.root):
+            self.assertNotIn(archive, self.promotion.required_artifacts(version))
+            self.assertIn(f"netratel-client-{version}-linux-x64.tar.gz", self.promotion.required_artifacts(version))
 
     def test_flat_staging_verifies_all_required_downloads_without_rearrangement(self):
         inputs = self.root / "inputs"
@@ -4672,12 +4707,12 @@ class PublicationImageJournalTests(unittest.TestCase):
             "runId": 1010, "attempt": 2, "headSha": self.revision,
             "productVersion": self.version, "files": {},
         }
-        groups = {101: [], 102: [], 103: [], 104: [], 105: []}
+        groups = {101: [], 102: [], 103: [], 104: [], 105: [], 106: []}
         for name in self.promotion.required_artifacts(self.version):
             artifact_id = 105 if name.startswith(f"netratel-mcp-stdio-{self.version}-win-x64.") else 101
             if name.startswith(f"netratel-client-{self.version}-"):
                 artifact_id = next(value for runtime, value in
-                                   (("linux-x64", 102), ("win-x64", 103), ("osx-arm64", 104))
+                                   (("linux-x64", 102), ("win-x64", 103), ("osx-arm64", 104), ("linux-musl-x64", 106))
                                    if runtime in name)
             content = ("synthetic downloadable artifact: " + name).encode()
             (self.inputs / name).write_bytes(content)
@@ -4711,6 +4746,9 @@ class PublicationImageJournalTests(unittest.TestCase):
             "GITHUB_EVENT_NAME": "release",
         }
         self.real_run = self.promotion.run
+        profile = Path("src/NetRatel/NetRatel.Client/Properties/PublishProfiles/linux-musl-x64.pubxml")
+        (self.root / profile).parent.mkdir(parents=True)
+        shutil.copyfile(ROOT / profile, self.root / profile)
         for guard in (
                 patch.dict(os.environ, self.environment, clear=True),
                 patch.object(self.promotion, "ROOT", self.root),
@@ -4819,7 +4857,7 @@ class PublicationImageJournalTests(unittest.TestCase):
                 stable = lambda document: {key: value for key, value in document.items()
                                            if key not in {"phase", "recordedAtUtc", "imageDigest"}}
                 self.assertEqual(stable(prepared), stable(recorded))
-        self.assertEqual(set(self.downloads), {101, 102, 103, 104, 105})
+        self.assertEqual(set(self.downloads), {101, 102, 103, 104, 105, 106})
 
     def test_source_tag_dirty_checkout_and_workflow_environment_fail_before_evidence_creation(self):
         for key, value in (("GITHUB_ACTIONS", "false"), ("GITHUB_REPOSITORY", "example/other"),
@@ -4903,7 +4941,7 @@ class PublicationImageJournalTests(unittest.TestCase):
         grouped = self.root / "original-downloads"; grouped.mkdir()
         for metadata in self.metadata:
             members = [name for name, item in self.receipt["files"].items() if item["artifactId"] == metadata["id"]]
-            runtime = {101: None, 102: "linux-x64", 103: "win-x64", 104: "osx-arm64", 105: None}[metadata["id"]]
+            runtime = {101: None, 102: "linux-x64", 103: "win-x64", 104: "osx-arm64", 105: None, 106: "linux-musl-x64"}[metadata["id"]]
             metadata["name"] = (f"netratel-mcp-stdio-{self.version}-win-x64" if metadata["id"] == 105 else
                                 f"netratel-client-{self.version}-{runtime}" if runtime else
                                 f"netratel-{self.version}-linux-x64")
@@ -4927,7 +4965,7 @@ class PublicationImageJournalTests(unittest.TestCase):
     def test_receipt_download_selects_latest_upload_by_time_across_partial_reruns(self):
         self.original_run.update(event="push", head_branch=f"v{self.version}", run_attempt=2)
         for metadata in self.metadata:
-            runtime = {101: None, 102: "linux-x64", 103: "win-x64", 104: "osx-arm64", 105: None}[metadata["id"]]
+            runtime = {101: None, 102: "linux-x64", 103: "win-x64", 104: "osx-arm64", 105: None, 106: "linux-musl-x64"}[metadata["id"]]
             metadata["name"] = (f"netratel-mcp-stdio-{self.version}-win-x64" if metadata["id"] == 105 else
                                 f"netratel-client-{self.version}-{runtime}" if runtime else
                                 f"netratel-{self.version}-linux-x64")
@@ -4945,7 +4983,9 @@ class PublicationImageJournalTests(unittest.TestCase):
         output = self.root / "downloaded-receipt.json"
         self.promotion.create_input_receipt(inputs, output, 1010, self.version, self.revision, download=True)
         receipt = json.loads(output.read_text())
-        self.assertEqual({item["artifactId"] for item in receipt["files"].values()}, {101, 102, 103, 104, 105})
+        self.assertEqual({item["artifactId"] for item in receipt["files"].values()}, {101, 102, 103, 104, 105, 106})
+        self.assertEqual(receipt["files"][f"netratel-client-{self.version}-linux-musl-x64.tar.gz"]["artifactId"], 106)
+        self.assertEqual(receipt["files"][f"netratel-client-{self.version}-linux-x64.tar.gz"]["artifactId"], 102)
         self.promotion.verified_input_receipt(inputs, output, self.version, self.revision)
         self.assertNotIn(999, self.downloads)
         older["created_at"] = self.metadata[1]["created_at"]

@@ -11,18 +11,12 @@ from datetime import datetime, timezone
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+from viewer_runtime import sha256, viewer_notices, viewer_packages
+
 
 def spdx_id(value: str, prefix: str) -> str:
     normalized = re.sub(r"[^A-Za-z0-9.-]", "-", value)
     return f"SPDXRef-{prefix}-{normalized}".rstrip("-")
-
-
-def sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def runtime_target(assets: dict, runtime: str | None) -> dict:
@@ -125,6 +119,33 @@ def packages_from_assets(assets_path: Path, runtime: str | None, distribution: P
     return packages
 
 
+def browser_packages(distribution):
+    viewers = viewer_packages(distribution)
+    notices = distribution / "THIRD-PARTY-NOTICES.txt"
+    with notices.open("a", encoding="utf-8") as stream:
+        stream.write(viewer_notices(viewers))
+
+    def npm_id(name, version):
+        return spdx_id(f"npm-{name}-{version}", "Package")
+
+    def spdx_package(metadata):
+        name, version = metadata["name"], metadata["version"]
+        return {
+            "name": name, "SPDXID": npm_id(name, version), "versionInfo": version,
+            "downloadLocation": metadata["source"], "filesAnalyzed": False,
+            "licenseConcluded": "NOASSERTION", "licenseDeclared": metadata["license"],
+            "copyrightText": "NOASSERTION",
+            "_dependencies": [npm_id(name, version) for name, version in metadata.get("externalDependencies", {}).items()],
+            "_contains": [npm_id(item["name"], item["version"]) for item in metadata.get("embeddedDependencies", [])],
+            "externalRefs": [{"referenceCategory": "PACKAGE-MANAGER", "referenceType": "purl",
+                              "referenceLocator": f"pkg:npm/{name}@{version}"}],
+        }
+
+    for _, metadata in viewers:
+        yield spdx_package(metadata)
+        yield from (spdx_package(item) for item in metadata["embeddedDependencies"])
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--project-assets", action="append", required=True, type=Path)
@@ -160,32 +181,9 @@ def main() -> int:
             args.project_assets, args.distribution, args.runtime_graph or [None] * len(args.distribution))
         for package in packages_from_assets(assets_path, args.runtime, distribution, runtime_graph)
     }
-    # These are actual self-hosted browser runtime packages, not development
-    # dependencies. Keep provenance/licenses beside their distributed scripts.
     for distribution in args.distribution:
-        browser_notices = []
-        for manifest in sorted(distribution.glob("wwwroot/js/viewers/*/*/package.json")):
-            metadata = json.loads(manifest.read_text(encoding="utf-8"))
-            name, version = metadata["name"], metadata["version"]
-            identity = f"npm-{name}-{version}"
-            package_id = spdx_id(identity, "Package")
-            license_texts = [path for path in sorted(manifest.parent.rglob("*"))
-                             if path.is_file() and path.name.upper().startswith(("LICENSE", "LICENCE", "NOTICE"))]
-            if not license_texts:
-                raise ValueError(f"Missing distributed browser runtime license for {identity}")
-            dependency_packages[package_id] = {
-                "name": name, "SPDXID": package_id, "versionInfo": version,
-                "downloadLocation": f"https://registry.npmjs.org/{name}/-/{name}-{version}.tgz",
-                "filesAnalyzed": False, "licenseConcluded": "NOASSERTION",
-                "licenseDeclared": metadata.get("license", "NOASSERTION"),
-                "copyrightText": "NOASSERTION", "_dependencies": [],
-                "externalRefs": [{"referenceCategory": "PACKAGE-MANAGER", "referenceType": "purl",
-                                  "referenceLocator": f"pkg:npm/{name}@{version}"}]
-            }
-            browser_notices.append(f"{name} {version}\n" + "\n".join(path.read_text(encoding="utf-8-sig") for path in license_texts))
-        if browser_notices:
-            with (distribution / "THIRD-PARTY-NOTICES.txt").open("a", encoding="utf-8") as notices:
-                notices.write("\nSelf-hosted browser runtime packages\n\n" + "\n\n".join(browser_notices) + "\n")
+        if args.name == "NetRatel.Web" or (distribution / "NetRatel.Web.deps.json").is_file():
+            dependency_packages.update((package["SPDXID"], package) for package in browser_packages(distribution))
     files = []
     relationships = []
     inventoried_files = set()
@@ -215,6 +213,8 @@ def main() -> int:
         for dependency in dependency_packages[package_id].pop("_dependencies"):
             if dependency in dependency_packages:
                 relationships.append({"spdxElementId": package_id, "relationshipType": "DEPENDS_ON", "relatedSpdxElement": dependency})
+        for dependency in dependency_packages[package_id].pop("_contains", []):
+            relationships.append({"spdxElementId": package_id, "relationshipType": "CONTAINS", "relatedSpdxElement": dependency})
     relationships.append({"spdxElementId": "SPDXRef-DOCUMENT", "relationshipType": "DESCRIBES", "relatedSpdxElement": root_id})
 
     if not dependency_packages:

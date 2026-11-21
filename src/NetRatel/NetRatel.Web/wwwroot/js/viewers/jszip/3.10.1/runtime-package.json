@@ -1,0 +1,67 @@
+{
+  "name": "jszip",
+  "version": "3.10.1",
+  "license": "(MIT OR GPL-3.0-or-later)",
+  "source": "https://registry.npmjs.org/jszip/-/jszip-3.10.1.tgz",
+  "integrity": "sha512-xXDvecyTpGLrqFrvkrUSoxxfJI5AH7U8zxxtVclpsUtMCq4JQ290LY8AW5c7Ggnr/Y/oK+bQMbqK2qmtk3pN4g==",
+  "schema": "netratel.viewer-runtime.v1",
+  "generatedBy": "tools/ci/prepare-viewer-assets.py",
+  "externalDependencies": {},
+  "embeddedDependencies": [
+    {
+      "name": "immediate",
+      "version": "3.0.6",
+      "license": "MIT",
+      "source": "https://registry.npmjs.org/immediate/-/immediate-3.0.6.tgz",
+      "integrity": "sha512-XXOFtyqDjNDAQxVfYxuF7g9Il/IbWmmlQg2MYKOH8ExIT1qg6xc4zyS3HaEEATgs1btfzxq15ciUiY7gjSXRGQ==",
+      "licenseFiles": [
+        "licenses/immediate/LICENSE.txt"
+      ]
+    },
+    {
+      "name": "lie",
+      "version": "3.3.0",
+      "license": "MIT",
+      "source": "https://registry.npmjs.org/lie/-/lie-3.3.0.tgz",
+      "integrity": "sha512-UaiMJzeWRlEujzAuw5LokY1L5ecNQYZKfmyZ9L7wDHb/p5etKaxXhohBcrw0EYby+G/NA52vRSN4N39dxHAIwQ==",
+      "licenseFiles": [
+        "licenses/lie/license.md"
+      ]
+    },
+    {
+      "name": "pako",
+      "version": "1.0.5",
+      "license": "(MIT AND Zlib)",
+      "source": "https://registry.npmjs.org/pako/-/pako-1.0.5.tgz",
+      "integrity": "sha512-umumrxStF9I4G8OZlhzEgTlwktjp4bofYq7E0mfH/IM7fctJ1pzLBhVrhNmP86hA1b3RNP5gAzxJJ4mjj0Up6Q==",
+      "licenseFiles": [
+        "licenses/pako/LICENSE"
+      ]
+    },
+    {
+      "name": "setimmediate",
+      "version": "1.0.5",
+      "license": "MIT",
+      "source": "https://registry.npmjs.org/setimmediate/-/setimmediate-1.0.5.tgz",
+      "integrity": "sha512-MATJdZp8sLqDl/68LfQmbP8zKPLQNV6BIZoIgrscFDQ+RsvK/BxeDQOgyxKKoh0y/8h3BqVFnCqQ/gd+reiIXA==",
+      "licenseFiles": [
+        "licenses/setimmediate/LICENSE.txt"
+      ]
+    }
+  ],
+  "licenseFiles": [
+    "LICENSE.markdown",
+    "licenses/immediate/LICENSE.txt",
+    "licenses/lie/license.md",
+    "licenses/pako/LICENSE",
+    "licenses/setimmediate/LICENSE.txt"
+  ],
+  "files": {
+    "LICENSE.markdown": "566c953c6090b1218ca6217dd7359d45dde46581968586dc607d59a78af6a9c4",
+    "jszip.min.js": "acc7e41455a80765b5fd9c7ee1b8078a6d160bbbca455aeae854de65c947d59e",
+    "licenses/immediate/LICENSE.txt": "809e66de579fb7d92503848bbe6d1f348f4f6521a71e5d294fe7cc0c87a3b4ff",
+    "licenses/lie/license.md": "5c81b0caa98593408b03125efa25efe622341ed87ae55561968828cd887d64a4",
+    "licenses/pako/LICENSE": "a04665b3b2de56c66730c1f720f528175739e4104f79073614aa611da1e85539",
+    "licenses/setimmediate/LICENSE.txt": "c4b4ad3a5746f1f5249a6dd90396ec519264e1bb02e01e48a6522c48a3a97cb4"
+  }
+}

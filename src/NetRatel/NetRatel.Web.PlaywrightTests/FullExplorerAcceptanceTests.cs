@@ -440,7 +440,17 @@ public sealed class FullExplorerAcceptanceTests(ClientsManagementBrowserFixture 
         await workspace.GetByText("Synthetic remote text", new() { Exact = true }).First.WaitForAsync();
         Assert.DoesNotContain("Stale selection must never appear", await workspace.InnerTextAsync());
         await workspace.GetByText("document.docx", new() { Exact = true }).ClickAsync();
-        await page.FrameLocator("iframe[title='Isolated local DOCX preview']:visible").GetByText("Synthetic DOCX", new() { Exact = true }).WaitForAsync();
+        const string docxFrame = "iframe[title='Isolated local DOCX preview']:visible";
+        await page.FrameLocator(docxFrame).GetByText("Synthetic DOCX", new() { Exact = true }).WaitForAsync();
+        var sandbox = page.Locator(docxFrame);
+        Assert.Equal("allow-scripts", await sandbox.GetAttributeAsync("sandbox"));
+        var markup = await sandbox.GetAttributeAsync("srcdoc");
+        Assert.NotNull(markup);
+        Assert.Matches("script-src 'nonce-[A-Za-z0-9+/]+'", markup);
+        Assert.Contains("connect-src 'none'", markup);
+        var jszip = markup.IndexOf("/js/viewers/jszip/", StringComparison.Ordinal);
+        var docx = markup.IndexOf("/js/viewers/docx-preview/", StringComparison.Ordinal);
+        Assert.True(jszip >= 0 && docx > jszip);
         if (width > 1000)
         {
             var documentPopup = await page.RunAndWaitForPopupAsync(() => page.GetByRole(AriaRole.Button, new() { Name = "Pop out / rejoin", Exact = true }).ClickAsync());

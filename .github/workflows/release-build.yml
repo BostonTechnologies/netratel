@@ -178,6 +178,9 @@ jobs:
           - runtime: linux-x64
             runner: ubuntu-latest
             extension: tar.gz
+          - runtime: linux-musl-x64
+            runner: ubuntu-latest
+            extension: tar.gz
           - runtime: win-x64
             runner: windows-latest
             extension: zip
@@ -187,12 +190,39 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6
+        if: matrix.runtime != 'linux-musl-x64'
         with:
           global-json-file: global.json
-      - shell: bash
+      - name: Publish standard Client
+        if: matrix.runtime != 'linux-musl-x64'
+        shell: bash
         run: |
           dotnet restore src/NetRatel/NetRatel.Client/NetRatel.Client.csproj --runtime "${{ matrix.runtime }}"
-          dotnet publish src/NetRatel/NetRatel.Client/NetRatel.Client.csproj --configuration Release --no-restore --runtime "${{ matrix.runtime }}" --self-contained true --output "artifacts/netratel-client-${{ matrix.runtime }}"
+          dotnet publish src/NetRatel/NetRatel.Client/NetRatel.Client.csproj --configuration Release --no-restore --runtime "${{ matrix.runtime }}" --self-contained true --output "artifacts/netratel-client-${{ matrix.runtime }}" -p:SourceRevisionId="$GITHUB_SHA"
+      - name: Publish Client and PTY helper in the Alpine SDK
+        if: matrix.runtime == 'linux-musl-x64'
+        shell: bash
+        run: |
+          sdk="$(jq -er '.sdk.version' global.json)"
+          alpine_packages="$RUNNER_TEMP/alpine-nuget"
+          mkdir -p "$alpine_packages"
+          docker run --rm --platform linux/amd64 \
+            --volume "$PWD:/src" --workdir /src \
+            --volume "$alpine_packages:$alpine_packages" --env NUGET_PACKAGES="$alpine_packages" \
+            --env CI --env PublicSourceRevision \
+            --env GIT_CONFIG_COUNT=1 --env GIT_CONFIG_KEY_0=safe.directory --env GIT_CONFIG_VALUE_0=/src \
+            "mcr.microsoft.com/dotnet/sdk:$sdk-alpine3.24" /bin/sh -euc '
+              apk add --no-cache build-base
+              project=src/NetRatel/NetRatel.Client/NetRatel.Client.csproj
+              distribution=artifacts/netratel-client-linux-musl-x64
+              dotnet restore "$project" --runtime linux-musl-x64 -p:SelfContained=true
+              dotnet publish "$project" --no-restore -p:PublishProfile=linux-musl-x64 \
+                -p:SourceRevisionId="$PublicSourceRevision" --output "$distribution"
+              chown -R "$1" "$distribution"
+            ' sh "$(id -u):$(id -g)"
+      - name: Package and inventory Client
+        shell: bash
+        run: |
           python3 tools/ci/prepare-windows-client-repair.py --distribution "artifacts/netratel-client-${{ matrix.runtime }}"
           cp LICENSE NOTICE "artifacts/netratel-client-${{ matrix.runtime }}/"
           python3 tools/ci/generate-runtime-sbom.py \
@@ -231,7 +261,12 @@ jobs:
             --version "${{ needs.validate.outputs.version }}" \
             --runtime "${{ matrix.runtime }}" \
             --extension "${{ matrix.extension }}" \
+            --source-revision "$GITHUB_SHA" \
             --integrity-only
+      - name: Run the extracted archive on clean Alpine
+        if: matrix.runtime == 'linux-musl-x64'
+        shell: bash
+        run: bash tools/ci/test-alpine-client-archive.sh "artifacts/netratel-client-${{ needs.validate.outputs.version }}-linux-musl-x64.tar.gz" "${{ needs.validate.outputs.version }}" "$GITHUB_SHA"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: netratel-client-${{ needs.validate.outputs.version }}-${{ matrix.runtime }}

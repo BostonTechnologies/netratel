@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-  echo "Usage: $0 --artifacts <directory> --version <semver> --runtime <rid> --extension <zip|tar.gz> [--integrity-only]" >&2
+  echo "Usage: $0 --artifacts <directory> --version <semver> --runtime <rid> --extension <zip|tar.gz> [--source-revision <sha>] [--integrity-only]" >&2
   exit 2
 }
 
@@ -10,6 +10,7 @@ artifacts=""
 version=""
 runtime=""
 extension=""
+source_revision=""
 integrity_only=false
 while (( $# > 0 )); do
   case "$1" in
@@ -17,12 +18,14 @@ while (( $# > 0 )); do
     --version) version="${2:-}"; shift 2 ;;
     --runtime) runtime="${2:-}"; shift 2 ;;
     --extension) extension="${2:-}"; shift 2 ;;
+    --source-revision) source_revision="${2:-}"; shift 2 ;;
     --integrity-only) integrity_only=true; shift ;;
     *) usage ;;
   esac
 done
 
 [[ -n "$artifacts" && -n "$version" && -n "$runtime" && ( "$extension" == zip || "$extension" == tar.gz ) ]] || usage
+[[ -z "$source_revision" || "$source_revision" =~ ^[0-9a-f]{40}$ ]] || usage
 for required_tool in python3 jq find grep tar unzip; do
   command -v "$required_tool" >/dev/null 2>&1 || {
     echo "Required client artifact verifier tool '$required_tool' is unavailable." >&2; exit 1;
@@ -92,8 +95,11 @@ if [[ "$extension" == zip ]]; then
 else
   manifest_json="$(tar -xOzf "$artifacts/$archive" "$manifest")"
 fi
-jq -e --arg version "$version" --arg runtime "$runtime" \
-  '.product == "NetRatel.Client" and .version == $version and .runtimeId == $runtime' \
+jq -e --arg version "$version" --arg runtime "$runtime" --arg revision "$source_revision" \
+  '.schema == "netratel.client.manifest.v1" and .product == "NetRatel.Client"
+   and .version == $version and .runtimeId == $runtime
+   and ($revision == "" or .commitSha == $revision)
+   and ($runtime != "linux-musl-x64" or (.selfContained == true and .singleFile == true))' \
   <<<"$manifest_json" >/dev/null || { echo "Client manifest does not match the release metadata." >&2; exit 1; }
 
 extract_dir="$(mktemp -d)"
@@ -138,11 +144,16 @@ fi
 python3 "$(dirname "${BASH_SOURCE[0]}")/verify-runtime-sbom.py" --sbom "$artifacts/$sbom" --root "$extract_dir"
 python3 "$(dirname "${BASH_SOURCE[0]}")/verify-client-runtime-content.py" --sbom "$artifacts/$sbom" --distribution "$extract_dir"
 
-if [[ "$runtime" == linux-x64 ]]; then
+if [[ "$runtime" == linux-x64 || "$runtime" == linux-musl-x64 ]]; then
   client="$extract_dir/netratel-client-${runtime}/NetRatel.Client"
   native_library="$extract_dir/netratel-client-${runtime}/libnetratel_terminal_pty.so"
   [[ -x "$client" ]] || { echo "Linux Client executable is not executable." >&2; exit 1; }
   [[ -f "$native_library" ]] || { echo "Linux Client archive is missing its native PTY library." >&2; exit 1; }
+  if [[ "$runtime" == linux-musl-x64 ]]; then
+    # Inspect both binaries even when this verifier is running on glibc.
+    readelf -l "$client" | grep -F 'ld-musl-x86_64.so.1'
+    readelf -d "$native_library" | grep -F '[libc.musl-x86_64.so.1]'
+  fi
   if [[ "$integrity_only" == false ]]; then
     "$client" --terminal-pty-self-test-native
   fi
