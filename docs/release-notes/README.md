@@ -1,5 +1,7 @@
 # Release history
 
+- [0.1.6-beta.8](0.1.6-beta.8.md) — viewer dependency provenance and the Alpine x86_64 client archive.
+
 - [0.1.6-beta.4](0.1.6-beta.4.md) — contextual alert metrics, tenant metrics settings and client telemetry history.
 
 - [0.1.6-beta.3](0.1.6-beta.3.md) — historical CPU, memory, disk, network and watched-service metrics.

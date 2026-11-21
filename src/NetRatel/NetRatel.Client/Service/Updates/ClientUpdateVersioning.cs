@@ -9,11 +9,20 @@ namespace NetRatel.Client.Service.Updates;
 /// </summary>
 public static class ClientUpdateVersioning
 {
+    internal const string AlpineRuntimeId = "linux-musl-x64";
+
     public static string NormalizePublishedVersion(string version) =>
         NuGetVersion.TryParse(version, out var parsed) ? parsed.ToNormalizedString() : version;
 
     public static string ResolveRuntimeId(string? configured)
     {
+        // The self-contained musl runtime must keep its identity even if an
+        // existing configuration carries the glibc RID.
+        if (RuntimeInformation.RuntimeIdentifier == AlpineRuntimeId)
+        {
+            return AlpineRuntimeId;
+        }
+
         if (!string.IsNullOrWhiteSpace(configured))
         {
             return configured.Trim().ToLowerInvariant();

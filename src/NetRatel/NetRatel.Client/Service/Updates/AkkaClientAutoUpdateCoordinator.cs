@@ -111,6 +111,7 @@ public sealed partial class AkkaClientAutoUpdateCoordinator : IAgentGatewayUpdat
 
     public bool IsEnabled => _enabled ?? (
         string.Equals(_options.AutoUpdate.Mode, "Service", StringComparison.OrdinalIgnoreCase) &&
+        _runtimeId != ClientUpdateVersioning.AlpineRuntimeId &&
         (OperatingSystem.IsWindows() || OperatingSystem.IsLinux()) &&
         !string.Equals(Environment.GetEnvironmentVariable("DOTNET_RUNNING_IN_CONTAINER"), "true", StringComparison.OrdinalIgnoreCase) &&
         !File.Exists("/.dockerenv"));

@@ -25,7 +25,7 @@ public sealed record ClientReleaseDeletionStatus(Guid Id, string Version, string
 public sealed class ClientReleaseDeletionService(OrchestratorDbContext db,
     IOptions<ClientArtifactsOptions> options, IWebHostEnvironment environment, TimeProvider clock)
 {
-    private static readonly HashSet<string> Runtimes = ["win-x64", "win-arm64", "linux-x64", "osx-x64", "osx-arm64"];
+    private static readonly HashSet<string> Runtimes = ["win-x64", "win-arm64", "linux-x64", "linux-musl-x64", "osx-x64", "osx-arm64"];
     private string Root => Path.TrimEndingDirectorySeparator(Path.GetFullPath(Path.IsPathRooted(options.Value.StorageRoot)
         ? options.Value.StorageRoot : Path.Combine(environment.ContentRootPath, options.Value.StorageRoot)));
 

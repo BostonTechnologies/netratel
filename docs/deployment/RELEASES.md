@@ -37,8 +37,10 @@ Native Client archives are
 also checked for the expected executable, manifest version/runtime, updater and
 terminal support files, source-identical updater scripts, executable presence,
 SBOM coverage and checksums. Native archive producers use
-`verify-client-release-artifact.sh --integrity-only`; client installation,
-updater execution and the Linux native PTY self-test are opt-in diagnostics.
+`verify-client-release-artifact.sh --integrity-only`. The Alpine x86_64 job
+also runs the extracted archive on clean Alpine and exercises version reporting,
+foreground startup and the forced-native PTY backend. Service installation,
+updater execution and other native PTY diagnostics are opt-in.
 GitHub Actions creates a Sigstore-backed build-provenance attestation for each
 uploaded release artifact; verify it with `gh attestation verify` after it is
 publicly released. A public GitHub release, OCI publication, or recording
@@ -80,8 +82,9 @@ Release availability is determined by the matching immutable tag, completed
 publication record and verified downloadable artifacts; never infer it from a
 source checkout. The release workflow validates the committed version and
 packages CLI, stdio MCP, and native Client
-artifacts. Native Client packages are built on their matching Linux, Windows,
-and macOS runners. Publication, signing, package visibility, and a release tag
+artifacts. Native Client packages use matching Linux, Windows and macOS
+environments. The musl client and PTY helper build in the Alpine SDK on a
+GitHub-hosted Linux runner. Publication, signing, package visibility, and a release tag
 remain explicit controlled actions.
 
 Use `release/compose.images.yaml` only with approved immutable release-image

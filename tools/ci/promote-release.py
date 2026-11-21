@@ -71,16 +71,37 @@ def sha256(path):
     return digest.hexdigest()
 
 
+def client_archive_targets():
+    targets = {"linux-x64": "tar.gz", "win-x64": "zip", "osx-arm64": "tar.gz"}
+    profile = ROOT / "src/NetRatel/NetRatel.Client/Properties/PublishProfiles/linux-musl-x64.pubxml"
+    # Publication tooling also handles earlier tags. Use the approved source's
+    # publish profile to identify the required Alpine target.
+    if profile.is_file():
+        targets["linux-musl-x64"] = "tar.gz"
+    return targets
+
+
 def required_artifacts(version):
+    targets = client_archive_targets()
     return [
         f"netratel-cli-{version}-linux-x64.tar.gz", f"NetRatel.Cli.{version}.nupkg",
         f"netratel-mcp-stdio-{version}-linux-x64.tar.gz", f"netratel-compose-{version}.tar.gz",
         f"netratel-{version}.spdx.json",
         f"netratel-mcp-stdio-{version}-win-x64.zip", f"netratel-mcp-stdio-{version}-win-x64.spdx.json",
-        *[f"netratel-client-{version}-{runtime}.{extension}" for runtime, extension in
-          (("linux-x64", "tar.gz"), ("win-x64", "zip"), ("osx-arm64", "tar.gz"))],
-        *[f"netratel-client-{version}-{runtime}.spdx.json" for runtime in ("linux-x64", "win-x64", "osx-arm64")]
+        *[f"netratel-client-{version}-{runtime}.{extension}" for runtime, extension in targets.items()],
+        *[f"netratel-client-{version}-{runtime}.spdx.json" for runtime in targets],
     ]
+
+
+def artifact_group(name, version):
+    for runtime, extension in client_archive_targets().items():
+        group = f"netratel-client-{version}-{runtime}"
+        if name in (f"{group}.{extension}", f"{group}.spdx.json"):
+            return group
+    windows_mcp = f"netratel-mcp-stdio-{version}-win-x64"
+    if name in (f"{windows_mcp}.zip", f"{windows_mcp}.spdx.json"):
+        return windows_mcp
+    return f"netratel-{version}-linux-x64"
 
 
 def stage(inputs, output, version):
@@ -327,11 +348,7 @@ def create_input_receipt(inputs, output, run_id, version, revision, download=Fal
     downloaded = set()
     files = {}
     for name in required:
-        runtime = re.match(rf"netratel-client-{re.escape(version)}-(linux-x64|win-x64|osx-arm64)", name)
-        windows_mcp = name.startswith(f"netratel-mcp-stdio-{version}-win-x64.")
-        artifact_name = (f"netratel-mcp-stdio-{version}-win-x64" if windows_mcp else
-                         f"netratel-client-{version}-{runtime.group(1)}" if runtime else
-                         f"netratel-{version}-linux-x64")
+        artifact_name = artifact_group(name, version)
         artifact = artifacts.get(artifact_name)
         if not artifact or artifact.get("expired") or not isinstance(artifact.get("id"), int) or \
                 not re.fullmatch(r"sha256:[a-f0-9]{64}", artifact.get("digest", "")):

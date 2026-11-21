@@ -10,6 +10,25 @@ namespace NetRatel.Tests.API;
 public sealed class GitHubClientReleaseCatalogTests
 {
     [Fact]
+    public async Task ListsTheGlibcAndMuslArchivesWithTheirExactRuntimeIds()
+    {
+        using var client = Client(_ => Json("""
+            [{"id":1,"tag_name":"v1.2.3","name":"NetRatel 1.2.3","draft":false,"prerelease":false,"published_at":"2026-08-01T00:00:00Z",
+              "assets":[
+                {"id":11,"name":"netratel-client-1.2.3-linux-x64.tar.gz","state":"uploaded","size":100},
+                {"id":12,"name":"netratel-client-1.2.3-linux-musl-x64.tar.gz","state":"uploaded","size":101},
+                {"id":13,"name":"netratel-client-1.2.3-linux-musl-x64.spdx.json","state":"uploaded","size":10}
+              ]}]
+            """));
+
+        var page = await Catalog(client).ListAsync("stable", 0, false, CancellationToken.None);
+        var release = Assert.Single(page.Items);
+        Assert.Collection(release.ClientAssets,
+            glibc => Assert.Equal((11L, "linux-x64"), (glibc.Id, glibc.RuntimeId)),
+            musl => Assert.Equal((12L, "linux-musl-x64"), (musl.Id, musl.RuntimeId)));
+    }
+
+    [Fact]
     public async Task StableFilterScansOlderPagesAndDoesNotAdvertiseIncompletePackAsReady()
     {
         var requests = new List<Uri>();

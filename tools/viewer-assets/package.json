@@ -1,0 +1,18 @@
+{
+  "name": "netratel-viewer-assets",
+  "private": true,
+  "scripts": {
+    "prepare-assets": "python3 ../ci/prepare-viewer-assets.py --write",
+    "verify-assets": "python3 ../ci/prepare-viewer-assets.py"
+  },
+  "dependencies": {
+    "docx-preview": "0.3.3",
+    "jszip": "3.10.1",
+    "pdfjs-dist": "6.5.438"
+  },
+  "overrides": {
+    "jszip": {
+      "pako": "1.0.5"
+    }
+  }
+}

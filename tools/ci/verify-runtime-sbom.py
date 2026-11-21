@@ -1,10 +1,48 @@
 #!/usr/bin/env python3
 """Verify SPDX dependency coverage and every file digest against extracted bytes."""
 import argparse
-import hashlib
 import json
 from pathlib import Path
 import re
+
+from viewer_runtime import METADATA, sha256, viewer_notices, viewer_packages
+
+
+def verify_browser_inventory(document, inventoried):
+    distributions = sorted({path.parent for path in inventoried if path.name == "NetRatel.Web.deps.json"})
+    if document.get("name") == "NetRatel.Web" and not distributions:
+        raise ValueError("Missing Web runtime distribution")
+    for distribution in distributions:
+        viewers = viewer_packages(distribution)
+        npm_ids = {}
+        for directory, metadata in viewers:
+            for package in [metadata, *metadata["embeddedDependencies"]]:
+                name, version = package["name"], package["version"]
+                purl = f"pkg:npm/{name}@{version}"
+                matches = [item for item in document["packages"] if any(
+                    ref.get("referenceType") == "purl" and ref.get("referenceLocator") == purl
+                    for ref in item.get("externalRefs", []))]
+                if len(matches) != 1 or (
+                        matches[0]["name"], matches[0]["versionInfo"], matches[0]["licenseDeclared"],
+                        matches[0]["downloadLocation"]) != (name, version, package["license"], package["source"]):
+                    raise ValueError(f"Missing or inconsistent browser SBOM package {purl}")
+                npm_ids[name] = matches[0]["SPDXID"]
+            for relative in [METADATA, *metadata["files"]]:
+                if (directory / relative).resolve() not in inventoried:
+                    raise ValueError(f"Missing browser SBOM file checksum: {directory / relative}")
+
+        relationships = {(link["spdxElementId"], link["relationshipType"], link["relatedSpdxElement"])
+                         for link in document["relationships"]}
+        for _, metadata in viewers:
+            source = npm_ids[metadata["name"]]
+            required = {(source, "DEPENDS_ON", npm_ids[name]) for name in metadata["externalDependencies"]}
+            required.update((source, "CONTAINS", npm_ids[item["name"]]) for item in metadata["embeddedDependencies"])
+            if not required <= relationships:
+                raise ValueError(f"Missing browser SBOM dependency relationships for {metadata['name']}")
+
+        notices = (distribution / "THIRD-PARTY-NOTICES.txt").read_text(encoding="utf-8")
+        if not notices.endswith(viewer_notices(viewers)):
+            raise ValueError("Missing or inconsistent viewer notices")
 
 
 def verify(document, root):
@@ -23,6 +61,7 @@ def verify(document, root):
             raise ValueError("Dangling SPDX relationship")
     if not document["files"]:
         raise ValueError("No distribution files in SBOM")
+    inventoried = set()
     for item in document["files"]:
         path = (root / item["fileName"]).resolve()
         if not path.is_relative_to(root.resolve()) or not path.is_file():
@@ -30,10 +69,10 @@ def verify(document, root):
         checksums = [checksum["checksumValue"] for checksum in item["checksums"] if checksum["algorithm"] == "SHA256"]
         if len(checksums) != 1 or not re.fullmatch(r"[a-f0-9]{64}", checksums[0]) or checksums[0] == "0" * 64:
             raise ValueError("Missing, malformed or placeholder SHA256")
-        with path.open("rb") as stream:
-            actual = hashlib.file_digest(stream, "sha256").hexdigest()
-        if checksums[0] != actual:
+        if checksums[0] != sha256(path):
             raise ValueError(f"Incorrect SBOM digest: {item['fileName']}")
+        inventoried.add(path)
+    verify_browser_inventory(document, inventoried)
     print(f"Verified {len(packages)} packages and {len(document['files'])} distribution file digests.")
 
 

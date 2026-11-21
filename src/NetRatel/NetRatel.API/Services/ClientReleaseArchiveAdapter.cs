@@ -34,7 +34,7 @@ public static class ClientReleaseArchiveAdapter
             throw new InvalidDataException("Client release source archive exceeds its size limit.");
         if (!IsCommit(expectedCommit))
             throw new InvalidDataException("The release publication record does not identify a full build commit.");
-        if (runtimeId is not ("linux-x64" or "win-x64" or "win-arm64" or "osx-x64" or "osx-arm64"))
+        if (runtimeId is not ("linux-x64" or "linux-musl-x64" or "win-x64" or "win-arm64" or "osx-x64" or "osx-arm64"))
             throw new InvalidDataException("The release runtime is unsupported.");
 
         var outputDirectory = Path.GetDirectoryName(Path.GetFullPath(outputPath))

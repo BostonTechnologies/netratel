@@ -18,7 +18,7 @@
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <IncludeAllContentForSelfExtract>true</IncludeAllContentForSelfExtract>
     <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
-    <RuntimeIdentifiers>win-x64;linux-x64;osx-arm64</RuntimeIdentifiers>
+    <RuntimeIdentifiers>win-x64;linux-x64;linux-musl-x64;osx-arm64</RuntimeIdentifiers>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)' == 'Release'">
@@ -78,6 +78,7 @@
     </PropertyGroup>
     <MakeDir Directories="$(NativeUnixPtySpawnDirectory)" />
     <Exec Command="gcc -shared -fPIC -O2 -Wall -Wextra -Werror -o &quot;$(NativeUnixPtySpawnLibrary)&quot; &quot;$(MSBuildProjectDirectory)/Service/Terminal/native_unix_pty_spawn.c&quot; -lutil" />
+    <Exec Condition="'$(RuntimeIdentifier)' == 'linux-musl-x64'" Command="readelf -d &quot;$(NativeUnixPtySpawnLibrary)&quot; | grep -F '[libc.musl-x86_64.so.1]'" />
     <ItemGroup>
       <Content Include="$(NativeUnixPtySpawnLibrary)" Link="libnetratel_terminal_pty.so" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="Always" />
     </ItemGroup>
