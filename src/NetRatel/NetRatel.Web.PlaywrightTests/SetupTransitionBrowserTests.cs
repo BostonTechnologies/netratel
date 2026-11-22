@@ -59,6 +59,22 @@ public sealed class SetupTransitionBrowserTests : IAsyncLifetime
             """));
     }
 
+    [Theory]
+    [InlineData("/\\other.example.test/dashboard", "/")]
+    [InlineData("/dashboard?tab=clients#latest", "/dashboard?tab=clients#latest")]
+    public async Task LocalSignInReturnPathUsesBrowserOriginRules(string input, string expected)
+    {
+        await using var context = await Browser().NewContextAsync();
+        var page = await OpenSetupAsync(context);
+        var returnPath = await page.EvaluateAsync<string>("""
+            input => {
+                history.replaceState(null, '', '/setup?' + new URLSearchParams({ ReturnUrl: input }));
+                return window.netratelSetup.returnPath();
+            }
+            """, input);
+        Assert.Equal(expected, returnPath);
+    }
+
     public async ValueTask InitializeAsync()
     {
         _playwright = await Playwright.CreateAsync();

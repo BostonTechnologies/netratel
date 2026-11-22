@@ -16,16 +16,18 @@ public sealed class AuthControllerTests
     [Fact]
     public void Oidc_login_challenges_the_provider_neutral_scheme_and_preserves_a_local_return_url()
     {
-        var result = CreateController().OidcLogin("/clients").Should().BeOfType<ChallengeResult>().Subject;
+        var result = CreateController().OidcLogin("/clients?status=online#latest").Should().BeOfType<ChallengeResult>().Subject;
 
         result.AuthenticationSchemes.Should().ContainSingle().Which.Should().Be("Oidc");
         result.Properties.Should().NotBeNull();
-        result.Properties!.RedirectUri.Should().Be("/clients");
+        result.Properties!.RedirectUri.Should().Be("/clients?status=online#latest");
     }
 
     [Theory]
     [InlineData("https://attacker.example.invalid")]
     [InlineData("//attacker.example.invalid")]
+    [InlineData("/\\other.example.test")]
+    [InlineData("/\t/other.example.test")]
     public void Oidc_login_rejects_non_local_return_urls(string returnUrl)
     {
         var result = CreateController().OidcLogin(returnUrl).Should().BeOfType<ChallengeResult>().Subject;
