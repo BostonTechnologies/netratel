@@ -174,17 +174,8 @@ public class AuthController(
         return LocalRedirect(returnUrl);
     }
 
-    private static string NormalizeLocalRedirect(string? value, string fallback)
-    {
-        if (string.IsNullOrWhiteSpace(value)
-            || !value.StartsWith("/", StringComparison.Ordinal)
-            || value.StartsWith("//", StringComparison.Ordinal))
-        {
-            return fallback;
-        }
-
-        return value;
-    }
+    private string NormalizeLocalRedirect(string? value, string fallback) =>
+        value is not null && value.StartsWith("/", StringComparison.Ordinal) && Url.IsLocalUrl(value) ? value : fallback;
 }
 
 public sealed record MachineTokenExchangeRequest(string? Token, string? ReturnUrl);
