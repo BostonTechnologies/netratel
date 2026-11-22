@@ -3,7 +3,6 @@ using AwesomeAssertions;
 using Microsoft.AspNetCore.Components;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Hosting;
 using System.Net;
 using System.Net.Http.Json;
@@ -107,14 +106,6 @@ public class LoginPageTests : AsyncBunitContext
         }
 
         return Render<Login>();
-    }
-
-    private sealed class TestHostEnvironment(string environmentName) : IHostEnvironment
-    {
-        public string EnvironmentName { get; set; } = environmentName;
-        public string ApplicationName { get; set; } = "NetRatel.Web.ComponentTests";
-        public string ContentRootPath { get; set; } = AppContext.BaseDirectory;
-        public IFileProvider ContentRootFileProvider { get; set; } = new NullFileProvider();
     }
 
     private sealed class BootstrapStatusHttpClientFactory : IHttpClientFactory

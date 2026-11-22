@@ -12,6 +12,7 @@ using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using NetRatel.Shared;
@@ -286,6 +287,7 @@ public sealed class OperatorApiCredentialIsolationTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddHttpContextAccessor();
+        services.AddSingleton<IHostEnvironment>(new TestHostEnvironment(Environments.Production));
         services.AddSingleton<IConfiguration>(new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?>
             {
