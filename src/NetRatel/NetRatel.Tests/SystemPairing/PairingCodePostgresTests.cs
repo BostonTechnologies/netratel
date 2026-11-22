@@ -25,7 +25,7 @@ using Xunit;
 namespace NetRatel.Tests.SystemPairing;
 
 [Collection(PostgreSqlPersistenceCollection.Name)]
-public sealed class PairingCodePostgresTests(PostgreSqlPersistenceFixture postgres)
+public sealed partial class PairingCodePostgresTests(PostgreSqlPersistenceFixture postgres)
 {
     [Fact]
     public async Task Codes_last_five_minutes_replace_previous_code_and_reject_wrong_or_expired_values()
@@ -185,6 +185,8 @@ public sealed class PairingCodePostgresTests(PostgreSqlPersistenceFixture postgr
     public async Task Fresh_automation_Save_accepts_an_empty_catalog_and_activates_exact_tenant_authority()
     {
         await using var rig = await Rig.CreateAsync(postgres); await using var scope = rig.Scope();
+        rig.Access.SetTenantGrants(PairingBusinessAuthorityFixture.Administrator, 71,
+            NetRatelPermissions.IntegrationManagement, NetRatelPermissions.JobManagement);
         var service = scope.ServiceProvider.GetRequiredService<PairingService>();
         var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
         db.Tenants.Add(new() { Id = 71, Name = "Empty automation tenant", CreatedAtUtc = rig.Clock.Now, UpdatedAtUtc = rig.Clock.Now });
@@ -200,6 +202,12 @@ public sealed class PairingCodePostgresTests(PostgreSqlPersistenceFixture postgr
         Assert.Equal("active", principal.Status); Assert.Equal(71, principal.TenantId);
         var constraints = ServicePrincipalRegistry.ReadConstraints(principal);
         Assert.Equal("71", constraints.TenantId); Assert.Empty(constraints.ResourceIds); Assert.Empty(constraints.RequestDefinitionIds);
+        var profiles = scope.ServiceProvider.GetRequiredService<PairingBusinessProfileService>();
+        Assert.Equal(mapping.Id, (await profiles.ResolveAsync(71, mapping.Id.ToString("D"), "rateldesk.orchestration.callback", default)).MappingId);
+        var incidentDenied = await Assert.ThrowsAsync<PairingException>(() =>
+            profiles.ResolveAsync(71, mapping.Id.ToString("D"), "rateldesk.incidents.create", default));
+        Assert.Equal("connection-authority-removed", incidentDenied.Code);
+        Assert.Null(await scope.ServiceProvider.GetRequiredService<IRatelDeskConnectorStore>().GetAsync(71, mapping.Id, default));
         Assert.Equal(1, rig.Peer.Saves); Assert.Equal(1, rig.Peer.Tests);
         Assert.Empty(await db.Requests.ToArrayAsync()); Assert.Empty(await db.JobRuns.ToArrayAsync());
     }
@@ -281,6 +289,7 @@ public sealed class PairingCodePostgresTests(PostgreSqlPersistenceFixture postgr
         private ServiceProvider services = null!;
         private readonly string keyDirectory = Path.Combine(Path.GetTempPath(), "netratel-pairing-code-" + Guid.NewGuid().ToString("N"));
         internal Clock Clock { get; } = new(); internal Peer Peer { get; } = new();
+        internal PairingBusinessAuthorityFixture.Access Access => (PairingBusinessAuthorityFixture.Access)services.GetRequiredService<IEffectiveAccessService>();
         internal AsyncServiceScope Scope() => services.CreateAsyncScope();
         internal static async Task<Rig> CreateAsync(PostgreSqlPersistenceFixture postgres)
         {

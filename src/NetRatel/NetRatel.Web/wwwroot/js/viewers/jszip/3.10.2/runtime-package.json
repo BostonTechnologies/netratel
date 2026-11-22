@@ -1,9 +1,9 @@
 {
   "name": "jszip",
-  "version": "3.10.1",
+  "version": "3.10.2",
   "license": "(MIT OR GPL-3.0-or-later)",
-  "source": "https://registry.npmjs.org/jszip/-/jszip-3.10.1.tgz",
-  "integrity": "sha512-xXDvecyTpGLrqFrvkrUSoxxfJI5AH7U8zxxtVclpsUtMCq4JQ290LY8AW5c7Ggnr/Y/oK+bQMbqK2qmtk3pN4g==",
+  "source": "https://registry.npmjs.org/jszip/-/jszip-3.10.2.tgz",
+  "integrity": "sha512-3l+rb15IOWtUhU0H5MFqES/T6Kh7abYwjosBey/vD6hDt8zoEffkSC5Ws5SGtgVw3gBx2NEbhTeSW1+kWkpyTQ==",
   "schema": "netratel.viewer-runtime.v1",
   "generatedBy": "tools/ci/prepare-viewer-assets.py",
   "externalDependencies": {},
@@ -58,7 +58,7 @@
   ],
   "files": {
     "LICENSE.markdown": "566c953c6090b1218ca6217dd7359d45dde46581968586dc607d59a78af6a9c4",
-    "jszip.min.js": "acc7e41455a80765b5fd9c7ee1b8078a6d160bbbca455aeae854de65c947d59e",
+    "jszip.min.js": "7f839b2d4688b845c105ebf5d2f9803075f91ea0fe72bdaac176c3a04dd3d2c1",
     "licenses/immediate/LICENSE.txt": "809e66de579fb7d92503848bbe6d1f348f4f6521a71e5d294fe7cc0c87a3b4ff",
     "licenses/lie/license.md": "5c81b0caa98593408b03125efa25efe622341ed87ae55561968828cd887d64a4",
     "licenses/pako/LICENSE": "a04665b3b2de56c66730c1f720f528175739e4104f79073614aa611da1e85539",

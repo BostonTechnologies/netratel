@@ -84,7 +84,7 @@ verification. Review the embedded JSZip modules against the upstream browser
 bundle when changing JSZip. PDF.js ships the official browser build and its
 licensed support files. The optional npm canvas package is for Node.js.
 
-Pinned compatible packages: MudBlazor.Extensions 9.12.2, MudBlazor 9.12.0, CodeBeam.MudBlazor.Extensions 9.2.0 and BlazorJS 2.3.0. CodeBeam is a distinct package. Full explicitly initializes the packaged fingerprinted BlazorJS module with local CSS. A local pre-start lifecycle filter keeps the popout event bridge from replaying document startup and visibility events. Browser assets: JSZip 3.10.1, docx-preview 0.3.3, pdfjs-dist 6.5.438. Shipped assets/licenses are in release SBOM/notices. Local previews need no external network, while app/authentication/native-client connectivity remains necessary.
+Pinned compatible packages are MudBlazor.Extensions 9.13.1, MudBlazor 9.14.0, CodeBeam.MudBlazor.Extensions 9.14.0 and BlazorJS 2.3.0. CodeBeam is a distinct package. Full explicitly initializes the packaged fingerprinted BlazorJS module with local CSS. A local pre-start lifecycle filter keeps the popout event bridge from replaying document startup and visibility events. Full Explorer ships JSZip 3.10.2, docx-preview 0.4.1 and pdfjs-dist 6.5.438. The release SBOM and notices include the shipped assets and their licenses. Local previews need no external network, while app/authentication/native-client connectivity remains necessary.
 
 ## Disposable owner retest
 

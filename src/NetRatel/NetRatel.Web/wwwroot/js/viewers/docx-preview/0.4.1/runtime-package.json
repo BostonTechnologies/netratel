@@ -1,13 +1,13 @@
 {
   "name": "docx-preview",
-  "version": "0.3.3",
+  "version": "0.4.1",
   "license": "Apache-2.0",
-  "source": "https://registry.npmjs.org/docx-preview/-/docx-preview-0.3.3.tgz",
-  "integrity": "sha512-vg0bjmp5Q/hWYgalvVsnOOdqKlSBvgzdbrqX8pKw4KuTH8FkX2FIs21w10HZdx6ZhApmMbgfae+lOXjdCSsc8A==",
+  "source": "https://registry.npmjs.org/docx-preview/-/docx-preview-0.4.1.tgz",
+  "integrity": "sha512-Dv4g+LeE0swHpPvNC0lAT0YsR5Zq5pAxw7d3vHQ8EChBLgIrqqe9VPL5nVt2HBJap8bEZbXUI0TJob7kBeNU9w==",
   "schema": "netratel.viewer-runtime.v1",
   "generatedBy": "tools/ci/prepare-viewer-assets.py",
   "externalDependencies": {
-    "jszip": "3.10.1"
+    "jszip": "3.10.2"
   },
   "embeddedDependencies": [],
   "licenseFiles": [
@@ -15,6 +15,6 @@
   ],
   "files": {
     "LICENSE": "8668bf4417d161e4eb4d47d6044526e4914d9eb3c748573d9bb7e87708c1253f",
-    "docx-preview.min.js": "a94a542f2d2180bca47c2d11df9590cc23825b8190b0052255e1280c61f7f76d"
+    "docx-preview.min.js": "c4a133c65a112799e35b143c572dfff9e923a3bf39b5fd3b07a06aa0f8f530c2"
   }
 }
