@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Security.Claims;
+using System.Text.Json;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.DataProtection;
@@ -51,7 +52,8 @@ public sealed partial class IntegrationSetupTransactionTests(PostgreSqlPersisten
         const string path = "/api/v2/account/integration-credentials/";
         using var invalid = await client.PostAsJsonAsync(path, body with { SetupRequestId = "invalid-setup-id" });
         Assert.Equal(HttpStatusCode.BadRequest, invalid.StatusCode);
-        Assert.Equal("integration_setup_invalid", (await invalid.Content.ReadFromJsonAsync<IntegrationPairingFailure>())!.Code);
+        using var problem = await invalid.Content.ReadFromJsonAsync<JsonDocument>();
+        Assert.Equal("integration_setup_invalid", problem!.RootElement.GetProperty("code").GetString());
 
         using var created = await client.PostAsJsonAsync(path, body);
         Assert.Equal(HttpStatusCode.Created, created.StatusCode);

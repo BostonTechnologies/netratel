@@ -54,13 +54,17 @@ public sealed class OperationsDashboardPostgresTests(PostgreSqlPersistenceFixtur
             await db.SaveChangesAsync();
         }
         var ownership = provider.GetRequiredService<IClientConnectionEpochStore>();
+        // PostgreSQL checks admission against its wall clock. Seed timestamps
+        // can be older by the time the isolated schema finishes migrating.
+        var admissionAt = DateTimeOffset.UtcNow;
+        clock.Advance(admissionAt - now);
         for (var index = 0; index < 3; index++)
         {
             var admission = await ownership.ReserveAsync(new(new(1, ids[index]), Guid.NewGuid(), Guid.NewGuid(), 0,
-                now, now.AddSeconds(30), now.AddMinutes(index == 2 ? 1 : 10), new("dashboard-fixture", ["presence"], null)), default);
+                admissionAt, admissionAt.AddSeconds(30), admissionAt.AddMinutes(index == 2 ? 1 : 10), new("dashboard-fixture", ["presence"], null)), default);
             admission.Disposition.Should().Be(OwnershipDisposition.Accepted);
             var reservation = admission.Reservation!;
-            (await ownership.CommitAsync(reservation, new(reservation.Owner, 1, now), default)).Disposition.Should().Be(OwnershipDisposition.Accepted);
+            (await ownership.CommitAsync(reservation, new(reservation.Owner, 1, admissionAt), default)).Disposition.Should().Be(OwnershipDisposition.Accepted);
         }
         clock.Advance(TimeSpan.FromMinutes(2));
         var service = new OperationsDashboardService(new TenantAuthorizer(), provider.GetRequiredService<IServiceScopeFactory>(), clock);
