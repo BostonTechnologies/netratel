@@ -53,6 +53,7 @@ public sealed class AgentTokenService : IAgentTokenService
 
     public async Task<AgentTokenResponse> ExchangeRefreshTokenAsync(AgentTokenRequest request, CancellationToken ct)
     {
+        AgentAuthenticationRequestValidation.ValidateToken(request);
         // Serialize every rotating native request, including old-client requests and
         // acknowledgement, against the same agent/parent rows in PostgreSQL.
         await using var transaction = _hardening.EnableRefreshRotation && _db.Database.IsRelational()

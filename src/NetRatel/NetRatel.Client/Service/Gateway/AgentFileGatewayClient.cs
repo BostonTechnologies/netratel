@@ -15,6 +15,7 @@ using Grpc.Net.Client;
 using NetRatel.AgentGateway.Contracts.V1;
 using NetRatel.Client.Service.Logging;
 using NetRatel.Client.Services;
+using NetRatel.Shared.Contracts.FileSystem;
 
 namespace NetRatel.Client.Service.Gateway;
 
@@ -143,7 +144,7 @@ public sealed class AgentFileGatewayClient
             await writer.WriteAsync(new AgentFileFrame
             {
                 Sequence = 0,
-                Hello = new AgentFileHello { Capabilities = { "file-list", "file-read", "file-write", "file-stat-v1", "file-create-directory-v1", "file-delete-v1", "file-delete-directory-v1", "file-copy-v1", "file-move-v1", "chunk-sha256", "file-policy-roots-v1",
+                Hello = new AgentFileHello { Capabilities = { "file-list", "file-read", "file-write", "file-stat-v1", "file-create-directory-v1", "file-delete-v1", "file-delete-directory-v1", "file-copy-v1", "file-move-v1", "chunk-sha256", "file-policy-roots-v1", FileGatewaySecurityCapabilities.ProtectedPaths,
                     "file-create-v1", "file-move-entry-v1", "file-delete-recursive-v1", "file-read-range-v1", "file-write-conditional-v1", "file-roots-v1" } }
             }, streamToken).ConfigureAwait(false);
 
@@ -306,7 +307,12 @@ public sealed class AgentFileGatewayClient
                 return;
             }
         }
-        else if (dispatch.AllowedRoots.Count > 0)
+        else if (dispatch.AllowedRoots.Count is 0 or > 64)
+        {
+            await WriteFailureAsync(dispatch.RequestId, dispatch.AttemptId, "access_denied", writer, stoppingToken).ConfigureAwait(false);
+            return;
+        }
+        else if (operationName != "roots")
         {
             var pathResolution = fileSystem.ResolveGatewayPath(dispatch.Path, dispatch.AllowedRoots,
                 requireExisting: operationName is "list" or "read" or "stat" or "delete" or "delete_directory" or "delete_recursive",
@@ -325,9 +331,9 @@ public sealed class AgentFileGatewayClient
             }
         }
 
-        if (operationName is "create_file" or "create_directory" or "delete" or "delete_directory" or "delete_recursive" or "move_entry" &&
+        if (operationName is "create_file" or "create_directory" or "delete" or "delete_directory" or "delete_recursive" or "move_entry" or "move" &&
             !fileSystem.IsGatewayMutationTargetAllowed(dispatch.Path, resolvedPath,
-                operationName == "move_entry" ? dispatch.SourceAllowedRoots : dispatch.AllowedRoots))
+                isMoveCopy ? dispatch.SourceAllowedRoots : dispatch.AllowedRoots))
         {
             await WriteFailureAsync(dispatch.RequestId, dispatch.AttemptId, "protected_path", writer, stoppingToken).ConfigureAwait(false);
             return;
@@ -341,7 +347,7 @@ public sealed class AgentFileGatewayClient
             return;
         }
 
-        if (operationName == "write" && (dispatch.CreateOnly || dispatch.ExpectedVersion.Length > 0) &&
+        if (operationName == "write" &&
             !fileSystem.IsGatewayMutationTargetAllowed(dispatch.Path, resolvedPath, dispatch.AllowedRoots))
         {
             await WriteFailureAsync(dispatch.RequestId, dispatch.AttemptId, "protected_path", writer, stoppingToken).ConfigureAwait(false);
@@ -353,7 +359,8 @@ public sealed class AgentFileGatewayClient
             ReadOffset = dispatch.ReadOffset,
             ReadLength = dispatch.HasReadLength ? dispatch.ReadLength : null,
             ExpectedVersion = dispatch.ExpectedVersion,
-            CreateOnly = dispatch.CreateOnly
+            CreateOnly = dispatch.CreateOnly,
+            AllowedRoots = dispatch.AllowedRoots
         };
         if (!operations.TryAdd(requestId, operation))
         {
@@ -425,12 +432,17 @@ public sealed class AgentFileGatewayClient
             var page = new List<FileEntry>(pageSize);
             uint pageIndex = 0;
             var entries = operation.Operation == "roots"
-                ? DriveInfo.GetDrives().Where(drive => Directory.Exists(drive.RootDirectory.FullName))
-                    .Select(drive => new FileSystemService.BrowseEntry("", drive.Name, drive.RootDirectory.FullName, true, 0))
+                ? operation.AllowedRoots.Select(root => fileSystem.TryResolveGatewayPath(root, [root], requireExisting: true, out var resolved)
+                        ? resolved : null)
+                    .OfType<string>()
+                    .Select(root => new FileSystemService.BrowseEntry("", root, root, true, 0))
                 : enumerateEntries(operation.Path);
             foreach (var entry in entries)
             {
                 operation.Token.ThrowIfCancellationRequested();
+                if (AgentFileProtectedPaths.IsProtected(entry.FullPath))
+                    continue;
+
                 page.Add(new FileEntry
                 {
                     Name = entry.Name,
@@ -471,7 +483,7 @@ public sealed class AgentFileGatewayClient
         try
         {
             operation.Token.ThrowIfCancellationRequested();
-            await using var stream = new FileStream(operation.Path, FileMode.Open, FileAccess.Read, FileShare.Read, ChunkBytes, FileOptions.Asynchronous | FileOptions.SequentialScan);
+            await using var stream = NativeFileOperations.OpenForRead(operation.Path, ChunkBytes);
             var version = NativeFileOperations.ObservedVersion(operation.Path);
             if (operation.ExpectedVersion.Length > 0 && operation.ExpectedVersion != version)
                 throw new NativeFileOperationException("file_changed");
@@ -618,7 +630,8 @@ public sealed class AgentFileGatewayClient
                     break;
                 case "delete_recursive":
                     if (Directory.Exists(operation.Path))
-                        NativeFileOperations.DeleteTree(operation.Path, operation.Token, count => operation.AffectedEntries = count);
+                        NativeFileOperations.DeleteTree(operation.Path, operation.Token, count => operation.AffectedEntries = count,
+                            path => !AgentFileProtectedPaths.IsProtected(path, includeAncestor: true));
                     else if (File.Exists(operation.Path))
                     {
                         File.Delete(operation.Path);
@@ -710,7 +723,10 @@ public sealed class AgentFileGatewayClient
             }
 
             operation.Token.ThrowIfCancellationRequested();
-            File.Copy(operation.Path, operation.DestinationPath!, overwrite: false);
+            if (OperatingSystem.IsLinux())
+                await CopyLinuxFileAsync(operation).ConfigureAwait(false);
+            else
+                File.Copy(operation.Path, operation.DestinationPath!, overwrite: false);
             await WriteCompletedAsync(operation, writer, stoppingToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
@@ -733,6 +749,25 @@ public sealed class AgentFileGatewayClient
         }
     }
 
+    private static async Task CopyLinuxFileAsync(ClientFileOperation operation)
+    {
+        await using var source = NativeFileOperations.OpenForRead(operation.Path, ChunkBytes);
+        var destination = operation.DestinationPath!;
+        var output = new FileStream(destination, FileMode.CreateNew, FileAccess.Write, FileShare.None, ChunkBytes, FileOptions.Asynchronous);
+        try
+        {
+            await using (output.ConfigureAwait(false))
+            {
+                await source.CopyToAsync(output, ChunkBytes, operation.Token).ConfigureAwait(false);
+            }
+        }
+        catch
+        {
+            File.Delete(destination);
+            throw;
+        }
+    }
+
     private async Task HandleMoveAsync(ClientFileOperation operation, ConcurrentDictionary<Guid, ClientFileOperation> operations, FileGatewayWriter writer, CancellationToken stoppingToken)
     {
         try
@@ -744,7 +779,7 @@ public sealed class AgentFileGatewayClient
             }
 
             operation.Token.ThrowIfCancellationRequested();
-            File.Move(operation.Path, operation.DestinationPath!, overwrite: false);
+            NativeFileOperations.Move(operation.Path, operation.DestinationPath!);
             await WriteCompletedAsync(operation, writer, stoppingToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
@@ -995,6 +1030,7 @@ public sealed class AgentFileGatewayClient
         public long? ReadLength { get; init; }
         public string ExpectedVersion { get; init; } = string.Empty;
         public bool CreateOnly { get; init; }
+        public IReadOnlyList<string> AllowedRoots { get; init; } = [];
         public long AffectedEntries { get; set; }
 
         public void Cancel()

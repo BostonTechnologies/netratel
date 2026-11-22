@@ -38,6 +38,8 @@ public static class IntegrationPermissionCatalog
         new(NetRatelPermissions.AuditRead, "Read audit history", "View recorded activity."),
         new(NetRatelPermissions.SecretUse, "Use secrets", "Use configured secrets without revealing their values."),
         new(NetRatelPermissions.SecretReveal, "Reveal secrets", "Read secret values where authorized."),
+        new(NetRatelPermissions.SecretManage, "Manage secrets", "Create, update and delete secrets in the granted scope."),
+        new(NetRatelPermissions.EventDeliveryManage, "Manage event delivery", "Retry or disable delivery of visible events with an instance grant."),
         new(NetRatelPermissions.ArtifactPublication, "Publish artifacts", "Publish client artifacts."),
         new(NetRatelPermissions.TenantAdministration, "Administer tenant", "Change tenant-level settings and authority."),
         new(NetRatelPermissions.UserRoleAdministration, "Manage identities", "Change user and role assignments."),

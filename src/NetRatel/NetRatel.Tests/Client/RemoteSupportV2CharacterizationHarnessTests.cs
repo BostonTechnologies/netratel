@@ -56,9 +56,21 @@ public sealed class RemoteSupportV2CharacterizationHarnessTests
     {
         var hello = new RemoteDesktopHelperHello(SessionId: 4, ProcessId: 404, Version: "0.4.92", UserInteractive: true, User: "TEST\\rdp");
 
-        RemoteSupportHelperProcessValidation.TryValidate(hello, new FakeHelperProcessInspector(5), out var error).Should().BeFalse();
+        RemoteSupportHelperProcessValidation.MatchesPeer(hello, new(404, 5, "peer"), "0.4.92").Should().BeFalse();
+        RemoteSupportHelperProcessValidation.MatchesPeer(hello, new(405, 4, "peer"), "0.4.92").Should().BeFalse();
+        RemoteSupportHelperProcessValidation.MatchesPeer(hello, new(404, 4, "peer"), "0.4.93").Should().BeFalse();
+        RemoteSupportHelperProcessValidation.MatchesPeer(hello, new(404, 4, "peer"), "0.4.92").Should().BeTrue();
+    }
 
-        error.Should().Be("process_session_mismatch:5");
+    [Fact]
+    public async Task Helper_frame_reader_checks_the_byte_budget_and_keeps_frame_boundaries()
+    {
+        await using var input = new MemoryStream("first\nsecond\n"u8.ToArray());
+        var reader = new BoundedHelperPipeReader(input);
+        var ct = TestContext.Current.CancellationToken;
+
+        (await reader.ReadAsync(5, TimeSpan.FromSeconds(1), ct)).Should().Be("first");
+        await Assert.ThrowsAsync<InvalidDataException>(() => reader.ReadAsync(5, TimeSpan.FromSeconds(1), ct));
     }
 
     [Fact]
@@ -119,15 +131,7 @@ public sealed class RemoteSupportV2CharacterizationHarnessTests
         public IReadOnlyList<WindowsSessionInventoryItem> Capture() => sessions;
     }
 
-    private sealed class FakeHelperProcessInspector(int actualSessionId) : IRemoteSupportHelperProcessInspector
-    {
-        public bool TryGetSessionId(int processId, out int sessionId, out string? error)
-        {
-            sessionId = actualSessionId;
-            error = null;
-            return true;
-        }
-    }
+
 
     private sealed class FakeProviderHarness
     {

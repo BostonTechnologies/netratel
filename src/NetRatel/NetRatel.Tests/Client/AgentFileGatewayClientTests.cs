@@ -59,10 +59,10 @@ public sealed class AgentFileGatewayClientTests
     }
 
     [Fact]
-    public async Task RootsDispatchReturnsNativeVolumesWithoutLoadingTheirChildren()
+    public async Task RootsDispatchReturnsOnlyApprovedDirectoriesWithoutLoadingTheirChildren()
     {
         using var directory = new TestDirectory();
-        var gateway = new DirectoryOperationGateway(directory.Path, "/", "roots", dispatch => dispatch.AllowedRoots.Clear());
+        var gateway = new DirectoryOperationGateway(directory.Path, "/", "roots");
         using var host = await BuildHostAsync(gateway);
         using var stopping = new CancellationTokenSource();
         var run = NewClient(host).RunForPresenceSessionAsync(NewPresence(), "test-token", stopping.Token);
@@ -71,7 +71,7 @@ public sealed class AgentFileGatewayClientTests
             (await gateway.Result.Task.WaitAsync(TimeSpan.FromSeconds(5))).Completed.Should().NotBeNull();
             gateway.Entries.Should().NotBeEmpty();
             gateway.Entries.Should().OnlyContain(entry => entry.IsDirectory && entry.SizeBytes == 0);
-            gateway.Entries.Select(entry => entry.FullPath).Should().Contain(Path.GetPathRoot(directory.Path)!);
+            gateway.Entries.Select(entry => entry.FullPath).Should().Equal(directory.Path);
         }
         finally { stopping.Cancel(); await run.WaitAsync(TimeSpan.FromSeconds(5)); }
     }

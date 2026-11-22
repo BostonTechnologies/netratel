@@ -7,7 +7,8 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*; \
     groupadd --system --gid 10001 netratel; \
     useradd --system --uid 10001 --gid 10001 --home-dir /var/lib/netratel --create-home --shell /usr/sbin/nologin netratel; \
-    mkdir -p /etc/netratel /var/lib/netratel /app; \
+    mkdir -p /etc/netratel/agent-protection /var/lib/netratel /app; \
+    chmod 700 /etc/netratel/agent-protection; \
     chown -R netratel:netratel /etc/netratel /var/lib/netratel
 WORKDIR /app
 COPY --chown=netratel:netratel app/ ./

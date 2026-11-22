@@ -19,11 +19,15 @@ namespace NetRatel.Client.Service.RemoteDesktop;
 internal sealed class RemoteDesktopUserHelperPipeHost : IDisposable
 {
     private readonly JsonSerializerOptions _json = new(JsonSerializerDefaults.Web);
-    private const int PipeBufferBytes = 1024 * 1024;
-    private const int StreamBufferBytes = 256 * 1024;
+    private const int PipeBufferBytes = 16 * 1024;
+    private const int StreamBufferBytes = 4096;
+    private const int MaximumPendingHandshakes = 8;
+    private static readonly TimeSpan HandshakeTimeout = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan IdleTimeout = TimeSpan.FromSeconds(60);
+    private static readonly string HelperVersion = RemoteDesktopInteractiveHelper.GetHelperVersion();
+    private readonly SemaphoreSlim _handshakes = new(MaximumPendingHandshakes);
     private readonly CancellationTokenSource _cts = new();
-    private readonly InteractiveHelperRegistry _registry = new(
-        typeof(RemoteDesktopUserHelperPipeHost).Assembly.GetName().Version?.ToString() ?? string.Empty);
+    private readonly InteractiveHelperRegistry _registry = new(HelperVersion);
     private Task? _listenerTask;
     private bool _disposed;
 
@@ -40,7 +44,7 @@ internal sealed class RemoteDesktopUserHelperPipeHost : IDisposable
 
         LogManager.WriteLog("[RemoteDesktop] Helper pipe feature enabled.");
         LogManager.WriteLog($"[RemoteDesktop] Helper pipe listener starting name={RemoteDesktopUserHelperConstants.PipeName} path={RemoteDesktopUserHelperConstants.FullPipePath}");
-        LogManager.WriteLog("[RemoteDesktop] Helper pipe security mode=LocalSystem FullControl; Authenticated Users ReadWrite; Builtin Users ReadWrite.");
+        LogManager.WriteLog("[RemoteDesktop] Helper pipe security mode=LocalSystem FullControl; Interactive Users ReadWrite.");
         RemoteDesktopDiagnosticState.Update(state =>
         {
             state.PipeHostStarted = true;
@@ -106,9 +110,23 @@ internal sealed class RemoteDesktopUserHelperPipeHost : IDisposable
                     state.LatestError = null;
                 });
                 LogManager.WriteLog($"[RemoteDesktop] Helper pipe waiting for connection path={RemoteDesktopUserHelperConstants.FullPipePath}");
-                await pipe.WaitForConnectionAsync(ct).ConfigureAwait(false);
-                LogManager.WriteLog("[RemoteDesktop] Helper pipe client connected; waiting for hello.");
-                _ = Task.Run(() => HandleConnectionAsync(pipe, ct), CancellationToken.None);
+                try
+                {
+                    await pipe.WaitForConnectionAsync(ct).ConfigureAwait(false);
+                    var peer = ComputerUsePipeSecurity.GetVerifiedHelper(pipe);
+                    if (peer is not null && _handshakes.Wait(0))
+                    {
+                        _ = HandleConnectionAsync(pipe, peer, ct);
+                        continue;
+                    }
+                }
+                catch
+                {
+                    await pipe.DisposeAsync().ConfigureAwait(false);
+                    throw;
+                }
+
+                await pipe.DisposeAsync().ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -134,47 +152,33 @@ internal sealed class RemoteDesktopUserHelperPipeHost : IDisposable
         }
     }
 
-    private async Task HandleConnectionAsync(NamedPipeServerStream pipe, CancellationToken ct)
+    private async Task HandleConnectionAsync(NamedPipeServerStream pipe, VerifiedRemoteSupportHelper peer, CancellationToken ct)
     {
         await using var ownedPipe = pipe;
-        using var reader = new StreamReader(pipe, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, bufferSize: StreamBufferBytes, leaveOpen: true);
-        await using var writer = new StreamWriter(pipe, Encoding.UTF8, bufferSize: StreamBufferBytes, leaveOpen: true) { AutoFlush = true };
+        var reader = new BoundedHelperPipeReader(pipe);
         ConnectedUserHelper? helper = null;
 
         try
         {
-            var helloLine = await reader.ReadLineAsync(ct).ConfigureAwait(false);
-            var helloMessage = DeserializePipeMessage(helloLine);
-            if (helloMessage is null ||
-                !string.Equals(helloMessage.Kind, "hello", StringComparison.OrdinalIgnoreCase) ||
-                string.IsNullOrWhiteSpace(helloMessage.PayloadJson))
+            try
             {
-                LogManager.WriteLog("[RemoteDesktop] Helper pipe client did not send a valid hello; closing connection.");
-                return;
+                var line = await reader.ReadAsync(BoundedHelperPipeReader.MaximumHelloBytes, HandshakeTimeout, ct).ConfigureAwait(false);
+                var message = DeserializePipeMessage(line);
+                if (message?.Kind != "hello" || string.IsNullOrWhiteSpace(message.PayloadJson) ||
+                    JsonSerializer.Deserialize<RemoteDesktopHelperHello>(message.PayloadJson, _json) is not { } hello ||
+                    !RemoteSupportHelperProcessValidation.MatchesPeer(hello, peer, HelperVersion))
+                    return;
+            }
+            finally
+            {
+                _handshakes.Release();
             }
 
-            var hello = JsonSerializer.Deserialize<RemoteDesktopHelperHello>(helloMessage.PayloadJson, _json);
-            if (hello is null)
-            {
-                LogManager.WriteLog("[RemoteDesktop] Helper hello payload could not be parsed; closing connection.");
-                return;
-            }
-
-            if (!TryValidateHelperProcess(hello, out var validationError))
-            {
-                LogManager.WriteLog($"[RemoteDesktop] Helper hello rejected pid={hello.ProcessId} sessionId={hello.SessionId} reason={validationError}");
-                return;
-            }
-
-            helper = new ConnectedUserHelper(
-                hello.SessionId,
-                hello.ProcessId,
-                hello.Version,
-                hello.User,
-                DateTimeOffset.UtcNow,
-                writer,
-                pipe,
-                ComputerUsePipeSecurity.IsVerifiedHelper(pipe, hello.ProcessId, hello.SessionId));
+            // Every route (desktop capture, signaling, and computer use) now
+            // comes from the same OS-authenticated process and Windows session.
+            await using var writer = new StreamWriter(pipe, new UTF8Encoding(false), bufferSize: StreamBufferBytes, leaveOpen: true) { AutoFlush = true };
+            helper = new ConnectedUserHelper(peer.SessionId, peer.ProcessId, HelperVersion,
+                peer.UserName, DateTimeOffset.UtcNow, writer, pipe, computerUseAuthenticated: true);
             if (!TryRegisterHelper(helper, out var replaced, out var rejectionReason))
             {
                 LogManager.WriteLog($"[RemoteDesktop] Helper registration rejected pid={helper.ProcessId} sessionId={helper.SessionId} reason={rejectionReason}");
@@ -199,7 +203,7 @@ internal sealed class RemoteDesktopUserHelperPipeHost : IDisposable
 
             while (!ct.IsCancellationRequested)
             {
-                var line = await reader.ReadLineAsync(ct).ConfigureAwait(false);
+                var line = await reader.ReadAsync(BoundedHelperPipeReader.MaximumMessageBytes, IdleTimeout, ct).ConfigureAwait(false);
                 if (line is null)
                 {
                     return;
@@ -229,6 +233,11 @@ internal sealed class RemoteDesktopUserHelperPipeHost : IDisposable
                     LogManager.WriteLog($"[RemoteDesktopTrace] stage=service_pipe_message_dispatch_failed kind={message.Kind} streamId={message.StreamId ?? string.Empty} bytes={message.PayloadJson?.Length ?? 0} error={ex}");
                 }
             }
+        }
+        catch (Exception exception) when (exception is IOException or OperationCanceledException or
+            InvalidDataException or JsonException or DecoderFallbackException or ObjectDisposedException)
+        {
+            LogManager.WriteLog($"[RemoteDesktop] Helper connection ended pid={peer.ProcessId} reason={exception.GetType().Name}");
         }
         finally
         {
@@ -261,12 +270,6 @@ internal sealed class RemoteDesktopUserHelperPipeHost : IDisposable
         rejectionReason = null;
         return _registry.TryRegister(candidate, out replaced, out rejectionReason);
     }
-
-    private static bool TryValidateHelperProcess(RemoteDesktopHelperHello hello, out string? error) =>
-        RemoteSupportHelperProcessValidation.TryValidate(
-            hello,
-            new CurrentProcessRemoteSupportHelperProcessInspector(),
-            out error);
 
     private void LogPipeMessageReceived(RemoteDesktopPipeMessage message, int lineBytes)
     {
@@ -332,11 +335,7 @@ internal sealed class RemoteDesktopUserHelperPipeHost : IDisposable
             PipeAccessRights.FullControl,
             AccessControlType.Allow));
         security.AddAccessRule(new PipeAccessRule(
-            new SecurityIdentifier(WellKnownSidType.AuthenticatedUserSid, null),
-            PipeAccessRights.ReadWrite,
-            AccessControlType.Allow));
-        security.AddAccessRule(new PipeAccessRule(
-            new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null),
+            new SecurityIdentifier(WellKnownSidType.InteractiveSid, null),
             PipeAccessRights.ReadWrite,
             AccessControlType.Allow));
 

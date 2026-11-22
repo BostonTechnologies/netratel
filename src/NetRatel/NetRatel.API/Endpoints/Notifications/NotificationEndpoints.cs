@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Authorization;
 using NetRatel.Application.Notifications;
 using NetRatel.Application.Observability;
+using NetRatel.API.Security;
 using NetRatel.API.Services.Orchestration;
 using NetRatel.Shared.Contracts.Monitoring;
 using NetRatel.Infrastructure.Identity.Authorization;
@@ -130,9 +131,7 @@ public static class NotificationEndpoints
 
         userNotifications.MapGet("/stream", StreamNotificationsAsync).RequireAuthorization("AuditReader");
 
-        var events = app.MapGroup("/api/v1/events")
-            .WithTags("Events")
-            .RequireAuthorization("AuditReader");
+        var events = app.MapGroup("/api/v1/events").WithTags("Events").AddEndpointFilter(LocalCookieMutationFilter.InvokeAsync);
 
         events.MapGet("", async (
             INetRatelNotificationService notifications,
@@ -165,7 +164,7 @@ public static class NotificationEndpoints
                 severity,
                 ct);
             return Results.Ok(pageResult);
-        });
+        }).RequireAuthorization("AuditReader");
 
         events.MapGet("/{id:guid}", async (
             Guid id,
@@ -174,7 +173,7 @@ public static class NotificationEndpoints
         {
             var item = await notifications.GetByIdAsync(id, "system.events.viewer", ct);
             return item is null ? Results.NotFound() : Results.Ok(item);
-        });
+        }).RequireAuthorization("AuditReader");
 
         events.MapPost("/{id:guid}/retry", async (
             Guid id,
@@ -196,7 +195,7 @@ public static class NotificationEndpoints
 
             await notifications.RetryAsync(id, ct);
             return Results.Accepted();
-        });
+        }).RequireAuthorization("EventDeliveryManager");
 
         events.MapPost("/{id:guid}/disable", async (
             Guid id,
@@ -209,7 +208,7 @@ public static class NotificationEndpoints
             if (item is null) return Results.NotFound();
             await notifications.DisableAsync(id, ct);
             return Results.Accepted();
-        });
+        }).RequireAuthorization("EventDeliveryManager");
 
         return app;
     }

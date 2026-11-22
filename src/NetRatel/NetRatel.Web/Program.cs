@@ -1,4 +1,5 @@
-﻿using Microsoft.AspNetCore.Authentication;
+using NetRatel.ServiceDefaults;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.OpenIdConnect;
 using Microsoft.AspNetCore.Authorization;
@@ -422,6 +423,12 @@ var gatewayConfiguration = WebGatewayConfiguration.Create(builder.Configuration,
     exception => gatewayLogger?.LogError(exception, "Gateway configuration reload rejected; retaining the prior routes."));
 builder.Services.AddReverseProxy().LoadFromConfig(gatewayConfiguration.GetSection("ReverseProxy"));
 
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.GlobalLimiter = AgentAuthenticationRequestLimits.CreateRateLimiter();
+});
+
 var app = builder.Build();
 gatewayLogger = app.Logger;
 app.Lifetime.ApplicationStopped.Register(gatewayConfiguration.Dispose);
@@ -433,6 +440,8 @@ app.MapDefaultEndpoints();
 // from being able to forge an HTTPS origin or client address.
 var forwardedHeadersOptions = ProxyTrustOptions.Create(builder.Configuration);
 app.UseForwardedHeaders(forwardedHeadersOptions);
+app.UseAgentAuthenticationRequestLimits();
+app.UseRateLimiter();
 
 // Configure the HTTP request pipeline.
 if (!app.Environment.IsDevelopment())

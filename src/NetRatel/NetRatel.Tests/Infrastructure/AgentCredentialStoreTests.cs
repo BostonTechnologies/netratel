@@ -258,7 +258,7 @@ public sealed class AgentCredentialStoreTests
     }
 
     [Fact]
-    public async Task LoadAsync_UsesPersistedMachineIdentityAcrossContainerRecreate()
+    public async Task LoadAsync_UsesSeparateProtectionKeyAcrossContainerRecreate()
     {
         var directory = Path.Combine(Path.GetTempPath(), $"netratel-agent-store-{Guid.NewGuid():N}");
         var path = Path.Combine(directory, "agent.dat");
@@ -272,8 +272,9 @@ public sealed class AgentCredentialStoreTests
                 containerRuntimeProvider: () => true);
             await beforeRecreate.SaveAsync("agent-container", "refresh-container");
 
-            var identityPath = Path.Combine(directory, ".netratel-credential-machine-id");
-            File.Exists(identityPath).Should().BeTrue();
+            File.Exists(Path.Combine(directory, ".netratel-credential-machine-id")).Should().BeFalse();
+            if (!OperatingSystem.IsWindows())
+                File.Exists(AgentCredentialStore.GetUnixProtectionKeyPath(path)).Should().BeTrue();
 
             var afterRecreate = new AgentCredentialStore(
                 path,

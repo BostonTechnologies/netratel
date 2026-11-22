@@ -138,6 +138,21 @@ failure reference before taking further action. **Remove record only…** is an
 explicit fallback when confirmation remains pending or has expired; it revokes
 platform access without waiting for a helper that may still be running.
 
+### Linux credential protection
+
+The Linux client protects its enrollment identity and refresh journal with a
+private AES-GCM key stored separately from its agent state. A native system
+installation uses `/etc/netratel/agent-protection/credential.key`. Persist
+`/etc/netratel/agent-protection` on a separate volume when recreating a Linux
+client container with persisted agent state. Alternatively, mount a private
+32-byte key file outside the state directory and supply its absolute path as
+`NetRatel_CREDENTIAL_PROTECTION_KEY_FILE`. The file must be readable by the
+service account and inaccessible to group and other users.
+
+On upgrade, the client rewrites a readable legacy record under the new key.
+Keep the key with the installation during recovery. Revoke and reenroll any
+client whose old identity may already have been exposed.
+
 ### Native uninstall eligibility and acceptance
 
 The initial implementation verifies the installed manifest and an owned service

@@ -131,9 +131,33 @@ libraries, unsupported negotiation, and unexpected status codes fail the gate.
   fallback at `/app/storage/keys/spacetime-es256-private.pem` for existing
   instances; it is a file-location compatibility rule, not a runtime selector.
 
-Back up PostgreSQL and persistent key/artifact volumes
-together. Replacing a Data Protection key ring invalidates cookies and
+Back up PostgreSQL and persistent key/artifact volumes on the same recovery
+schedule. Restrict access to the Data Protection key ring separately from the
+database and database backups. Replacing the key ring invalidates cookies and
 protected state.
+
+### General secrets and event delivery
+
+Apply the database migrations before starting the updated API. During an
+upgrade, stop older API instances before starting the new version. The updated
+API protects any existing general secret values with its persistent Data
+Protection key ring in a transaction before it serves requests. Retain that
+key ring for restores. Rotate any values that were present in plaintext backups.
+
+Grant `secret.reveal` for scoped secret reads and `secret.manage` for scoped
+writes. Mutation responses contain record metadata. Assign
+`event-delivery.manage` as an instance permission for retrying or disabling
+visible events. Existing audit-read and secret-reveal grants do not confer
+mutation access.
+
+### File gateway roots
+
+Set `NetRatel:FileGateway:AllowedRoots` on the API to the absolute directories
+that may be shared by the native clients. For example, set
+`NetRatel__FileGateway__AllowedRoots__0=/srv/shared-reports` in the API
+container environment. Use dedicated data directories on the clients. The
+gateway requires a client that supports protected-path checks and an explicit
+root for every operation. Reviewed MCP grants can narrow this scope further.
 
 ## RatelDesk connections
 
@@ -414,6 +438,27 @@ proxy range can use:
 Do not add broad private-network ranges unless every sender in that range is a
 trusted proxy. Direct local evaluation needs no configuration beyond the
 loopback default.
+
+### Agent authentication ingress
+
+Web and API both limit agent enroll and token requests to 24 KiB and rate-limit
+them by trusted source IP. If an Nginx ingress fronts Web, apply matching limits
+before proxy buffering. Declare the limit zone in the Nginx `http` block and add
+the scoped location to the existing NetRatel virtual host, retaining its proxy
+headers and upstream.
+
+```nginx
+# In http
+limit_req_zone $binary_remote_addr zone=agent_auth:10m rate=10r/s;
+
+# In the existing server
+location ~* ^/api/v1/agents/(enroll|token)/?$ {
+    client_max_body_size 24k;
+    limit_req zone=agent_auth burst=120 nodelay;
+    limit_req_status 429;
+    proxy_pass http://netratel_web;
+}
+```
 
 ## Integration credential expiry
 

@@ -60,8 +60,14 @@ public sealed class PairingNotificationAudienceTests
         marked.EnsureSuccessStatusCode();
         Assert.Equal(auditReader ? 2 : 1, await db.OutboxReadReceipts.CountAsync());
         Assert.False(await db.OutboxReadReceipts.AnyAsync(x => x.EventId == foreign.Id || x.UserId != "actor"));
-        foreach (var path in new[] { $"/api/v1/events/{own.Id}/retry", $"/api/v1/events/{own.Id}/disable" })
-            Assert.Equal(auditReader ? HttpStatusCode.NotFound : HttpStatusCode.Forbidden, (await client.PostAsync(path, null)).StatusCode);
+        foreach (var action in new[] { "retry", "disable" })
+            Assert.Equal(HttpStatusCode.Forbidden, (await client.PostAsync($"/api/v1/events/{audit.Id}/{action}", null)).StatusCode);
+
+        client.DefaultRequestHeaders.Add("X-Test-Delivery", "yes");
+        foreach (var action in new[] { "retry", "disable" })
+            Assert.Equal(HttpStatusCode.NotFound, (await client.PostAsync($"/api/v1/events/{own.Id}/{action}", null)).StatusCode);
+
+        Assert.Equal(HttpStatusCode.Accepted, (await client.PostAsync($"/api/v1/events/{audit.Id}/disable", null)).StatusCode);
     }
 
     [Theory]
@@ -84,7 +90,11 @@ public sealed class PairingNotificationAudienceTests
         var reserved = new[] { native.Id, binding.Id, intent.Id };
         var client = host.GetTestClient();
         client.DefaultRequestHeaders.Add("X-Test-Actor", "actor");
-        if (auditReader) client.DefaultRequestHeaders.Add("X-Test-Audit", "yes");
+        if (auditReader)
+        {
+            client.DefaultRequestHeaders.Add("X-Test-Audit", "yes");
+            client.DefaultRequestHeaders.Add("X-Test-Delivery", "yes");
+        }
 
         var page = await client.GetFromJsonAsync<PagedResult<NetRatelNotificationDto>>("/api/v1/notifications");
         Assert.DoesNotContain(page!.Items, item => reserved.Contains(item.Id));
@@ -147,7 +157,11 @@ public sealed class PairingNotificationAudienceTests
         {
             services.AddRouting();
             services.AddAuthentication("Test").AddScheme<AuthenticationSchemeOptions, TestAuth>("Test", _ => { });
-            services.AddAuthorization(options => options.AddPolicy("AuditReader", policy => policy.RequireAuthenticatedUser().RequireClaim("audit", "yes")));
+            services.AddAuthorization(options =>
+            {
+                options.AddPolicy("AuditReader", policy => policy.RequireAuthenticatedUser().RequireClaim("audit", "yes"));
+                options.AddPolicy("EventDeliveryManager", policy => policy.RequireAuthenticatedUser().RequireClaim("delivery", "yes"));
+            });
             services.AddDbContext<OrchestratorDbContext>(options => options.UseInMemoryDatabase(database));
             services.AddScoped<NetRatelNotificationAudience>();
             services.AddScoped<INetRatelNotificationService, NetRatelNotificationService>();
@@ -165,6 +179,7 @@ public sealed class PairingNotificationAudienceTests
             if (!Request.Headers.TryGetValue("X-Test-Actor", out var actor)) return Task.FromResult(AuthenticateResult.NoResult());
             var claims = new List<Claim> { new(ClaimTypes.NameIdentifier, actor.ToString()) };
             if (Request.Headers.ContainsKey("X-Test-Audit")) claims.Add(new("audit", "yes"));
+            if (Request.Headers.ContainsKey("X-Test-Delivery")) claims.Add(new("delivery", "yes"));
             return Task.FromResult(AuthenticateResult.Success(new AuthenticationTicket(new ClaimsPrincipal(new ClaimsIdentity(claims, Scheme.Name)), Scheme.Name)));
         }
     }

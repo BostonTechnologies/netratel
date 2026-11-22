@@ -61,7 +61,8 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*; \
     groupadd --system --gid "${APP_GID}" "${APP_USER}"; \
     useradd --system --uid "${APP_UID}" --gid "${APP_GID}" --home-dir /var/lib/netratel --create-home --shell /usr/sbin/nologin "${APP_USER}"; \
-    mkdir -p /etc/netratel /var/lib/netratel; \
+    mkdir -p /etc/netratel/agent-protection /var/lib/netratel; \
+    chmod 700 /etc/netratel/agent-protection; \
     chown -R "${APP_USER}:${APP_USER}" /etc/netratel /var/lib/netratel
 
 WORKDIR /app
