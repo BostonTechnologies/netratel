@@ -15,6 +15,17 @@ public sealed class ProtectSecretValues : Migration
             nullable: false,
             defaultValue: false);
 
-    protected override void Down(MigrationBuilder migrationBuilder) =>
-        throw new NotSupportedException("Protected secret records require a compatible NetRatel API.");
+    protected override void Down(MigrationBuilder migrationBuilder)
+    {
+        migrationBuilder.Sql("""
+            LOCK TABLE "Secrets" IN ACCESS EXCLUSIVE MODE;
+            DO $$
+            BEGIN
+                IF EXISTS (SELECT 1 FROM "Secrets" WHERE "ValueProtected") THEN
+                    RAISE EXCEPTION 'Protected secret records require a compatible NetRatel API.';
+                END IF;
+            END $$;
+            """);
+        migrationBuilder.DropColumn(name: "ValueProtected", table: "Secrets");
+    }
 }

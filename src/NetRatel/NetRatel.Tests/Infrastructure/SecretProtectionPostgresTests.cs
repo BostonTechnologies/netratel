@@ -18,7 +18,9 @@ public sealed class SecretProtectionPostgresTests(PostgreSqlPersistenceFixture p
         var ct = TestContext.Current.CancellationToken;
         await using var db = new OrchestratorDbContext(new DbContextOptionsBuilder<OrchestratorDbContext>()
             .UseNpgsql(await postgres.CreateDatabaseAsync(ct)).Options);
-        await db.GetService<IMigrator>().MigrateAsync("20261119161541_AddHistoricalMetrics", ct);
+        const string preceding = "20261119161541_AddHistoricalMetrics";
+        var migrator = db.GetService<IMigrator>();
+        await migrator.MigrateAsync(preceding, ct);
 
         const string original = "synthetic legacy value";
         await db.Database.ExecuteSqlInterpolatedAsync($"""
@@ -45,5 +47,8 @@ public sealed class SecretProtectionPostgresTests(PostgreSqlPersistenceFixture p
         stored.Value.Should().NotContain(value);
         (await service.ListAsync([8], ct)).Should().ContainSingle().Which.Value.Should().Be(value);
         (await service.DeleteAsync(created.Id, [8], ct)).Should().NotBeNull();
+
+        var rollback = await Assert.ThrowsAsync<Npgsql.PostgresException>(() => migrator.MigrateAsync(preceding, ct));
+        rollback.Message.Should().Contain("Protected secret records").And.NotContain(original);
     }
 }
