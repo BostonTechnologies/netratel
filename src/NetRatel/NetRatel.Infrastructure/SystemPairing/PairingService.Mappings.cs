@@ -92,7 +92,6 @@ public sealed partial class PairingService
         if (pair.ProtectedOutboundSecret is null) throw new PairingException(409, "pair-incomplete", "Complete Pair & connect before saving the mapping.");
         var actorId = PairingAuthority.ActorId(actor);
         await StageDraftAsync(pair, mapping, actorId, ct);
-        await authority.RequireMappingAsync(mapping, actorId, ct); await authority.RequireMappingAsync(mapping, pair.AdministratorId, ct);
         PairingConnectionRecord row;
         await using (var tx = await db.Database.BeginTransactionAsync(ct))
         {
@@ -151,13 +150,21 @@ public sealed partial class PairingService
         {
             if (row.PairId != pair.Id) throw new PairingException(409, "connection-owner-conflict", "The connection belongs to another system pairing.");
             var old = Read<PairingMapping>(row.MappingJson);
-            if (row.AdministratorId != owner && !await authority.CanManageAsync(owner, int.Parse(old.NetRatelTenantId, CultureInfo.InvariantCulture), false, false, ct)) throw new PairingException(403, "mapping-not-authorized", "Integration management permission is required for the current tenant mapping.");
+            if ((row.AdministratorId != owner || old.NetRatelTenantId != mapping.NetRatelTenantId) &&
+                !await authority.CanManageAsync(owner, int.Parse(old.NetRatelTenantId, CultureInfo.InvariantCulture), false, false, ct))
+                throw new PairingException(403, "mapping-not-authorized", "Integration management permission is required for the current tenant mapping.");
+        }
+
+        await authority.RequireMappingAsync(mapping, owner, ct);
+        await authority.RequireMappingAsync(mapping, pair.AdministratorId, ct);
+        if (row is not null)
+        {
             if (row.MappingJson == Json(mapping)) return;
             if (row.InboundPrincipalId is { } principal) await principals.RevokeAsync(principal, ct);
             row.InboundPrincipalId = null; row.ProtectedInboundCredential = null; row.ProtectedOutboundCredential = null; row.LastTestJson = null;
         }
         else { row = new() { Id = mapping.Id, PairId = pair.Id, CreatedAtUtc = clock.GetUtcNow() }; db.Add(row); }
-        // Persist only bounded nonsecret form values before policy/peer validation, so refresh keeps a failed draft.
+        // Keep bounded nonsecret form values if peer validation fails after the authorized edit.
         row.MappingJson = Json(mapping); row.AdministratorId = owner; row.Active = false; row.OperationId = Guid.Empty; row.SaveFingerprint = ""; row.Revision++;
         await db.SaveChangesAsync(ct); await tx.CommitAsync(ct);
     }

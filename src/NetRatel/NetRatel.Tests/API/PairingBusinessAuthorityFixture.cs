@@ -77,10 +77,38 @@ internal static class PairingBusinessAuthorityFixture
 
     internal sealed class Access : IEffectiveAccessService
     {
+        private Dictionary<(string PrincipalId, int TenantId), HashSet<string>>? tenantGrants;
+
         internal bool Allowed { get; set; } = true;
-        public Task<bool> AuthorizeAsync(ClaimsPrincipal actor, string permission, int? tenantId, CancellationToken ct = default) => Task.FromResult(Allowed);
-        public Task<int[]?> GetAuthorizedTenantIdsAsync(ClaimsPrincipal actor, string permission, CancellationToken ct = default) => Task.FromResult<int[]?>(Allowed ? null : []);
-        public Task<EffectiveAccessSnapshot> GetSnapshotAsync(ClaimsPrincipal actor, int? tenantId, CancellationToken ct = default) => Task.FromResult(new EffectiveAccessSnapshot(null, false, Allowed, new HashSet<string>()));
+
+        internal void SetTenantGrants(string principalId, int tenantId, params string[] permissions)
+        {
+            tenantGrants ??= new();
+            tenantGrants[(principalId, tenantId)] = permissions.ToHashSet(StringComparer.Ordinal);
+        }
+
+        public async Task<bool> AuthorizeAsync(ClaimsPrincipal actor, string permission, int? tenantId, CancellationToken ct = default)
+        {
+            var snapshot = await GetSnapshotAsync(actor, tenantId, ct);
+            return snapshot.IsInstanceAdministrator || snapshot.Permissions.Contains(permission);
+        }
+
+        public Task<int[]?> GetAuthorizedTenantIdsAsync(ClaimsPrincipal actor, string permission, CancellationToken ct = default)
+        {
+            if (!Allowed) return Task.FromResult<int[]?>([]);
+            if (tenantGrants is null) return Task.FromResult<int[]?>(null);
+            var principal = PairingAuthority.ActorId(actor);
+            return Task.FromResult<int[]?>(tenantGrants.Where(grant => grant.Key.PrincipalId == principal && grant.Value.Contains(permission))
+                .Select(grant => grant.Key.TenantId).ToArray());
+        }
+
+        public Task<EffectiveAccessSnapshot> GetSnapshotAsync(ClaimsPrincipal actor, int? tenantId, CancellationToken ct = default)
+        {
+            var principal = PairingAuthority.ActorId(actor);
+            var permissions = Allowed && tenantId is { } tenant ? tenantGrants?.GetValueOrDefault((principal, tenant)) : null;
+            return Task.FromResult(new EffectiveAccessSnapshot(principal, false, Allowed && tenantGrants is null, permissions ?? []));
+        }
+
         public Task ReconcileBuiltInRolesAsync(CancellationToken ct = default) => Task.CompletedTask;
     }
 }
