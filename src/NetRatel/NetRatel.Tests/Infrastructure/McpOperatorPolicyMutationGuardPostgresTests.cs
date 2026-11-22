@@ -143,6 +143,12 @@ public sealed class McpOperatorPolicyMutationGuardPostgresTests(PostgreSqlPersis
         var created = await administration.CreateAsync(draft, Administrator, CancellationToken.None);
         db.ChangeTracker.Clear();
         var bounded = draft with { ExpiresAtUtc = created.ExpiresAtUtc!.Value.ToOffset(TimeSpan.FromHours(2)), ReviewByUtc = created.ReviewByUtc!.Value.ToOffset(TimeSpan.FromHours(2)), Constraints = new(ReadRoots: ["/tmp/netratel"], WriteRoots: ["/tmp/netratel"], MaxScriptBytes: 65536) };
+        var invalidVersion = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            administration.ReplaceAsync(created.PolicyId, 0, bounded, Administrator, CancellationToken.None));
+        Assert.Equal("expectedVersion", invalidVersion.ParamName);
+        (await administration.GetAsync(created.PolicyId, CancellationToken.None)).Should().BeEquivalentTo(created);
+        (await administration.ListChangeAuditsAsync(TenantId, created.PolicyId, null, CancellationToken.None))
+            .Select(audit => audit.Action).Should().Equal("policy_created");
         var replaced = await administration.ReplaceAsync(created.PolicyId, created.Version, bounded, Administrator, CancellationToken.None);
         db.ChangeTracker.Clear();
         var readback = await administration.GetAsync(created.PolicyId, CancellationToken.None);

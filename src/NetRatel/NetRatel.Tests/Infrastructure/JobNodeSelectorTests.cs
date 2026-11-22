@@ -177,6 +177,28 @@ public sealed class JobNodeSelectorTests
             .Code.Should().Be("target_node_unavailable");
     }
 
+    [Theory]
+    [InlineData(NetRatelPermissions.JobManagement)]
+    [InlineData(NetRatelPermissions.TenantAdministration)]
+    public async Task Target_search_accepts_either_tenant_read_permission_and_preserves_directory_scope(string permission)
+    {
+        await using var db = Db();
+        db.Agents.AddRange(new Agent { Id = Ids[0], TenantId = 7, Name = "permitted" },
+            new Agent { Id = Ids[1], TenantId = 7, Name = "outside reviewed scope" },
+            new Agent { Id = Ids[2], TenantId = 8, Name = "other tenant" });
+        await db.SaveChangesAsync();
+        var directory = new JobNodeDirectory(db);
+        var service = new JobTargetApiService(directory, new JobTargetResolver(db, directory), new Access(permission));
+        var actor = new ClaimsPrincipal();
+        var page = await service.SearchAsync(7, null, 1, 10, actor, default, new HashSet<Guid> { Ids[0], Ids[2] });
+        page.Items.Select(node => node.AgentId).Should().Equal(Ids[0]);
+
+        var invalid = await Assert.ThrowsAsync<JobTargetValidationException>(() => service.SearchAsync(0, null, 1, 10, actor, default));
+        var foreign = await Assert.ThrowsAsync<JobTargetValidationException>(() => service.SearchAsync(8, null, 1, 10, actor, default));
+        Assert.Equal((403, "target_read_denied"), (invalid.StatusCode, invalid.Code));
+        Assert.Equal((403, "target_read_denied"), (foreign.StatusCode, foreign.Code));
+    }
+
     [Fact]
     public async Task Group_details_preserve_unavailable_member_ids_without_metadata_or_execution_authority()
     {
@@ -211,9 +233,10 @@ public sealed class JobNodeSelectorTests
         public Task<IReadOnlyList<JobNodeInventoryDto>> ReadAsync(int tenantId, IReadOnlySet<Guid>? ids, bool includeInvalid, CancellationToken cancellationToken)
             => Task.FromResult<IReadOnlyList<JobNodeInventoryDto>>(nodes.Where(x => (ids is null || ids.Contains(x.AgentId)) && (includeInvalid || x.IsEnabled)).ToArray());
     }
-    private sealed class Access : IEffectiveAccessService
+    private sealed class Access(string? scopedPermission = null) : IEffectiveAccessService
     {
-        public Task<bool> AuthorizeAsync(ClaimsPrincipal principal, string permission, int? tenantId, CancellationToken cancellationToken = default) => Task.FromResult(true);
+        public Task<bool> AuthorizeAsync(ClaimsPrincipal principal, string permission, int? tenantId, CancellationToken cancellationToken = default) =>
+            Task.FromResult(scopedPermission is null || tenantId == 7 && permission == scopedPermission);
         public Task<EffectiveAccessSnapshot> GetSnapshotAsync(ClaimsPrincipal principal, int? tenantId, CancellationToken cancellationToken = default) => throw new NotSupportedException();
         public Task ReconcileBuiltInRolesAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
     }

@@ -179,6 +179,18 @@ public sealed partial class MonitoringApiTests
         fixture.Authority.Requests.Should().Contain(item => item.Permission == NetRatelPermissions.MonitoringRead && item.Resource.TenantId == 8);
     }
 
+    [Fact]
+    public async Task Resource_authorizer_denies_an_empty_agent_even_with_monitoring_read_in_the_tenant()
+    {
+        var fixture = new Fixture();
+        var authorizer = new MonitoringResourceAuthorizer(fixture.Access);
+
+        Assert.False(await authorizer.AuthorizeAsync(User, NetRatelPermissions.MonitoringRead,
+            new(7, MonitoringResourceKind.Agent, AgentId: Guid.Empty), default));
+        Assert.True(await authorizer.AuthorizeAsync(User, NetRatelPermissions.MonitoringRead,
+            new(7, MonitoringResourceKind.Agent, AgentId: fixture.AgentId), default));
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

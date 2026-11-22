@@ -49,6 +49,10 @@ public sealed partial class IntegrationSetupTransactionTests(PostgreSqlPersisten
         await using var host = await StartAccountApiAsync(connection, protection);
         using var client = IntegrationCredentialAccessEndpointTests.AccountClient(host, owner: Owner);
         const string path = "/api/v2/account/integration-credentials/";
+        using var invalid = await client.PostAsJsonAsync(path, body with { SetupRequestId = "invalid-setup-id" });
+        Assert.Equal(HttpStatusCode.BadRequest, invalid.StatusCode);
+        Assert.Equal("integration_setup_invalid", (await invalid.Content.ReadFromJsonAsync<IntegrationPairingFailure>())!.Code);
+
         using var created = await client.PostAsJsonAsync(path, body);
         Assert.Equal(HttpStatusCode.Created, created.StatusCode);
         var credential = Assert.IsType<IntegrationCredentialSecret>(await created.Content.ReadFromJsonAsync<IntegrationCredentialSecret>());
@@ -270,8 +274,16 @@ public sealed partial class IntegrationSetupTransactionTests(PostgreSqlPersisten
             [new(701, NetRatelPermissions.FlowRead), new(702, NetRatelPermissions.FlowRead)], Resource, [NetRatelPermissions.McpDiscoveryRead]);
         var id = Guid.NewGuid().ToString("N"); var valid = Plan(request); var invalid = valid.Select((p, i) => i == 1 ? p with { Name = new string('x', 161) } : p).ToArray();
         await using (var failed = Open(connection, protection))
+        {
+            const string ordinaryOwner = "synthetic-ordinary-account";
+            failed.Identity.ApplicationPrincipals.Add(new() { Id = ordinaryOwner });
+            await failed.Identity.SaveChangesAsync();
+            var ordinary = new ClaimsPrincipal(new ClaimsIdentity([new Claim("netratel_principal_id", ordinaryOwner)], "local"));
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+                failed.Setup.CreateAsync(ordinary, id, request, valid, McpOperatorEnvironment.Production, default));
             Assert.Equal("integration_policy_invalid", (await Assert.ThrowsAsync<IntegrationCredentialGrantValidationException>(
                 () => failed.Setup.CreateAsync(Principal(), id, request, invalid, McpOperatorEnvironment.Production, default))).ReviewFailure!.Code);
+        }
         await using var retry = Open(connection, protection);
         Assert.Empty(await retry.Identity.IntegrationCredentials.ToArrayAsync()); Assert.Empty(await retry.App.McpOperatorPolicies.Where(p => p.IntegrationCredentialId != null).ToArrayAsync()); Assert.Empty(await retry.Identity.IntegrationSetupAttempts.ToArrayAsync());
         await retry.Setup.CreateAsync(Principal(), id, request, valid, McpOperatorEnvironment.Production, default);
