@@ -172,7 +172,7 @@ public sealed class OidcSessionRefreshTests
         IHttpClientFactory factory,
         HttpContext? context = null,
         string tokenEndpoint = "https://issuer.example.invalid/oauth/token",
-        string environmentName = Environments.Production,
+        string? environmentName = null,
         bool requireHttpsMetadata = true)
     {
         var accessor = new HttpContextAccessor { HttpContext = context };
@@ -191,7 +191,7 @@ public sealed class OidcSessionRefreshTests
             accessor,
             factory,
             configuration,
-            new TestHostEnvironment(environmentName),
+            new TestHostEnvironment(environmentName ?? Environments.Production),
             new StubSystemTokenService(),
             new OperatorApiCredentialState(),
             NullLogger<TokenService>.Instance);
