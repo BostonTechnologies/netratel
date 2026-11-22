@@ -150,7 +150,7 @@ public sealed partial class AgentCredentialStore
             }
             catch (IOException) when (File.Exists(keyPath))
             {
-                // Concurrent installations on the same account share the winning key.
+                return; // The caller will read and validate the winning key.
             }
         }
         finally

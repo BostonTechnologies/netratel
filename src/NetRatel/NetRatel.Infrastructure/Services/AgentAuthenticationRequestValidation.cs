@@ -59,7 +59,7 @@ internal static class AgentAuthenticationRequestValidation
         }
         catch (JsonException)
         {
-            // The response does not echo device-provided metadata.
+            throw new AgentAuthException(400, "Device metadata is invalid JSON.", "agent_device_info_invalid");
         }
 
         throw new AgentAuthException(400, "Device metadata exceeds the supported JSON limits.", "agent_device_info_invalid");

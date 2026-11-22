@@ -114,8 +114,9 @@ internal static class RemoteDesktopInteractiveHelper
                     {
                         await heartbeatTask.ConfigureAwait(false);
                     }
-                    catch
+                    catch (OperationCanceledException) when (connectionCts.IsCancellationRequested)
                     {
+                        LogManager.WriteLog("[RemoteDesktopHelper] Resident helper heartbeat stopped.");
                     }
                 }
             }
@@ -302,8 +303,9 @@ internal static class RemoteDesktopInteractiveHelper
                 {
                     await captureTask.ConfigureAwait(false);
                 }
-                catch
+                catch (Exception exception)
                 {
+                    LogManager.WriteLog($"[RemoteDesktopHelper] Resident capture ended: {exception.GetType().Name}.");
                 }
             }
 

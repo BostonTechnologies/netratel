@@ -237,7 +237,7 @@ internal sealed class RemoteDesktopUserHelperPipeHost : IDisposable
         catch (Exception exception) when (exception is IOException or OperationCanceledException or
             InvalidDataException or JsonException or DecoderFallbackException or ObjectDisposedException)
         {
-            // Closed, expired, or invalid connections are removed below.
+            LogManager.WriteLog($"[RemoteDesktop] Helper connection ended pid={peer.ProcessId} reason={exception.GetType().Name}");
         }
         finally
         {
