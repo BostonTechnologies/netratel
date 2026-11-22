@@ -38,6 +38,7 @@ public sealed class RatelDeskConnectorAuthorizationTests
         var credential = await db.IntegrationCredentials.SingleAsync(x => x.Id == created.CredentialId);
         var auth = new RatelDeskConnectorAuthorization(access, db);
         Assert.True(await auth.CanExecuteAsync("owner", credential.Id, 4, CancellationToken.None));
+        Assert.False(await auth.CanExecuteAsync("owner", credential.Id, 0, CancellationToken.None));
         Assert.False(await auth.CanExecuteAsync("owner", credential.Id, 5, CancellationToken.None));
         Assert.False(await auth.CanExecuteAsync("owner", "", 4, CancellationToken.None));
         Assert.False(await auth.CanExecuteAsync("owner", "missing-credential", 4, CancellationToken.None));

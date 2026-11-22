@@ -51,6 +51,39 @@ public sealed class ExecutionGroupPostgresTests(PostgreSqlPersistenceFixture pos
     }
 
     [Fact]
+    public async Task Either_scoped_permission_reads_groups_and_only_tenant_administration_changes_membership()
+    {
+        await using var db = await CreateAsync(default);
+        var ids = await SeedAsync(db, default);
+        var admin = Service(db, new ManagerAccess([NetRatelPermissions.TenantAdministration]));
+        var jobs = Service(db, new ManagerAccess([NetRatelPermissions.JobManagement]));
+        var foreign = Service(db, new ManagerAccess([NetRatelPermissions.TenantAdministration], tenant: 8));
+        var created = await admin.CreateAsync(7, new("Scoped group", null, true, false, [ids[0]]), Manager, default);
+        var id = created.Group.Id;
+        var change = new ExecutionGroupMembershipWriteDto(created.Group.Revision, [ids[1]], []);
+
+        Assert.Equal(id, Assert.Single((await admin.ListAsync(7, null, 1, 10, Manager, default)).Items).Id);
+        Assert.Equal(id, Assert.Single((await jobs.ListAsync(7, null, 1, 10, Manager, default)).Items).Id);
+        Assert.Null(await foreign.GetAsync(8, id, Manager, default));
+        var invalid = await Assert.ThrowsAsync<JobTargetValidationException>(() => admin.GetAsync(0, id, Manager, default));
+        var wrongTenant = await Assert.ThrowsAsync<JobTargetValidationException>(() => foreign.GetAsync(7, id, Manager, default));
+        Assert.Equal((403, "execution_group_read_denied"), (invalid.StatusCode, invalid.Code));
+        Assert.Equal((403, "execution_group_read_denied"), (wrongTenant.StatusCode, wrongTenant.Code));
+
+        var denied = await Assert.ThrowsAsync<JobTargetValidationException>(() => jobs.ChangeMembershipAsync(7, id, change, Manager, default));
+        var invalidWrite = await Assert.ThrowsAsync<JobTargetValidationException>(() => admin.ChangeMembershipAsync(0, id, change, Manager, default));
+        Assert.Equal((403, "execution_group_manage_denied"), (denied.StatusCode, denied.Code));
+        Assert.Equal((403, "execution_group_manage_denied"), (invalidWrite.StatusCode, invalidWrite.Code));
+        Assert.Null(await foreign.ChangeMembershipAsync(8, id, change, Manager, default));
+        var unchanged = (await jobs.GetAsync(7, id, Manager, default))!;
+        Assert.Equal(created.Group.Revision, unchanged.Group.Revision);
+        Assert.Equal(ids[0], Assert.Single(unchanged.Members).AgentId);
+        Assert.Single(await db.ExecutionGroupAudits.AsNoTracking().ToArrayAsync());
+        var updated = (await admin.ChangeMembershipAsync(7, id, change, Manager, default))!;
+        updated.Members.Select(member => member.AgentId).Should().BeEquivalentTo(ids.Take(2));
+    }
+
+    [Fact]
     public async Task Tenant_constraints_duplicate_names_and_atomic_conflicting_revisions_are_enforced_by_postgres()
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(45)); var ct = deadline.Token;
@@ -169,11 +202,14 @@ public sealed class ExecutionGroupPostgresTests(PostgreSqlPersistenceFixture pos
             DeviceInfoJson = JsonSerializer.Serialize(new { hostName = $"lab-node-{index + 1:00}", os = "Linux", architecture = "x64" }) }));
         await db.SaveChangesAsync(ct); return ids;
     }
-    private static ExecutionGroupService Service(OrchestratorDbContext db) => new(db, new ManagerAccess(), new JobNodeDirectory(db), [new PublishedFlowExecutionGroupReferences(db)], TimeProvider.System);
-    private sealed class ManagerAccess : IEffectiveAccessService
+    private static ExecutionGroupService Service(OrchestratorDbContext db, IEffectiveAccessService? access = null) =>
+        new(db, access ?? new ManagerAccess(), new JobNodeDirectory(db), [new PublishedFlowExecutionGroupReferences(db)], TimeProvider.System);
+    private sealed class ManagerAccess(string[]? permissions = null, int tenant = 7) : IEffectiveAccessService
     {
+        private readonly string[] grants = permissions ?? [NetRatelPermissions.TenantAdministration, NetRatelPermissions.JobManagement, NetRatelPermissions.FlowRead];
+
         public Task<bool> AuthorizeAsync(ClaimsPrincipal principal, string permission, int? tenantId, CancellationToken cancellationToken = default) =>
-            Task.FromResult(tenantId == 7 && permission is NetRatelPermissions.TenantAdministration or NetRatelPermissions.JobManagement or NetRatelPermissions.FlowRead);
+            Task.FromResult(tenantId == tenant && grants.Contains(permission, StringComparer.Ordinal));
         public Task<EffectiveAccessSnapshot> GetSnapshotAsync(ClaimsPrincipal principal, int? tenantId, CancellationToken cancellationToken = default) => throw new NotSupportedException();
         public Task ReconcileBuiltInRolesAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
