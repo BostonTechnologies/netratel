@@ -6,7 +6,7 @@
     "verify-assets": "python3 ../ci/prepare-viewer-assets.py"
   },
   "dependencies": {
-    "docx-preview": "0.3.3",
+    "docx-preview": "0.4.1",
     "jszip": "3.10.2",
     "pdfjs-dist": "6.5.438"
   },

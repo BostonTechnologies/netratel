@@ -17,8 +17,8 @@ ASSET_ROOT = WEB / VIEWER_ROOT
 # The official JSZip release pairs these minified and readable upstream files.
 # A JSZip bump requires reviewing that pair and the embedded modules again.
 JSZIP_RELEASE_FILES = {
-    "dist/jszip.js": "e2e1be5c22d3f15b0b89e676d3eede94644529996d9898a6b1587c9908a78506",
-    "dist/jszip.min.js": "acc7e41455a80765b5fd9c7ee1b8078a6d160bbbca455aeae854de65c947d59e",
+    "dist/jszip.js": "fa62224aa46f5aa78b9449aa8d6d46d914f8a7cce80bc65c635359f7a2f8ffd7",
+    "dist/jszip.min.js": "7f839b2d4688b845c105ebf5d2f9803075f91ea0fe72bdaac176c3a04dd3d2c1",
 }
 EMBEDDED_FILES = {
     "immediate": ("lib/browser.js", "LICENSE.txt"),
