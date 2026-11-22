@@ -217,7 +217,7 @@ window.netratelSetup = {
             window.location.assign(`/login?localMfa=true&ReturnUrl=${encodeURIComponent(window.netratelSetup.returnPath())}`);
             return;
         }
-        window.location.assign(window.netratelSetup.returnPath());
+        window.location.assign(window.location.origin + window.netratelSetup.returnPath());
     },
     completeTwoFactor: async () => {
         const code = window.netratelSetup.value("[data-testid='local-login-two-factor']");
@@ -233,7 +233,7 @@ window.netratelSetup = {
                 : "The authenticator or recovery code was not accepted.");
             return;
         }
-        window.location.assign(window.netratelSetup.returnPath());
+        window.location.assign(window.location.origin + window.netratelSetup.returnPath());
     },
     claim: async () => {
         const proof = window.netratelSetup.value("[data-testid='setup-proof']");
