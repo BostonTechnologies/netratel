@@ -328,7 +328,7 @@ builder.Services.AddTransient<RedirectReissueHandler>();
 builder.Services.AddHttpClient("TokenClient", c =>
 {
     c.Timeout = TimeSpan.FromSeconds(30);
-}).ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { UseCookies = false });
+}).ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false, UseCookies = false });
 
 builder.Services.AddHttpClient("OrchestratorApi", c =>
 {

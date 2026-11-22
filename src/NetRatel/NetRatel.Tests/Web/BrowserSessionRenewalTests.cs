@@ -11,6 +11,7 @@ using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.JSInterop;
@@ -153,6 +154,7 @@ public sealed class BrowserSessionRenewalTests
         CookieContainer cookies,
         TokenEndpoint tokenEndpoint,
         IConfiguration configuration,
+        IHostEnvironment environment,
         BrowserSessionRenewalBroker broker,
         string newAccessToken,
         string originalRefreshToken) : IAsyncDisposable
@@ -223,7 +225,16 @@ public sealed class BrowserSessionRenewalTests
                 cookies.SetCookies(client.BaseAddress!, cookie);
             }
 
-            return new Fixture(app, client, cookies, tokenEndpoint, builder.Configuration, broker, newAccessToken, originalRefreshToken);
+            return new Fixture(
+                app,
+                client,
+                cookies,
+                tokenEndpoint,
+                builder.Configuration,
+                builder.Environment,
+                broker,
+                newAccessToken,
+                originalRefreshToken);
         }
 
         public TokenService CreateCircuitService(ClaimsPrincipal principal, OperatorApiCredentialState state, IJSRuntime js, bool hasStartedContext)
@@ -231,7 +242,13 @@ public sealed class BrowserSessionRenewalTests
             var started = new DefaultHttpContext { User = principal };
             started.Features.Set<IHttpResponseFeature>(new StartedResponseFeature());
             var accessor = new HttpContextAccessor { HttpContext = hasStartedContext ? started : null };
-            return new TokenService(accessor, new TokenClientFactory(TokenEndpoint), configuration, new NoSystemTokenService(), state,
+            return new TokenService(
+                accessor,
+                new TokenClientFactory(TokenEndpoint),
+                configuration,
+                environment,
+                new NoSystemTokenService(),
+                state,
                 NullLogger<TokenService>.Instance,
                 new BrowserSessionRenewal(js, broker, state, NullLogger<BrowserSessionRenewal>.Instance));
         }

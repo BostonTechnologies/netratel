@@ -7,6 +7,7 @@ public sealed class OidcOptions
     public string ClientId { get; set; } = string.Empty;
     public string ApiScope { get; set; } = string.Empty;
     public string? TokenEndpoint { get; set; }
+    public bool RequireHttpsMetadata { get; set; } = true;
     public string CallbackPath { get; set; } = "/signin-oidc";
     public string SignedOutCallbackPath { get; set; } = "/signout-callback-oidc";
 }
