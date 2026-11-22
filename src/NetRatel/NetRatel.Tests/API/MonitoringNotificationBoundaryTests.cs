@@ -51,6 +51,7 @@ public sealed class MonitoringNotificationBoundaryTests
         using var host = await HostAsync(new Bus(), notifications);
         var http = host.GetTestClient();
         http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Test");
+        http.DefaultRequestHeaders.Add("X-Test-Delivery", "yes");
         var scopedId = Guid.NewGuid();
         (await http.GetAsync($"/api/v1/notifications/{scopedId}")).StatusCode.Should().Be(HttpStatusCode.NotFound);
         (await http.PostAsync($"/api/v1/events/{scopedId}/retry", null)).StatusCode.Should().Be(HttpStatusCode.NotFound);
@@ -64,7 +65,11 @@ public sealed class MonitoringNotificationBoundaryTests
         {
             services.AddRouting();
             services.AddAuthentication("Test").AddScheme<AuthenticationSchemeOptions, AuditAuth>("Test", _ => { });
-            services.AddAuthorization(options => options.AddPolicy("AuditReader", policy => policy.RequireAuthenticatedUser().RequireClaim("tenant_id", "8")));
+            services.AddAuthorization(options =>
+            {
+                options.AddPolicy("AuditReader", policy => policy.RequireAuthenticatedUser().RequireClaim("tenant_id", "8"));
+                options.AddPolicy("EventDeliveryManager", policy => policy.RequireAuthenticatedUser().RequireClaim("delivery", "yes"));
+            });
             services.AddSingleton<INetRatelNotificationEventBus>(bus);
             services.AddSingleton<INetRatelNotificationService>(notifications);
             services.AddSingleton<INetRatelExternalServiceCallbackReplayService, CallbackReplay>();
@@ -74,7 +79,8 @@ public sealed class MonitoringNotificationBoundaryTests
     {
         protected override Task<AuthenticateResult> HandleAuthenticateAsync() => Task.FromResult(Request.Headers.ContainsKey("Authorization")
             ? AuthenticateResult.Success(new AuthenticationTicket(new ClaimsPrincipal(new ClaimsIdentity([
-                new Claim(ClaimTypes.NameIdentifier, "foreign-audit-reader"), new Claim("tenant_id", "8")], Scheme.Name)), Scheme.Name))
+                new Claim(ClaimTypes.NameIdentifier, "foreign-audit-reader"), new Claim("tenant_id", "8"),
+                new Claim("delivery", Request.Headers.ContainsKey("X-Test-Delivery") ? "yes" : "no")], Scheme.Name)), Scheme.Name))
             : AuthenticateResult.NoResult());
     }
     private sealed class Bus : INetRatelNotificationEventBus

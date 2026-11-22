@@ -1,6 +1,8 @@
 using System.Threading.Channels;
 using AwesomeAssertions;
 using Google.Protobuf;
+using Microsoft.Extensions.Configuration;
+using NetRatel.Shared.Contracts.FileSystem;
 using NetRatel.API.Gateway;
 using NetRatel.AgentGateway.Contracts.V1;
 using NetRatel.Application.Presence;
@@ -10,13 +12,33 @@ namespace NetRatel.Tests.API;
 
 public sealed class AgentFileGatewaySessionRegistryTests
 {
+    private static readonly IConfiguration FileConfiguration = new ConfigurationBuilder()
+        .AddInMemoryCollection(new Dictionary<string, string?> { ["NetRatel:FileGateway:AllowedRoots:0"] = "/" }).Build();
+    private static readonly HashSet<string> ProtectedCapabilities = new(StringComparer.Ordinal)
+    {
+        "file-policy-roots-v1", FileGatewaySecurityCapabilities.ProtectedPaths
+    };
+
+    [Fact]
+    public async Task Missing_instance_roots_deny_requests_even_with_a_reviewed_root()
+    {
+        var client = new ClientKey(3, Guid.NewGuid());
+        var connection = Guid.NewGuid();
+        var registry = new AgentFileGatewaySessionRegistry(new CurrentPresenceRouter(client, connection, 2));
+        using var registration = registry.Register(client, connection, 2, ProtectedCapabilities);
+
+        var listing = () => registry.ListAsync(client, "/data", 32, new(["/data"]), CancellationToken.None);
+        (await listing.Should().ThrowAsync<AgentFileGatewayOperationException>()).Which.Code.Should().Be("access_denied");
+        registration.Reader.TryRead(out _).Should().BeFalse();
+    }
+
     [Fact]
     public async Task FailedUploadSourceCancelsTheNativeWriterWithoutSendingACommit()
     {
         var client = new ClientKey(3, Guid.NewGuid());
         var connection = Guid.NewGuid();
-        var registry = new AgentFileGatewaySessionRegistry(new CurrentPresenceRouter(client, connection, 2));
-        using var registration = registry.Register(client, connection, 2);
+        var registry = new AgentFileGatewaySessionRegistry(new CurrentPresenceRouter(client, connection, 2), FileConfiguration);
+        using var registration = registry.Register(client, connection, 2, ProtectedCapabilities);
         using var source = new FailedUploadSource();
         var writing = registry.WriteAsync(client, "/data/upload.bin", source, CancellationToken.None);
         var dispatch = (await registration.Reader.ReadAsync()).Dispatch;
@@ -40,8 +62,8 @@ public sealed class AgentFileGatewaySessionRegistryTests
     {
         var client = new ClientKey(3, Guid.NewGuid());
         var connection = Guid.NewGuid();
-        var registry = new AgentFileGatewaySessionRegistry(new CurrentPresenceRouter(client, connection, 2));
-        using var registration = registry.Register(client, connection, 2);
+        var registry = new AgentFileGatewaySessionRegistry(new CurrentPresenceRouter(client, connection, 2), FileConfiguration);
+        using var registration = registry.Register(client, connection, 2, ProtectedCapabilities);
         var listing = registry.ListAsync(client, "/data", 1, CancellationToken.None);
         var dispatch = (await registration.Reader.ReadAsync()).Dispatch;
         registry.TryAccept(client, new FileRequestAccepted { RequestId = dispatch.RequestId, AttemptId = dispatch.AttemptId }).Should().BeTrue();
@@ -61,8 +83,8 @@ public sealed class AgentFileGatewaySessionRegistryTests
     {
         var client = new ClientKey(3, Guid.NewGuid());
         var connection = Guid.NewGuid();
-        var registry = new AgentFileGatewaySessionRegistry(new CurrentPresenceRouter(client, connection, 2));
-        using var registration = registry.Register(client, connection, 2);
+        var registry = new AgentFileGatewaySessionRegistry(new CurrentPresenceRouter(client, connection, 2), FileConfiguration);
+        using var registration = registry.Register(client, connection, 2, ProtectedCapabilities);
         var listing = registry.ListAsync(client, "/data", 100, CancellationToken.None);
         var dispatch = (await registration.Reader.ReadAsync()).Dispatch;
         registry.TryAccept(client, new FileRequestAccepted { RequestId = dispatch.RequestId, AttemptId = dispatch.AttemptId }).Should().BeTrue();
@@ -80,8 +102,8 @@ public sealed class AgentFileGatewaySessionRegistryTests
     {
         var client = new ClientKey(3, Guid.NewGuid());
         var connectionId = Guid.NewGuid();
-        var registry = new AgentFileGatewaySessionRegistry(new CurrentPresenceRouter(client, connectionId, 2));
-        using var registration = registry.Register(client, connectionId, 2);
+        var registry = new AgentFileGatewaySessionRegistry(new CurrentPresenceRouter(client, connectionId, 2), FileConfiguration);
+        using var registration = registry.Register(client, connectionId, 2, ProtectedCapabilities);
 
         var listing = registry.ListAsync(client, "/var/log", 32, CancellationToken.None);
         var dispatch = await registration.Reader.ReadAsync();
@@ -112,13 +134,13 @@ public sealed class AgentFileGatewaySessionRegistryTests
     {
         var client = new ClientKey(3, Guid.NewGuid());
         var connection = Guid.NewGuid();
-        var registry = new AgentFileGatewaySessionRegistry(new CurrentPresenceRouter(client, connection, 2));
-        using var old = registry.Register(client, connection, 2, new HashSet<string>(["file-delete-v1", "file-policy-roots-v1"]));
+        var registry = new AgentFileGatewaySessionRegistry(new CurrentPresenceRouter(client, connection, 2), FileConfiguration);
+        using var old = registry.Register(client, connection, 2, new HashSet<string>(["file-delete-v1", FileGatewaySecurityCapabilities.ProtectedPaths, "file-policy-roots-v1"]));
         var denied = () => registry.DeleteDirectoryAsync(client, "/data/empty", new(["/data"]), CancellationToken.None);
         (await denied.Should().ThrowAsync<AgentFileGatewayOperationException>()).Which.Code.Should().Be("capability_unavailable");
         old.Reader.TryRead(out _).Should().BeFalse();
         using var current = registry.Register(client, connection, 2,
-            new HashSet<string>(["file-delete-v1", "file-delete-directory-v1", "file-policy-roots-v1"]));
+            new HashSet<string>(["file-delete-v1", "file-delete-directory-v1", FileGatewaySecurityCapabilities.ProtectedPaths, "file-policy-roots-v1"]));
         var deletion = registry.DeleteDirectoryAsync(client, "/data/empty", new(["/data"]), CancellationToken.None);
         var dispatch = await current.Reader.ReadAsync();
         dispatch.Dispatch.Operation.Should().Be("delete_directory");
@@ -133,8 +155,8 @@ public sealed class AgentFileGatewaySessionRegistryTests
     {
         var client = new ClientKey(3, Guid.NewGuid());
         var connectionId = Guid.NewGuid();
-        var registry = new AgentFileGatewaySessionRegistry(new CurrentPresenceRouter(client, connectionId, 2));
-        using var registration = registry.Register(client, connectionId, 2);
+        var registry = new AgentFileGatewaySessionRegistry(new CurrentPresenceRouter(client, connectionId, 2), FileConfiguration);
+        using var registration = registry.Register(client, connectionId, 2, ProtectedCapabilities);
 
         var read = registry.ReadAsync(client, "/var/log/messages", CancellationToken.None);
         var dispatch = await registration.Reader.ReadAsync();
@@ -159,8 +181,8 @@ public sealed class AgentFileGatewaySessionRegistryTests
     {
         var client = new ClientKey(3, Guid.NewGuid());
         var connectionId = Guid.NewGuid();
-        var registry = new AgentFileGatewaySessionRegistry(new CurrentPresenceRouter(client, connectionId, 2));
-        using var registration = registry.Register(client, connectionId, 2);
+        var registry = new AgentFileGatewaySessionRegistry(new CurrentPresenceRouter(client, connectionId, 2), FileConfiguration);
+        using var registration = registry.Register(client, connectionId, 2, ProtectedCapabilities);
 
         var listing = registry.ListAsync(client, "/missing", 32, CancellationToken.None);
         var dispatch = await registration.Reader.ReadAsync();
@@ -182,8 +204,8 @@ public sealed class AgentFileGatewaySessionRegistryTests
     {
         var client = new ClientKey(3, Guid.NewGuid());
         var connectionId = Guid.NewGuid();
-        var registry = new AgentFileGatewaySessionRegistry(new CurrentPresenceRouter(client, connectionId, 2));
-        using var registration = registry.Register(client, connectionId, 2);
+        var registry = new AgentFileGatewaySessionRegistry(new CurrentPresenceRouter(client, connectionId, 2), FileConfiguration);
+        using var registration = registry.Register(client, connectionId, 2, ProtectedCapabilities);
 
         var read = registry.ReadAsync(client, "/var/log/messages", CancellationToken.None);
         var dispatch = await registration.Reader.ReadAsync();
@@ -212,12 +234,12 @@ public sealed class AgentFileGatewaySessionRegistryTests
     {
         var client = new ClientKey(3, Guid.NewGuid());
         var connectionId = Guid.NewGuid();
-        var registry = new AgentFileGatewaySessionRegistry(new CurrentPresenceRouter(client, connectionId, 2));
+        var registry = new AgentFileGatewaySessionRegistry(new CurrentPresenceRouter(client, connectionId, 2), FileConfiguration);
         using var registration = registry.Register(
             client,
             connectionId,
             2,
-            new HashSet<string>(["file-policy-roots-v1"], StringComparer.Ordinal));
+            new HashSet<string>([FileGatewaySecurityCapabilities.ProtectedPaths, "file-policy-roots-v1"], StringComparer.Ordinal));
 
         var listing = registry.ListAsync(
             client,
@@ -245,8 +267,8 @@ public sealed class AgentFileGatewaySessionRegistryTests
     {
         var client = new ClientKey(3, Guid.NewGuid());
         var connectionId = Guid.NewGuid();
-        var registry = new AgentFileGatewaySessionRegistry(new CurrentPresenceRouter(client, connectionId, 2));
-        using var registration = registry.Register(client, connectionId, 2);
+        var registry = new AgentFileGatewaySessionRegistry(new CurrentPresenceRouter(client, connectionId, 2), FileConfiguration);
+        using var registration = registry.Register(client, connectionId, 2, new HashSet<string>(["file-policy-roots-v1"]));
 
         var action = () => registry.ReadAsync(
             client,
@@ -264,12 +286,12 @@ public sealed class AgentFileGatewaySessionRegistryTests
     {
         var client = new ClientKey(3, Guid.NewGuid());
         var connectionId = Guid.NewGuid();
-        var registry = new AgentFileGatewaySessionRegistry(new CurrentPresenceRouter(client, connectionId, 2));
+        var registry = new AgentFileGatewaySessionRegistry(new CurrentPresenceRouter(client, connectionId, 2), FileConfiguration);
         using var registration = registry.Register(
             client,
             connectionId,
             2,
-            new HashSet<string>(["file-policy-roots-v1", "file-stat-v1"], StringComparer.Ordinal));
+            new HashSet<string>([FileGatewaySecurityCapabilities.ProtectedPaths, "file-policy-roots-v1", "file-stat-v1"], StringComparer.Ordinal));
 
         var stat = registry.StatAsync(
             client,
@@ -306,8 +328,8 @@ public sealed class AgentFileGatewaySessionRegistryTests
     {
         var client = new ClientKey(3, Guid.NewGuid());
         var connectionId = Guid.NewGuid();
-        var registry = new AgentFileGatewaySessionRegistry(new CurrentPresenceRouter(client, connectionId, 2));
-        using var registration = registry.Register(client, connectionId, 2, new HashSet<string>(["file-policy-roots-v1"], StringComparer.Ordinal));
+        var registry = new AgentFileGatewaySessionRegistry(new CurrentPresenceRouter(client, connectionId, 2), FileConfiguration);
+        using var registration = registry.Register(client, connectionId, 2, new HashSet<string>([FileGatewaySecurityCapabilities.ProtectedPaths, "file-policy-roots-v1"], StringComparer.Ordinal));
 
         var action = () => registry.StatAsync(
             client,
@@ -325,12 +347,12 @@ public sealed class AgentFileGatewaySessionRegistryTests
     {
         var client = new ClientKey(3, Guid.NewGuid());
         var connectionId = Guid.NewGuid();
-        var registry = new AgentFileGatewaySessionRegistry(new CurrentPresenceRouter(client, connectionId, 2));
+        var registry = new AgentFileGatewaySessionRegistry(new CurrentPresenceRouter(client, connectionId, 2), FileConfiguration);
         using var registration = registry.Register(
             client,
             connectionId,
             2,
-            new HashSet<string>(["file-policy-roots-v1", "file-create-directory-v1"], StringComparer.Ordinal));
+            new HashSet<string>([FileGatewaySecurityCapabilities.ProtectedPaths, "file-policy-roots-v1", "file-create-directory-v1"], StringComparer.Ordinal));
 
         var create = registry.CreateDirectoryAsync(
             client,
@@ -351,8 +373,8 @@ public sealed class AgentFileGatewaySessionRegistryTests
     {
         var client = new ClientKey(3, Guid.NewGuid());
         var connectionId = Guid.NewGuid();
-        var registry = new AgentFileGatewaySessionRegistry(new CurrentPresenceRouter(client, connectionId, 2));
-        using var registration = registry.Register(client, connectionId, 2, new HashSet<string>(["file-policy-roots-v1"], StringComparer.Ordinal));
+        var registry = new AgentFileGatewaySessionRegistry(new CurrentPresenceRouter(client, connectionId, 2), FileConfiguration);
+        using var registration = registry.Register(client, connectionId, 2, new HashSet<string>([FileGatewaySecurityCapabilities.ProtectedPaths, "file-policy-roots-v1"], StringComparer.Ordinal));
 
         var action = () => registry.CreateDirectoryAsync(
             client,
@@ -370,12 +392,12 @@ public sealed class AgentFileGatewaySessionRegistryTests
     {
         var client = new ClientKey(3, Guid.NewGuid());
         var connectionId = Guid.NewGuid();
-        var registry = new AgentFileGatewaySessionRegistry(new CurrentPresenceRouter(client, connectionId, 2));
+        var registry = new AgentFileGatewaySessionRegistry(new CurrentPresenceRouter(client, connectionId, 2), FileConfiguration);
         using var registration = registry.Register(
             client,
             connectionId,
             2,
-            new HashSet<string>(["file-policy-roots-v1", "file-delete-v1"], StringComparer.Ordinal));
+            new HashSet<string>([FileGatewaySecurityCapabilities.ProtectedPaths, "file-policy-roots-v1", "file-delete-v1"], StringComparer.Ordinal));
 
         var delete = registry.DeleteAsync(
             client,
@@ -396,8 +418,8 @@ public sealed class AgentFileGatewaySessionRegistryTests
     {
         var client = new ClientKey(3, Guid.NewGuid());
         var connectionId = Guid.NewGuid();
-        var registry = new AgentFileGatewaySessionRegistry(new CurrentPresenceRouter(client, connectionId, 2));
-        using var registration = registry.Register(client, connectionId, 2, new HashSet<string>(["file-policy-roots-v1"], StringComparer.Ordinal));
+        var registry = new AgentFileGatewaySessionRegistry(new CurrentPresenceRouter(client, connectionId, 2), FileConfiguration);
+        using var registration = registry.Register(client, connectionId, 2, new HashSet<string>([FileGatewaySecurityCapabilities.ProtectedPaths, "file-policy-roots-v1"], StringComparer.Ordinal));
 
         var action = () => registry.DeleteAsync(
             client,
@@ -419,12 +441,12 @@ public sealed class AgentFileGatewaySessionRegistryTests
     {
         var client = new ClientKey(3, Guid.NewGuid());
         var connectionId = Guid.NewGuid();
-        var registry = new AgentFileGatewaySessionRegistry(new CurrentPresenceRouter(client, connectionId, 2));
+        var registry = new AgentFileGatewaySessionRegistry(new CurrentPresenceRouter(client, connectionId, 2), FileConfiguration);
         using var registration = registry.Register(
             client,
             connectionId,
             2,
-            new HashSet<string>(["file-policy-roots-v1", capability], StringComparer.Ordinal));
+            new HashSet<string>([FileGatewaySecurityCapabilities.ProtectedPaths, "file-policy-roots-v1", capability], StringComparer.Ordinal));
         var accessPolicy = new GatewayFileMoveCopyAccessPolicy(["/var/log"], ["/var/lib/netratel"]);
 
         Task relocation = operationName == "copy"
@@ -450,8 +472,8 @@ public sealed class AgentFileGatewaySessionRegistryTests
     {
         var client = new ClientKey(3, Guid.NewGuid());
         var connectionId = Guid.NewGuid();
-        var registry = new AgentFileGatewaySessionRegistry(new CurrentPresenceRouter(client, connectionId, 2));
-        using var registration = registry.Register(client, connectionId, 2, new HashSet<string>(["file-policy-roots-v1"], StringComparer.Ordinal));
+        var registry = new AgentFileGatewaySessionRegistry(new CurrentPresenceRouter(client, connectionId, 2), FileConfiguration);
+        using var registration = registry.Register(client, connectionId, 2, new HashSet<string>([FileGatewaySecurityCapabilities.ProtectedPaths, "file-policy-roots-v1"], StringComparer.Ordinal));
         var accessPolicy = new GatewayFileMoveCopyAccessPolicy(["/var/log"], ["/var/lib/netratel"]);
 
         var action = () => operationName == "copy"
@@ -468,8 +490,8 @@ public sealed class AgentFileGatewaySessionRegistryTests
     {
         var client = new ClientKey(3, Guid.NewGuid());
         var connectionId = Guid.NewGuid();
-        var registry = new AgentFileGatewaySessionRegistry(new CurrentPresenceRouter(client, connectionId, 2));
-        using var registration = registry.Register(client, connectionId, 2, new HashSet<string>(["file-stat-v1"], StringComparer.Ordinal));
+        var registry = new AgentFileGatewaySessionRegistry(new CurrentPresenceRouter(client, connectionId, 2), FileConfiguration);
+        using var registration = registry.Register(client, connectionId, 2, new HashSet<string>(["file-stat-v1", "file-policy-roots-v1", FileGatewaySecurityCapabilities.ProtectedPaths], StringComparer.Ordinal));
 
         var stat = registry.StatAsync(client, "/var/log/agent.log", CancellationToken.None);
         var dispatch = await registration.Reader.ReadAsync();
@@ -535,8 +557,8 @@ public sealed class AgentFileGatewaySessionRegistryTests
         var firstConnection = Guid.NewGuid();
         var replacementConnection = Guid.NewGuid();
         var presence = new SwitchingPresenceRouter(client, firstConnection, 2);
-        var registry = new AgentFileGatewaySessionRegistry(presence);
-        using var first = registry.Register(client, firstConnection, 2, new HashSet<string>(["file-stat-v1"], StringComparer.Ordinal));
+        var registry = new AgentFileGatewaySessionRegistry(presence, FileConfiguration);
+        using var first = registry.Register(client, firstConnection, 2, ProtectedCapabilities);
 
         var pending = registry.ListAsync(client, "/var/log", 32, CancellationToken.None);
         var firstDispatch = await first.Reader.ReadAsync();
@@ -547,7 +569,7 @@ public sealed class AgentFileGatewaySessionRegistryTests
         }).Should().BeTrue();
 
         presence.SetCurrentFence(replacementConnection, 3);
-        using var replacement = registry.Register(client, replacementConnection, 3, new HashSet<string>(["file-policy-roots-v1"], StringComparer.Ordinal));
+        using var replacement = registry.Register(client, replacementConnection, 3, new HashSet<string>([FileGatewaySecurityCapabilities.ProtectedPaths, "file-policy-roots-v1"], StringComparer.Ordinal));
 
         var assertion = () => pending;
         var failure = await assertion.Should().ThrowAsync<AgentFileGatewaySessionUnavailableException>();
@@ -584,8 +606,8 @@ public sealed class AgentFileGatewaySessionRegistryTests
     {
         var client = new ClientKey(3, Guid.NewGuid());
         var currentConnection = Guid.NewGuid();
-        var registry = new AgentFileGatewaySessionRegistry(new CurrentPresenceRouter(client, currentConnection, 5));
-        using var current = registry.Register(client, currentConnection, 5, new HashSet<string>(["file-stat-v1"], StringComparer.Ordinal));
+        var registry = new AgentFileGatewaySessionRegistry(new CurrentPresenceRouter(client, currentConnection, 5), FileConfiguration);
+        using var current = registry.Register(client, currentConnection, 5, ProtectedCapabilities);
 
         var staleEpoch = () => registry.Register(client, Guid.NewGuid(), 4, new HashSet<string>(StringComparer.Ordinal));
         staleEpoch.Should().Throw<AgentGatewayRegistrationFencedException>();
@@ -611,7 +633,7 @@ public sealed class AgentFileGatewaySessionRegistryTests
         var client = new ClientKey(3, Guid.NewGuid());
         var firstConnection = Guid.NewGuid();
         var replacementConnection = Guid.NewGuid();
-        var registry = new AgentFileGatewaySessionRegistry(new CurrentPresenceRouter(client, replacementConnection, 3));
+        var registry = new AgentFileGatewaySessionRegistry(new CurrentPresenceRouter(client, replacementConnection, 3), FileConfiguration);
         var first = registry.Register(client, firstConnection, 2, new HashSet<string>(StringComparer.Ordinal));
         using var replacement = registry.Register(client, replacementConnection, 3, new HashSet<string>(["file-stat-v1"], StringComparer.Ordinal));
 
@@ -629,9 +651,9 @@ public sealed class AgentFileGatewaySessionRegistryTests
     {
         var client = new ClientKey(3, Guid.NewGuid());
         var connection = Guid.NewGuid();
-        var registry = new AgentFileGatewaySessionRegistry(new CurrentPresenceRouter(client, connection, 5));
-        using var old = registry.Register(client, connection, 5);
-        using var current = registry.Register(client, connection, 5);
+        var registry = new AgentFileGatewaySessionRegistry(new CurrentPresenceRouter(client, connection, 5), FileConfiguration);
+        using var old = registry.Register(client, connection, 5, ProtectedCapabilities);
+        using var current = registry.Register(client, connection, 5, ProtectedCapabilities);
         old.CompletionToken.IsCancellationRequested.Should().BeTrue();
         old.IsCurrent.Should().BeFalse();
         old.Dispose();
@@ -652,7 +674,7 @@ public sealed class AgentFileGatewaySessionRegistryTests
     {
         var client = new ClientKey(3, Guid.NewGuid());
         var connection = Guid.NewGuid();
-        var registry = new AgentFileGatewaySessionRegistry(new CurrentPresenceRouter(client, connection, 5));
+        var registry = new AgentFileGatewaySessionRegistry(new CurrentPresenceRouter(client, connection, 5), FileConfiguration);
         using var candidate = registry.Register(client, connection, 5, new HashSet<string>(), provisional: true);
         registry.GetAvailability(client).Should().BeNull();
         Action dispatch = () => _ = registry.ListAsync(client, "/var/log", 32, CancellationToken.None);
@@ -706,8 +728,8 @@ public sealed class AgentFileGatewaySessionRegistryTests
     {
         var client = new ClientKey(3, Guid.NewGuid());
         var connection = Guid.NewGuid();
-        var registry = new AgentFileGatewaySessionRegistry(new CurrentPresenceRouter(client, connection, 5));
-        using var registration = registry.Register(client, connection, 5);
+        var registry = new AgentFileGatewaySessionRegistry(new CurrentPresenceRouter(client, connection, 5), FileConfiguration);
+        using var registration = registry.Register(client, connection, 5, ProtectedCapabilities);
         var reading = registry.ReadAsync(client, "/data/source", CancellationToken.None);
         var readDispatch = await registration.Reader.ReadAsync();
         registration.TryAccept(new FileRequestAccepted
@@ -744,8 +766,8 @@ public sealed class AgentFileGatewaySessionRegistryTests
     {
         var client = new ClientKey(3, Guid.NewGuid());
         var connection = Guid.NewGuid();
-        var registry = new AgentFileGatewaySessionRegistry(new CurrentPresenceRouter(client, connection, 5));
-        using var registration = registry.Register(client, connection, 5);
+        var registry = new AgentFileGatewaySessionRegistry(new CurrentPresenceRouter(client, connection, 5), FileConfiguration);
+        using var registration = registry.Register(client, connection, 5, ProtectedCapabilities);
         using var operatorCancellation = new CancellationTokenSource();
         var listings = Enumerable.Range(0, 32)
             .Select(index => registry.ListAsync(client, $"/data/{index}", 32, operatorCancellation.Token)).ToArray();
@@ -759,7 +781,7 @@ public sealed class AgentFileGatewaySessionRegistryTests
         started.Elapsed.Should().BeLessThan(AgentFileGatewaySession.CancellationEnqueueTimeout + TimeSpan.FromSeconds(2));
         registration.CompletionToken.IsCancellationRequested.Should().BeTrue();
         registry.GetAvailability(client).Should().BeNull();
-        using var replacement = registry.Register(client, connection, 5);
+        using var replacement = registry.Register(client, connection, 5, ProtectedCapabilities);
         registration.Dispose();
         replacement.IsCurrent.Should().BeTrue();
         var subsequent = registry.ListAsync(client, "/data", 32, CancellationToken.None);

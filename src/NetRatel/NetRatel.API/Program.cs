@@ -1,3 +1,4 @@
+using NetRatel.ServiceDefaults;
 using NetRatel.API.Endpoints.Auth;
 ﻿using NetRatel.API.Endpoints.Client;
 using NetRatel.Infrastructure.Netclaw;
@@ -224,6 +225,7 @@ builder.Services
 builder.Services.AddRateLimiter(rateLimits =>
 {
     rateLimits.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    rateLimits.GlobalLimiter = AgentAuthenticationRequestLimits.CreateRateLimiter();
     rateLimits.AddPolicy("local-login", context =>
         RateLimitPartition.GetFixedWindowLimiter(
             context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
@@ -619,10 +621,10 @@ builder.Services.AddAuthorization(options =>
         policy.AddRequirements(new EffectiveAccessRequirement(NetRatelPermissions.ScriptEdit));
     });
 
-    options.AddPolicy("SecretRevealer", policy =>
+    options.AddPolicy("EventDeliveryManager", policy =>
     {
         policy.RequireAuthenticatedUser();
-        policy.AddRequirements(new EffectiveAccessRequirement(NetRatelPermissions.SecretReveal));
+        policy.AddRequirements(new EffectiveAccessRequirement(NetRatelPermissions.EventDeliveryManage));
     });
 
     options.AddPolicy("AuditReader", policy =>
@@ -1064,6 +1066,7 @@ app.UseExceptionHandler(errorApp =>
         await context.Response.WriteAsJsonAsync(problem);
     });
 });
+app.UseAgentAuthenticationRequestLimits();
 app.UseMiddleware<NetRatel.API.Middleware.ExceptionNotificationMiddleware>();
 app.UseMiddleware<NetRatel.API.Middleware.MonitoringHttpBoundsMiddleware>();
 app.UseMiddleware<NetRatel.API.Middleware.ComputerUseRequestBodyLimitMiddleware>();
@@ -1099,6 +1102,15 @@ try
 catch (Exception ex)
 {
     app.Logger.LogCritical(ex, "Agent-auth signing key probe failed; application will continue serving while token issuance reports the configuration failure.");
+}
+
+// The API owns the data-protection key ring. Protect existing values after schema
+// migration, before requests can read or change secrets.
+await using (var secretMigrationScope = app.Services.CreateAsyncScope())
+{
+    await secretMigrationScope.ServiceProvider
+        .GetRequiredService<NetRatel.Infrastructure.Services.SecretService>()
+        .ProtectLegacyValuesAsync(app.Lifetime.ApplicationStopping);
 }
 
 app.Run();

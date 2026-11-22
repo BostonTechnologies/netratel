@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Configuration;
 using System.Security.Claims;
 using System.Reflection;
 using System.Threading.Channels;
@@ -43,7 +44,7 @@ public sealed class AgentCapabilityGatewayEndToEndTests
         using var call = client.Connect();
 
         await call.RequestStream.WriteAsync(FileFrame(tenantId, agentId, connectionId, epoch, 0,
-            frame => frame.Hello = new AgentFileHello { Capabilities = { "file-list", "file-read", "file-write", "file-stat-v1", "file-create-directory-v1", "file-delete-v1", "file-copy-v1", "file-move-v1", "file-policy-roots-v1", "chunk-sha256" } }));
+            frame => frame.Hello = new AgentFileHello { Capabilities = { "file-list", "file-read", "file-write", "file-stat-v1", "file-create-directory-v1", "file-delete-v1", "file-copy-v1", "file-move-v1", "file-policy-roots-v1", "file-protected-paths-v1", "chunk-sha256" } }));
         (await call.ResponseStream.MoveNext(CancellationToken.None)).Should().BeTrue();
         call.ResponseStream.Current.Accepted.FileAuthority.Should().Be("akka");
 
@@ -399,7 +400,8 @@ public sealed class AgentCapabilityGatewayEndToEndTests
         ulong epoch,
         int renewalIntervalSeconds = 10)
     {
-        var builder = Host.CreateDefaultBuilder();
+        var builder = Host.CreateDefaultBuilder().ConfigureAppConfiguration(config =>
+            config.AddInMemoryCollection(new Dictionary<string, string?> { ["NetRatel:FileGateway:AllowedRoots:0"] = "/tmp" }));
         builder.ConfigureWebHost(web =>
         {
             web.UseTestServer();

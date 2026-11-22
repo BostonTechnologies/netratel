@@ -10,6 +10,7 @@ using NetRatel.AgentClient;
 using NetRatel.Mcp.Core;
 using NetRatel.Mcp.Core.Prompts;
 using NetRatel.Shared.Operations;
+using System.Security.Claims;
 using System.Threading.RateLimiting;
 using System.Text.Json;
 using ModelContextProtocol.Protocol;
@@ -145,12 +146,18 @@ public static class NetRatelMcpHttpApplication
                     httpOptions.RequiredScopes.ToHashSet(StringComparer.Ordinal),
                     httpOptions.RequiredGroups.ToHashSet(StringComparer.Ordinal)));
         }));
-        builder.Services.AddRateLimiter(options => options.AddConcurrencyLimiter(RateLimitPolicy, limiter =>
+        builder.Services.AddRateLimiter(options =>
         {
-            limiter.PermitLimit = 32;
-            limiter.QueueLimit = 64;
-            limiter.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
-        }));
+            options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+            options.AddPolicy(RateLimitPolicy, context => RateLimitPartition.GetConcurrencyLimiter(
+                GetCallerPartition(context, httpOptions.LocalCredentialMode),
+                _ => new ConcurrencyLimiterOptions { PermitLimit = 4, QueueLimit = 0 }));
+            options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(context =>
+                context.GetEndpoint()?.Metadata.GetMetadata<EnableRateLimitingAttribute>()?.PolicyName == RateLimitPolicy
+                    ? RateLimitPartition.GetConcurrencyLimiter(RateLimitPolicy,
+                        _ => new ConcurrencyLimiterOptions { PermitLimit = 32, QueueLimit = 0 })
+                    : RateLimitPartition.GetNoLimiter("other"));
+        });
         builder.Services.AddSingleton<McpToolInvocationAudit>();
         builder.Services.AddSingleton<McpOperationScopeAuthorization>();
         var httpTools = NetRatelMcpToolDefinitions.CreateForHttp(hostContext);
@@ -242,17 +249,30 @@ public static class NetRatelMcpHttpApplication
 
             await next(context);
         });
-        app.UseRateLimiter();
         if (runtime.Options.LocalCredentialMode)
             app.Use((context, next) => McpLocalCredentialExchangeFailureResponses.InvokeAsync(context, next));
         app.UseAuthentication();
         app.UseAuthorization();
+        app.UseRateLimiter();
         app.MapHealthChecks("/health/live", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions { Predicate = check => check.Tags.Contains("live") });
         app.MapHealthChecks("/health/ready");
         if (runtime.ProtectedResourceMetadata is not null)
             app.MapGet("/.well-known/oauth-protected-resource/mcp", () => Results.Json(runtime.ProtectedResourceMetadata)).AllowAnonymous();
         app.MapMcpReviewedSetup(runtime.Options.LocalCredentialMode);
         app.MapMcp("/mcp").RequireAuthorization(PolicyName).RequireRateLimiting(RateLimitPolicy);
+    }
+
+    private static (string Kind, string Issuer, string Id) GetCallerPartition(HttpContext context, bool localCredentialMode)
+    {
+        if (localCredentialMode && context.User.FindFirstValue("netratel_integration_credential_id") is { Length: > 0 } credential)
+            return ("credential", "", credential);
+
+        var subject = context.User.FindFirstValue("sub") ?? context.User.FindFirstValue(ClaimTypes.NameIdentifier);
+        var issuer = context.User.FindFirstValue("iss");
+        if (!string.IsNullOrEmpty(subject) && !string.IsNullOrEmpty(issuer))
+            return ("subject", issuer, subject);
+
+        return ("network", "", context.Connection.RemoteIpAddress?.MapToIPv6().ToString() ?? "unknown");
     }
 
     private static void Copy(NetRatelMcpHttpOptions source, NetRatelMcpHttpOptions destination)

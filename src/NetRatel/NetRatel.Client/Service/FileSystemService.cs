@@ -1,5 +1,6 @@
 // .Client/Services/FileSystemService.cs
 using NetRatel.Client.Service.Logging;
+using NetRatel.Client.Service.Gateway;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -173,14 +174,15 @@ namespace NetRatel.Client.Services
             string path, IReadOnlyList<string> allowedRoots, bool requireExisting, out string resolvedPath)
         {
             resolvedPath = string.Empty;
-            if (string.IsNullOrWhiteSpace(path) || allowedRoots is null || allowedRoots.Count is 0 or > 64)
+            if (string.IsNullOrWhiteSpace(path) || allowedRoots is null || allowedRoots.Count is 0 or > 64 ||
+                AgentFileProtectedPaths.IsProtected(path))
                 return GatewayPathResolution.Denied;
 
             var failure = GatewayPathResolution.Denied;
             foreach (var root in allowedRoots)
             {
                 var result = ResolveGatewayPathUnderRoot(path, root, requireExisting, out resolvedPath);
-                if (result == GatewayPathResolution.Resolved) return result;
+                if (result == GatewayPathResolution.Resolved && !AgentFileProtectedPaths.IsProtected(resolvedPath)) return result;
                 if (result == GatewayPathResolution.Missing) failure = result;
             }
 
@@ -197,6 +199,9 @@ namespace NetRatel.Client.Services
             try
             {
                 var target = Path.TrimEndingDirectorySeparator(Path.GetFullPath(resolvedPath));
+                if (AgentFileProtectedPaths.IsProtected(target, includeAncestor: true))
+                    return false;
+
                 var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
                 if (string.Equals(target, Path.TrimEndingDirectorySeparator(Path.GetPathRoot(target) ?? target), comparison))
                     return false;
@@ -235,11 +240,12 @@ namespace NetRatel.Client.Services
             {
                 var requestedPath = Path.GetFullPath(path);
                 var configuredRoot = Path.GetFullPath(root);
-                if (!IsPathWithin(requestedPath, configuredRoot) ||
-                    !TryResolveExistingPath(configuredRoot, out var physicalRoot) ||
-                    !Directory.Exists(physicalRoot))
+                if (!IsPathWithin(requestedPath, configuredRoot) || AgentFileProtectedPaths.IsProtected(configuredRoot) ||
+                    !IsPhysicalDirectory(configuredRoot) ||
+                    (OperatingSystem.IsWindows() && NativeFileOperations.IsProtectedWindowsPath(configuredRoot)))
                     return GatewayPathResolution.Denied;
 
+                var physicalRoot = configuredRoot;
                 var relative = Path.GetRelativePath(configuredRoot, requestedPath);
                 if (relative == ".")
                 {
@@ -258,7 +264,9 @@ namespace NetRatel.Client.Services
                     try
                     {
                         // Exists() also returns false for permission and IO failures.
-                        _ = File.GetAttributes(candidate);
+                        if ((File.GetAttributes(candidate) & FileAttributes.ReparsePoint) != 0 ||
+                            (OperatingSystem.IsWindows() && NativeFileOperations.IsProtectedWindowsPath(candidate)))
+                            return GatewayPathResolution.Denied;
                     }
                     catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
                     {
@@ -270,9 +278,9 @@ namespace NetRatel.Client.Services
                         return GatewayPathResolution.Resolved;
                     }
 
-                    if (!TryResolveExistingPath(candidate, out current) || !IsPathWithin(current, physicalRoot) ||
-                        index < components.Length - 1 && !Directory.Exists(current))
+                    if (index < components.Length - 1 && !Directory.Exists(candidate))
                         return GatewayPathResolution.Denied;
+                    current = candidate;
                 }
 
                 resolvedPath = current;
@@ -284,42 +292,17 @@ namespace NetRatel.Client.Services
             }
         }
 
-        private static bool TryResolveExistingPath(string path, out string resolvedPath)
+        // Check the configured root's ancestors as well as the request's
+        // components. Opening through a reparse point would change the boundary.
+        private static bool IsPhysicalDirectory(string path)
         {
-            resolvedPath = string.Empty;
-            FileSystemInfo? current = Directory.Exists(path)
-                ? new DirectoryInfo(path)
-                : File.Exists(path)
-                    ? new FileInfo(path)
-                    : null;
-            if (current is null)
+            for (var directory = new DirectoryInfo(path); directory is not null; directory = directory.Parent)
             {
-                return false;
-            }
-
-            for (var remainingLinks = 32; remainingLinks > 0; remainingLinks--)
-            {
-                if (current.LinkTarget is null)
-                {
-                    try
-                    {
-                        resolvedPath = Path.GetFullPath(current.FullName);
-                        return true;
-                    }
-                    catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
-                    {
-                        return false;
-                    }
-                }
-
-                current = current.ResolveLinkTarget(returnFinalTarget: true);
-                if (current is null)
-                {
+                if (!directory.Exists || (directory.Attributes & FileAttributes.ReparsePoint) != 0)
                     return false;
-                }
             }
 
-            return false;
+            return true;
         }
 
         private static bool IsPathWithin(string path, string root)

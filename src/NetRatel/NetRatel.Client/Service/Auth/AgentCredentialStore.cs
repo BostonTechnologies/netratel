@@ -291,6 +291,8 @@ public sealed partial class AgentCredentialStore : IAgentCredentialStore, IAgent
                 string.IsNullOrWhiteSpace(journal.Exchange.AgentId) || string.IsNullOrWhiteSpace(journal.Exchange.ParentRefreshToken) ||
                 string.IsNullOrWhiteSpace(journal.Exchange.DeviceKeyHash) || journal.Exchange.RequestedScopes is null)
                 throw new AgentCredentialStoreException("Protected native refresh exchange is invalid; its bytes were preserved.");
+            if (IsLegacyUnixPayload(bytes))
+                await WriteExchangeJournalAsync(journal, ct).ConfigureAwait(false);
             return journal;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or CryptographicException or JsonException)
@@ -322,19 +324,7 @@ public sealed partial class AgentCredentialStore : IAgentCredentialStore, IAgent
             return ProtectedData.Protect(plaintext, protection.Entropy, DataProtectionScope.CurrentUser);
         }
 
-        using var aes = Aes.Create();
-        aes.Key = DeriveAesKey(protection);
-        aes.GenerateIV();
-        aes.Mode = CipherMode.CBC;
-        aes.Padding = PaddingMode.PKCS7;
-
-        using var encryptor = aes.CreateEncryptor();
-        var cipher = encryptor.TransformFinalBlock(plaintext, 0, plaintext.Length);
-
-        var output = new byte[aes.IV.Length + cipher.Length];
-        Buffer.BlockCopy(aes.IV, 0, output, 0, aes.IV.Length);
-        Buffer.BlockCopy(cipher, 0, output, aes.IV.Length, cipher.Length);
-        return output;
+        return ProtectUnix(plaintext, protection);
     }
 
     private byte[] Unprotect(byte[] ciphertext, CredentialProtectionProfile protection)
@@ -344,6 +334,11 @@ public sealed partial class AgentCredentialStore : IAgentCredentialStore, IAgent
             return ProtectedData.Unprotect(ciphertext, protection.Entropy, DataProtectionScope.CurrentUser);
         }
 
+        if (!IsLegacyUnixPayload(ciphertext))
+            return UnprotectUnix(ciphertext, protection);
+
+        // Read-only compatibility for released installations. A successfully
+        // decoded record is immediately rewritten in the authenticated format.
         using var aes = Aes.Create();
         aes.Key = DeriveAesKey(protection);
         aes.Mode = CipherMode.CBC;
@@ -402,55 +397,6 @@ public sealed partial class AgentCredentialStore : IAgentCredentialStore, IAgent
         // Docker hostname. Retain that read behavior just long enough to migrate a
         // live installation after it has successfully decrypted its credentials.
         return _machineNameProvider();
-    }
-
-    private async Task EnsurePersistentContainerMachineIdentityAsync(CancellationToken ct)
-    {
-        if (!UsesPersistentContainerMachineIdentity() ||
-            !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(CredentialMachineIdentityEnvironmentVariable)))
-        {
-            return;
-        }
-
-        var identityPath = GetCredentialMachineIdentityPath();
-        if (File.Exists(identityPath))
-        {
-            return;
-        }
-
-        var directory = Path.GetDirectoryName(identityPath)!;
-        Directory.CreateDirectory(directory);
-
-        var generated = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
-        var temporaryPath = $"{identityPath}.{Guid.NewGuid():N}.tmp";
-        try
-        {
-            await File.WriteAllTextAsync(temporaryPath, generated, Encoding.UTF8, ct).ConfigureAwait(false);
-            TryTightenPermissions(temporaryPath);
-
-            try
-            {
-                File.Move(temporaryPath, identityPath, overwrite: false);
-            }
-            catch (IOException) when (File.Exists(identityPath))
-            {
-                // Another process completed the same one-time initialization.
-                // Validate its output instead of silently accepting a partial file.
-                if (string.IsNullOrWhiteSpace(File.ReadAllText(identityPath).Trim()))
-                {
-                    throw new InvalidOperationException($"NetRatel credential machine identity at '{identityPath}' is empty.");
-                }
-            }
-        }
-        finally
-        {
-            if (File.Exists(temporaryPath))
-            {
-                File.Delete(temporaryPath);
-            }
-        }
-
-        TryTightenPermissions(identityPath);
     }
 
     private bool UsesPersistentContainerMachineIdentity() =>
@@ -581,15 +527,8 @@ public sealed partial class AgentCredentialStore : IAgentCredentialStore, IAgent
             var current = TryDeserialize(encrypted, CurrentProtection);
             if (current is not null)
             {
-                if (UsesPersistentContainerMachineIdentity() &&
-                    string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(CredentialMachineIdentityEnvironmentVariable)) &&
-                    !File.Exists(GetCredentialMachineIdentityPath()))
-                {
-                    // The payload was successfully read using the legacy container
-                    // hostname contract. Rewrite it once under a stable identity
-                    // before a future recreate gives the container a new hostname.
+                if (IsLegacyUnixPayload(encrypted))
                     await WritePayloadAsync(current, ct).ConfigureAwait(false);
-                }
 
                 return current;
             }
@@ -720,7 +659,6 @@ public sealed partial class AgentCredentialStore : IAgentCredentialStore, IAgent
 
     private async Task WriteProtectedFileAsync(string path, byte[] plaintext, CredentialProtectionProfile protection, CancellationToken ct)
     {
-        await EnsurePersistentContainerMachineIdentityAsync(ct).ConfigureAwait(false);
         var encrypted = ProtectForPurpose(plaintext, protection);
         var directory = Path.GetDirectoryName(path);
         if (!string.IsNullOrWhiteSpace(directory))

@@ -7,6 +7,7 @@ using System.Runtime.Versioning;
 using System.Security.Principal;
 using System.Text;
 using Microsoft.Win32.SafeHandles;
+using NetRatel.Client.Service.RemoteDesktop;
 
 namespace NetRatel.Client.Service.ComputerUse;
 
@@ -14,17 +15,49 @@ namespace NetRatel.Client.Service.ComputerUse;
 [SupportedOSPlatform("windows")]
 internal static class ComputerUsePipeSecurity
 {
-    internal static bool IsVerifiedHelper(NamedPipeServerStream pipe, int claimedPid, int claimedSessionId)
+    internal static VerifiedRemoteSupportHelper? GetVerifiedHelper(NamedPipeServerStream pipe)
     {
-        if (!GetNamedPipeClientProcessId(pipe.SafePipeHandle, out var peerPid) || peerPid != claimedPid)
-            return false;
-        return IsOurExecutable(checked((int)peerPid), claimedSessionId);
+        if (!GetNamedPipeClientProcessId(pipe.SafePipeHandle, out var peerPid) || peerPid > int.MaxValue)
+            return null;
+
+        try
+        {
+            using var process = Process.GetProcessById((int)peerPid);
+            var sessionId = process.SessionId;
+            if (sessionId <= 0 || !IsOurExecutable(process.Id, sessionId))
+                return null;
+
+            using var handle = OpenProcess(0x1000, false, peerPid);
+            if (handle.IsInvalid || !OpenProcessToken(handle, 0x0008, out var processToken))
+                return null;
+
+            using (processToken)
+            {
+                if (!WTSQueryUserToken(checked((uint)sessionId), out var sessionToken))
+                    return null;
+
+                using (sessionToken)
+                using (var owner = new WindowsIdentity(processToken.DangerousGetHandle()))
+                using (var sessionUser = new WindowsIdentity(sessionToken.DangerousGetHandle()))
+                {
+                    var sid = owner.User;
+                    return sid is not null && sid.Equals(sessionUser.User)
+                        ? new VerifiedRemoteSupportHelper(process.Id, sessionId, sid.Value)
+                        : null;
+                }
+            }
+        }
+        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or
+            System.ComponentModel.Win32Exception or System.Security.SecurityException or IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
     }
 
     internal static bool IsVerifiedService(NamedPipeClientStream pipe)
     {
         if (!GetNamedPipeServerProcessId(pipe.SafePipeHandle, out var peerPid)) return false;
-        return IsOurExecutable(checked((int)peerPid), 0) && IsInstalledSystemService(peerPid);
+        return peerPid <= int.MaxValue && IsOurExecutable((int)peerPid, 0) && IsInstalledSystemService(peerPid);
     }
 
     private static bool IsOurExecutable(int pid, int expectedSession)
@@ -42,7 +75,7 @@ internal static class ComputerUsePipeSecurity
                 return false;
             return true;
         }
-        catch (Exception exception) when (exception is System.ComponentModel.Win32Exception or InvalidOperationException or System.Security.SecurityException or IOException)
+        catch (Exception exception) when (exception is ArgumentException or System.ComponentModel.Win32Exception or InvalidOperationException or System.Security.SecurityException or IOException)
         {
             return false;
         }
@@ -99,6 +132,14 @@ internal static class ComputerUsePipeSecurity
     private static extern bool GetNamedPipeServerProcessId(SafePipeHandle pipe, out uint processId);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern SafeProcessHandle OpenProcess(uint access, [MarshalAs(UnmanagedType.Bool)] bool inherit, uint pid);
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool QueryFullProcessImageName(SafeProcessHandle process, int flags, StringBuilder image, ref int size);
+    [DllImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool OpenProcessToken(SafeProcessHandle process, uint desiredAccess, out SafeAccessTokenHandle token);
+
+    [DllImport("wtsapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool WTSQueryUserToken(uint sessionId, out SafeAccessTokenHandle token);
+
     [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern IntPtr OpenSCManager(string? machineName, string? databaseName, uint access);
     [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern IntPtr OpenService(IntPtr manager, string serviceName, uint access);
     [DllImport("advapi32.dll", SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool QueryServiceStatusEx(IntPtr service, int level, out ServiceStatusProcess status, int size, out int needed);

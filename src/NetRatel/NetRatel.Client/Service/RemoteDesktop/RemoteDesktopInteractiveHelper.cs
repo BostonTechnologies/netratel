@@ -81,8 +81,11 @@ internal static class RemoteDesktopInteractiveHelper
                 await pipe.ConnectAsync(15000, ct).ConfigureAwait(false);
                 LogManager.WriteLog($"[RemoteDesktopHelper] helper_pipe_connected path={RemoteDesktopUserHelperConstants.FullPipePath}");
 
-                using var reader = new StreamReader(pipe, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, bufferSize: StreamBufferBytes, leaveOpen: true);
-                await using var writer = new StreamWriter(pipe, Encoding.UTF8, bufferSize: StreamBufferBytes, leaveOpen: true) { AutoFlush = true };
+                if (!ComputerUsePipeSecurity.IsVerifiedService(pipe))
+                    throw new IOException("The desktop helper could not verify the installed service peer.");
+
+                var reader = new BoundedHelperPipeReader(pipe);
+                await using var writer = new StreamWriter(pipe, new UTF8Encoding(false), bufferSize: 4096, leaveOpen: true) { AutoFlush = true };
                 var writerSync = new object();
                 using var connectionCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 await WriteMessageAsync(
@@ -102,7 +105,7 @@ internal static class RemoteDesktopInteractiveHelper
                 var heartbeatTask = Task.Run(() => HeartbeatLoopAsync(writer, writerSync, connectionCts.Token), connectionCts.Token);
                 try
                 {
-                    await RunResidentControlLoopAsync(reader, writer, writerSync, ComputerUsePipeSecurity.IsVerifiedService(pipe), connectionCts.Token).ConfigureAwait(false);
+                    await RunResidentControlLoopAsync(reader, writer, writerSync, connectionCts.Token).ConfigureAwait(false);
                 }
                 finally
                 {
@@ -149,10 +152,9 @@ internal static class RemoteDesktopInteractiveHelper
 
     [SupportedOSPlatform("windows")]
     private static async Task RunResidentControlLoopAsync(
-        StreamReader reader,
+        BoundedHelperPipeReader reader,
         StreamWriter writer,
         object writerSync,
-        bool computerUseServiceVerified,
         CancellationToken ct)
     {
         CancellationTokenSource? captureCts = null;
@@ -160,7 +162,7 @@ internal static class RemoteDesktopInteractiveHelper
         ComputerUseInteractiveHost? computerUse = null;
         using var remoteSupport = new RemoteSupportInteractiveWebRtcManager(beforeManualInput: () => computerUse?.RevokeAllAsync() ?? Task.CompletedTask);
         var legacyManualController = 0;
-        await using var computerUseHost = ComputerUseInteractiveHost.Create(computerUseServiceVerified,
+        await using var computerUseHost = ComputerUseInteractiveHost.Create(trustedService: true,
             () => remoteSupport.HasManualController || Volatile.Read(ref legacyManualController) != 0);
         computerUse = computerUseHost;
         List<Task> computerUseTasks = [];
@@ -169,7 +171,8 @@ internal static class RemoteDesktopInteractiveHelper
         {
             while (!ct.IsCancellationRequested)
             {
-                var line = await reader.ReadLineAsync(ct).ConfigureAwait(false);
+                var line = await reader.ReadAsync(BoundedHelperPipeReader.MaximumMessageBytes,
+                    Timeout.InfiniteTimeSpan, ct).ConfigureAwait(false);
                 if (line is null)
                 {
                     return;
@@ -729,7 +732,7 @@ internal static class RemoteDesktopInteractiveHelper
         int Width,
         int Height);
 
-    private static string GetHelperVersion()
+    internal static string GetHelperVersion()
     {
         var assembly = Assembly.GetEntryAssembly() ?? typeof(RemoteDesktopInteractiveHelper).Assembly;
         return assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion

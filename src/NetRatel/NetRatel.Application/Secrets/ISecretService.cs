@@ -9,6 +9,14 @@ public sealed record SecretInfo(
     DateTimeOffset CreatedAtUtc,
     DateTimeOffset UpdatedAtUtc);
 
+public sealed record SecretMetadata(
+    int Id,
+    int? TenantId,
+    string? ClientIdentity,
+    string? Description,
+    DateTimeOffset CreatedAtUtc,
+    DateTimeOffset UpdatedAtUtc);
+
 public sealed record CreateSecretCommand(
     int? TenantId,
     string? ClientIdentity,
@@ -22,9 +30,9 @@ public sealed record UpdateSecretCommand(
 
 public interface ISecretService
 {
-    Task<IReadOnlyList<SecretInfo>> ListAsync(CancellationToken ct = default);
-    Task<SecretInfo?> GetAsync(int id, CancellationToken ct = default);
-    Task<SecretInfo> CreateAsync(CreateSecretCommand command, CancellationToken ct = default);
-    Task<SecretInfo?> UpdateAsync(UpdateSecretCommand command, CancellationToken ct = default);
-    Task<SecretInfo?> DeleteAsync(int id, CancellationToken ct = default);
+    Task<IReadOnlyList<SecretInfo>> ListAsync(int[]? authorizedTenantIds, CancellationToken ct = default);
+    Task<SecretInfo?> GetAsync(int id, int[]? authorizedTenantIds, CancellationToken ct = default);
+    Task<SecretMetadata> CreateAsync(CreateSecretCommand command, CancellationToken ct = default);
+    Task<SecretMetadata?> UpdateAsync(UpdateSecretCommand command, int[]? authorizedTenantIds, CancellationToken ct = default);
+    Task<SecretMetadata?> DeleteAsync(int id, int[]? authorizedTenantIds, CancellationToken ct = default);
 }

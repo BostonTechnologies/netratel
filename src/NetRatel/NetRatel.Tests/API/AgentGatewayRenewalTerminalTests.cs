@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Configuration;
 using System.Collections.Concurrent;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -197,7 +198,13 @@ public sealed class AgentGatewayRenewalTerminalTests(ITestOutputHelper output)
         services.AddSingleton<IAgentTerminalSessionRegistry>(provider =>
             new AgentTerminalSessionRegistry(provider.GetRequiredService<TimeProvider>(), new RecordingRealtimeFanoutSink()));
         services.AddSingleton(NullLogger<AgentTerminalGatewayService>.Instance);
-        services.AddSingleton<IAgentFileGatewaySessionRegistry, AgentFileGatewaySessionRegistry>();
+        services.AddSingleton<IAgentFileGatewaySessionRegistry>(provider =>
+            new AgentFileGatewaySessionRegistry(provider.GetRequiredService<IClientPresenceRouter>(),
+                new Microsoft.Extensions.Configuration.ConfigurationBuilder()
+                    .AddInMemoryCollection(new Dictionary<string, string?>
+                    {
+                        ["NetRatel:FileGateway:AllowedRoots:0"] = Path.GetTempPath()
+                    }).Build()));
         services.AddSingleton(NullLogger<AgentFileGatewayService>.Instance);
     }
 

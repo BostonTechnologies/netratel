@@ -205,10 +205,11 @@ public sealed class AgentFileGatewayOperationException(string code, long affecte
     public long AffectedEntries { get; } = affectedEntries;
 }
 
-public sealed class AgentFileGatewaySessionRegistry(IClientPresenceRouter presenceRouter)
+public sealed class AgentFileGatewaySessionRegistry(IClientPresenceRouter presenceRouter, IConfiguration? configuration = null)
     : IAgentFileGatewaySessionRegistry
 {
     private const int MaximumPageSize = 256;
+    private readonly IReadOnlyList<string> _configuredRoots = GatewayFileRootPolicy.ReadConfiguredRoots(configuration);
     private readonly ConcurrentDictionary<ClientKey, AgentFileGatewaySession> _sessions = new();
 
     public AgentFileGatewayRegistration Register(ClientKey client, Guid connectionId, ulong connectionEpoch) =>
@@ -228,6 +229,7 @@ public sealed class AgentFileGatewaySessionRegistry(IClientPresenceRouter presen
             connectionId,
             connectionEpoch,
             presenceRouter,
+            _configuredRoots,
             capabilities.Contains("file-policy-roots-v1"),
             capabilities.Contains("file-stat-v1"),
             capabilities.Contains("file-create-directory-v1"),
@@ -484,6 +486,7 @@ internal sealed class AgentFileGatewaySession(
     Guid connectionId,
     ulong connectionEpoch,
     IClientPresenceRouter presenceRouter,
+    IReadOnlyList<string> configuredRoots,
     bool supportsPolicyRoots,
     bool supportsStat,
     bool supportsCreateDirectory,
@@ -1074,15 +1077,26 @@ internal sealed class AgentFileGatewaySession(
         CancellationToken cancellationToken,
         FileRequestDispatch? options = null)
     {
-        if ((accessPolicy is { AllowedRoots.Count: > 0 } ||
-                moveCopyAccessPolicy is { SourceAllowedRoots.Count: > 0, DestinationAllowedRoots.Count: > 0 }) &&
-            !supportsPolicyRoots)
-        {
+        RequireCapability(FileGatewaySecurityCapabilities.ProtectedPaths);
+        if (!supportsPolicyRoots)
             throw new AgentFileGatewayOperationException("capability_unavailable");
-        }
 
-        if (moveCopyAccessPolicy is not null &&
-            (string.IsNullOrWhiteSpace(destinationPath) || moveCopyAccessPolicy.SourceAllowedRoots.Count == 0 || moveCopyAccessPolicy.DestinationAllowedRoots.Count == 0))
+        var isRelocation = operation is "copy" or "move" or "move_entry";
+        var roots = operation == "roots" ? configuredRoots :
+            isRelocation ? [] : GatewayFileRootPolicy.AdmitPath(path, configuredRoots, accessPolicy?.AllowedRoots);
+        IReadOnlyList<string> sourceRoots = [];
+        IReadOnlyList<string> destinationRoots = [];
+        if (isRelocation)
+        {
+            if (moveCopyAccessPolicy is null)
+                throw new AgentFileGatewayOperationException("access_denied");
+
+            sourceRoots = GatewayFileRootPolicy.AdmitPath(path, configuredRoots, moveCopyAccessPolicy.SourceAllowedRoots);
+            destinationRoots = GatewayFileRootPolicy.AdmitPath(destinationPath ?? "", configuredRoots, moveCopyAccessPolicy.DestinationAllowedRoots);
+            if (sourceRoots.Count == 0 || destinationRoots.Count == 0)
+                throw new AgentFileGatewayOperationException("access_denied");
+        }
+        else if (roots.Count == 0)
         {
             throw new AgentFileGatewayOperationException("access_denied");
         }
@@ -1103,10 +1117,10 @@ internal sealed class AgentFileGatewaySession(
             dispatch.Operation = operation;
             dispatch.Path = path;
             dispatch.PageSize = checked((uint)pageSize);
-            dispatch.AllowedRoots.Add(accessPolicy?.AllowedRoots ?? []);
+            dispatch.AllowedRoots.Add(roots);
             dispatch.DestinationPath = destinationPath ?? string.Empty;
-            dispatch.SourceAllowedRoots.Add(moveCopyAccessPolicy?.SourceAllowedRoots ?? []);
-            dispatch.DestinationAllowedRoots.Add(moveCopyAccessPolicy?.DestinationAllowedRoots ?? []);
+            dispatch.SourceAllowedRoots.Add(sourceRoots);
+            dispatch.DestinationAllowedRoots.Add(destinationRoots);
             await WriteOutboundAsync(new GatewayFileFrame
             {
                 ProtocolVersion = "1.0",

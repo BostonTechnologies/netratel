@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Npgsql;
+using NetRatel.API.Security;
 using NetRatel.Application.Agents;
 using NetRatel.Application.Events;
 using NetRatel.Infrastructure.Persistence;
@@ -179,13 +180,15 @@ public static class AuthEndpoints
             }
         })
         .RequireAuthorization("Operator")
+        .AddEndpointFilter(LocalCookieMutationFilter.InvokeAsync)
         .Produces(StatusCodes.Status204NoContent)
         .ProducesProblem(StatusCodes.Status400BadRequest)
         .ProducesProblem(StatusCodes.Status404NotFound);
 
         var adminGroup = app.MapGroup("/api/v1/tenants/{tenantId:int}/agents")
             .WithTags("Agent Admin")
-            .RequireAuthorization("ClientManager");
+            .RequireAuthorization("ClientManager")
+            .AddEndpointFilter(LocalCookieMutationFilter.InvokeAsync);
 
         adminGroup.MapGet(string.Empty, async (
             int tenantId,
@@ -254,7 +257,8 @@ public static class AuthEndpoints
 
         var enrollmentGroup = app.MapGroup("/api/v1/tenants/{tenantId:int}/enrollment-codes")
             .WithTags("Enrollment Codes")
-            .RequireAuthorization("ClientManager");
+            .RequireAuthorization("ClientManager")
+            .AddEndpointFilter(LocalCookieMutationFilter.InvokeAsync);
 
         enrollmentGroup.MapPost(string.Empty, async (
             int tenantId,

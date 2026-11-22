@@ -84,7 +84,8 @@ public static class DependencyInjection
         services.AddScoped<NetRatel.Application.Flows.IFlowExecutionDefinitionCatalog, NetRatel.Infrastructure.Flows.FlowExecutionDefinitionCatalog>();
         services.AddScoped<IRequestService, RequestService>();
         services.AddScoped<ITenantService, TenantService>();
-        services.AddScoped<ISecretService, SecretService>();
+        services.AddScoped<SecretService>();
+        services.AddScoped<ISecretService>(provider => provider.GetRequiredService<SecretService>());
         services.AddScoped<IScriptService, ScriptService>();
 
         services.AddScoped<IM2MConnectivityService, NetRatel.Infrastructure.SystemPairing.PairingConnectivityService>();

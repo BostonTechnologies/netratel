@@ -39,12 +39,15 @@ public sealed class EnrollmentService : IEnrollmentService
 
     public async Task<AgentEnrollResponse> EnrollAsync(AgentEnrollRequest request, CancellationToken ct)
     {
+        AgentAuthenticationRequestValidation.ValidateEnrollment(request);
         if (string.IsNullOrWhiteSpace(request.EnrollmentCode))
         {
             throw new AgentAuthException(400, "Enrollment code is required.");
         }
 
         var normalizedCode = EnrollmentCodeLookup.Normalize(request.EnrollmentCode);
+        if (normalizedCode.Any(character => !char.IsAsciiLetterOrDigit(character) && character is not ('-' or '_')))
+            throw new AgentAuthException(400, "Enrollment code format is invalid.");
         var installation = AgentInstallationIdentity.Parse(request.PublicKey, request.KeyAlgorithm);
         var enrollmentGate = EnrollmentGates[GetEnrollmentGateIndex(installation.Fingerprint)];
         await enrollmentGate.WaitAsync(ct).ConfigureAwait(false);
