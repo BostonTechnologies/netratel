@@ -7,6 +7,8 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.FileProviders;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
 using NetRatel.Web.Services.Authentication;
 using Xunit;
@@ -50,6 +52,54 @@ public sealed class OidcSessionRefreshTests
         Assert.Equal("new-refresh-token", authentication.LastSignInProperties.GetTokenValue("refresh_token"));
         Assert.True(authentication.LastSignInProperties.IsPersistent);
         Assert.True(authentication.LastSignInProperties.ExpiresUtc > DateTimeOffset.UtcNow.AddHours(7));
+    }
+
+    [Theory]
+    [InlineData("Production", false)]
+    [InlineData("Development", true)]
+    public async Task Http_Token_Endpoint_Requires_Development_And_Explicit_Opt_Out(
+        string environmentName,
+        bool requireHttpsMetadata)
+    {
+        var (context, authentication) = CreateContext(
+            "old-access-token", DateTimeOffset.UtcNow.AddMinutes(2), "protected-refresh-token");
+        var handler = new RecordingHandler(_ => JsonResponse("""
+            { "access_token": "unexpected-access-token", "refresh_token": "unexpected-refresh-token", "expires_in": 3600 }
+            """));
+        var service = CreateService(
+            new StubHttpClientFactory(handler),
+            context,
+            tokenEndpoint: "http://issuer.example.invalid/oauth/token",
+            environmentName: environmentName,
+            requireHttpsMetadata: requireHttpsMetadata);
+
+        var renewed = await service.TryRefreshSessionAsync(context, await context.AuthenticateAsync());
+
+        Assert.False(renewed);
+        Assert.Equal(0, handler.RequestCount);
+        Assert.Null(authentication.LastSignInProperties);
+    }
+
+    [Fact]
+    public async Task Development_Http_Token_Endpoint_With_Explicit_Opt_Out_Can_Refresh()
+    {
+        var (context, authentication) = CreateContext(
+            "old-access-token", DateTimeOffset.UtcNow.AddMinutes(2), "development-refresh-token");
+        var handler = new RecordingHandler(_ => JsonResponse("""
+            { "access_token": "new-access-token", "refresh_token": "new-refresh-token", "expires_in": 3600 }
+            """));
+        var service = CreateService(
+            new StubHttpClientFactory(handler),
+            context,
+            tokenEndpoint: "http://issuer.example.invalid/oauth/token",
+            environmentName: Environments.Development,
+            requireHttpsMetadata: false);
+
+        var renewed = await service.TryRefreshSessionAsync(context, await context.AuthenticateAsync());
+
+        Assert.True(renewed);
+        Assert.Equal(1, handler.RequestCount);
+        Assert.Equal("new-refresh-token", authentication.LastSignInProperties?.GetTokenValue("refresh_token"));
     }
 
     [Fact]
@@ -118,7 +168,12 @@ public sealed class OidcSessionRefreshTests
         Assert.True(validationContext.ShouldRenew);
     }
 
-    private static TokenService CreateService(IHttpClientFactory factory, HttpContext? context = null)
+    private static TokenService CreateService(
+        IHttpClientFactory factory,
+        HttpContext? context = null,
+        string tokenEndpoint = "https://issuer.example.invalid/oauth/token",
+        string? environmentName = null,
+        bool requireHttpsMetadata = true)
     {
         var accessor = new HttpContextAccessor { HttpContext = context };
         var configuration = new ConfigurationBuilder()
@@ -126,15 +181,17 @@ public sealed class OidcSessionRefreshTests
             {
                 ["OIDC_CLIENT_SECRET"] = "test-secret",
                 ["Authentication:Oidc:Authority"] = "https://issuer.example.invalid",
-                ["Authentication:Oidc:TokenEndpoint"] = "https://issuer.example.invalid/oauth/token",
+                ["Authentication:Oidc:TokenEndpoint"] = tokenEndpoint,
                 ["Authentication:Oidc:ClientId"] = "test-client",
-                ["Authentication:Oidc:ApiScope"] = "netratel.api"
+                ["Authentication:Oidc:ApiScope"] = "netratel.api",
+                ["Authentication:Oidc:RequireHttpsMetadata"] = requireHttpsMetadata.ToString()
             })
             .Build();
         return new TokenService(
             accessor,
             factory,
             configuration,
+            new TestHostEnvironment(environmentName ?? Environments.Production),
             new StubSystemTokenService(),
             new OperatorApiCredentialState(),
             NullLogger<TokenService>.Instance);
@@ -235,8 +292,21 @@ public sealed class OidcSessionRefreshTests
 
     private sealed class RecordingHandler(Func<HttpRequestMessage, HttpResponseMessage> responder) : HttpMessageHandler
     {
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
-            Task.FromResult(responder(request));
+        public int RequestCount { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            RequestCount++;
+            return Task.FromResult(responder(request));
+        }
+    }
+
+    private sealed class TestHostEnvironment(string environmentName) : IHostEnvironment
+    {
+        public string EnvironmentName { get; set; } = environmentName;
+        public string ApplicationName { get; set; } = nameof(OidcSessionRefreshTests);
+        public string ContentRootPath { get; set; } = string.Empty;
+        public IFileProvider ContentRootFileProvider { get; set; } = new NullFileProvider();
     }
 
     private sealed class RefreshingTokenService : ITokenService

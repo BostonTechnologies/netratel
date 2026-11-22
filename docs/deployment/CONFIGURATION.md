@@ -334,7 +334,10 @@ The API independently validates browser access tokens from
 to `preferred_username` and `roles`. Provide `OIDC_CLIENT_SECRET` through your
 secret mechanism; never place it in an appsettings file. `TokenEndpoint` is
 required when your provider does not publish its refresh-token endpoint at the
-usual Azure-compatible authority path.
+usual Azure-compatible authority path. `Authority` and `TokenEndpoint` must use
+HTTPS. Isolated disposable providers may use HTTP only in the Development
+environment when `Authentication:Oidc:RequireHttpsMetadata=false`; the Web host
+rejects that opt-out in every other environment.
 
 An OIDC browser administrator with that exact `groups` claim uses their NetRatel application principal to open MCP Policies. The MCP consumer scope is separate from this browser authority. In **Admin → Access**, select an OIDC user by validated issuer and subject to manage their NetRatel assignments alongside local accounts. Tenant administrators can see OIDC principals already assigned to their tenant. The broader browser role-mapping cutover is tracked separately. [NetRatel #478](https://github.com/BostonTechnologies/netratel/issues/478)
 

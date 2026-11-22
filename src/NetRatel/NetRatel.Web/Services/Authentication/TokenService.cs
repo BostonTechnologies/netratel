@@ -10,7 +10,9 @@ using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using NetRatel.Web.Configuration;
 
 namespace NetRatel.Web.Services.Authentication;
 
@@ -37,6 +39,7 @@ public sealed class TokenService : ITokenService
     private readonly IHttpContextAccessor _httpContextAccessor;
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly IConfiguration _configuration;
+    private readonly IHostEnvironment _environment;
     private readonly ISystemTokenService _systemTokenService;
     private readonly OperatorApiCredentialState _operatorApiCredentialState;
     private readonly ILogger<TokenService> _logger;
@@ -52,6 +55,7 @@ public sealed class TokenService : ITokenService
         IHttpContextAccessor httpContextAccessor,
         IHttpClientFactory httpClientFactory,
         IConfiguration configuration,
+        IHostEnvironment environment,
         ISystemTokenService systemTokenService,
         OperatorApiCredentialState operatorApiCredentialState,
         ILogger<TokenService> logger,
@@ -60,6 +64,7 @@ public sealed class TokenService : ITokenService
         _httpContextAccessor = httpContextAccessor;
         _httpClientFactory = httpClientFactory;
         _configuration = configuration;
+        _environment = environment;
         _systemTokenService = systemTokenService;
         _operatorApiCredentialState = operatorApiCredentialState;
         _logger = logger;
@@ -318,7 +323,18 @@ public sealed class TokenService : ITokenService
             body["client_secret"] = clientSecret;
         }
 
-        using var request = new HttpRequestMessage(HttpMethod.Post, tokenEndpoint)
+        if (!OidcEndpointSecurity.TryCreateAllowedUri(
+                tokenEndpoint,
+                _environment,
+                oidcSection.GetValue("RequireHttpsMetadata", true),
+                out var tokenEndpointUri))
+        {
+            _logger.LogError(
+                "OIDC refresh refused a token endpoint that is not HTTPS or an explicitly allowed Development HTTP endpoint.");
+            return null;
+        }
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, tokenEndpointUri)
         {
             Content = new FormUrlEncodedContent(body)
         };
