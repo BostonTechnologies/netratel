@@ -186,7 +186,13 @@ window.netratelSetup = {
     },
     returnPath: () => {
         const value = new URLSearchParams(window.location.search).get("ReturnUrl");
-        return value && value.startsWith("/") && !value.startsWith("//") ? value : "/";
+        if (!value?.startsWith("/") || value.startsWith("//")) return "/";
+        try {
+            const target = new URL(value, window.location.origin);
+            return target.origin === window.location.origin ? value : "/";
+        } catch {
+            return "/";
+        }
     },
     localLogin: async () => {
         const email = window.netratelSetup.value("[data-testid='local-login-email']");
