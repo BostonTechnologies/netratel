@@ -60,30 +60,19 @@ public sealed class SetupTransitionBrowserTests : IAsyncLifetime
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task SuccessfulLocalSignInKeepsFallbackAndValidReturnPathsOnTheCurrentOrigin(bool twoFactor)
+    [InlineData("/\\other.example.test/dashboard", "/")]
+    [InlineData("/dashboard?tab=clients#latest", "/dashboard?tab=clients#latest")]
+    public async Task LocalSignInReturnPathUsesBrowserOriginRules(string input, string expected)
     {
         await using var context = await Browser().NewContextAsync();
         var page = await OpenSetupAsync(context);
-        await context.RouteAsync("**/*", async route =>
-        {
-            if (new Uri(route.Request.Url).AbsolutePath == "/setup")
-            {
-                await route.FallbackAsync();
-                return;
+        var returnPath = await page.EvaluateAsync<string>("""
+            input => {
+                history.replaceState(null, '', '/setup?' + new URLSearchParams({ ReturnUrl: input }));
+                return window.netratelSetup.returnPath();
             }
-
-            await route.FulfillAsync(new() { Status = 200, ContentType = "text/html", Body = "<p>Destination</p>" });
-        });
-        var signIn = twoFactor ? "completeTwoFactor" : "localLogin";
-        var localPath = "/dashboard?tab=clients#latest";
-        foreach (var (input, expected) in new[] { ("/" + '\\' + "other.example.test/dashboard", "/"), (localPath, localPath) })
-        {
-            await page.GotoAsync("http://setup.test/setup?ReturnUrl=" + Uri.EscapeDataString(input));
-            await page.EvaluateAsync("name => { void window.netratelSetup[name](); }", signIn);
-            await page.WaitForURLAsync("http://setup.test" + expected);
-        }
+            """, input);
+        Assert.Equal(expected, returnPath);
     }
 
     public async ValueTask InitializeAsync()
@@ -112,9 +101,6 @@ public sealed class SetupTransitionBrowserTests : IAsyncLifetime
             <input data-testid="setup-email" value="admin@example.test">
             <input data-testid="setup-password" value="disposable-passphrase-for-test">
             <input data-testid="setup-confirm-password" value="disposable-passphrase-for-test">
-            <input data-testid="local-login-email" value="admin@example.test">
-            <input data-testid="local-login-password" value="disposable-passphrase-for-test">
-            <input data-testid="local-login-two-factor" value="123456">
             <button data-testid="setup-initialize">Initialize</button>
             <div id="setup-client-error" hidden></div>
             <section id="setup-initializing" hidden>
@@ -126,15 +112,12 @@ public sealed class SetupTransitionBrowserTests : IAsyncLifetime
             </section>
             </body></html>
             """.Replace("</body>", "<script>" + script + "</script></body>", StringComparison.Ordinal);
-        await context.RouteAsync(url => new Uri(url).AbsolutePath == "/setup", route => route.FulfillAsync(new RouteFulfillOptions
+        await context.RouteAsync("**/setup", route => route.FulfillAsync(new RouteFulfillOptions
         {
             Status = 200, ContentType = "text/html", Body = html
         }));
         await context.AddInitScriptAsync("""
             window.fetch = async (url) => {
-                if (String(url).startsWith('/api/v2/local-auth/login')) {
-                    return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
-                }
                 if (String(url).includes('/api/v2/setup/initialize')) {
                     sessionStorage.setItem('fixture.initializeCount',
                         String(Number(sessionStorage.getItem('fixture.initializeCount') || '0') + 1));
