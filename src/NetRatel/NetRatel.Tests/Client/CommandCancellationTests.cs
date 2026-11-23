@@ -142,6 +142,7 @@ public sealed class CommandCancellationTests
     {
         using var identity = WindowsIdentity.GetCurrent();
         var security = new DirectoryInfo(directory).GetAccessControl();
+        security.GetOwner(typeof(SecurityIdentifier)).Should().Be(identity.User);
         security.AreAccessRulesProtected.Should().BeTrue();
         var allowedSids = security.GetAccessRules(includeExplicit: true, includeInherited: false, typeof(SecurityIdentifier))
             .Cast<FileSystemAccessRule>()

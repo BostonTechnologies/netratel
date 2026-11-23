@@ -415,10 +415,9 @@ namespace NetRatel.Client.Service.Shells
                 var privateRoot = Path.Combine(applicationRoot, "PrivateParameters");
                 EnsureWindowsPrivateDirectory(privateRoot, owner);
                 var windowsExecutionDirectory = Path.Combine(privateRoot, $"netratel_private_{Guid.NewGuid():N}");
-                Directory.CreateDirectory(windowsExecutionDirectory);
+                new DirectoryInfo(windowsExecutionDirectory).Create(CreateWindowsPrivateSecurity(owner));
                 try
                 {
-                    ProtectWindowsPrivateDirectory(windowsExecutionDirectory);
                     ValidateWindowsPrivateDirectory(windowsExecutionDirectory, owner, protectContents: true);
                     return windowsExecutionDirectory;
                 }
@@ -578,25 +577,22 @@ namespace NetRatel.Client.Service.Shells
         [SupportedOSPlatform("windows")]
         internal static void EnsureWindowsPrivateDirectory(string path, SecurityIdentifier owner)
         {
-            if (Directory.Exists(path))
+            var directory = new DirectoryInfo(path);
+            if (directory.Exists)
             {
-                // A pre-existing LocalSystem AppData root can inherit only SYSTEM and
-                // Administrators ACEs. Verify its owner, path and every readable ACE
-                // before replacing that inheritance with the canonical private ACL.
-                ValidateWindowsPrivateDirectory(path, owner, protectContents: true, requireProtected: false);
-                if (!new DirectoryInfo(path).GetAccessControl().AreAccessRulesProtected)
-                    ProtectWindowsPrivateDirectory(path);
-                ValidateWindowsPrivateDirectory(path, owner, protectContents: true);
-                return;
+                // A service or elevated account may have created the directory with
+                // SYSTEM or Administrators as owner. Validate its ACL before repair.
+                var security = ValidateWindowsPrivateDirectory(path, owner, protectContents: true, requireProtected: false);
+                if (!security.AreAccessRulesProtected || !owner.Equals(security.GetOwner(typeof(SecurityIdentifier))))
+                    directory.SetAccessControl(CreateWindowsPrivateSecurity(owner));
             }
+            else directory.Create(CreateWindowsPrivateSecurity(owner));
 
-            Directory.CreateDirectory(path);
-            ProtectWindowsPrivateDirectory(path);
             ValidateWindowsPrivateDirectory(path, owner, protectContents: true);
         }
 
         [SupportedOSPlatform("windows")]
-        private static void ValidateWindowsPrivateDirectory(string path, SecurityIdentifier owner, bool protectContents, bool requireProtected = true)
+        private static DirectorySecurity ValidateWindowsPrivateDirectory(string path, SecurityIdentifier owner, bool protectContents, bool requireProtected = true)
         {
             var info = new DirectoryInfo(path);
             if (!info.Exists || (info.Attributes & FileAttributes.ReparsePoint) != 0)
@@ -605,9 +601,13 @@ namespace NetRatel.Client.Service.Shells
             }
 
             var security = info.GetAccessControl();
-            if (security.GetOwner(typeof(SecurityIdentifier)) is not SecurityIdentifier directoryOwner || !directoryOwner.Equals(owner))
+            var system = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
+            var administrators = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
+            var requireExecutionOwner = protectContents && requireProtected;
+            if (security.GetOwner(typeof(SecurityIdentifier)) is not SecurityIdentifier directoryOwner ||
+                !directoryOwner.Equals(owner) && (requireExecutionOwner || !directoryOwner.Equals(system) && !directoryOwner.Equals(administrators)))
             {
-                throw new UnauthorizedAccessException("A private temporary directory is not owned by the current Windows identity.");
+                throw new UnauthorizedAccessException("The Windows temporary-directory owner is outside the allowed identities.");
             }
 
             if (protectContents && requireProtected && !security.AreAccessRulesProtected)
@@ -615,8 +615,6 @@ namespace NetRatel.Client.Service.Shells
                 throw new UnauthorizedAccessException("A private temporary directory must not inherit access rules from its parent.");
             }
 
-            var system = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
-            var administrators = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
             var creatorOwner = new SecurityIdentifier(WellKnownSidType.CreatorOwnerSid, null);
             var allowedWriters = new[] { owner, system, administrators, creatorOwner };
             var protectedRights = FileSystemRights.Write | FileSystemRights.Delete |
@@ -639,13 +637,12 @@ namespace NetRatel.Client.Service.Shells
                     throw new UnauthorizedAccessException("A private temporary directory grants write access to an untrusted Windows identity.");
                 }
             }
+            return security;
         }
 
         [SupportedOSPlatform("windows")]
-        private static void ProtectWindowsPrivateDirectory(string path)
+        private static DirectorySecurity CreateWindowsPrivateSecurity(SecurityIdentifier currentSid)
         {
-            using var identity = WindowsIdentity.GetCurrent();
-            var currentSid = identity.User ?? throw new InvalidOperationException("The current Windows identity has no user SID.");
             var systemSid = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
             var administratorsSid = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
             var security = new DirectorySecurity();
@@ -661,7 +658,7 @@ namespace NetRatel.Client.Service.Shells
                     PropagationFlags.None,
                     AccessControlType.Allow));
             }
-            new DirectoryInfo(path).SetAccessControl(security);
+            return security;
         }
 
         internal static void TryDeletePrivateTemp(string path)
