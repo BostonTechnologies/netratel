@@ -46,7 +46,8 @@ public sealed class TenantSecretVaultBrowserTests(ClientsManagementBrowserFixtur
             await Assertions.Expect(page.Locator($"html[data-netratel-theme={theme}]")).ToBeVisibleAsync();
             await AssertFitsAsync(page, tenant, width);
 
-            var screenshots = Environment.GetEnvironmentVariable("NETRATEL_PLAYWRIGHT_ARTIFACTS") ?? Path.Combine(Path.GetTempPath(), "netratel-vault-browser");
+            var screenshots = Path.Combine(Environment.GetEnvironmentVariable("NETRATEL_PLAYWRIGHT_ARTIFACT_ROOT")
+                ?? Path.Combine(Path.GetTempPath(), "netratel-playwright"), "tenant-secret-vault");
             Directory.CreateDirectory(screenshots);
             await page.ScreenshotAsync(new() { Path = Path.Combine(screenshots, $"vault-{width}-{theme}.png") });
 
@@ -66,6 +67,24 @@ public sealed class TenantSecretVaultBrowserTests(ClientsManagementBrowserFixtur
             await AssertFitsAsync(page, submit, width);
             await page.ScreenshotAsync(new() { Path = Path.Combine(screenshots, $"vault-entry-{width}-{theme}.png") });
             await editor.GetByRole(AriaRole.Button, new() { Name = "Close", Exact = true }).PressAsync("Enter");
+            await Assertions.Expect(page.GetByRole(AriaRole.Dialog)).ToHaveCountAsync(1);
+            await page.SetViewportSizeAsync(width, height);
+
+            await tenant.GetByRole(AriaRole.Button, new() { Name = "Credentials", Exact = true }).PressAsync("Enter");
+            await tenant.GetByRole(AriaRole.Button, new() { Name = "Add credential profile", Exact = true }).PressAsync("Enter");
+            var profile = page.GetByRole(AriaRole.Dialog).Last;
+            await profile.GetByRole(AriaRole.Button, new() { Name = "Choose password reference", Exact = true }).PressAsync("Enter");
+            var picker = page.GetByRole(AriaRole.Dialog).Last;
+            await Assertions.Expect(picker.GetByText(VaultFixtureFactory.LongSecret, new() { Exact = true })).ToBeVisibleAsync();
+            var select = picker.GetByRole(AriaRole.Button, new() { Name = "Select", Exact = true });
+            await AssertFitsAsync(page, select, width);
+            await page.ScreenshotAsync(new() { Path = Path.Combine(screenshots, $"vault-picker-{width}-{theme}.png") });
+            await select.PressAsync("Enter");
+            var referenceDialog = page.GetByRole(AriaRole.Dialog).Last;
+            await referenceDialog.GetByRole(AriaRole.Button, new() { Name = "Use reference", Exact = true }).PressAsync("Enter");
+            await Assertions.Expect(page.GetByRole(AriaRole.Dialog)).ToHaveCountAsync(2);
+            await Assertions.Expect(profile.GetByText("22 · Latest at execution", new() { Exact = true })).ToBeVisibleAsync();
+            await profile.GetByRole(AriaRole.Button, new() { Name = "Cancel", Exact = true }).PressAsync("Enter");
             await Assertions.Expect(page.GetByRole(AriaRole.Dialog)).ToHaveCountAsync(1);
             Assert.False(await page.Locator("#blazor-error-ui").IsVisibleAsync());
         }
@@ -92,6 +111,7 @@ public sealed class TenantSecretVaultBrowserTests(ClientsManagementBrowserFixtur
     {
         public const string LongSecret = "Canary_ExtremelyLongSecretMetadataEntryName_ForResponsiveKeyboardAndWrappingVerification_Example_0123456789";
         private static readonly Guid ConnectionId = Guid.Parse("b59b9b79-2e0c-4d0b-950c-000000000007");
+        private static readonly SecretEntryMetadata Entry = new("22", LongSecret, false, "1", "1", Enabled: true);
 
         public HttpClient CreateClient(string name) => new(new FixtureHandler(directory)) { BaseAddress = new Uri("https://netratel.test") };
 
@@ -107,8 +127,9 @@ public sealed class TenantSecretVaultBrowserTests(ClientsManagementBrowserFixtur
                     "/permissions" => new SecretVaultPermissions(true, true, true, true, true, true, true),
                     "/connections" => new[] { new SecretProviderConnection(ConnectionId, SecretProviderKind.Local, "Local", 1, 1, true, true,
                         null, false, new(SecretWriteConcurrency.CompareAndSwap, SecretDeletionMode.RemoveEntry, false), null) },
-                    var route when route.EndsWith("/entries", StringComparison.Ordinal) => new SecretBrowsePage(
-                        [new SecretEntryMetadata("22", LongSecret, false, "1", "1", Enabled: true)], null, false, null),
+                    "/profiles" => Array.Empty<CredentialProfile>(),
+                    var route when route.EndsWith("/entries", StringComparison.Ordinal) => new SecretBrowsePage([Entry], null, false, null),
+                    var route when route.EndsWith("/entry", StringComparison.Ordinal) => new SecretEntryDetails(Entry, [], ["1"], false, []),
                     var route when route.EndsWith("/test", StringComparison.Ordinal) => new SecretProviderTestResult(DateTimeOffset.UtcNow, false, "Authentication"),
                     _ => throw new InvalidOperationException("Unexpected vault fixture route.")
                 };
