@@ -7,7 +7,7 @@ on:
         description: Run only this optional suite (client measurements use matching hosted OS runners)
         type: choice
         required: true
-        options: [pairing, gateway, mcp-campaign, stdio-assessment, browser, vault-fixture, vault-windows, filesystem, deployment, release-images, candidate-images, native-client, upgrade-local, upgrade-oidc, client-measurement, client-trim-windows, client-trim-macos, client-control-macos, client-pty-debug-macos, windows-mcp, migrations-image, api-image, api-rid, cli-tool]
+        options: [pairing, gateway, mcp-campaign, stdio-assessment, browser, vault-fixture, vault-windows, vault-musl, filesystem, deployment, release-images, candidate-images, native-client, upgrade-local, upgrade-oidc, client-measurement, client-trim-windows, client-trim-macos, client-control-macos, client-pty-debug-macos, windows-mcp, migrations-image, api-image, api-rid, cli-tool]
       source_ref:
         description: Source ref to test (published-image and upgrade suites use release_tag)
         default: main
@@ -68,6 +68,46 @@ permissions:
   actions: read
 
 jobs:
+  vault-musl:
+    name: Alpine client compilation and PTY smoke
+    if: inputs.suite == 'vault-musl'
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source_ref }}
+      - name: Run the client archive on clean Alpine
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdk="$(jq -er '.sdk.version' global.json)"
+          export PublicSourceRevision="$(git rev-parse HEAD)"
+          version="$(python3 tools/ci/product-version.py)"
+          echo "Source $PublicSourceRevision, version $version, SDK $sdk"
+          alpine_packages="$RUNNER_TEMP/alpine-nuget"
+          mkdir -p "$alpine_packages" artifacts
+          docker run --rm --platform linux/amd64 \
+            --volume "$PWD:/src" --workdir /src \
+            --volume "$alpine_packages:$alpine_packages" --env NUGET_PACKAGES="$alpine_packages" \
+            --env CI --env PublicSourceRevision \
+            --env GIT_CONFIG_COUNT=1 --env GIT_CONFIG_KEY_0=safe.directory --env GIT_CONFIG_VALUE_0=/src \
+            "mcr.microsoft.com/dotnet/sdk:$sdk-alpine3.24" /bin/sh -euc '
+              apk add --no-cache build-base protobuf grpc-plugins
+              export PROTOBUF_PROTOC=/usr/bin/protoc GRPC_PROTOC_PLUGIN=/usr/bin/grpc_csharp_plugin
+              project=src/NetRatel/NetRatel.Client/NetRatel.Client.csproj
+              distribution=artifacts/netratel-client-linux-musl-x64
+              dotnet restore "$project" --runtime linux-musl-x64 -p:SelfContained=true
+              dotnet publish "$project" --no-restore -p:PublishProfile=linux-musl-x64 \
+                -p:SourceRevisionId="$PublicSourceRevision" --output "$distribution"
+              chown -R "$1" "$distribution"
+            ' sh "$(id -u):$(id -g)"
+          readelf -l artifacts/netratel-client-linux-musl-x64/NetRatel.Client | grep -F ld-musl-x86_64.so.1
+          readelf -d artifacts/netratel-client-linux-musl-x64/libnetratel_terminal_pty.so | grep -F libc.musl-x86_64.so.1
+          archive="$RUNNER_TEMP/musl-client-check.tar.gz"
+          tar -C artifacts -czf "$archive" netratel-client-linux-musl-x64
+          bash tools/ci/test-alpine-client-archive.sh "$archive" "$version" "$PublicSourceRevision"
+
   vault-windows:
     name: Windows protected job transport and native account observation
     if: inputs.suite == 'vault-windows'
@@ -145,7 +185,7 @@ jobs:
 
   selected-suite:
     name: Manual ${{ inputs.suite }} (Linux)
-    if: inputs.suite != 'vault-fixture' && inputs.suite != 'vault-windows' && inputs.suite != 'client-measurement' && inputs.suite != 'filesystem' && inputs.suite != 'client-trim-windows' && inputs.suite != 'client-trim-macos' && inputs.suite != 'client-control-macos' && inputs.suite != 'client-pty-debug-macos' && inputs.suite != 'windows-mcp' && inputs.suite != 'migrations-image' && inputs.suite != 'api-image' && inputs.suite != 'api-rid' && inputs.suite != 'cli-tool' && inputs.suite != 'candidate-images'
+    if: inputs.suite != 'vault-fixture' && inputs.suite != 'vault-windows' && inputs.suite != 'vault-musl' && inputs.suite != 'client-measurement' && inputs.suite != 'filesystem' && inputs.suite != 'client-trim-windows' && inputs.suite != 'client-trim-macos' && inputs.suite != 'client-control-macos' && inputs.suite != 'client-pty-debug-macos' && inputs.suite != 'windows-mcp' && inputs.suite != 'migrations-image' && inputs.suite != 'api-image' && inputs.suite != 'api-rid' && inputs.suite != 'cli-tool' && inputs.suite != 'candidate-images'
     runs-on: ubuntu-latest
     timeout-minutes: ${{ (inputs.suite == 'native-client' || inputs.suite == 'deployment' || inputs.suite == 'upgrade-local' || inputs.suite == 'upgrade-oidc') && 45 || inputs.suite == 'release-images' && 60 || 40 }}
     env:
