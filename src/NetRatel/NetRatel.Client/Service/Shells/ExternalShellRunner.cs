@@ -424,13 +424,8 @@ namespace NetRatel.Client.Service.Shells
                 }
             }
 
-            var configuredRoot = tempRootOverride ?? (OperatingSystem.IsMacOS() ? "/private/tmp" : "/tmp");
-            if (string.IsNullOrWhiteSpace(configuredRoot))
-            {
-                throw new InvalidOperationException("The operating system temporary directory is unavailable.");
-            }
-
-            var root = ResolveTrustedUnixTemporaryDirectory(configuredRoot);
+            var root = OperatingSystem.IsMacOS() ? "/private/tmp" : "/tmp";
+            ValidateTrustedUnixTemporaryDirectory(root, tempRootOverride);
             var executionDirectory = Path.Combine(root, $"netratel_private_{Guid.NewGuid():N}");
             if (MakeUnixDirectory(executionDirectory, (int)OwnerOnlyDirectoryMode) != 0)
             {
@@ -455,10 +450,14 @@ namespace NetRatel.Client.Service.Shells
             }
         }
 
-        private static string ResolveTrustedUnixTemporaryDirectory(string configuredRoot)
+        private static void ValidateTrustedUnixTemporaryDirectory(string expectedRoot, string? tempRootOverride)
         {
+            var configuredRoot = tempRootOverride ?? expectedRoot;
+            if (string.IsNullOrWhiteSpace(configuredRoot))
+            {
+                throw new InvalidOperationException("The operating system temporary directory is unavailable.");
+            }
             var candidate = new DirectoryInfo(Path.GetFullPath(configuredRoot));
-            var expectedRoot = OperatingSystem.IsMacOS() ? "/private/tmp" : "/tmp";
             if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS())
             {
                 throw new PlatformNotSupportedException("Private script files require a supported Linux or macOS temporary directory.");
@@ -489,8 +488,6 @@ namespace NetRatel.Client.Service.Shells
                 var isTemporaryRoot = string.Equals(ancestorPath, candidate.FullName, StringComparison.Ordinal);
                 ValidateUnixTemporaryAncestor(ancestorPath, isTemporaryRoot);
             }
-
-            return candidate.FullName;
         }
 
         private static void ValidateUnixTemporaryAncestor(string path, bool allowSharedWrite)
