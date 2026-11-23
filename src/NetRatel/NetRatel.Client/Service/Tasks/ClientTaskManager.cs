@@ -13,6 +13,7 @@ using System.Threading.Tasks;
 using NetRatel.Client.Service.Logging;
 using NetRatel.Client.Service.Shells;
 using NetRatel.Shared.Contracts.Execution;
+using NetRatel.Shared.Contracts.Jobs;
 using NetRatel.Shared.Contracts.Tasks;
 using NetRatel.Shared.Service.Shells;
 using NetRatel.Shared.Security;
@@ -56,7 +57,9 @@ public sealed class ClientTaskManager : IDisposable
         string? Payload,
         int? TenantId,
         int Environment,
-        CancellationTokenSource Cancellation) : IDisposable
+        CancellationTokenSource Cancellation,
+        IReadOnlyDictionary<string, string>? ProtectedParameters = null,
+        DateTimeOffset ProtectedExpires = default) : IDisposable
     {
         private int _disposed;
         public CancellationToken Token { get; } = Cancellation.Token;
@@ -165,14 +168,24 @@ public sealed class ClientTaskManager : IDisposable
         Stop();
     }
 
-    public bool EnqueueGatewayCommand(string commandId, string taskType, string? payload, int tenantId, int environment)
+    public bool EnqueueGatewayCommand(string commandId, string taskType, string? payload, int tenantId, int environment) =>
+        EnqueueCommand(commandId, taskType, payload, tenantId, environment);
+
+    internal bool EnqueueProtectedJobStep(string commandId, string taskType, string payload, int tenantId, int environment,
+        IReadOnlyDictionary<string, string>? parameters, DateTimeOffset expires) =>
+        expires != default && taskType is TaskKinds.ExecLibraryScript or TaskKinds.ExecShellCommand &&
+        (parameters is null || taskType == TaskKinds.ExecLibraryScript && ProtectedJobParameterRules.AreValid(parameters)) &&
+        EnqueueCommand(commandId, taskType, payload, tenantId, environment, parameters, expires);
+
+    private bool EnqueueCommand(string commandId, string taskType, string? payload, int tenantId, int environment,
+        IReadOnlyDictionary<string, string>? protectedParameters = null, DateTimeOffset protectedExpires = default)
     {
         if (string.IsNullOrWhiteSpace(commandId) || string.IsNullOrWhiteSpace(taskType)) return false;
         lock (_lifecycleLock)
         {
             if (!_started || _cts is null || _queue is not { IsAddingCompleted: false } queue) return false;
             var work = new CommandWorkItem(commandId, taskType, payload, tenantId, environment,
-                CancellationTokenSource.CreateLinkedTokenSource(_cts.Token));
+                CancellationTokenSource.CreateLinkedTokenSource(_cts.Token), protectedParameters, protectedExpires);
             if (!_enqueued.TryAdd(commandId, work))
             {
                 work.Dispose();
@@ -269,8 +282,15 @@ public sealed class ClientTaskManager : IDisposable
             workItem.CommandType,
             workItem.Payload,
             workItem.CommandId);
+        if (workItem.ProtectedParameters is { } protectedParameters)
+            task = task with { Output = new TaskOutputRedactor(null, additionalSecretValues: protectedParameters) };
 
         ITaskLogSink sink = NullTaskLogSink.Instance;
+        if (workItem.ProtectedExpires != default && workItem.ProtectedExpires <= DateTimeOffset.UtcNow)
+        {
+            await PublishFailureAsync(task, sink, "Protected job parameters expired", "The protected dispatch expired while waiting to start.").ConfigureAwait(false);
+            return;
+        }
 
         var rawType = task.TaskType;
         var kind = NormalizeTaskType(rawType);
@@ -301,7 +321,7 @@ public sealed class ClientTaskManager : IDisposable
                 break;
 
             case TaskKinds.ExecLibraryScript:
-                await HandleExecLibraryScriptAsync(task, sink, ct).ConfigureAwait(false);
+                await HandleExecLibraryScriptAsync(task, sink, ct, workItem.ProtectedParameters).ConfigureAwait(false);
                 break;
 
             case TaskKinds.OsInfo:
@@ -455,7 +475,8 @@ public sealed class ClientTaskManager : IDisposable
         }
     }
 
-    private async Task HandleExecLibraryScriptAsync(CommandExecutionContext task, ITaskLogSink sink, CancellationToken ct)
+    private async Task HandleExecLibraryScriptAsync(CommandExecutionContext task, ITaskLogSink sink, CancellationToken ct,
+        IReadOnlyDictionary<string, string>? protectedParameters)
     {
         ct.ThrowIfCancellationRequested();
 
@@ -465,14 +486,14 @@ public sealed class ClientTaskManager : IDisposable
             return;
         }
 
-        ExecLibraryScriptPayload? payload = null;
+        ExecLibraryScriptPayload? payload;
         try
         {
             payload = JsonSerializer.Deserialize(task.Payload, TaskPayloadJsonContext.Default.ExecLibraryScriptPayload);
         }
         catch (JsonException)
         {
-            // fallback handled below
+            payload = null;
         }
 
         if (payload is null)
@@ -481,7 +502,18 @@ public sealed class ClientTaskManager : IDisposable
             return;
         }
 
-        task = task with { Output = new TaskOutputRedactor(payload.OutputPolicy, payload.Parameters, payload.OutputSecretValues) };
+        var outputSecrets = payload.OutputSecretValues;
+        if (protectedParameters is not null)
+        {
+            if (!IsProtectedDispatchBound(payload, protectedParameters))
+            {
+                await PublishFailureAsync(task, sink, "Protected job parameters unavailable", "The protected parameters do not match this executable step.").ConfigureAwait(false);
+                return;
+            }
+            outputSecrets = new(payload.OutputSecretValues ?? [], StringComparer.OrdinalIgnoreCase);
+            foreach (var (key, value) in protectedParameters) outputSecrets.Add(key, value);
+        }
+        task = task with { Output = new TaskOutputRedactor(payload.OutputPolicy, payload.Parameters, outputSecrets) };
 
         var hasSnapshotContent = !string.IsNullOrEmpty(payload.ScriptContent);
         if (payload.ScriptId <= 0 && !hasSnapshotContent)
@@ -512,7 +544,10 @@ public sealed class ClientTaskManager : IDisposable
         try
         {
             LogManager.WriteLog($"[Command] Executing library script requestId={task.RequestId} scriptId={payload.ScriptId} scriptType={payload.ScriptType} preferred={payload.Preferred} contentHash={ComputeContentHash(content)}");
-            var result = await _shellRunner.RunLibraryScriptAsync(payload, content, ct, mergedParams, CreateExecutionObserver(task)).ConfigureAwait(false);
+            var result = protectedParameters is null
+                ? await _shellRunner.RunLibraryScriptAsync(payload, content, ct, mergedParams, CreateExecutionObserver(task)).ConfigureAwait(false)
+                : await _shellRunner.RunProtectedLibraryScriptAsync(payload, content, ct, mergedParams, protectedParameters,
+                    CreateExecutionObserver(task)).ConfigureAwait(false);
             LogManager.WriteLog($"[Command] Library script finished requestId={task.RequestId} exitCode={result.ExitCode}");
             await EmitResultAsync(task, sink, result).ConfigureAwait(false);
         }
@@ -529,6 +564,17 @@ public sealed class ClientTaskManager : IDisposable
             await PublishFailureAsync(task, sink, "Library script execution failed.", ex.ToString(), task.Payload).ConfigureAwait(false);
         }
     }
+
+    private static bool IsProtectedDispatchBound(ExecLibraryScriptPayload payload, IReadOnlyDictionary<string, string> parameters) =>
+        payload.ScriptId > 0 && payload.ScriptContent is { Length: > 0 } content &&
+        payload.OutputPolicy is { ScriptRevision: > 0, ScriptContentHash: { Length: 64 } hash } policy &&
+        Guid.TryParseExact(policy.Binding, "N", out _) &&
+        policy.ScriptId == payload.ScriptId && string.Equals(hash, ComputeContentHash(content), StringComparison.OrdinalIgnoreCase) &&
+        payload.ScriptType is ScriptType.Bash or ScriptType.PowerShell &&
+        parameters.Keys.All(name => policy.SecretParameters.Contains(name, StringComparer.OrdinalIgnoreCase) &&
+            !policy.SecretReferenceParameters.Contains(name, StringComparer.OrdinalIgnoreCase) &&
+            !(payload.Parameters?.Keys.Contains(name, StringComparer.OrdinalIgnoreCase) ?? false) &&
+            !(payload.OutputSecretValues?.Keys.Contains(name, StringComparer.OrdinalIgnoreCase) ?? false));
 
     public static string? ResolveLibraryScriptContent(
         ExecLibraryScriptPayload payload)
@@ -561,7 +607,8 @@ public sealed class ClientTaskManager : IDisposable
             res.OutputTruncated || stdoutTruncated || stderrTruncated, true, res.ProcessStarted,
             res.Cancelled, res.TimedOut, res.OutcomeUnknown,
             // Raw arguments can contain private command or parameter values.
-            new ShellExecutionDiagnostics(res.ShellPath, null, res.WorkingDirectory, res.DurationMs, res.Cancelled, res.TimedOut)),
+            new ShellExecutionDiagnostics(res.ShellPath, null, res.WorkingDirectory, res.DurationMs, res.Cancelled, res.TimedOut)
+            { ObservedIdentity = res.ObservedIdentity }),
             ClientShellJsonContext.Default.ShellResultEnvelope);
         await SafeStatusAsync(task, res.Cancelled ? TaskStatuses.Cancelled : res.Success ? TaskStatuses.Completed : TaskStatuses.Failed, res.TimedOut ? "Timed out" : res.Cancelled ? "Cancelled" : res.Success ? "OK" : "Failed", payload, res.ExitCode).ConfigureAwait(false);
     }

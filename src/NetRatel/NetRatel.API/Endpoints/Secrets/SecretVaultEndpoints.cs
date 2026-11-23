@@ -42,7 +42,12 @@ internal static partial class SecretVaultEndpoints
         bool Allowed(string name) => snapshot.IsLegacyOperator || snapshot.IsInstanceAdministrator || snapshot.Permissions.Contains(name);
         return Results.Ok(new SecretVaultPermissions(Allowed(NetRatelPermissions.SecretBrowse), Allowed(NetRatelPermissions.SecretUse),
             IsHuman(http) && Allowed(NetRatelPermissions.SecretReveal), Allowed(NetRatelPermissions.SecretManage),
-            Allowed(NetRatelPermissions.SecretProviderAdministration), Allowed(NetRatelPermissions.CredentialProfileManagement), Allowed(NetRatelPermissions.RunAs)));
+            Allowed(NetRatelPermissions.SecretProviderAdministration), Allowed(NetRatelPermissions.CredentialProfileManagement), Allowed(NetRatelPermissions.RunAs))
+        {
+            SubmitProtectedJobInputs = IsHuman(http) && http.User.HasClaim(claim => claim.Type == "netratel_principal_id") &&
+                Allowed(NetRatelPermissions.JobManagement) &&
+                Allowed(NetRatelPermissions.SecretBrowse) && Allowed(NetRatelPermissions.SecretUse) && Allowed(NetRatelPermissions.SecretReveal)
+        });
     }
 
     private static Task<IResult> ListConnectionsAsync(int tenantId, HttpContext http, IEffectiveAccessService access, ITenantSecretService vault,

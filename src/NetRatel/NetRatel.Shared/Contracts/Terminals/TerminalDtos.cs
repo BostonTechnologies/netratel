@@ -1,3 +1,5 @@
+using NetRatel.Shared.Contracts.Secrets;
+
 namespace NetRatel.Shared.Contracts.Terminals;
 
 public enum TerminalTransportKind
@@ -86,6 +88,8 @@ public sealed record TerminalSessionDto(
     // this preserves already-built callers that invoke the original constructor.
     // Missing JSON remains null for older API responses and saved handles.
     public ulong? Generation { get; init; }
+
+    public ObservedExecutionIdentity? ObservedIdentity { get; init; }
 
     /// <summary>
     /// Opaque browser attachment fence. It is stored with the non-secret V2

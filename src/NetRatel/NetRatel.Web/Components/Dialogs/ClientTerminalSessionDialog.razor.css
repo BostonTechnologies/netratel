@@ -70,6 +70,14 @@
     gap: .35rem;
 }
 
+.terminal-account-name {
+    display: block;
+    max-inline-size: min(24ch, 65vw);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 .client-terminal-session-body {
     flex: 1 1 auto;
     min-height: 0;

@@ -16,6 +16,7 @@ using NetRatel.Application.Fanout;
 using NetRatel.Application.Jobs;
 using NetRatel.Application.Requests;
 using NetRatel.Application.Scripts;
+using NetRatel.Application.Secrets;
 using NetRatel.Shared.Contracts.Tasks;
 using NetRatel.Infrastructure.Flows;
 using NetRatel.Application.Presence;
@@ -145,7 +146,7 @@ public sealed class AkkaJobAuthorityService(
         if (!string.IsNullOrWhiteSpace(request.ClientIdentityOverride))
             throw new InvalidOperationException("A fixed job cannot be retargeted through ClientIdentityOverride.");
         var definition = await jobDefinitions.GetAsync(jobId, cancellationToken);
-        if (definition?.Target is not null || definition?.ExecutionPolicy is not null)
+        if (definition?.Target is not null || definition?.ExecutionPolicy is not null || request.ProviderInputs is { Count: > 0 })
             return await (aggregates ?? throw new InvalidOperationException("Aggregate job admission is unavailable."))
                 .StartFreshAsync(jobId, request, cancellationToken);
         if (request.RuntimeTarget is not null)
@@ -203,6 +204,8 @@ public sealed class AkkaJobAuthorityService(
     public async Task<JobRunInfo> StartKeyedAsync(KeyedJobAdmissionRequest admission, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(admission);
+        if (admission.Request.ProviderInputs is { Count: > 0 })
+            throw new ExecutionAdmissionDeniedException("This flow admission has no approved protected input binding.");
         admission.Identity.Validate();
         admission.Snapshot.Validate(admission.Identity.TenantId);
         if (admission.Snapshot.Definition.Job.Target is not null || admission.Snapshot.Definition.Job.ExecutionPolicy is not null || admission.TargetPlan is not null)
@@ -269,6 +272,8 @@ public sealed class AkkaJobAuthorityService(
     public Task<JobRunInfo> StartReviewedMcpAsync(McpOperatorJobExecutionSnapshot snapshot, RunJobRequest request, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(snapshot);
+        if (request.ProviderInputs is { Count: > 0 })
+            throw new ExecutionAdmissionDeniedException("This MCP admission has no approved protected input binding.");
         if (snapshot.TargetPlan is not null)
             return (aggregates ?? throw new InvalidOperationException("Reviewed aggregate job admission is unavailable."))
                 .StartReviewedAsync(snapshot, request, cancellationToken);
@@ -764,7 +769,23 @@ public sealed class AkkaJobAuthorityService(
 
         var step = definition.Steps.SingleOrDefault(item => item.Id == next.JobStepId)
             ?? throw new InvalidOperationException($"Job step {next.JobStepId} was not found.");
+        var providerBindings = run.ParentRunId is { } parentId
+            ? await aggregates!.GetProviderInputsAsync(parentId, cancellationToken) : [];
+        var providerStepNames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var resolvedInputs = JobTemplateHelper.ParseInputs(await jobRuns.GetExecutionInputsAsync(run.Id, cancellationToken));
+        if (providerBindings.Length != 0)
+        {
+            if (pinnedSnapshot is null)
+                throw new ExecutionAdmissionDeniedException("The protected parameters have no immutable script snapshot.");
+            var manual = new Dictionary<string, object?>(resolvedInputs, StringComparer.OrdinalIgnoreCase);
+            foreach (var binding in providerBindings)
+            {
+                manual.Remove(binding.ParameterName);
+                if (JobProviderExecutionInputs.MapName(pinnedSnapshot, step, binding.ParameterName) is { } stepName)
+                    providerStepNames.Add(binding.ParameterName, stepName);
+            }
+            resolvedInputs = manual;
+        }
         var nodeContext = await jobRuns.GetNodeExecutionContextAsync(run.Id, cancellationToken);
         if (nodeContext is null && run.ParentRunId is { } aggregateParent && run.AgentId is { } nativeAgent)
         {
@@ -775,6 +796,9 @@ public sealed class AkkaJobAuthorityService(
         if (nodeContext is not null) resolvedInputs = JobNodeTemplateContext.Bind(resolvedInputs, nodeContext);
         var runtimePolicy = JobExecutionRuntimePolicy.FromOptions(await jobRuns.GetExecutionOptionsAsync(run.Id, cancellationToken));
         var outputPolicy = await jobRuns.GetRunOutputPolicyAsync(run.Id, cancellationToken);
+        if (outputPolicy is not null && providerBindings.Length != 0)
+            outputPolicy = outputPolicy with { SecretParameters = outputPolicy.SecretParameters.Where(name =>
+                !providerBindings.Any(binding => binding.ParameterName.Equals(name, StringComparison.OrdinalIgnoreCase))).ToArray() };
         var invocation = pinnedSnapshot is null
             ? await taskBridge.BuildGatewayInvocationAsync(run, step, resolvedInputs, runtimePolicy,
                 cancellationToken, outputPolicy, mcpSnapshot).ConfigureAwait(false)
@@ -795,6 +819,11 @@ public sealed class AkkaJobAuthorityService(
             await FailBeforeDispatchAsync(run, cancellationToken, "The agent job gateway became unavailable before dispatch.");
             return (await jobRuns.GetAsync(run.Id, cancellationToken))!;
         }
+        if (providerBindings.Length != 0 && (dispatchOwner is not { } owner || !sessions.SupportsProtectedParameters(owner)))
+        {
+            await FailBeforeDispatchAsync(run, cancellationToken, "protected_parameters_unsupported: the current agent cannot receive protected job parameters.");
+            return (await jobRuns.GetAsync(run.Id, cancellationToken))!;
+        }
         var now = _clock.GetUtcNow();
         var running = await jobRuns.UpsertRunAsync(new UpsertJobRunCommand(
             run.Id, run.JobId, run.TenantId, run.ClientIdentity, run.StartedBy, JobRunState.Running, next.Ordinal,
@@ -813,7 +842,7 @@ public sealed class AkkaJobAuthorityService(
             Environment: run.Environment, TargetDisplayName: run.TargetDisplayName, TargetHostName: run.TargetHostName, TargetName: run.TargetName,
             ScriptName: invocation.ScriptName, ScriptType: invocation.ScriptType, CommandLabel: invocation.CommandLabel, ScriptContentHash: invocation.ScriptContentHash,
             OutputPolicy: invocation.OutputPolicy), cancellationToken).ConfigureAwait(false);
-        if (scriptReplayPins is not null && pinnedSnapshot is not null && step.Type == JobStepKind.LibraryScript &&
+        if (providerBindings.Length == 0 && scriptReplayPins is not null && pinnedSnapshot is not null && step.Type == JobStepKind.LibraryScript &&
             invocation.TaskType == TaskKinds.ExecLibraryScript)
         {
             var script = pinnedSnapshot.Scripts.Single(item => item.Script.Id == step.ScriptId);
@@ -860,9 +889,17 @@ public sealed class AkkaJobAuthorityService(
             {
                 await RequireKeyedDispatchAsync(run, cancellationToken, initialDispatch, firstDispatchLease);
             }
-            await sessions.DispatchAsync(client, new JobGatewayStepDispatch(
+            var dispatch = new JobGatewayStepDispatch(
                 run.Id, step.Id, next.Id, next.Ordinal, activity.RequestId, $"akka-job-{run.Id}", invocation.TaskType, invocation.PayloadJson,
-                Environment: (int)(run.Environment ?? ClientEnvironment.None), nextVersion, nextSequence, now, ExpectedOwner: dispatchOwner), cancellationToken).ConfigureAwait(false);
+                Environment: (int)(run.Environment ?? ClientEnvironment.None), nextVersion, nextSequence, now, ExpectedOwner: dispatchOwner);
+            if (providerBindings.Length != 0)
+            {
+                if (!sessions.SupportsProtectedParameters(dispatchOwner!.Value)) throw new ProtectedJobDispatchUnavailableException();
+                var values = await aggregates!.ResolveProviderInputsAsync(run, providerBindings, providerStepNames, cancellationToken);
+                await aggregates.RequireNodeAuthorityAsync(run, cancellationToken);
+                await sessions.DispatchProtectedAsync(dispatchOwner.Value, dispatch, values, cancellationToken);
+            }
+            else await sessions.DispatchAsync(client, dispatch, cancellationToken);
             await BeginAfterTransportAsync(cancellationToken);
             if (db is not null)
             {
@@ -871,6 +908,14 @@ public sealed class AkkaJobAuthorityService(
                 control.Revision++;
                 await db.SaveChangesAsync(cancellationToken);
             }
+        }
+        catch (Exception error) when (providerBindings.Length != 0 &&
+            error is ExecutionAdmissionDeniedException or SecretProviderException or ProtectedJobDispatchUnavailableException or JobTargetValidationException)
+        {
+            await BeginAfterTransportAsync(cancellationToken);
+            var code = error is SecretProviderException provider ? $"protected_parameters_{provider.Reason.ToString().ToLowerInvariant()}" : "protected_parameters_unavailable";
+            await FailBeforeDispatchAsync(running, cancellationToken, $"{code}: {error.Message}");
+            return (await jobRuns.GetAsync(run.Id, cancellationToken))!;
         }
         catch (ExecutionAdmissionDeniedException)
         {

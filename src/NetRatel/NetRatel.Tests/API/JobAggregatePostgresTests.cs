@@ -9,6 +9,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using System.Data.Common;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -19,11 +20,14 @@ using NetRatel.API.Services.Jobs;
 using NetRatel.Application.Jobs;
 using NetRatel.Application.Presence;
 using NetRatel.Application.Scripts;
+using NetRatel.Application.Secrets;
 using NetRatel.Infrastructure.Flows;
 using NetRatel.Infrastructure.Identity.Authorization;
 using NetRatel.Infrastructure.Persistence;
+using NetRatel.Infrastructure.Secrets;
 using NetRatel.Infrastructure.Services;
 using NetRatel.Shared.Contracts.Jobs;
+using NetRatel.Shared.Contracts.Secrets;
 using NetRatel.Tests.Infrastructure;
 using Xunit;
 
@@ -32,6 +36,77 @@ namespace NetRatel.Tests.API;
 /// <summary>Real PostgreSQL claims and native actor/receipt boundaries; synthetic gateway, no deployed OS processes.</summary>
 public sealed partial class JobAggregatePostgresTests(PostgreSqlPersistenceFixture postgres) : IClassFixture<PostgreSqlPersistenceFixture>
 {
+    [Fact]
+    public async Task Protected_job_inputs_pin_at_first_dispatch_and_follow_the_parent_across_nodes()
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(60));
+        var ct = deadline.Token;
+        await using var h = await AggregateHarness.CreateAsync(await postgres.CreateDatabaseAsync(ct), 1, ct, providerInputs: true);
+        const string initial = "synthetic-aggregate-first-119";
+        const string rotated = "synthetic-aggregate-rotated-220";
+        await using var setup = h.Services.CreateAsyncScope();
+        var db = setup.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+        db.Scripts.Add(new()
+        {
+            Id = 17, Name = "Pinned canary", ScriptType = "Bash", Content = "printf '%s' \"$NETRATEL_SECRET_Canary\"",
+            Parameters = [new() { Id = 18, Name = "Canary", Type = "secret" }], CreatedAtUtc = h.Clock.GetUtcNow(), UpdatedAtUtc = h.Clock.GetUtcNow()
+        });
+        var library = await db.JobSteps.SingleAsync(step => step.Id == 43, ct);
+        library.Type = (int)JobStepKind.LibraryScript; library.ScriptId = 17; library.Command = null;
+        db.JobParameters.Add(new() { Id = 19, JobId = 41, Name = "Canary", Type = "secret", Required = true });
+        await db.SaveChangesAsync(ct);
+        var vault = setup.ServiceProvider.GetRequiredService<ITenantSecretService>();
+        var local = Assert.Single(await vault.ListConnectionsAsync(7, false, ct));
+        var entry = await vault.WriteAsync(7, local.Id, new() { Name = "Local job canary", Value = initial }, ct);
+        var reference = new SecretReference(1, local.Id, entry.Locator, null, SecretVersionMode.LatestAtExecution, null);
+        var request = new RunJobRequest("synthetic-manager", null, null)
+        { ProviderInputs = [new("Canary", reference)], SelectedTargetAgentIds = h.AgentIds.Take(2).ToArray() };
+
+        var parent = await h.StartAsync(ct, request);
+        Assert.Empty(h.Gateway.ProtectedValues);
+        await h.FillAsync(parent.Id, ct);
+        var first = Assert.Single(h.Gateway.Active).Key;
+        Assert.Empty(Assert.Single(h.Gateway.ProtectedValues).Parameters);
+        await vault.WriteAsync(7, local.Id, new()
+        { Locator = entry.Locator, ExpectedRevision = entry.Revision, ExpectedVersion = entry.Version, Value = rotated }, ct);
+        await h.SucceedNodeAsync(first, ct);
+        await h.FillAsync(parent.Id, ct);
+        var second = Assert.Single(h.Gateway.Active).Key;
+        Assert.NotEqual(first, second);
+        await h.SucceedNodeAsync(second, ct);
+        await h.FillAsync(parent.Id, ct);
+        Assert.Equal(JobRunState.Succeeded, (await h.ReadAsync(parent.Id, ct)).Status);
+        var originalValues = h.Gateway.ProtectedValues.Where(step => step.Parameters.Count != 0).ToArray();
+        Assert.Equal(2, originalValues.Length);
+        Assert.All(originalValues, step => Assert.Equal(initial, step.Parameters["Canary"]));
+        Assert.All(h.Gateway.Dispatches, step => Assert.DoesNotContain(initial, step.Dispatch.PayloadJson, StringComparison.Ordinal));
+        var storage = await db.JobAggregateControls.AsNoTracking().SingleAsync(row => row.ParentRunId == (long)parent.Id, ct);
+        Assert.NotNull(storage.PinnedProviderInputBindingsJson);
+        Assert.DoesNotContain(initial, storage.PinnedProviderInputBindingsJson, StringComparison.Ordinal);
+        Assert.DoesNotContain(rotated, storage.PinnedProviderInputBindingsJson, StringComparison.Ordinal);
+
+        var next = await h.StartAsync(ct, request with { SelectedTargetAgentIds = [h.AgentIds[0]] });
+        await h.FillAsync(next.Id, ct);
+        await h.SucceedNodeAsync(Assert.Single(h.Gateway.Active).Key, ct);
+        await h.FillAsync(next.Id, ct);
+        Assert.Equal(rotated, h.Gateway.ProtectedValues.Last().Parameters["Canary"]);
+
+        h.Gateway.ProtectedParametersSupported = false;
+        var old = await h.StartAsync(ct, request with { SelectedTargetAgentIds = [h.AgentIds[0]] });
+        var dispatched = h.Gateway.Dispatches.Count;
+        await h.FillAsync(old.Id, ct);
+        Assert.Equal(dispatched, h.Gateway.Dispatches.Count);
+        Assert.Equal(JobRunState.Failed, (await h.ReadAsync(old.Id, ct)).Status);
+
+        h.Gateway.ProtectedParametersSupported = true;
+        var revoked = await h.StartAsync(ct, request with { SelectedTargetAgentIds = [h.AgentIds[0]] });
+        h.Access.SecretUseAllowed = false;
+        await h.FillAsync(revoked.Id, ct);
+        Assert.Equal(dispatched, h.Gateway.Dispatches.Count);
+        Assert.Equal(JobRunState.Failed, (await h.ReadAsync(revoked.Id, ct)).Status);
+    }
+
     [Theory]
     [InlineData(1)]
     [InlineData(2)]
@@ -422,7 +497,8 @@ public sealed partial class JobAggregatePostgresTests(PostgreSqlPersistenceFixtu
         private static readonly ClaimsPrincipal Principal = new(new ClaimsIdentity([new("netratel_principal_id", "synthetic-manager")], "fixture"));
 
         public static async Task<AggregateHarness> CreateAsync(string connection, int threads, CancellationToken ct,
-            JobNodeFailurePolicy failurePolicy = JobNodeFailurePolicy.StopRemaining, bool reviewedMcp = false, bool keyedFlow = false)
+            JobNodeFailurePolicy failurePolicy = JobNodeFailurePolicy.StopRemaining, bool reviewedMcp = false, bool keyedFlow = false,
+            bool providerInputs = false)
         {
             var h = new AggregateHarness(); var services = new ServiceCollection();
             services.AddLogging(); services.AddDbContext<OrchestratorDbContext>(builder => builder.UseNpgsql(connection).AddInterceptors(h.ClaimCrash));
@@ -445,12 +521,21 @@ public sealed partial class JobAggregatePostgresTests(PostgreSqlPersistenceFixtu
                 db: provider.GetRequiredService<OrchestratorDbContext>(), clock: h.Clock,
                 snapshotCapture: provider.GetRequiredService<IJobExecutionSnapshotCapture>(), aggregates: provider.GetRequiredService<JobAggregateOrchestrator>()));
             if (reviewedMcp) ConfigureReviewedMcp(services, connection);
+            if (providerInputs)
+            {
+                services.AddScoped<IScriptService, ScriptService>();
+                services.AddScoped<SecretService>();
+                services.AddScoped<ISecretProvider, LocalSecretProvider>();
+                services.AddSingleton(new SecretProviderNetworkPolicy(new ConfigurationBuilder().Build(), new FixtureEnvironment()));
+                services.AddScoped<ITenantSecretService, TenantSecretService>();
+                services.AddScoped<JobProviderExecutionInputs>();
+            }
             if (keyedFlow)
             {
                 services.AddScoped<IExecutionAdmissionStore, ExecutionAdmissionStore>();
                 services.AddSingleton<IKeyedExecutionAuthority>(new FixtureFlowAuthority(h));
             }
-            h.Services = services.BuildServiceProvider(); h.Gateway = new(h);
+            h.Services = services.BuildServiceProvider(); h.Gateway = new(h) { ProtectedParametersSupported = providerInputs };
             h._actors = ActorSystem.Create("aggregate-pg-" + Guid.NewGuid().ToString("N"));
             h._native = new(h._actors.ActorOf(JobCoordinatorActor.Props(h.Services.GetRequiredService<IJobObservationStore>())));
             await using (var scope = h.Services.CreateAsyncScope())
@@ -524,11 +609,20 @@ public sealed partial class JobAggregatePostgresTests(PostgreSqlPersistenceFixtu
         public ConcurrentDictionary<ClientKey, OwnerKey> Owners { get; } = new();
         public ConcurrentDictionary<ulong, JobGatewayStepDispatch> Active { get; } = new();
         public ConcurrentQueue<(ClientKey Client, JobGatewayStepDispatch Dispatch)> Dispatches { get; } = new();
+        public ConcurrentQueue<(ulong RunId, IReadOnlyDictionary<string, string> Parameters)> ProtectedValues { get; } = new();
         public ConcurrentBag<ulong> Cancellations { get; } = [];
+        public bool ProtectedParametersSupported { get; set; }
         public int Peak;
         public AgentJobGatewayRegistration Register(ClientKey client, Guid connectionId, ulong epoch, bool provisional = false) => throw new NotSupportedException();
         public bool IsAvailable(ClientKey client) => Owners.ContainsKey(client);
         public OwnerKey? GetRegisteredOwner(ClientKey client) => Owners.TryGetValue(client, out var owner) ? owner : null;
+        public bool SupportsProtectedParameters(OwnerKey owner) => ProtectedParametersSupported && GetRegisteredOwner(owner.Client) == owner;
+        public Task DispatchProtectedAsync(OwnerKey owner, JobGatewayStepDispatch dispatch, IReadOnlyDictionary<string, string> parameters, CancellationToken ct)
+        {
+            Assert.True(SupportsProtectedParameters(owner));
+            ProtectedValues.Enqueue((dispatch.JobRunId, parameters));
+            return DispatchAsync(owner.Client, dispatch, ct);
+        }
         public async Task DispatchAsync(ClientKey client, JobGatewayStepDispatch dispatch, CancellationToken ct)
         {
             dispatch.ExpectedOwner.Should().Be(Owners[client]);
@@ -554,8 +648,10 @@ public sealed partial class JobAggregatePostgresTests(PostgreSqlPersistenceFixtu
     private sealed class AggregateAccess : IEffectiveAccessService
     {
         public bool Allowed = true;
+        public bool SecretUseAllowed = true;
         public Task<bool> AuthorizeAsync(ClaimsPrincipal principal, string permission, int? tenant, CancellationToken cancellationToken = default)
-            => Task.FromResult(Allowed && tenant == 7 && principal.FindFirstValue("netratel_principal_id") == "synthetic-manager");
+            => Task.FromResult(Allowed && (permission != NetRatelPermissions.SecretUse || SecretUseAllowed) &&
+                tenant == 7 && principal.FindFirstValue("netratel_principal_id") == "synthetic-manager");
         public Task<EffectiveAccessSnapshot> GetSnapshotAsync(ClaimsPrincipal principal, int? tenant, CancellationToken cancellationToken = default)
             => Task.FromResult(new EffectiveAccessSnapshot("synthetic-manager", false, false, Allowed ? NetRatelPermissions.All : new HashSet<string>()));
         public Task ReconcileBuiltInRolesAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;

@@ -3,6 +3,8 @@ using System.Threading.Channels;
 using Google.Protobuf.WellKnownTypes;
 using NetRatel.AgentGateway.Contracts.V1;
 using NetRatel.Application.Presence;
+using NetRatel.Shared.Contracts.Jobs;
+using NetRatel.Shared.Contracts.Tasks;
 
 namespace NetRatel.API.Gateway;
 
@@ -14,11 +16,16 @@ namespace NetRatel.API.Gateway;
 public interface IAgentJobGatewaySessionRegistry
 {
     AgentJobGatewayRegistration Register(ClientKey client, Guid connectionId, ulong connectionEpoch, bool provisional = false);
+    AgentJobGatewayRegistration RegisterWithCapabilities(ClientKey client, Guid connectionId, ulong connectionEpoch,
+        bool provisional, bool supportsProtectedParameters) => Register(client, connectionId, connectionEpoch, provisional);
     bool IsAvailable(ClientKey client);
     // A physical registration is routing information, never durable authority.
     // Existing nonpersisting fixture adapters return no production fence.
     OwnerKey? GetRegisteredOwner(ClientKey client) => null;
     Task DispatchAsync(ClientKey client, JobGatewayStepDispatch dispatch, CancellationToken cancellationToken);
+    bool SupportsProtectedParameters(OwnerKey owner) => false;
+    Task DispatchProtectedAsync(OwnerKey owner, JobGatewayStepDispatch dispatch, IReadOnlyDictionary<string, string> parameters,
+        CancellationToken cancellationToken) => throw new ProtectedJobDispatchUnavailableException();
     Task CancelAsync(ClientKey client, ulong jobRunId, string reason, CancellationToken cancellationToken);
     Task CancelAsync(OwnerKey expectedOwner, ulong jobRunId, string reason, CancellationToken cancellationToken)
         => throw new InvalidOperationException("The transport adapter cannot target an exact dispatch owner.");
@@ -42,13 +49,20 @@ public sealed record JobGatewayStepDispatch(
 public sealed class AgentJobGatewaySessionUnavailableException(ClientKey client)
     : InvalidOperationException($"No active job gateway session exists for tenant {client.TenantId}, agent {client.AgentId:D}.");
 
-public sealed class AgentJobGatewaySessionRegistry : IAgentJobGatewaySessionRegistry
+public sealed class ProtectedJobDispatchUnavailableException()
+    : InvalidOperationException("The current agent connection does not support protected job parameters.");
+
+public sealed class AgentJobGatewaySessionRegistry(TimeProvider? clock = null) : IAgentJobGatewaySessionRegistry
 {
     private readonly ConcurrentDictionary<ClientKey, AgentJobGatewaySession> _sessions = new();
 
-    public AgentJobGatewayRegistration Register(ClientKey client, Guid connectionId, ulong connectionEpoch, bool provisional = false)
+    public AgentJobGatewayRegistration Register(ClientKey client, Guid connectionId, ulong connectionEpoch, bool provisional = false) =>
+        RegisterWithCapabilities(client, connectionId, connectionEpoch, provisional, supportsProtectedParameters: false);
+
+    public AgentJobGatewayRegistration RegisterWithCapabilities(ClientKey client, Guid connectionId, ulong connectionEpoch,
+        bool provisional, bool supportsProtectedParameters)
     {
-        var session = new AgentJobGatewaySession(client, connectionId, connectionEpoch);
+        var session = new AgentJobGatewaySession(client, connectionId, connectionEpoch, supportsProtectedParameters);
         while (true)
         {
             if (!_sessions.TryGetValue(client, out var previous))
@@ -116,6 +130,21 @@ public sealed class AgentJobGatewaySessionRegistry : IAgentJobGatewaySessionRegi
         return session.DispatchAsync(dispatch, cancellationToken);
     }
 
+    public bool SupportsProtectedParameters(OwnerKey owner) => _sessions.TryGetValue(owner.Client, out var session) &&
+        session.IsActive && session.SupportsProtectedParameters && session.Matches(owner);
+
+    public Task DispatchProtectedAsync(OwnerKey owner, JobGatewayStepDispatch dispatch, IReadOnlyDictionary<string, string> parameters,
+        CancellationToken cancellationToken)
+    {
+        if (dispatch.ExpectedOwner != owner || dispatch.TaskType is not (TaskKinds.ExecShellCommand or TaskKinds.ExecLibraryScript) || parameters.Count != 0 &&
+            (dispatch.TaskType != TaskKinds.ExecLibraryScript || !ProtectedJobParameterRules.AreValid(parameters)))
+            throw new ArgumentException("Protected parameters require a bounded library step and its exact dispatch owner.");
+        if (!_sessions.TryGetValue(owner.Client, out var session) || !session.IsActive || !session.Matches(owner) || !session.SupportsProtectedParameters)
+            throw new ProtectedJobDispatchUnavailableException();
+        var expires = (clock ?? TimeProvider.System).GetUtcNow() + ProtectedJobParameterRules.DispatchLifetime;
+        return session.DispatchAsync(dispatch, cancellationToken, parameters, expires);
+    }
+
     public Task CancelAsync(ClientKey client, ulong jobRunId, string reason, CancellationToken cancellationToken) =>
         GetSession(client).CancelAsync(jobRunId, reason, cancellationToken);
 
@@ -165,7 +194,7 @@ public sealed class AgentJobGatewayRegistration(
     }
 }
 
-internal sealed class AgentJobGatewaySession(ClientKey client, Guid connectionId, ulong connectionEpoch)
+internal sealed class AgentJobGatewaySession(ClientKey client, Guid connectionId, ulong connectionEpoch, bool supportsProtectedParameters)
 {
     private readonly Channel<GatewayJobFrame> _outbound = Channel.CreateBounded<GatewayJobFrame>(
         new BoundedChannelOptions(32)
@@ -188,32 +217,45 @@ internal sealed class AgentJobGatewaySession(ClientKey client, Guid connectionId
     public void Activate() => Volatile.Write(ref _active, 1);
     public Guid ConnectionId => connectionId;
     public ulong ConnectionEpoch => connectionEpoch;
+    public bool SupportsProtectedParameters => supportsProtectedParameters;
+    public bool Matches(OwnerKey owner) => owner.Client == client && owner.ConnectionId == connectionId && owner.Epoch == checked((long)connectionEpoch);
 
-    public Task DispatchAsync(JobGatewayStepDispatch dispatch, CancellationToken cancellationToken) =>
-        WriteAsync(new GatewayJobFrame
+    public Task DispatchAsync(JobGatewayStepDispatch dispatch, CancellationToken cancellationToken,
+        IReadOnlyDictionary<string, string>? parameters = null, DateTimeOffset expiresAt = default)
+    {
+        var frame = new GatewayJobFrame
         {
             ProtocolVersion = "1.0",
             TenantId = client.TenantId,
             ClientId = client.AgentId.ToString("D"),
             ConnectionEpoch = connectionEpoch,
-            ConnectionId = connectionId.ToString("D"),
-            Dispatch = new JobStepDispatch
-            {
-                JobRunId = dispatch.JobRunId,
-                JobStepId = dispatch.JobStepId,
-                JobStepRunId = dispatch.JobStepRunId,
-                TenantId = client.TenantId,
-                Ordinal = dispatch.Ordinal,
-                RequestId = dispatch.RequestId,
-                CorrelationId = dispatch.CorrelationId,
-                TaskType = dispatch.TaskType,
-                PayloadJson = dispatch.PayloadJson,
-                Environment = dispatch.Environment,
-                NextVersion = dispatch.NextVersion,
-                NextSequence = dispatch.NextSequence,
-                RequestedAtUtc = Timestamp.FromDateTimeOffset(dispatch.RequestedAtUtc)
-            }
-        }, cancellationToken);
+            ConnectionId = connectionId.ToString("D")
+        };
+        var step = new JobStepDispatch
+        {
+            JobRunId = dispatch.JobRunId,
+            JobStepId = dispatch.JobStepId,
+            JobStepRunId = dispatch.JobStepRunId,
+            TenantId = client.TenantId,
+            Ordinal = dispatch.Ordinal,
+            RequestId = dispatch.RequestId,
+            CorrelationId = dispatch.CorrelationId,
+            TaskType = dispatch.TaskType,
+            PayloadJson = dispatch.PayloadJson,
+            Environment = dispatch.Environment,
+            NextVersion = dispatch.NextVersion,
+            NextSequence = dispatch.NextSequence,
+            RequestedAtUtc = Timestamp.FromDateTimeOffset(dispatch.RequestedAtUtc)
+        };
+        if (parameters is null) frame.Dispatch = step;
+        else
+        {
+            var protectedDispatch = new ProtectedJobStepDispatch { Step = step, ExpiresAtUtc = Timestamp.FromDateTimeOffset(expiresAt) };
+            foreach (var (name, value) in parameters) protectedDispatch.Parameters.Add(name, value);
+            frame.ProtectedDispatch = protectedDispatch;
+        }
+        return WriteAsync(frame, cancellationToken);
+    }
 
     public Task CancelAsync(ulong jobRunId, string reason, CancellationToken cancellationToken) =>
         WriteAsync(new GatewayJobFrame

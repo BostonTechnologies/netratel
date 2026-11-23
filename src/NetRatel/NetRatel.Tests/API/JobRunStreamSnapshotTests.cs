@@ -12,6 +12,27 @@ namespace NetRatel.Tests.API;
 
 public sealed class JobRunStreamSnapshotTests
 {
+    [Theory]
+    [InlineData("""{"processStarted":true,"diagnostics":{"observedIdentity":{"account":"canary-agent","accountId":"1702"}}}""", true)]
+    [InlineData("""{"processStarted":false,"diagnostics":{"observedIdentity":{"account":"canary-agent","accountId":"1702"}}}""", false)]
+    [InlineData("""{"processStarted":true,"diagnostics":{"observedIdentity":{"account":"canary-agent","accountId":"invalid-id"}}}""", false)]
+    [InlineData("""{"processStarted":true,"stdout":["identity canary-agent"]}""", false)]
+    public void Step_projection_uses_only_a_valid_native_launch_observation(string result, bool expected)
+    {
+        var stamp = DateTimeOffset.UtcNow;
+        var step = new JobStepRunInfo(11, 10, 12, JobStepRunState.Succeeded, 1, "canary", null, stamp, stamp);
+        var activity = new JobTaskActivityInfo(13, "canary", 10, 12, "canary-target", 7,
+            "exec-shell-cmd", "Completed", null, stamp, stamp, ResultJson: result);
+        var observed = JobRunEndpoints.MapStepRun(step, activity).ObservedIdentity;
+        if (expected)
+        {
+            Assert.NotNull(observed);
+            Assert.Equal("canary-agent", observed.Account);
+            Assert.Equal("1702", observed.AccountId);
+        }
+        else Assert.Null(observed);
+    }
+
     [Fact]
     public async Task Recovered_snapshot_bounds_output_keeps_sequence_order_and_separates_errors_from_logs()
     {

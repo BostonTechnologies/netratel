@@ -9,13 +9,17 @@ using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Runtime.Versioning;
 using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Threading.Channels;
 using NetRatel.Shared.Security;
 using NetRatel.Client.Service.Logging;
+using NetRatel.Client.Service.Tasks;
 using NetRatel.Shared.Contracts.Execution;
+using NetRatel.Shared.Contracts.Jobs;
+using NetRatel.Shared.Contracts.Secrets;
 using NetRatel.Shared.Contracts.Tasks;
 using NetRatel.Shared.Service.Shells;
 
@@ -45,6 +49,7 @@ namespace NetRatel.Client.Service.Shells
             public string? Arguments { get; set; }
             public string? WorkingDirectory { get; set; }
             public double DurationMs { get; set; }
+            public ObservedExecutionIdentity? ObservedIdentity { get; set; }
         }
 
         public sealed class ExecutionOutcomeUnknownException(string message, RunResult execution, Exception cause)
@@ -80,6 +85,21 @@ namespace NetRatel.Client.Service.Shells
             IReadOnlyDictionary<string, string>? parameters,
             ExecutionObserver? observer = null)
             => RunScriptByTypeAsync(payload.ScriptType, payload.Preferred, scriptContent, payload.WorkingDirectory, payload.TimeoutSeconds, ct, parameters, observer);
+
+        internal Task<RunResult> RunProtectedLibraryScriptAsync(ExecLibraryScriptPayload payload, string content, CancellationToken ct,
+            IReadOnlyDictionary<string, string>? parameters, IReadOnlyDictionary<string, string> protectedParameters, ExecutionObserver observer)
+        {
+            if (!ProtectedJobParameterRules.AreValid(protectedParameters))
+                throw new InvalidOperationException("The protected script parameters are invalid.");
+            return payload.ScriptType switch
+            {
+                ScriptType.PowerShell => RunPowerShellScriptFileAsync(payload.Preferred, content, payload.WorkingDirectory, payload.TimeoutSeconds,
+                    ct, parameters, observer: observer, protectedParameters: protectedParameters),
+                ScriptType.Bash when payload.Preferred is ShellExecutor.Auto or ShellExecutor.Bash =>
+                    RunProtectedBashScriptAsync(payload, content, ct, parameters, protectedParameters, observer),
+                _ => throw new InvalidOperationException("Protected parameters require a PowerShell or Bash library script with its matching executor.")
+            };
+        }
 
         public Task<RunResult> RunPowerShellScriptAsync(
             string content,
@@ -166,16 +186,18 @@ namespace NetRatel.Client.Service.Shells
             CancellationToken ct,
             IReadOnlyDictionary<string, string>? parameters,
             string? requirementsContent = null,
-            ExecutionObserver? observer = null)
+            ExecutionObserver? observer = null,
+            IReadOnlyDictionary<string, string>? protectedParameters = null)
         {
             var timeout = TimeSpan.FromSeconds(timeoutSec ?? (int)_defaultTimeout.TotalSeconds);
             var scriptPath = WritePrivateTemp(".ps1", content);
             string? wrapperPath = null;
+            string? parameterPath = null;
 
             try
             {
                 var shellPath = ResolvePowerShellHost(pref, requirementsContent ?? content, FindShell, OperatingSystem.IsWindows());
-                var hasParameters = parameters is { Count: > 0 };
+                var hasParameters = parameters is { Count: > 0 } || protectedParameters is not null;
                 var windowsPowerShell = OperatingSystem.IsWindows() &&
                     Path.GetFileName(shellPath).Equals("powershell.exe", StringComparison.OrdinalIgnoreCase);
                 if (hasParameters || windowsPowerShell)
@@ -189,7 +211,7 @@ namespace NetRatel.Client.Service.Shells
                         wrapper.AppendLine("$ErrorActionPreference = 'Stop'");
                         wrapper.AppendLine("$ProgressPreference = 'SilentlyContinue'");
                         wrapper.AppendLine("$__netratelParams = @{}");
-                        foreach (var kv in parameters!)
+                        foreach (var kv in parameters?.AsEnumerable() ?? [])
                         {
                             if (string.IsNullOrWhiteSpace(kv.Key)) continue;
                             var name = kv.Key.Trim().TrimStart('-');
@@ -199,6 +221,13 @@ namespace NetRatel.Client.Service.Shells
                                    .Append("'] = '")
                                    .Append(Esc(kv.Value))
                                    .AppendLine("'");
+                        }
+                        if (protectedParameters is not null)
+                        {
+                            parameterPath = WritePrivateTemp(".json", JsonSerializer.Serialize(protectedParameters, ClientShellJsonContext.Default.ParameterMap));
+                            wrapper.Append("$__netratelSecret = ConvertFrom-Json -InputObject ([IO.File]::ReadAllText('")
+                                .Append(Esc(parameterPath)).AppendLine("', [Text.Encoding]::UTF8))");
+                            wrapper.AppendLine("foreach ($p in $__netratelSecret.PSObject.Properties) { $__netratelParams[$p.Name] = $p.Value }");
                         }
                         wrapper.Append("& '").Append(Esc(scriptPath)).AppendLine("' @__netratelParams");
                         wrapper.AppendLine("exit $LASTEXITCODE");
@@ -226,6 +255,7 @@ namespace NetRatel.Client.Service.Shells
                 {
                     TryDeletePrivateTemp(wrapperPath);
                 }
+                if (parameterPath is not null) TryDeletePrivateTemp(parameterPath);
             }
         }
 
@@ -250,6 +280,40 @@ namespace NetRatel.Client.Service.Shells
             var environment = CreateBashParameterEnvironment(parameters);
             var shellPath = (FindShell("bash") ?? FindShell("sh")) ?? Throw("bash/sh");
             return RunDirectAsync(shellPath, "-lc", script, timeout, cwd, ct, observer, environment);
+        }
+
+        private async Task<RunResult> RunProtectedBashScriptAsync(ExecLibraryScriptPayload payload, string content, CancellationToken ct,
+            IReadOnlyDictionary<string, string>? parameters, IReadOnlyDictionary<string, string> protectedParameters, ExecutionObserver observer)
+        {
+            if (protectedParameters.Values.Any(value => value.Contains('\0')))
+                throw new InvalidOperationException("Bash protected parameters cannot contain a NUL character.");
+            var shellPath = FindShell("bash") ?? Throw("bash");
+            var paths = new List<string>(protectedParameters.Count + 1);
+            var script = new StringBuilder();
+            try
+            {
+                foreach (var (name, value) in protectedParameters)
+                {
+                    var file = WritePrivateTemp(".parameter", value);
+                    paths.Add(file);
+                    var variable = $"NETRATEL_SECRET_{name}";
+                    var quotedFile = "'" + file.Replace("'", "'\"'\"'", StringComparison.Ordinal) + "'";
+                    script.Append("unset -v ").Append(variable).AppendLine(" || exit 126");
+                    script.Append("[[ -r ").Append(quotedFile).AppendLine(" ]] || exit 126");
+                    script.Append("IFS= read -r -d '' ").Append(variable).Append(" < ").Append(quotedFile)
+                        .AppendLine(" || [[ $? == 1 ]] || exit 126");
+                }
+                script.Append(content);
+                var scriptPath = WritePrivateTemp(".sh", script.ToString());
+                paths.Add(scriptPath);
+                var timeout = TimeSpan.FromSeconds(payload.TimeoutSeconds ?? (int)_defaultTimeout.TotalSeconds);
+                return await StartAsync(shellPath, $"--noprofile --norc -p -- {QuoteArgument(scriptPath)}", payload.WorkingDirectory,
+                    timeout, ct, CreateBashParameterEnvironment(parameters), observer: observer).ConfigureAwait(false);
+            }
+            finally
+            {
+                foreach (var path in paths) TryDeletePrivateTemp(path);
+            }
         }
 
         private static Dictionary<string, string>? CreateBashParameterEnvironment(
@@ -317,7 +381,10 @@ namespace NetRatel.Client.Service.Shells
                 // encoding. Both external engines understand a UTF-8 script BOM.
                 var powerShellScript = ext.Equals(".ps1", StringComparison.OrdinalIgnoreCase);
                 var scriptContents = powerShellScript && contents.StartsWith('\uFEFF') ? contents[1..] : contents;
-                File.WriteAllText(path, scriptContents, new UTF8Encoding(powerShellScript));
+                var options = new FileStreamOptions { Mode = FileMode.CreateNew, Access = FileAccess.Write, Share = FileShare.None };
+                if (!OperatingSystem.IsWindows()) options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+                using var writer = new StreamWriter(path, new UTF8Encoding(powerShellScript), options);
+                writer.Write(scriptContents);
                 return path;
             }
             catch
@@ -919,6 +986,7 @@ namespace NetRatel.Client.Service.Shells
 
             if (!proc.Start()) throw new InvalidOperationException($"Failed to start: {fileName}");
             res.ProcessStarted = true;
+            res.ObservedIdentity = NativeProcessIdentity.ObserveStartedProcess(proc);
             async Task PublishOutputAsync()
             {
                 if (observer is not null) await observer.Started().ConfigureAwait(false);

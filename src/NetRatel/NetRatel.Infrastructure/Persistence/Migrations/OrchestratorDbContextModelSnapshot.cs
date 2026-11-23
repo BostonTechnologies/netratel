@@ -3749,9 +3749,15 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                         .HasMaxLength(256)
                         .HasColumnType("character varying(256)");
 
+                    b.Property<string>("PinnedProviderInputBindingsJson")
+                        .HasColumnType("text");
+
                     b.Property<string>("PrincipalId")
                         .HasMaxLength(256)
                         .HasColumnType("character varying(256)");
+
+                    b.Property<string>("ProviderInputBindingsJson")
+                        .HasColumnType("text");
 
                     b.Property<long>("Revision")
                         .IsConcurrencyToken()

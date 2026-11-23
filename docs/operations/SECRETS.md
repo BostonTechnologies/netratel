@@ -24,3 +24,11 @@ Grant `secret.browse` for provider and entry metadata, `secret.use` for referenc
 Use **Credentials** to save a profile if your role has `credential.profile.manage`. Select a public username or an opaque username reference, and specify the exact client IDs plus the approved account SID or UID. Windows password profiles require a password reference. Unix privileged-local profiles identify a local account by approved UID. The connection test checks only vault metadata availability. For deployment and recovery, see [API key-ring protection](../deployment/CONFIGURATION.md#api-key-ring-protection).
 
 Local provider metadata and the new REST operations live under `/api/v1/tenants/{tenantId}/secret-vault`. In the generated API reference, use the **Secret vault** group. To remove a secret, profile or provider connection, preview the exact current revision and confirm with the returned token. The browser shows provider-specific deletion behavior before confirmation.
+
+## Protected inputs for interactive job runs
+
+Declare a **Secret** input on the job and a matching **Secret** parameter on a Bash or PowerShell library script. In **Run Job**, choose **Secret provider** for that input and select a reference. The direct operator path requires job permission and the tenant's `secret.use` and `secret.reveal` permissions. Agents must advertise `protected-job-parameters-v1`.
+
+PowerShell receives the value through its named script parameter. Bash receives it in a shell-local `NETRATEL_SECRET_<parameter name>` variable, preserving case. For example, a Bash script with a declared `ApiToken` secret parameter can read `"$NETRATEL_SECRET_ApiToken"`. Use the matching library-script parameter to consume the value. An `@option.ApiToken@` placeholder in command text or a step payload is rejected during admission.
+
+The server saves the connection scope revision and selects exact versions once for an aggregate, as it prepares the first physical dispatch. It shares that selection across the aggregate's nodes and starts a new selection for each new run. Provider values reach a capable agent through the authenticated job stream and private parameter files. The agent registers the values with output redaction before starting the script.

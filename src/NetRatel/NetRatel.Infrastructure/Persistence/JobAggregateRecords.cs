@@ -34,6 +34,8 @@ public sealed class JobAggregateControlRecord
     public DateTimeOffset? ActionDeadlineAtUtc { get; set; }
     public DateTimeOffset? TerminalReadyAtUtc { get; set; }
     public string? TerminalResultHash { get; set; }
+    public string? ProviderInputBindingsJson { get; set; }
+    public string? PinnedProviderInputBindingsJson { get; set; }
 }
 
 public static class JobAggregateModelConfiguration

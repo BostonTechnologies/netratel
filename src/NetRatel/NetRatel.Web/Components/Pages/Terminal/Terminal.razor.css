@@ -2,6 +2,14 @@
     min-width: 0;
 }
 
+.terminal-account-name {
+    display: block;
+    max-inline-size: min(24ch, 65vw);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 .terminal-console-surface {
     height: min(70dvh, calc(100dvh - 210px));
     min-height: 320px;

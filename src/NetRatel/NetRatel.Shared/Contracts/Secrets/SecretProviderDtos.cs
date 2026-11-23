@@ -87,7 +87,11 @@ public sealed class SaveSecretProviderRequest
 public sealed record SelectDefaultSecretProviderRequest(Guid ExpectedDefaultId, long ExpectedConnectionRevision);
 
 public sealed record SecretVaultPermissions(bool Browse, bool Use, bool Reveal, bool Manage, bool AdministerProviders,
-    bool ManageCredentials, bool RunAs);
+    bool ManageCredentials, bool RunAs)
+{
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    public bool SubmitProtectedJobInputs { get; init; }
+}
 
 public sealed record EnableSecretProviderRequest(long ExpectedRevision);
 

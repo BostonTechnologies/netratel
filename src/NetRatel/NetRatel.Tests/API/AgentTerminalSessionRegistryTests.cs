@@ -8,12 +8,45 @@ using NetRatel.Application.Operations;
 using NetRatel.Application.Presence;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Infrastructure.Services;
+using NetRatel.Shared.Contracts.Secrets;
 using Xunit;
 
 namespace NetRatel.Tests.API;
 
 public sealed class AgentTerminalSessionRegistryTests
 {
+    [Fact]
+    public async Task Opened_observation_is_fenced_and_retained_when_the_transport_reconnects()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var client = new ClientKey(3, Guid.NewGuid());
+        var registry = new AgentTerminalSessionRegistry(TimeProvider.System, new ThrowingRealtimeFanoutSink());
+        var connection = Guid.NewGuid();
+        using var first = registry.Register(client, connection, 4, ["sh"]);
+        var session = await registry.OpenAsync(client, "sh", null, 100, 30, ct);
+        await first.Reader.ReadAsync(ct);
+        var opened = new TerminalSessionOpened
+        {
+            SessionId = session.SessionId, Generation = session.Generation,
+            ObservedIdentity = new() { Account = "canary-agent", AccountId = "1702" }
+        };
+        var wrongGeneration = opened.Clone();
+        wrongGeneration.Generation++;
+        Assert.False(registry.TryReceiveOpened(client, first.RegistrationId, wrongGeneration));
+        Assert.True(registry.TryReceiveOpened(client, first.RegistrationId, opened));
+        var observed = Assert.IsType<ObservedExecutionIdentity>(registry.Get(session.SessionId)?.ObservedIdentity);
+        Assert.Equal("canary-agent", observed.Account);
+        Assert.Equal("1702", observed.AccountId);
+
+        using var next = registry.Register(client, connection, 4, ["sh"]);
+        Assert.False(registry.TryReceiveOpened(client, first.RegistrationId, opened));
+        var changed = opened.Clone();
+        changed.ObservedIdentity.Account = "different-account";
+        Assert.False(registry.TryReceiveOpened(client, next.RegistrationId, changed));
+        Assert.True(registry.TryReceiveOpened(client, next.RegistrationId, opened));
+        Assert.Equal(observed, registry.Get(session.SessionId)?.ObservedIdentity);
+    }
+
     [Fact]
     public async Task Replay_SequentialInputThenReadAndRetry_PreservesOutputBetweenToolCalls()
     {

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
@@ -10,6 +11,8 @@ using Grpc.Core;
 using Grpc.Net.Client;
 using NetRatel.AgentGateway.Contracts.V1;
 using NetRatel.Client.Service.Tasks;
+using NetRatel.Shared.Contracts.Jobs;
+using NetRatel.Shared.Contracts.Tasks;
 
 namespace NetRatel.Client.Service.Gateway;
 
@@ -76,6 +79,7 @@ public sealed class AgentJobGatewayClient(GatewayClientOptions options, Action<s
                 throw new RpcException(new Status(StatusCode.Unavailable, "Job gateway closed before accepting the session."));
 
             writer.ValidateAccepted(call.ResponseStream.Current);
+            var supportsProtectedParameters = call.ResponseStream.Current.Accepted.Capabilities.Contains(ProtectedJobParameterRules.Capability);
             await writer.AttachAsync(call.RequestStream, streamLifetime.Token).ConfigureAwait(false);
             log($"Job gateway admitted. authority={call.ResponseStream.Current.Accepted.JobAuthority}.");
             ulong lastServerSequence = 0;
@@ -90,6 +94,11 @@ public sealed class AgentJobGatewayClient(GatewayClientOptions options, Action<s
                 {
                     case GatewayJobFrame.PayloadOneofCase.Dispatch:
                         HandleDispatch(frame.Dispatch, taskManager, writer, stoppingToken);
+                        break;
+                    case GatewayJobFrame.PayloadOneofCase.ProtectedDispatch:
+                        if (!supportsProtectedParameters)
+                            throw new RpcException(new Status(StatusCode.FailedPrecondition, "Protected job parameters were not negotiated."));
+                        HandleProtectedDispatch(frame.ProtectedDispatch, taskManager, writer, streamLifetime.Token);
                         break;
                     case GatewayJobFrame.PayloadOneofCase.Receipt:
                         writer.Acknowledge(frame.Receipt);
@@ -115,7 +124,27 @@ public sealed class AgentJobGatewayClient(GatewayClientOptions options, Action<s
         }
     }
 
-    private void HandleDispatch(JobStepDispatch dispatch, ClientTaskManager taskManager, JobGatewayWriter writer, CancellationToken cancellationToken)
+    private void HandleProtectedDispatch(ProtectedJobStepDispatch envelope, ClientTaskManager taskManager, JobGatewayWriter writer,
+        CancellationToken cancellationToken)
+    {
+        var now = DateTimeOffset.UtcNow;
+        if (envelope.Step is not { TaskType: TaskKinds.ExecShellCommand or TaskKinds.ExecLibraryScript } dispatch || envelope.ExpiresAtUtc is null || envelope.Parameters.Count != 0 &&
+            (dispatch.TaskType != TaskKinds.ExecLibraryScript || !ProtectedJobParameterRules.AreValid(envelope.Parameters)))
+            throw new RpcException(new Status(StatusCode.InvalidArgument, "The protected job dispatch is invalid."));
+        DateTimeOffset expires;
+        try { expires = envelope.ExpiresAtUtc.ToDateTimeOffset(); }
+        catch (Exception error) when (error is InvalidOperationException or ArgumentOutOfRangeException)
+        { throw new RpcException(new Status(StatusCode.InvalidArgument, "The protected job dispatch expiry is invalid.")); }
+        if (expires <= now || expires > now + ProtectedJobParameterRules.DispatchLifetime + ProtectedJobParameterRules.MaximumClockSkew)
+            throw new RpcException(new Status(StatusCode.FailedPrecondition, "The protected job dispatch expired or has an invalid lifetime."));
+        var parameters = envelope.Parameters.Count == 0 ? null :
+            envelope.Parameters.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase);
+        envelope.Parameters.Clear();
+        HandleDispatch(dispatch, taskManager, writer, cancellationToken, parameters, expires);
+    }
+
+    private void HandleDispatch(JobStepDispatch dispatch, ClientTaskManager taskManager, JobGatewayWriter writer,
+        CancellationToken cancellationToken, IReadOnlyDictionary<string, string>? protectedParameters = null, DateTimeOffset expires = default)
     {
         if (dispatch.JobRunId == 0 || dispatch.JobStepId == 0 || dispatch.JobStepRunId == 0 || dispatch.Ordinal < 0 ||
             dispatch.TenantId != writer.TenantId || string.IsNullOrWhiteSpace(dispatch.RequestId) || string.IsNullOrWhiteSpace(dispatch.CorrelationId) ||
@@ -131,11 +160,15 @@ public sealed class AgentJobGatewayClient(GatewayClientOptions options, Action<s
                 // Keep the response reader free to consume the durable acknowledgement.
                 await writer.PublishLifecycleAsync(dispatch.RequestId, JobLifecycleStatus.Accepted, null, null, 0).ConfigureAwait(false);
                 cancellationToken.ThrowIfCancellationRequested();
-                if (!taskManager.EnqueueGatewayCommand(dispatch.RequestId, dispatch.TaskType, dispatch.PayloadJson, dispatch.TenantId, dispatch.Environment))
+                var enqueued = expires == default
+                    ? taskManager.EnqueueGatewayCommand(dispatch.RequestId, dispatch.TaskType, dispatch.PayloadJson, dispatch.TenantId, dispatch.Environment)
+                    : taskManager.EnqueueProtectedJobStep(dispatch.RequestId, dispatch.TaskType, dispatch.PayloadJson, dispatch.TenantId, dispatch.Environment,
+                        protectedParameters, expires);
+                if (!enqueued)
                     await writer.PublishLifecycleAsync(dispatch.RequestId, JobLifecycleStatus.Failed, "{\"error\":\"job_queue_unavailable\"}", null, 0).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
-            catch (Exception exception) { log($"Job dispatch admission failed for {dispatch.RequestId}: {exception.Message}"); }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { return; }
+            catch (Exception exception) { log($"Job dispatch admission failed for {dispatch.RequestId}: {exception.GetType().Name}"); }
         }
     }
 
@@ -163,7 +196,7 @@ public sealed class AgentJobGatewayClient(GatewayClientOptions options, Action<s
         public Task WriteHelloAsync(IClientStreamWriter<AgentJobFrame> stream, CancellationToken cancellationToken) =>
             stream.WriteAsync(Stamp(new AgentJobFrame { Hello = new AgentJobHello
             {
-                Capabilities = { "job-lifecycle-v1", "gateway-execution", "progress-v1", "lifecycle-receipts-v1" }
+                Capabilities = { "job-lifecycle-v1", "gateway-execution", "progress-v1", "lifecycle-receipts-v1", ProtectedJobParameterRules.Capability }
             } }, 0), cancellationToken);
 
         public bool TryRegisterDispatch(JobStepDispatch dispatch) => !_receipts.ContainsKey(dispatch.RequestId) &&

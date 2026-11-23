@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using NetRatel.Infrastructure.Persistence;
@@ -108,18 +107,11 @@ internal sealed partial class TenantSecretService
             throw Invalid("Select exact client targets and at least one execution surface.");
         var accountId = RequiredText(scope.AccountId, 184, "Approved account ID");
         var windows = request.Mode == ExecutionIdentityMode.WindowsPassword;
-        if (windows ? !IsWindowsSid(accountId) : !IsUnixUid(accountId))
+        if (windows ? !ObservedExecutionIdentity.IsWindowsAccountId(accountId) : !ObservedExecutionIdentity.IsUnixAccountId(accountId))
             throw Invalid(windows ? "Supply the approved Windows account SID." : "Supply the approved Unix numeric UID.");
         return new(request.Mode, username, request.UsernameReference, domain, request.PasswordReference,
             scope with { AccountId = accountId, AgentIds = scope.AgentIds.Distinct().Order().ToArray() });
     }
-
-    private static bool IsWindowsSid(string value) => value.StartsWith("S-1-", StringComparison.Ordinal) &&
-        value[4..].Split('-') is { Length: >= 2 and <= 16 } segments && segments.All(segment =>
-            segment.Length > 0 && segment.All(char.IsAsciiDigit) && (segment.Length == 1 || segment[0] != '0'));
-
-    private static bool IsUnixUid(string value) => uint.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var uid) &&
-        uid != uint.MaxValue && uid.ToString(CultureInfo.InvariantCulture) == value;
 
     private Task<CredentialProfileRecord> GetProfileRecordAsync(int tenantId, Guid profileId, CancellationToken ct) =>
         GetEntityAsync(db.CredentialProfiles, x => x.TenantId == tenantId && x.Id == profileId, ct);
