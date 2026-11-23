@@ -42,6 +42,15 @@ public static class JobAggregateModelConfiguration
 {
     public static void ConfigureJobAggregateModel(this ModelBuilder model)
     {
+        model.Entity<JobParameterDefinition>(entity =>
+        {
+            entity.HasIndex(row => row.ProviderDefaultConnectionId);
+            entity.ToTable("JobParameters", table => table.HasCheckConstraint("CK_JobParameters_ProviderDefault", """
+                ("ProviderDefaultReferenceJson" IS NULL AND "ProviderDefaultConnectionId" IS NULL AND "ProviderDefaultLocator" IS NULL) OR
+                ("ProviderDefaultReferenceJson" IS NOT NULL AND "ProviderDefaultConnectionId" IS NOT NULL AND "ProviderDefaultLocator" IS NOT NULL AND
+                 lower("Type") = 'secret' AND "DefaultValue" IS NULL AND "ProtectedDefaultValue" IS NULL)
+                """));
+        });
         model.Entity<JobDefinition>(entity =>
         {
             entity.Property(row => row.TargetJson).HasColumnType("text");

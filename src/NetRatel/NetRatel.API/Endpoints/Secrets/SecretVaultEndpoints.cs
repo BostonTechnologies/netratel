@@ -46,7 +46,9 @@ internal static partial class SecretVaultEndpoints
         {
             SubmitProtectedJobInputs = IsHuman(http) && http.User.HasClaim(claim => claim.Type == "netratel_principal_id") &&
                 Allowed(NetRatelPermissions.JobManagement) &&
-                Allowed(NetRatelPermissions.SecretBrowse) && Allowed(NetRatelPermissions.SecretUse) && Allowed(NetRatelPermissions.SecretReveal)
+                Allowed(NetRatelPermissions.SecretBrowse) && Allowed(NetRatelPermissions.SecretUse) && Allowed(NetRatelPermissions.SecretReveal),
+            SaveProtectedJobDefaults = Allowed(NetRatelPermissions.JobManagement) &&
+                Allowed(NetRatelPermissions.SecretBrowse) && Allowed(NetRatelPermissions.SecretUse)
         });
     }
 

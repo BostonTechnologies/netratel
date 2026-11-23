@@ -89,10 +89,11 @@
                             {
                                 <MudButton Variant="Variant.Outlined" OnClick="@(() => PickProviderInputAsync(p))" Disabled="_isSubmitting"
                                            aria-label="@($"Choose secret for {p.Name}")">Choose secret</MudButton>
-                                @if (_providerInputs.TryGetValue(p.Name, out var reference))
+                                @if ((_providerInputs.GetValueOrDefault(p.Name) ?? p.DefaultSecretReference) is { } reference)
                                 {
                                     <MudText Typo="Typo.caption" Style="overflow-wrap:anywhere">@SecretVaultPresentation.Reference(reference)</MudText>
                                 }
+                                else if (p.HasProviderDefault) { <MudText Typo="Typo.caption">Saved provider reference</MudText> }
                             }
                             else if (type == "bool")
                             {
@@ -171,15 +172,10 @@
     private bool CanRun => !_isSubmitting && !_submitted && _params is not null && !string.IsNullOrWhiteSpace(_startedBy)
         && ValidInputs && RuntimeInputError is null && (Job.Target is null || !_targetsLoading && _launchPreview is not null);
 
-    protected override async Task OnInitializedAsync()
+    protected override Task OnInitializedAsync()
     {
         _runtimeValues = string.Join("\n", Job.Target?.RuntimeInput?.DefaultValues ?? []);
-        await LoadParametersAsync();
-        if (Job.TenantId is not { } tenantId || _params?.Any(p => p.Type.Equals("secret", StringComparison.OrdinalIgnoreCase)) != true) return;
-        var ct = _dispose.Token;
-        try { _providerInputsAllowed = (await new SecretVaultApi(HttpClients).PermissionsAsync(tenantId, ct)).SubmitProtectedJobInputs; }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
-        catch (Exception error) when (error is SecretVaultUiException or HttpRequestException) { _providerInputsAllowed = false; }
+        return LoadParametersAsync();
     }
     private async Task LoadParametersAsync()
     {
@@ -189,9 +185,19 @@
         try
         {
             _params = (await JobApi.GetJobParamsAsync(Job.Id)).ToList();
+            if (Job.TenantId is { } tenantId && _params.Any(p => p.Type.Equals("secret", StringComparison.OrdinalIgnoreCase)))
+            {
+                var ct = _dispose.Token;
+                try { _providerInputsAllowed = (await new SecretVaultApi(HttpClients).PermissionsAsync(tenantId, ct)).SubmitProtectedJobInputs; }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
+                catch (Exception error) when (error is SecretVaultUiException or HttpRequestException) { _providerInputsAllowed = false; }
+            }
             foreach (var p in _params)
                 if (!_values.ContainsKey(p.Name))
+                {
                     _values[p.Name] = p.Type.Equals("bool", StringComparison.OrdinalIgnoreCase) && string.IsNullOrWhiteSpace(p.Default) ? "false" : p.Default ?? string.Empty;
+                    if (_providerInputsAllowed && p.HasProviderDefault) _providerMode.Add(p.Name);
+                }
             await MudDialog.SetOptionsAsync(MudDialog.Options with { MaxWidth = _params.Count > 1 ? MaxWidth.Large : MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
         }
         catch { _parameterLoadFailed = true; _params = null; }
@@ -200,7 +206,7 @@
     }
     private string? GetValue(string key) => _values.GetValueOrDefault(key);
     private string? ValidateInput(JobParamDto parameter) => _providerMode.Contains(parameter.Name)
-        ? (_providerInputs.ContainsKey(parameter.Name) ? null : "Choose a secret reference.")
+        ? (_providerInputs.ContainsKey(parameter.Name) || parameter.HasProviderDefault ? null : "Choose a secret reference.")
         : JobParameterInput.Validate(parameter.Type, GetValue(parameter.Name), parameter.Required && !parameter.HasProtectedDefault, parameter.OptionsJson);
     private string? FieldError(JobParamDto p) => _touched.Contains(p.Name) || !string.IsNullOrWhiteSpace(GetValue(p.Name)) ? ValidateInput(p) : null;
     private Task SetProviderModeAsync(JobParamDto parameter, bool provider)
@@ -215,7 +221,7 @@
         var ct = _dispose.Token;
         var picker = await Dialogs.ShowAsync<SecretPickerDialog>("Choose job secret", new DialogParameters<SecretPickerDialog>
         {
-            { value => value.TenantId, tenantId }, { value => value.Current, _providerInputs.GetValueOrDefault(parameter.Name) },
+            { value => value.TenantId, tenantId }, { value => value.Current, _providerInputs.GetValueOrDefault(parameter.Name) ?? parameter.DefaultSecretReference },
             { value => value.OwnerLifetime, ct }
         }, SecretVaultPresentation.Options);
         if (await picker.Result is not { Canceled: false, Data: SecretReference reference } || ct.IsCancellationRequested) return;

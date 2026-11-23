@@ -15,12 +15,15 @@ public interface ITenantSecretService
     Task<SecretEntryMetadata> WriteAsync(int tenantId, Guid connectionId, WriteSecretEntryRequest request, CancellationToken ct);
     Task<SecretDeletionResult> DeleteAsync(int tenantId, Guid connectionId, long expectedConnectionRevision, DeleteSecretEntryRequest request, CancellationToken ct);
     Task<RevealedSecret> RevealAsync(int tenantId, SecretReference reference, CancellationToken ct);
+    Task<BoundSecretReference> BindReferenceAsync(int tenantId, SecretReference reference, CancellationToken ct);
     Task<IReadOnlyList<ResolvedSecret>> ResolveForExecutionAsync(int tenantId, IReadOnlyList<SecretReference> references, CancellationToken ct);
     Task<CredentialProfile[]> ListProfilesAsync(int tenantId, CancellationToken ct);
     Task<CredentialProfile> GetProfileAsync(int tenantId, Guid profileId, CancellationToken ct);
     Task<CredentialProfile> SaveProfileAsync(int tenantId, Guid? profileId, SaveCredentialProfileRequest request, CancellationToken ct);
     Task DeleteProfileAsync(int tenantId, Guid profileId, long expectedRevision, CancellationToken ct);
 }
+
+public sealed record BoundSecretReference(SecretReference Reference, long ScopeRevision);
 
 // Server-side execution material. It is never a read model or an actor message.
 public sealed class ResolvedSecret(SecretReference exactReference, long scopeRevision, string value)

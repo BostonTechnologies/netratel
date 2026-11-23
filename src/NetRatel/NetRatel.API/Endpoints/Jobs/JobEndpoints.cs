@@ -48,7 +48,8 @@ public static class JobEndpoints
             if (!await CanManageAsync(http, access, detail.Job.TenantId, ct)) return Results.Forbid();
             var summaries = await BuildSummariesAsync(db, [id], ct);
             var dto = MapJob(detail.Job, (await tenants.ListAsync(ct)).ToDictionary(x => x.TenantId, x => x.Name), await db.Agents.AsNoTracking().ToDictionaryAsync(x => x.Id, ct), summaries.GetValueOrDefault(id));
-            return Results.Ok(new JobWithDetailsDto(dto, detail.Steps.Select(MapStep).ToList(), detail.Params.Select(MapParam).ToList()));
+            var browse = await access.AuthorizeAsync(http.User, NetRatelPermissions.SecretBrowse, detail.Job.TenantId, ct);
+            return Results.Ok(new JobWithDetailsDto(dto, detail.Steps.Select(MapStep).ToList(), detail.Params.Select(p => MapParam(p, browse)).ToList()));
         });
         group.MapPost("/", async ([FromBody] CreateJobRequest request, HttpContext http, [FromServices] IEffectiveAccessService access, IJobDefinitionService jobs, [FromServices] OrchestratorDbContext db, IEventRecorder events, ICorrelationContext correlation, CancellationToken ct) =>
         {
@@ -112,21 +113,30 @@ public static class JobEndpoints
         group.MapGet("/{id:long}/params", async (ulong id, HttpContext http, IJobDefinitionService jobs, [FromServices] IEffectiveAccessService access, CancellationToken ct) =>
         {
             var job = await jobs.GetAsync(id, ct); if (job is null) return Results.NotFound();
-            return !await CanManageAsync(http, access, job.TenantId, ct) ? Results.Forbid() : Results.Ok((await jobs.ListParamsAsync(id, ct)).Select(MapParam));
+            if (!await CanManageAsync(http, access, job.TenantId, ct)) return Results.Forbid();
+            var browse = await access.AuthorizeAsync(http.User, NetRatelPermissions.SecretBrowse, job.TenantId, ct);
+            return Results.Ok((await jobs.ListParamsAsync(id, ct)).Select(p => MapParam(p, browse)));
         });
         group.MapPost("/{id:long}/params", async (ulong id, [FromBody] AddJobParamRequest r, HttpContext http, IJobDefinitionService jobs, [FromServices] IEffectiveAccessService access, CancellationToken ct) =>
         {
             var job = await jobs.GetAsync(id, ct); if (job is null) return Results.NotFound();
-            return !await CanManageAsync(http, access, job.TenantId, ct) ? Results.Forbid() : (await jobs.AddParamAsync(new AddJobParameterCommand(id, r.Name, r.Type, r.Required, r.Default, r.Description, r.OptionsJson), ct)) is { } p ? Results.Ok(MapParam(p)) : Results.NotFound();
+            if (!await CanManageAsync(http, access, job.TenantId, ct) || r.DefaultSecretReference is not null &&
+                !await access.AuthorizeAsync(http.User, NetRatelPermissions.SecretUse, job.TenantId, ct)) return Results.Forbid();
+            var param = await jobs.AddParamAsync(new AddJobParameterCommand(id, r.Name, r.Type, r.Required, r.Default, r.Description, r.OptionsJson)
+                { DefaultSecretReference = r.DefaultSecretReference, ExpectedSecretTenantId = job.TenantId }, ct);
+            var browse = await access.AuthorizeAsync(http.User, NetRatelPermissions.SecretBrowse, job.TenantId, ct);
+            return param is null ? Results.NotFound() : Results.Ok(MapParam(param, browse));
         });
         group.MapPut("/params/{id:long}", async (ulong id, [FromBody] UpdateJobParamRequest r, HttpContext http, [FromServices] IEffectiveAccessService access, [FromServices] OrchestratorDbContext db, IJobDefinitionService jobs, CancellationToken ct) =>
         {
             var scope = await JobScopeForParameterAsync(db, id, ct); if (scope is null) return Results.NotFound();
-            if (!await CanManageAsync(http, access, scope.TenantId, ct)) return Results.Forbid();
+            if (!await CanManageAsync(http, access, scope.TenantId, ct) || r.DefaultSecretReference is not null &&
+                !await access.AuthorizeAsync(http.User, NetRatelPermissions.SecretUse, scope.TenantId, ct)) return Results.Forbid();
             if (r.ClearProtectedDefault && r.Default is not null) return Results.BadRequest("Choose one protected default change.");
             var param = await jobs.UpdateParamAsync(new UpdateJobParameterCommand(id, r.Name, r.Type, r.Required, r.Default, r.Description, r.OptionsJson)
-                { ClearProtectedDefault = r.ClearProtectedDefault }, ct);
-            return param is null ? Results.NotFound() : Results.Ok(MapParam(param));
+                { ClearProtectedDefault = r.ClearProtectedDefault, DefaultSecretReference = r.DefaultSecretReference, ExpectedSecretTenantId = scope.TenantId }, ct);
+            var browse = await access.AuthorizeAsync(http.User, NetRatelPermissions.SecretBrowse, scope.TenantId, ct);
+            return param is null ? Results.NotFound() : Results.Ok(MapParam(param, browse));
         });
         group.MapDelete("/params/{id:long}", async (ulong id, HttpContext http, [FromServices] IEffectiveAccessService access, [FromServices] OrchestratorDbContext db, IJobDefinitionService jobs, CancellationToken ct) =>
         {
@@ -236,8 +246,9 @@ public static class JobEndpoints
         return string.IsNullOrWhiteSpace(runner) ? label : $"{runner}: {label}";
     }
     private static bool Matches(JobDto job, string? search) => string.IsNullOrWhiteSpace(search) || ($"{job.Name} {job.FolderPath} {job.TenantDisplayName} {job.ClientDisplayName}").Contains(search.Trim(), StringComparison.OrdinalIgnoreCase);
-    private static JobParamDto MapParam(JobParameterInfo p) => new(p.Id, p.JobId, p.Name, p.Type, p.Required, p.DefaultValue, p.Description, p.OptionsJson)
-        { HasProtectedDefault = p.HasProtectedDefault };
+    private static JobParamDto MapParam(JobParameterInfo p, bool browse) => new(p.Id, p.JobId, p.Name, p.Type, p.Required, p.DefaultValue, p.Description, p.OptionsJson)
+        { HasProtectedDefault = p.HasProtectedDefault, HasProviderDefault = p.ProviderDefault is not null,
+            DefaultSecretReference = browse ? p.ProviderDefault?.Reference : null };
     private static JobStepDto MapStep(JobStepInfo s) => new(s.Id, s.JobId, s.Ordinal, (JobStepTypeDto)s.Type, s.Runner, s.Command, s.ScriptId, s.PayloadJson, s.Enabled);
     private static string NormalizeFolder(string? folder) { var value = string.IsNullOrWhiteSpace(folder) ? "/" : folder.Replace('\\', '/'); return (value.StartsWith('/') ? value : "/" + value).TrimEnd('/') + "/"; }
     private static Task RecordAsync(IEventRecorder events, ICorrelationContext correlation, string type, JobDefinitionInfo job, string action, CancellationToken ct, string? actor = null) => events.RecordAsync(new DomainEvent { EventType = type, Source = "Orchestration", CorrelationId = correlation.GetOrCreate(), TenantId = job.TenantId?.ToString(), EntityId = job.Id.ToString(), Severity = "Info", Message = $"Job {job.Name} {action}.", Payload = new { job.Id, job.TenantId, job.AgentId, Actor = actor } }, ct);

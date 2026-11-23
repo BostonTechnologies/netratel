@@ -1,15 +1,20 @@
 using System.Linq.Expressions;
 using Microsoft.EntityFrameworkCore;
 using NetRatel.Application.Jobs;
+using NetRatel.Application.Secrets;
 using NetRatel.Infrastructure.Persistence;
+using NetRatel.Infrastructure.Secrets;
 using NetRatel.Shared.Contracts.Jobs;
+using NetRatel.Shared.Contracts.Secrets;
 using System.Text.Json;
 
 namespace NetRatel.Infrastructure.Services;
 
-public sealed class JobDefinitionService(OrchestratorDbContext db, JobSecretDefaultProtection? secretDefaults = null) : IJobDefinitionService
+public sealed class JobDefinitionService(OrchestratorDbContext db, JobSecretDefaultProtection? secretDefaults = null,
+    ITenantSecretService? vault = null) : IJobDefinitionService
 {
     private readonly OrchestratorDbContext _db = db;
+    private static readonly JsonSerializerOptions ProviderDefaultJson = new(JsonSerializerDefaults.Web);
 
     public async Task<IReadOnlyList<JobDefinitionInfo>> ListAsync(CancellationToken ct = default)
         => await _db.Jobs
@@ -87,8 +92,9 @@ public sealed class JobDefinitionService(OrchestratorDbContext db, JobSecretDefa
         var effectiveTarget = command.Target ?? (command.AgentId.HasValue ? null : ReadTarget(job.TargetJson));
         await JobTargetDefinitionGuard.RequireAsync(_db, command.TenantId ?? job.TenantId, effectiveTarget, ct);
         var parameterDefaults = await _db.JobParameters.AsNoTracking().Where(x => x.JobId == job.Id)
-            .Select(x => new { x.Name, x.DefaultValue, x.ProtectedDefaultValue }).ToArrayAsync(ct);
-        if (command.TenantId.HasValue && command.TenantId != job.TenantId && parameterDefaults.Any(x => x.ProtectedDefaultValue is not null))
+            .Select(x => new { x.Name, x.DefaultValue, x.ProtectedDefaultValue, x.ProviderDefaultReferenceJson }).ToArrayAsync(ct);
+        if (command.TenantId.HasValue && command.TenantId != job.TenantId &&
+            parameterDefaults.Any(x => x.ProtectedDefaultValue is not null || x.ProviderDefaultReferenceJson is not null))
             throw new InvalidOperationException("Clear or rebind the protected defaults before moving this job to another tenant.");
         JobTargetScheduleValidation.RequireComplete(effectiveTarget, command.OptionsJson ?? job.OptionsJson,
             parameterDefaults.Select(x => new KeyValuePair<string, string?>(x.Name, x.DefaultValue)));
@@ -184,6 +190,11 @@ public sealed class JobDefinitionService(OrchestratorDbContext db, JobSecretDefa
             Description = NormalizeNullable(command.Description),
             OptionsJson = NormalizeNullable(command.OptionsJson)
         };
+        if (command.DefaultSecretReference is { } reference)
+        {
+            if (!secret || command.DefaultValue is not null) throw InvalidSecretDefault();
+            await SaveProviderDefaultAsync(row, reference, command.ExpectedSecretTenantId, ct);
+        }
 
         await RequireParameterScheduleAsync(row.JobId, null, row.Name, row.DefaultValue, ct);
         _db.JobParameters.Add(row);
@@ -217,21 +228,32 @@ public sealed class JobDefinitionService(OrchestratorDbContext db, JobSecretDefa
         var oldDefault = row.Type.Equals("secret", StringComparison.OrdinalIgnoreCase) ? null : row.DefaultValue;
         if (command.ClearProtectedDefault && command.DefaultValue is not null)
             throw new ArgumentException("Supply either a replacement default or remove the protected default.");
+        if (command.DefaultSecretReference is not null && (!secret || command.ClearProtectedDefault || command.DefaultValue is not null))
+            throw InvalidSecretDefault();
         await RequireParameterScheduleAsync(row.JobId, row.Id, command.Name?.Trim() ?? row.Name, secret ? null : command.DefaultValue ?? oldDefault, ct);
         if (command.Name is not null) row.Name = command.Name.Trim();
         row.Type = type;
         if (command.Required.HasValue) row.Required = command.Required.Value;
         if (secret)
         {
-            if (command.ClearProtectedDefault)
+            if (command.DefaultSecretReference is { } reference)
+                await SaveProviderDefaultAsync(row, reference, command.ExpectedSecretTenantId, ct);
+            else if (command.ClearProtectedDefault)
+            {
                 (row.ProtectedDefaultValue, row.DefaultValue) = (null, null);
+                ClearProviderDefault(row);
+            }
             else if (command.DefaultValue is not null || row.DefaultValue is not null)
+            {
                 Defaults().Store(row, await ReadJobTenantAsync(row.JobId, ct), command.DefaultValue ?? row.DefaultValue);
+                ClearProviderDefault(row);
+            }
         }
         else
         {
             row.DefaultValue = command.DefaultValue ?? oldDefault;
             row.ProtectedDefaultValue = null;
+            ClearProviderDefault(row);
         }
         if (command.Description is not null) row.Description = NormalizeNullable(command.Description);
         if (command.OptionsJson is not null) row.OptionsJson = NormalizeNullable(command.OptionsJson);
@@ -493,7 +515,7 @@ public sealed class JobDefinitionService(OrchestratorDbContext db, JobSecretDefa
             row.Required,
             row.Type.Equals("secret", StringComparison.OrdinalIgnoreCase) ? null : row.DefaultValue,
             row.Description,
-            row.OptionsJson) { HasProtectedDefault = row.ProtectedDefaultValue is not null };
+            row.OptionsJson) { HasProtectedDefault = row.ProtectedDefaultValue is not null, ProviderDefault = ReadProviderDefault(row.ProviderDefaultReferenceJson) };
 
     private static JobStepInfo Map(JobStepDefinition row)
         => new(
@@ -533,7 +555,31 @@ public sealed class JobDefinitionService(OrchestratorDbContext db, JobSecretDefa
             row.Required,
             row.Type.ToLower() == "secret" ? null : row.DefaultValue,
             row.Description,
-            row.OptionsJson) { HasProtectedDefault = row.ProtectedDefaultValue != null };
+            row.OptionsJson) { HasProtectedDefault = row.ProtectedDefaultValue != null, ProviderDefault = ReadProviderDefault(row.ProviderDefaultReferenceJson) };
+
+    private async Task SaveProviderDefaultAsync(JobParameterDefinition row, SecretReference reference, int? expectedTenant, CancellationToken ct)
+    {
+        var tenant = await ReadJobTenantAsync(row.JobId, ct);
+        if (tenant is not > 0 || tenant != expectedTenant || vault is null || !ProtectedJobParameterRules.IsName(row.Name))
+            throw InvalidSecretDefault();
+        await SecretConsumerQuery.LockTenantAsync(_db, tenant.Value, ct);
+        BoundSecretReference bound;
+        try { bound = await vault.BindReferenceAsync(tenant.Value, reference, ct); }
+        catch (SecretProviderException error) { throw new JobTargetValidationException("job_provider_default_unavailable", error.Message); }
+        row.ProviderDefaultReferenceJson = JsonSerializer.Serialize(bound, ProviderDefaultJson);
+        row.ProviderDefaultConnectionId = bound.Reference.ConnectionId;
+        row.ProviderDefaultLocator = bound.Reference.Locator;
+        (row.ProtectedDefaultValue, row.DefaultValue) = (null, null);
+    }
+
+    internal static BoundSecretReference? ReadProviderDefault(string? json) => json is null ? null :
+        JsonSerializer.Deserialize<BoundSecretReference>(json, ProviderDefaultJson) ?? throw InvalidSecretDefault();
+
+    private static void ClearProviderDefault(JobParameterDefinition row) =>
+        (row.ProviderDefaultReferenceJson, row.ProviderDefaultConnectionId, row.ProviderDefaultLocator) = (null, null, null);
+
+    private static JobTargetValidationException InvalidSecretDefault() => new("job_provider_default_invalid",
+        "Select one saved secret reference for a named Secret parameter in this job's tenant.");
 
     private JobSecretDefaultProtection Defaults() => secretDefaults ?? throw new InvalidOperationException("The API secret default protector is unavailable.");
     private Task<int?> ReadJobTenantAsync(long jobId, CancellationToken ct) => _db.Jobs.AsNoTracking().Where(job => job.Id == jobId)

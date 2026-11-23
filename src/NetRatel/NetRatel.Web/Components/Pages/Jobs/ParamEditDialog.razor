@@ -1,7 +1,13 @@
 @using System.Text.Json
 @using NetRatel.Shared.Contracts.Jobs
+@using NetRatel.Shared.Contracts.Secrets
+@using NetRatel.Web.Components.Shared.Secrets
+@using NetRatel.Web.Services.Tenants
+@implements IDisposable
 @inject IJobApiClient JobApi
 @inject ISnackbar Snackbar
+@inject IDialogService Dialogs
+@inject IHttpClientFactory HttpClients
 
 <MudDialog Style="width:min(680px,calc(100vw - 32px))" ContentStyle="max-height:calc(100dvh - 180px);overflow-y:auto">
     <DialogContent>
@@ -14,7 +20,27 @@
                 </MudSelect>
             </div>
             <MudSwitch T="bool" @bind-Value="_required" Color="Color.Primary" Disabled="_saving">Required at run time</MudSwitch>
-            @if (_type == "bool")
+            @if (_type == "secret" && _canSelectProvider)
+            {
+                <MudCheckBox T="bool" @bind-Value="_useProvider" Label="Use a provider reference as the default" Disabled="@(_saving || _clearProtectedDefault)" />
+            }
+            @if (_type == "secret" && _useProvider)
+            {
+                @if (_canSelectProvider)
+                {
+                    <MudButton Variant="Variant.Outlined" OnClick="PickDefaultAsync" Disabled="@(_saving || _clearProtectedDefault)">Choose default secret</MudButton>
+                }
+                @if (_defaultReference is { } reference)
+                {
+                    <MudText Typo="Typo.caption" Style="overflow-wrap:anywhere">@SecretVaultPresentation.Reference(reference)</MudText>
+                }
+                else if (ExistingParam?.HasProviderDefault == true)
+                {
+                    <MudText Typo="Typo.caption">Saved provider reference</MudText>
+                }
+                @if (DefaultError is { } error) { <MudText Typo="Typo.caption" Color="Color.Error" role="alert">@error</MudText> }
+            }
+            else if (_type == "bool")
             {
                 <MudSelect T="string" @bind-Value="_default" Label="Default value" InputId="@FieldId("default-value")" UserAttributes="@JobParameterInput.OperationalAttributes(FieldId("default-value"))" Clearable="true" Variant="Variant.Outlined" Margin="Margin.Dense" Error="@(DefaultError is not null)" ErrorText="@DefaultError" Disabled="_saving">
                     <MudSelectItem T="string" Value="@("true")">True</MudSelectItem>
@@ -32,7 +58,7 @@
             {
                 <MudTextField @bind-Value="_default" Label="Default value" InputId="@FieldId("default-value")" UserAttributes="@JobParameterInput.OperationalAttributes(FieldId("default-value"), _type == "secret")" InputType="@(_type == "secret" ? InputType.Password : InputType.Text)" InputMode="@(_type == "int" ? InputMode.numeric : InputMode.text)" Lines="@(_type == "json" ? 3 : 1)" Variant="Variant.Outlined" Margin="Margin.Dense" Error="@(DefaultError is not null)" ErrorText="@DefaultError" Disabled="@(_saving || _clearProtectedDefault)" HelperText="@DefaultHelp" />
             }
-            @if (_type == "secret" && ExistingParam?.HasProtectedDefault == true)
+            @if (_type == "secret" && (ExistingParam?.HasProtectedDefault == true || ExistingParam?.HasProviderDefault == true))
             {
                 <MudCheckBox T="bool" @bind-Value="_clearProtectedDefault" Disabled="_saving" Label="Remove the protected default" />
             }
@@ -59,7 +85,9 @@
 @code {
     [CascadingParameter] public IMudDialogInstance MudDialog { get; set; } = default!;
     [Parameter] public ulong JobId { get; set; }
+    [Parameter] public int? TenantId { get; set; }
     [Parameter] public JobParamDto? ExistingParam { get; set; }
+    private readonly CancellationTokenSource _lifetime = new();
     private readonly string _formId = $"job-operation-{Guid.NewGuid():N}";
     private string FieldId(string field) => $"{_formId}-{field}";
     private readonly Dictionary<string, string> _typeOptions = new()
@@ -67,9 +95,13 @@
     private string _name = string.Empty, _type = "string", _optionsText = string.Empty;
     private string? _default, _description, _optionsJson, _saveError;
     private bool _required, _saving, _saved, _validated, _advanced, _clearProtectedDefault;
+    private bool _canSelectProvider, _useProvider;
+    private SecretReference? _defaultReference;
     private string DefaultHelp => _type == "secret" && ExistingParam?.HasProtectedDefault == true
         ? "Leave blank to keep the protected default. Enter a value to replace it." : "Optional. Used when no value is supplied.";
-    private string? DefaultError => _validated ? JobParameterInput.Validate(_type, _default, false, _optionsJson) : null;
+    private string? DefaultError => !_validated ? null : _type == "secret" && _useProvider
+        ? (_defaultReference is null && ExistingParam?.HasProviderDefault != true && !_clearProtectedDefault ? "Choose a default secret reference." : null)
+        : JobParameterInput.Validate(_type, _default, false, _optionsJson);
     private string? OptionsError
     {
         get
@@ -80,13 +112,36 @@
             catch (JsonException) { return "Enter valid options JSON."; }
         }
     }
-    protected override void OnInitialized()
+    protected override async Task OnInitializedAsync()
     {
-        if (ExistingParam is not { } p) return;
-        _name = p.Name; _type = p.Type; _required = p.Required; _default = p.Default;
-        _description = p.Description; _optionsJson = p.OptionsJson;
-        _optionsText = string.Join('\n', JobParameterInput.SelectOptions(_optionsJson));
-        _advanced = !string.IsNullOrWhiteSpace(_optionsJson) && (_type != "select" || JobParameterInput.SelectOptions(_optionsJson).Count == 0);
+        if (ExistingParam is { } p)
+        {
+            _name = p.Name; _type = p.Type; _required = p.Required; _default = p.Default;
+            _description = p.Description; _optionsJson = p.OptionsJson;
+            _optionsText = string.Join('\n', JobParameterInput.SelectOptions(_optionsJson));
+            _advanced = !string.IsNullOrWhiteSpace(_optionsJson) && (_type != "select" || JobParameterInput.SelectOptions(_optionsJson).Count == 0);
+            (_useProvider, _defaultReference) = (p.HasProviderDefault, p.DefaultSecretReference);
+        }
+        if (TenantId is not { } tenant) return;
+        var ct = _lifetime.Token;
+        try
+        {
+            var permissions = await new SecretVaultApi(HttpClients).PermissionsAsync(tenant, ct);
+            _canSelectProvider = permissions.SaveProtectedJobDefaults;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
+        catch (Exception error) when (error is SecretVaultUiException or HttpRequestException) { _canSelectProvider = false; }
+    }
+    private async Task PickDefaultAsync()
+    {
+        if (!_canSelectProvider || TenantId is not { } tenant) return;
+        var ct = _lifetime.Token;
+        var picker = await Dialogs.ShowAsync<SecretPickerDialog>("Choose default secret", new DialogParameters<SecretPickerDialog>
+        {
+            { x => x.TenantId, tenant }, { x => x.Current, _defaultReference }, { x => x.OwnerLifetime, ct }
+        }, SecretVaultPresentation.Options);
+        if (await picker.Result is { Canceled: false, Data: SecretReference reference } && !ct.IsCancellationRequested)
+            _defaultReference = reference;
     }
     private void SetOptionsText(string? value)
     {
@@ -107,11 +162,14 @@
         _saving = true;
         try
         {
+            var providerDefault = _type == "secret" && _useProvider && !_clearProtectedDefault && _defaultReference != ExistingParam?.DefaultSecretReference
+                ? _defaultReference : null;
+            var manualDefault = _type == "secret" && (_useProvider || _clearProtectedDefault || string.IsNullOrEmpty(_default)) ? null : _default;
             var param = ExistingParam is null
-                ? await JobApi.AddJobParamAsync(JobId, new AddJobParamRequest(_name, _type, _required, _default, _description, _optionsJson))
-                : await JobApi.UpdateJobParamAsync(ExistingParam.Id, new UpdateJobParamRequest(_name, _type, _required,
-                    _type == "secret" && (_clearProtectedDefault || string.IsNullOrEmpty(_default)) ? null : _default, _description, _optionsJson)
-                    { ClearProtectedDefault = _type == "secret" && _clearProtectedDefault });
+                ? await JobApi.AddJobParamAsync(JobId, new AddJobParamRequest(_name, _type, _required, manualDefault, _description, _optionsJson)
+                    { DefaultSecretReference = providerDefault })
+                : await JobApi.UpdateJobParamAsync(ExistingParam.Id, new UpdateJobParamRequest(_name, _type, _required, manualDefault, _description, _optionsJson)
+                    { ClearProtectedDefault = _type == "secret" && _clearProtectedDefault, DefaultSecretReference = providerDefault });
             _saved = true;
             Snackbar.Add("Parameter saved.", Severity.Success);
             MudDialog.Close(DialogResult.Ok(param));
@@ -120,4 +178,5 @@
         finally { _saving = false; }
     }
     private void Cancel() { if (!_saving) MudDialog.Cancel(); }
+    public void Dispose() { _lifetime.Cancel(); _lifetime.Dispose(); }
 }

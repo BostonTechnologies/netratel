@@ -1,4 +1,6 @@
 using NetRatel.Shared.Contracts.Jobs;
+using NetRatel.Shared.Contracts.Secrets;
+using NetRatel.Application.Secrets;
 
 namespace NetRatel.Application.Jobs;
 
@@ -39,6 +41,8 @@ public sealed record JobParameterInfo(
 {
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
     public bool HasProtectedDefault { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public BoundSecretReference? ProviderDefault { get; init; }
 }
 
 public sealed record JobStepInfo(
@@ -95,7 +99,11 @@ public sealed record AddJobParameterCommand(
     bool Required,
     string? DefaultValue,
     string? Description,
-    string? OptionsJson);
+    string? OptionsJson)
+{
+    public SecretReference? DefaultSecretReference { get; init; }
+    public int? ExpectedSecretTenantId { get; init; }
+}
 
 public sealed record UpdateJobParameterCommand(
     ulong ParamId,
@@ -107,6 +115,8 @@ public sealed record UpdateJobParameterCommand(
     string? OptionsJson)
 {
     public bool ClearProtectedDefault { get; init; }
+    public SecretReference? DefaultSecretReference { get; init; }
+    public int? ExpectedSecretTenantId { get; init; }
 }
 
 public sealed record AddJobStepCommand(

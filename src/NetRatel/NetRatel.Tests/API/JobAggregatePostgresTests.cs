@@ -65,10 +65,12 @@ public sealed partial class JobAggregatePostgresTests(PostgreSqlPersistenceFixtu
 
         var parent = await h.StartAsync(ct, request);
         Assert.Empty(h.Gateway.ProtectedValues);
+        Assert.Equal(SecretProviderFailure.InUse, (await Assert.ThrowsAsync<SecretProviderException>(() =>
+            vault.DeleteAsync(7, local.Id, local.Revision, new(entry.Locator, entry.Revision!, entry.Version!), ct))).Reason);
         await h.FillAsync(parent.Id, ct);
         var first = Assert.Single(h.Gateway.Active).Key;
         Assert.Empty(Assert.Single(h.Gateway.ProtectedValues).Parameters);
-        await vault.WriteAsync(7, local.Id, new()
+        var updated = await vault.WriteAsync(7, local.Id, new()
         { Locator = entry.Locator, ExpectedRevision = entry.Revision, ExpectedVersion = entry.Version, Value = rotated }, ct);
         await h.SucceedNodeAsync(first, ct);
         await h.FillAsync(parent.Id, ct);
@@ -105,6 +107,26 @@ public sealed partial class JobAggregatePostgresTests(PostgreSqlPersistenceFixtu
         await h.FillAsync(revoked.Id, ct);
         Assert.Equal(dispatched, h.Gateway.Dispatches.Count);
         Assert.Equal(JobRunState.Failed, (await h.ReadAsync(revoked.Id, ct)).Status);
+
+        h.Access.SecretUseAllowed = true;
+        var jobDefinitions = setup.ServiceProvider.GetRequiredService<IJobDefinitionService>();
+        var saved = await jobDefinitions.UpdateParamAsync(new(19, null, null, null, null, null, null)
+            { DefaultSecretReference = reference, ExpectedSecretTenantId = 7 }, ct);
+        Assert.Equal(reference, saved?.ProviderDefault?.Reference);
+        Assert.Null(saved?.DefaultValue);
+        var removal = new DeleteSecretEntryRequest(updated.Locator, updated.Revision!, updated.Version!);
+        Assert.Equal(SecretProviderFailure.InUse, (await Assert.ThrowsAsync<SecretProviderException>(() =>
+            vault.DeleteAsync(7, local.Id, local.Revision, removal, ct))).Reason);
+
+        var scheduledDefinition = await db.Jobs.SingleAsync(row => row.Id == 41, ct);
+        scheduledDefinition.OptionsJson = JobScheduleAuthority.Capture(
+            """{"schedule":{"enabled":true,"timeZoneId":"UTC","timeOfDay":"08:00","daysOfWeek":["Monday"]}}""",
+            new ClaimsPrincipal(new ClaimsIdentity([new Claim("netratel_principal_id", "synthetic-manager")], "fixture")));
+        await db.SaveChangesAsync(ct);
+        var schedule = await h.ScheduleAsync("schedule-with-provider-default", ct);
+        await h.FillAsync(schedule.Id, ct);
+        await h.SucceedNodeAsync(Assert.Single(h.Gateway.Active).Key, ct);
+        Assert.Equal(rotated, h.Gateway.ProtectedValues.Last().Parameters["Canary"]);
     }
 
     [Theory]

@@ -25,10 +25,14 @@ Use **Credentials** to save a profile if your role has `credential.profile.manag
 
 Local provider metadata and the new REST operations live under `/api/v1/tenants/{tenantId}/secret-vault`. In the generated API reference, use the **Secret vault** group. To remove a secret, profile or provider connection, preview the exact current revision and confirm with the returned token. The browser shows provider-specific deletion behavior before confirmation.
 
-## Protected inputs for interactive job runs
+## Protected inputs for jobs
 
 Declare a **Secret** input on the job and a matching **Secret** parameter on a Bash or PowerShell library script. In **Run Job**, choose **Secret provider** for that input and select a reference. The direct operator path requires job permission and the tenant's `secret.use` and `secret.reveal` permissions. Agents must advertise `protected-job-parameters-v1`.
+
+To reuse a reference, edit the job parameter and select **Use a provider reference as the default**. The reference retains the selected connection and its scope revision. A supplied manual run value takes precedence over the saved default. A schedule using a provider default uses the configuring operator's saved authority and rechecks that authority at dispatch.
 
 PowerShell receives the value through its named script parameter. Bash receives it in a shell-local `NETRATEL_SECRET_<parameter name>` variable, preserving case. For example, a Bash script with a declared `ApiToken` secret parameter can read `"$NETRATEL_SECRET_ApiToken"`. Use the matching library-script parameter to consume the value. An `@option.ApiToken@` placeholder in command text or a step payload is rejected during admission.
 
 The server saves the connection scope revision and selects exact versions once for an aggregate, as it prepares the first physical dispatch. It shares that selection across the aggregate's nodes and starts a new selection for each new run. Provider values reach a capable agent through the authenticated job stream and private parameter files. The agent registers the values with output redaction before starting the script.
+
+REST callers supply a `providerInputs` array on `POST /api/v1/jobruns/start/{id}`. Each item has a `parameterName` and a `reference` in the same format as the vault picker. The CLI accepts that array with `job-runs start --provider-inputs` or in the job request body supplied with `--body-file`.

@@ -325,16 +325,25 @@ public sealed class JobAggregateOrchestrator(
             if (mcpSnapshot is not null) await mcpAuthority!.RequireAllowedAsync(mcpSnapshot, plan.Nodes[0].AgentId, ct);
         }
         string? providerInputs = null;
-        if (request.ProviderInputs is { Count: > 0 })
+        var requestedInputs = JobProviderExecutionInputs.SelectBindings(snapshot.Definition, request);
+        if (requestedInputs.Length != 0)
         {
             try { await RequireProviderInputAuthorityAsync(sourceKind, principalId, credentialId, plan.TenantId, ct); }
             catch (ExecutionAdmissionDeniedException error)
             { throw new JobTargetValidationException("job_provider_input_denied", error.Message, StatusCodes.Status403Forbidden); }
+            if (db.Database.IsNpgsql())
+            {
+                // Provider removals take the matching exclusive tenant lock.
+                var tenant = await db.Database.SqlQuery<int>($"""
+                    SELECT "Id" AS "Value" FROM "Tenants" WHERE "Id" = {plan.TenantId} AND "DeletedAtUtc" IS NULL FOR SHARE
+                    """).SingleOrDefaultAsync(ct);
+                if (tenant == 0) throw new ExecutionAdmissionDeniedException("The tenant is no longer available for protected job admission.");
+            }
             await using var providerScope = scopes.CreateAsyncScope();
             try
             {
                 providerInputs = await providerScope.ServiceProvider.GetRequiredService<JobProviderExecutionInputs>()
-                    .AdmitAsync(plan.TenantId, snapshot, request, ct);
+                    .AdmitAsync(plan.TenantId, snapshot, request, requestedInputs, ct);
             }
             catch (SecretProviderException error)
             { throw new JobTargetValidationException("job_provider_input_unavailable", error.Message); }
@@ -583,7 +592,7 @@ public sealed class JobAggregateOrchestrator(
     {
         // Restricted automation use needs an independent immutable review. The
         // direct interactive path can use only authority that can already reveal.
-        if (source != "manual" || credentialId is not null || string.IsNullOrWhiteSpace(principalId))
+        if (source is not ("manual" or "schedule" or "request") || credentialId is not null || string.IsNullOrWhiteSpace(principalId))
             throw new ExecutionAdmissionDeniedException("Protected job inputs require authorized interactive admission or a reviewed execution source.");
         var principal = new ClaimsPrincipal(new ClaimsIdentity([new Claim("netratel_principal_id", principalId)], "NetclawSavedAuthority"));
         if (!await access.AuthorizeAsync(principal, NetRatelPermissions.SecretUse, tenantId, ct) ||

@@ -1029,7 +1029,7 @@
         _parameterDialogOpen = true;
         try
         {
-            var parameters = new DialogParameters { ["JobId"] = _jobId.Value, ["ExistingParam"] = param };
+            var parameters = new DialogParameters { ["JobId"] = _jobId.Value, ["ExistingParam"] = param, ["TenantId"] = _selectedTenant?.Id };
             // Keep the invoking control enabled while the provider traps focus in the child,
             // so the provider can restore it when that dialog closes.
             var dialog = await DialogService.ShowAsync<ParamEditDialog>(param is null ? "Add parameter" : "Edit parameter", parameters, ParameterDialogOptions);

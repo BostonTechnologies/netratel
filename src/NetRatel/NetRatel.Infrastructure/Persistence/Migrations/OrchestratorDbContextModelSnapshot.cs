@@ -3913,6 +3913,15 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.Property<string>("ProtectedDefaultValue")
                         .HasColumnType("text");
 
+                    b.Property<Guid?>("ProviderDefaultConnectionId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("ProviderDefaultLocator")
+                        .HasColumnType("text");
+
+                    b.Property<string>("ProviderDefaultReferenceJson")
+                        .HasColumnType("text");
+
                     b.Property<bool>("Required")
                         .HasColumnType("boolean");
 
@@ -3927,7 +3936,12 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("JobId");
 
-                    b.ToTable("JobParameters", (string)null);
+                    b.HasIndex("ProviderDefaultConnectionId");
+
+                    b.ToTable("JobParameters", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_JobParameters_ProviderDefault", "(\"ProviderDefaultReferenceJson\" IS NULL AND \"ProviderDefaultConnectionId\" IS NULL AND \"ProviderDefaultLocator\" IS NULL) OR\n(\"ProviderDefaultReferenceJson\" IS NOT NULL AND \"ProviderDefaultConnectionId\" IS NOT NULL AND \"ProviderDefaultLocator\" IS NOT NULL AND\n lower(\"Type\") = 'secret' AND \"DefaultValue\" IS NULL AND \"ProtectedDefaultValue\" IS NULL)");
+                        });
                 });
 
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.JobRunControlRecord", b =>

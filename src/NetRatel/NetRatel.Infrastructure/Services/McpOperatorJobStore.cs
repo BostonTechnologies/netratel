@@ -158,7 +158,8 @@ public sealed partial class McpOperatorJobStore(OrchestratorDbContext db) : IMcp
                 ExecutionPolicy = ReadPolicy(definition.ExecutionPolicyJson)
             },
             parameters.Select(parameter => new JobParameterInfo((ulong)parameter.Id, (ulong)parameter.JobId, parameter.Name,
-                parameter.Type, parameter.Required, parameter.DefaultValue, parameter.Description, parameter.OptionsJson)).ToArray(),
+                parameter.Type, parameter.Required, parameter.DefaultValue, parameter.Description, parameter.OptionsJson)
+            { ProviderDefault = JobDefinitionService.ReadProviderDefault(parameter.ProviderDefaultReferenceJson) }).ToArray(),
             definition.Steps.OrderBy(step => step.Ordinal).ThenBy(step => step.Id).Select(step => new JobStepInfo((ulong)step.Id,
                 (ulong)step.JobId, step.Ordinal, (JobStepKind)step.Type, step.Runner, step.Command,
                 step.ScriptId is { } scriptId ? (ulong)scriptId : null, step.PayloadJson, step.Enabled)).ToArray());

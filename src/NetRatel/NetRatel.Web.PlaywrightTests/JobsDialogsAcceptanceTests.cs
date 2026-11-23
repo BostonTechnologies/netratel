@@ -1,4 +1,9 @@
+using System.Text.Json;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Playwright;
+using NetRatel.Shared.Contracts.Jobs;
+using NetRatel.Shared.Contracts.Secrets;
+using NetRatel.Web.Services.Tenants;
 
 namespace NetRatel.Web.PlaywrightTests;
 
@@ -6,6 +11,54 @@ namespace NetRatel.Web.PlaywrightTests;
 [Trait("Category", "BrowserAcceptance")]
 public sealed class JobsDialogsAcceptanceTests(ClientsManagementBrowserFixture browserFixture) : IClassFixture<ClientsManagementBrowserFixture>
 {
+    [Fact]
+    public async Task Portrait_job_uses_saved_provider_defaults_and_submits_only_reference_metadata()
+    {
+        var accepted = new TaskCompletionSource<RunJobRequest>(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var fixture = await ClientsManagementFixtureHost.StartAsync(services =>
+        {
+            NewTaskWorkspaceFixture.AddServices(services);
+            new ScriptLibraryWorkspaceFixture().Register(services);
+            services.AddScoped<SecretVaultApi>();
+            JobsWorkspaceFixture.Configure(services, parameters: [new(1, 42, "Token", "secret", true, null, null, null)],
+                runAccepted: request => accepted.TrySetResult(request), secretVault: true);
+        });
+        await using var context = await ContextAsync(390, 844, "dark");
+        var page = await context.NewPageAsync();
+        await OpenAsync(page, fixture, "/jobs", 390);
+        await page.GetByRole(AriaRole.Button, new() { Name = "Edit Nightly backup", Exact = true }).ClickAsync();
+        var parent = page.Locator(".jobs-edit-dialog");
+        await SelectJobSectionAsync(parent, "Parameters");
+        await parent.GetByRole(AriaRole.Button, new() { Name = "Edit parameter Token", Exact = true }).ClickAsync();
+        await page.GetByRole(AriaRole.Checkbox, new() { Name = "Use a provider reference as the default" }).CheckAsync();
+        await PickAsync("Choose default secret");
+        await page.GetByRole(AriaRole.Button, new() { Name = "Save", Exact = true }).Last.ClickAsync();
+        await Assertions.Expect(page.Locator(".param-editor")).ToHaveCountAsync(0);
+        await parent.GetByRole(AriaRole.Button, new() { Name = "Cancel", Exact = true }).ClickAsync();
+        await page.GetByRole(AriaRole.Button, new() { Name = "Run Nightly backup", Exact = true }).ClickAsync();
+        var run = page.GetByRole(AriaRole.Dialog).Last;
+        await Assertions.Expect(run.GetByText("902 · Latest at execution", new() { Exact = true })).ToBeVisibleAsync();
+        await CaptureAsync(page, "job-provider-reference-portrait-dark");
+        await PickAsync("Choose secret for Token");
+        await run.GetByRole(AriaRole.Button, new() { Name = "Start Run", Exact = true }).ClickAsync();
+        var submitted = await accepted.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        var input = Assert.Single(submitted.ProviderInputs!);
+        Assert.Equal("Token", input.ParameterName);
+        Assert.Equal("902", input.Reference.Locator);
+        Assert.Equal(SecretVersionMode.LatestAtExecution, input.Reference.VersionMode);
+        using var manual = JsonDocument.Parse(submitted.InputsJson!);
+        Assert.False(manual.RootElement.TryGetProperty("Token", out _));
+
+        async Task PickAsync(string button)
+        {
+            await page.GetByRole(AriaRole.Button, new() { Name = button, Exact = true }).ClickAsync();
+            var picker = page.GetByRole(AriaRole.Dialog).Last;
+            await Assertions.Expect(picker.GetByText("Canary job secret", new() { Exact = true })).ToBeVisibleAsync();
+            await picker.GetByRole(AriaRole.Button, new() { Name = "Select", Exact = true }).PressAsync("Enter");
+            await page.GetByRole(AriaRole.Dialog).Last.GetByRole(AriaRole.Button, new() { Name = "Use reference", Exact = true }).PressAsync("Enter");
+        }
+    }
+
     [Theory]
     [InlineData(1366, 768, "light", 1d)]
     [InlineData(1366, 768, "dark", 1d)]

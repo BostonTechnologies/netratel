@@ -1839,7 +1839,8 @@ internal static partial class NetRatelCli
         runs.AddCommand(GetListCommand(runtime, globals, "query", "/api/v1/jobruns/query", (status, "status"), (jobId, "jobId"), (tenantId, "tenantId")));
         runs.AddCommand(GetByIdCommand(runtime, globals, "get", "/api/v1/jobruns/{id}"));
         runs.AddCommand(GetByIdCommand(runtime, globals, "steps", "/api/v1/jobruns/{id}/steps"));
-        runs.AddCommand(BodyCommand(runtime, globals, "start", HttpMethod.Post, "/api/v1/jobruns/start/{id}", ("--started-by", "startedBy"), ("--client-identity-override", "clientIdentityOverride"), ("--inputs-json", "inputsJson")));
+        runs.AddCommand(BodyCommand(runtime, globals, "start", HttpMethod.Post, "/api/v1/jobruns/start/{id}", ("--started-by", "startedBy"),
+            ("--client-identity-override", "clientIdentityOverride"), ("--inputs-json", "inputsJson"), ("--provider-inputs", "providerInputs")));
         runs.AddCommand(BodyCommand(runtime, globals, "cancel", HttpMethod.Post, "/api/v1/jobruns/{id}/cancel"));
         runs.AddCommand(DeleteByIdCommand(runtime, globals, "delete", "/api/v1/jobruns/{id}"));
         var runId = new Argument<long>("id");

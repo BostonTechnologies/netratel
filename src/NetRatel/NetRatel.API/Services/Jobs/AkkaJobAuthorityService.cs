@@ -146,7 +146,8 @@ public sealed class AkkaJobAuthorityService(
         if (!string.IsNullOrWhiteSpace(request.ClientIdentityOverride))
             throw new InvalidOperationException("A fixed job cannot be retargeted through ClientIdentityOverride.");
         var definition = await jobDefinitions.GetAsync(jobId, cancellationToken);
-        if (definition?.Target is not null || definition?.ExecutionPolicy is not null || request.ProviderInputs is { Count: > 0 })
+        if (definition?.Target is not null || definition?.ExecutionPolicy is not null || request.ProviderInputs is { Count: > 0 } ||
+            definition is not null && await HasProviderDefaultsAsync(jobId, cancellationToken))
             return await (aggregates ?? throw new InvalidOperationException("Aggregate job admission is unavailable."))
                 .StartFreshAsync(jobId, request, cancellationToken);
         if (request.RuntimeTarget is not null)
@@ -332,7 +333,8 @@ public sealed class AkkaJobAuthorityService(
             { throw new CanonicalRequestAdmissionRejectedException("The original canonical request binding is unavailable or differs from its submitted identity.", error); }
         }
         var currentDefinition = await jobDefinitions.GetAsync(jobId, cancellationToken);
-        if (currentDefinition?.Target is not null || currentDefinition?.ExecutionPolicy is not null)
+        if (currentDefinition?.Target is not null || currentDefinition?.ExecutionPolicy is not null ||
+            currentDefinition is not null && await HasProviderDefaultsAsync(jobId, cancellationToken))
             return await (aggregates ?? throw new CanonicalRequestAdmissionRejectedException("Aggregate Request admission is unavailable."))
                 .StartRequestAsync(material, cancellationToken);
         ulong runId;
@@ -375,6 +377,9 @@ public sealed class AkkaJobAuthorityService(
         }
     }
 
+    private async Task<bool> HasProviderDefaultsAsync(ulong jobId, CancellationToken ct) =>
+        (await jobDefinitions.ListParamsAsync(jobId, ct)).Any(parameter => parameter.ProviderDefault is not null);
+
     private async Task<JobRunInfo> StartCoreAsync(ulong jobId, RunJobRequest request, int? recordedRequestId, ClaimsPrincipal? principal, CancellationToken cancellationToken,
         McpOperatorJobExecutionSnapshot? mcpSnapshot = null)
     {
@@ -409,6 +414,8 @@ public sealed class AkkaJobAuthorityService(
             pinnedSnapshot = await snapshotCapture.CaptureAsync(jobId, definition.Job.TenantId ?? 0, cancellationToken);
             definition = pinnedSnapshot.Definition;
         }
+        if (!preparedNativeIntent && JobProviderExecutionInputs.SelectBindings(definition, request).Length != 0)
+            throw new ExecutionAdmissionDeniedException("This execution has no approved protected job input admission.");
         if (sourceRequest is not null && (definition.Job.Id != sourceRequest.JobDefinitionId ||
             definition.Job.TenantId != sourceRequest.TenantId || definition.Job.AgentId != sourceRequest.AgentId ||
             request.StartedBy != sourceRequest.SourceSystem || request.InputsJson != sourceRequest.InputsJson))

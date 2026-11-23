@@ -124,6 +124,10 @@ public sealed record PinnedJobExecutionSnapshot(JobDefinitionDetails Definition,
             SecretDefaults.Any(value => !Definition.Params.Any(parameter => parameter.Id == value.ParameterId && parameter.Name == value.Name &&
                 parameter.Type.Equals("secret", StringComparison.OrdinalIgnoreCase) && parameter.HasProtectedDefault))))
             throw new ArgumentException("Protected defaults must match their immutable secret parameters.");
+        if (Definition.Params.Any(parameter => parameter.ProviderDefault is { } binding &&
+                (!parameter.Type.Equals("secret", StringComparison.OrdinalIgnoreCase) || parameter.HasProtectedDefault ||
+                parameter.DefaultValue is not null || !ProtectedJobParameterRules.IsName(parameter.Name) || binding.ScopeRevision <= 0)))
+            throw new ArgumentException("Provider defaults must bind an immutable Secret parameter and provider scope.");
         foreach (var script in Scripts)
         {
             if (script.Script.Id == 0 || script.Script.SourceRevision <= 0 ||

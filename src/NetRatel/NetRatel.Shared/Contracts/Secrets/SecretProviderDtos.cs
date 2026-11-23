@@ -91,6 +91,8 @@ public sealed record SecretVaultPermissions(bool Browse, bool Use, bool Reveal, 
 {
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
     public bool SubmitProtectedJobInputs { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    public bool SaveProtectedJobDefaults { get; init; }
 }
 
 public sealed record EnableSecretProviderRequest(long ExpectedRevision);

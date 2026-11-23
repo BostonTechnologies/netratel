@@ -16,12 +16,22 @@ internal sealed class JobProviderExecutionInputs(OrchestratorDbContext db, ITena
 
     internal sealed record Binding(string ParameterName, SecretReference Reference, long ScopeRevision);
 
-    public async Task<string?> AdmitAsync(int tenantId, PinnedJobExecutionSnapshot snapshot, RunJobRequest request, CancellationToken ct)
+    public static JobProviderInput[] SelectBindings(JobDefinitionDetails definition, RunJobRequest request)
     {
-        if (request.ProviderInputs is not { Count: > 0 } inputs) return null;
+        var requested = request.ProviderInputs ?? [];
+        if (!definition.Params.Any(parameter => parameter.ProviderDefault is not null)) return requested.ToArray();
+        var manual = JobTemplateHelper.ParseInputs(request.InputsJson);
+        return [.. requested, .. definition.Params.Where(parameter => parameter.ProviderDefault is not null &&
+                !manual.ContainsKey(parameter.Name) && !requested.Any(item => item is not null &&
+                    parameter.Name.Equals(item.ParameterName, StringComparison.OrdinalIgnoreCase)))
+            .Select(parameter => new JobProviderInput(parameter.Name, parameter.ProviderDefault!.Reference))];
+    }
+
+    public async Task<string> AdmitAsync(int tenantId, PinnedJobExecutionSnapshot snapshot, RunJobRequest request,
+        IReadOnlyList<JobProviderInput> inputs, CancellationToken ct)
+    {
         if (inputs.Count > 32) throw Invalid("Supply at most 32 protected job parameter bindings.");
         var manual = JobTemplateHelper.ParseInputs(request.InputsJson);
-        var connections = await vault.ListConnectionsAsync(tenantId, includeAdministration: false, ct);
         var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var admitted = new List<Binding>(inputs.Count);
         foreach (var input in inputs)
@@ -30,13 +40,6 @@ internal sealed class JobProviderExecutionInputs(OrchestratorDbContext db, ITena
                 !names.Add(input.ParameterName) || manual.ContainsKey(input.ParameterName) ||
                 snapshot.Definition.Params.Count(p => p.Name.Equals(input.ParameterName, StringComparison.OrdinalIgnoreCase) && IsSecret(p.Type)) != 1)
                 throw Invalid("Each protected reference must bind one declared Secret parameter without a manual value.");
-            if (reference.SchemaVersion != SecretReference.CurrentSchemaVersion || reference.Locator is not { Length: > 0 and <= 1024 } ||
-                (reference.VersionMode switch
-                {
-                    SecretVersionMode.LatestAtExecution => reference.Version is not null,
-                    SecretVersionMode.Pinned => string.IsNullOrWhiteSpace(reference.Version),
-                    _ => true
-                })) throw Invalid("Select a supported Latest or Pinned secret reference.");
             if (snapshot.Definition.Job.Target?.RuntimeInput?.Name.Equals(input.ParameterName, StringComparison.OrdinalIgnoreCase) == true)
                 throw Invalid("Protected parameters cannot select execution targets.");
             if (!snapshot.Definition.Steps.Any(step => step.Enabled && MapName(snapshot, step, input.ParameterName) is not null))
@@ -46,13 +49,11 @@ internal sealed class JobProviderExecutionInputs(OrchestratorDbContext db, ITena
                 (step.Command?.Contains(placeholder, StringComparison.OrdinalIgnoreCase) == true ||
                 step.PayloadJson?.Contains(placeholder, StringComparison.OrdinalIgnoreCase) == true)))
                 throw Invalid("Use a library script Secret parameter instead of interpolating a protected parameter into a job step.");
-            var connection = connections.SingleOrDefault(current => current.Id == reference.ConnectionId && current.Enabled)
-                ?? throw Invalid("A referenced provider is unavailable in this tenant.");
-            var metadata = await vault.GetMetadataAsync(tenantId, reference.ConnectionId, reference.Locator, reference.Version, ct);
-            if (metadata.Entry.IsFolder || metadata.Entry.Enabled == false ||
-                (connection.Capabilities.StructuredFields ? reference.Field is null || !metadata.Fields.Any(field => field.Name == reference.Field) : reference.Field is not null))
-                throw Invalid("Select an available secret value or field from this provider.");
-            admitted.Add(new(input.ParameterName, reference with { Locator = metadata.Entry.Locator }, connection.ScopeRevision));
+            var bound = await vault.BindReferenceAsync(tenantId, reference, ct);
+            var stored = snapshot.Definition.Params.Single(parameter => parameter.Name.Equals(input.ParameterName, StringComparison.OrdinalIgnoreCase)).ProviderDefault;
+            if (stored is not null && stored.Reference == reference && stored.ScopeRevision != bound.ScopeRevision)
+                throw Invalid("The saved default's provider scope changed. Re-select the reference in the job definition.");
+            admitted.Add(new(input.ParameterName, bound.Reference, bound.ScopeRevision));
         }
         return JsonSerializer.Serialize(admitted, Json);
     }

@@ -208,6 +208,18 @@ internal sealed partial class TenantSecretService(OrchestratorDbContext db, IDat
         return new(resolved.ExactReference.Version!, resolved.Value);
     }
 
+    public async Task<BoundSecretReference> BindReferenceAsync(int tenantId, SecretReference reference, CancellationToken ct)
+    {
+        var connection = await LoadAsync(tenantId, reference.ConnectionId, ct);
+        ValidateReference(connection.Adapter, reference);
+        var locator = connection.Adapter.ValidateLocator(reference.Locator);
+        var metadata = await connection.Adapter.GetMetadataAsync(connection.Context, locator, reference.Version, ct);
+        if (metadata.Entry.IsFolder || metadata.Entry.Enabled == false ||
+            (reference.Field is not null && !metadata.Fields.Any(field => field.Name == reference.Field)))
+            throw Invalid("Select an available secret value or field from this provider.");
+        return new(reference with { Locator = metadata.Entry.Locator }, connection.ScopeRevision);
+    }
+
     public async Task<IReadOnlyList<ResolvedSecret>> ResolveForExecutionAsync(int tenantId, IReadOnlyList<SecretReference> references, CancellationToken ct)
     {
         if (references.Count is < 1 or > 128)

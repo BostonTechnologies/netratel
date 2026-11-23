@@ -8,6 +8,7 @@ using NetRatel.Shared;
 using NetRatel.Shared.Contracts;
 using NetRatel.Shared.Contracts.Jobs;
 using NetRatel.Shared.Contracts.Requests;
+using NetRatel.Shared.Contracts.Secrets;
 using NetRatel.Web.Services.Jobs;
 using NetRatel.Web.Services.Tenants;
 
@@ -18,10 +19,10 @@ internal static class JobsWorkspaceFixture
 {
     public static void Configure(IServiceCollection services, int parameterCount = 1, bool mixed = false, JobsRunFixtureStream? stream = null,
         IReadOnlyList<JobParamDto>? parameters = null, Action<RunJobRequest>? runAccepted = null, bool multiNode = false,
-        Action<ExecutionGroupWriteDto>? groupSaved = null, int nodeCount = 30, bool haGroup = false)
+        Action<ExecutionGroupWriteDto>? groupSaved = null, int nodeCount = 30, bool haGroup = false, bool secretVault = false)
     {
         services.AddSingleton<IHttpClientFactory>(provider => new JobsTransport(parameterCount, mixed, parameters, runAccepted,
-            multiNode, provider.GetRequiredService<ClientDirectoryFixtureData>(), groupSaved, nodeCount, haGroup));
+            multiNode, provider.GetRequiredService<ClientDirectoryFixtureData>(), groupSaved, nodeCount, haGroup, secretVault));
         services.AddSingleton<IJobApiClient>(provider => new JobApiClient(provider.GetRequiredService<IHttpClientFactory>()));
         services.AddSingleton<ITenantApiService, JobsTenants>();
         services.AddSingleton<IJobRunStreamService>(stream ?? new JobsRunFixtureStream());
@@ -39,7 +40,7 @@ internal static class JobsWorkspaceFixture
     }
 
     private sealed class JobsTransport(int parameterCount, bool mixed, IReadOnlyList<JobParamDto>? parameters, Action<RunJobRequest>? runAccepted,
-        bool multiNode, ClientDirectoryFixtureData directory, Action<ExecutionGroupWriteDto>? groupSaved, int nodeCount, bool haGroup) : HttpMessageHandler, IHttpClientFactory
+        bool multiNode, ClientDirectoryFixtureData directory, Action<ExecutionGroupWriteDto>? groupSaved, int nodeCount, bool haGroup, bool secretVault) : HttpMessageHandler, IHttpClientFactory
     {
         private JobDto _job = new(42, "Nightly backup", "/Visual fixture/Backups/", "Back up the development database", 3, "gateway-agent-01", 0, 0,
             "Visual fixture", "gateway-agent-01", ClientEnvironment.Dev,
@@ -51,6 +52,8 @@ internal static class JobsWorkspaceFixture
         private JobRunDto _run = JobsRunFixtureStream.Run;
         private IReadOnlyList<JobStepRunDto> _runSteps = JobsRunFixtureStream.Steps(1);
         private static readonly Guid GroupId = Guid.Parse("c186e933-9b40-4d99-9d12-dbb944b59001");
+        private static readonly Guid VaultConnectionId = Guid.Parse("b59b9b79-2e0c-4d0b-950c-000000000003");
+        private static readonly SecretEntryMetadata VaultEntry = new("902", "Canary job secret", false, "1", "1", Enabled: true);
         private readonly IReadOnlyList<JobNodeInventoryDto> _nodes = Enumerable.Range(1, nodeCount).Select(index =>
             new JobNodeInventoryDto(Guid.Parse($"4886c6c0-e486-4f59-a006-{index:000000000000}"), index <= 5 ? $"lab-node-{index:00}" : $"spare-node-{index:00}", $"Synthetic node {index}", null,
                 index <= 5 ? new[] { "TestSystem", "Linux" } : new[] { "Auxiliary" }, "Linux", "x64", ClientEnvironment.Dev, index != 5, true, null)).ToArray();
@@ -89,6 +92,15 @@ internal static class JobsWorkspaceFixture
         {
             Initialize();
             var path = request.RequestUri!.AbsolutePath;
+            if (secretVault && path.StartsWith("/api/v1/tenants/3/secret-vault/", StringComparison.Ordinal))
+            {
+                if (path.EndsWith("/permissions", StringComparison.Ordinal)) return Ok(new SecretVaultPermissions(true, true, true, true, true, true, true)
+                    { SubmitProtectedJobInputs = true, SaveProtectedJobDefaults = true });
+                if (path.EndsWith("/connections", StringComparison.Ordinal)) return Ok(new[] { new SecretProviderConnection(VaultConnectionId,
+                    SecretProviderKind.Local, "Local", 1, 1, true, true, null, false, new(SecretWriteConcurrency.CompareAndSwap, SecretDeletionMode.RemoveEntry, false), null) });
+                if (path.EndsWith("/entries", StringComparison.Ordinal)) return Ok(new SecretBrowsePage([VaultEntry], null, false, null));
+                if (path.EndsWith("/entry", StringComparison.Ordinal)) return Ok(new SecretEntryDetails(VaultEntry, [], ["1"], false, []));
+            }
             if (path.Contains("/job-targets/", StringComparison.Ordinal) || path.Contains("/execution-groups", StringComparison.Ordinal))
                 return await TargetsAsync(request, cancellationToken);
             if (path == "/api/v1/jobruns/preview/42")
@@ -147,6 +159,7 @@ internal static class JobsWorkspaceFixture
             {
                 var body = (await request.Content!.ReadFromJsonAsync<AddJobParamRequest>(cancellationToken))!;
                 var saved = new JobParamDto((ulong)(_parameters.Count + 1), 42, body.Name, body.Type, body.Required, body.Default, body.Description, body.OptionsJson);
+                if (body.DefaultSecretReference is { } reference) saved = saved with { DefaultSecretReference = reference, HasProviderDefault = true };
                 _parameters.Add(saved); return Ok(saved);
             }
             if (request.Method == HttpMethod.Put && path.StartsWith("/api/v1/jobs/params/"))
@@ -157,6 +170,8 @@ internal static class JobsWorkspaceFixture
                 var saved = _parameters[index] with { Name = body.Name ?? _parameters[index].Name, Type = body.Type ?? _parameters[index].Type,
                     Default = body.Default ?? _parameters[index].Default, Description = body.Description ?? _parameters[index].Description,
                     Required = body.Required ?? _parameters[index].Required, OptionsJson = body.OptionsJson ?? _parameters[index].OptionsJson };
+                if (body.DefaultSecretReference is { } reference) saved = saved with { Default = null, DefaultSecretReference = reference, HasProviderDefault = true };
+                else if (body.ClearProtectedDefault || body.Default is not null) saved = saved with { DefaultSecretReference = null, HasProviderDefault = false };
                 _parameters[index] = saved; return Ok(saved);
             }
             if (request.Method == HttpMethod.Post && path == "/api/v1/jobs")
