@@ -9,7 +9,7 @@ on:
         required: true
         options: [pairing, gateway, mcp-campaign, stdio-assessment, browser, vault-fixture, filesystem, deployment, release-images, candidate-images, native-client, upgrade-local, upgrade-oidc, client-measurement, client-trim-windows, client-trim-macos, client-control-macos, client-pty-debug-macos, windows-mcp, migrations-image, api-image, api-rid, cli-tool]
       source_ref:
-        description: Source ref to test (published-image and upgrade suites use release_tag)
+        description: Source ref to test (published-image and upgrade suites use release_tag and vault-fixture uses the workflow ref)
         default: main
         required: true
       migrations_comparison:
@@ -76,7 +76,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.source_ref }}
+          persist-credentials: false
       - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6
         with:
           global-json-file: global.json
