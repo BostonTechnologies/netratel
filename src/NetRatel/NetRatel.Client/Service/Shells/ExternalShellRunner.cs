@@ -6,6 +6,7 @@ using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Security.AccessControl;
+using System.Security.Cryptography;
 using System.Security.Principal;
 using System.Runtime.Versioning;
 using System.Text;
@@ -41,8 +42,9 @@ namespace NetRatel.Client.Service.Shells
             public bool TimedOut { get; set; }
             public bool OutputTruncated { get; set; }
             public bool OutcomeUnknown { get; set; }
+            internal bool ProtectedInputDeliveryFailed { get; set; }
             // Stderr also carries warnings and progress; the process exit code owns success.
-            public bool Success => ExitCode == 0 && !Cancelled && !TimedOut && !OutcomeUnknown;
+            public bool Success => ExitCode == 0 && !Cancelled && !TimedOut && !OutcomeUnknown && !ProtectedInputDeliveryFailed;
             public List<string> Output { get; } = new();
             public List<string> Error { get; } = new();
             public string? ShellPath { get; set; }
@@ -192,7 +194,6 @@ namespace NetRatel.Client.Service.Shells
             var timeout = TimeSpan.FromSeconds(timeoutSec ?? (int)_defaultTimeout.TotalSeconds);
             var scriptPath = WritePrivateTemp(".ps1", content);
             string? wrapperPath = null;
-            string? parameterPath = null;
 
             try
             {
@@ -224,9 +225,11 @@ namespace NetRatel.Client.Service.Shells
                         }
                         if (protectedParameters is not null)
                         {
-                            parameterPath = WritePrivateTemp(".json", JsonSerializer.Serialize(protectedParameters, ClientShellJsonContext.Default.ParameterMap));
-                            wrapper.Append("$__netratelSecret = ConvertFrom-Json -InputObject ([IO.File]::ReadAllText('")
-                                .Append(Esc(parameterPath)).AppendLine("', [Text.Encoding]::UTF8))");
+                            wrapper.AppendLine("try {");
+                            wrapper.AppendLine("    [Console]::InputEncoding = [Text.UTF8Encoding]::new($false)");
+                            wrapper.AppendLine("    $__netratelSecret = ConvertFrom-Json -InputObject ([Console]::In.ReadToEnd()) -ErrorAction Stop");
+                            wrapper.AppendLine("} catch { [Console]::Error.WriteLine('Protected parameters could not be read.'); exit 126 }");
+                            wrapper.AppendLine("if ($null -eq $__netratelSecret) { exit 126 }");
                             wrapper.AppendLine("foreach ($p in $__netratelSecret.PSObject.Properties) { $__netratelParams[$p.Name] = $p.Value }");
                         }
                         wrapper.Append("& '").Append(Esc(scriptPath)).AppendLine("' @__netratelParams");
@@ -246,7 +249,9 @@ namespace NetRatel.Client.Service.Shells
                 var fileToRun = wrapperPath ?? scriptPath;
                 var argsText = $"-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File {QuoteArgument(fileToRun)}";
                 LogManager.WriteLog($"[Shell] {shellPath} {MaskArgumentsForLog(argsText)}");
-                return await StartAsync(shellPath, argsText, cwd, timeout, ct, outputEncoding: Encoding.UTF8, observer: observer).ConfigureAwait(false);
+                var protectedInput = protectedParameters is null ? null : JsonSerializer.Serialize(protectedParameters, ClientShellJsonContext.Default.ParameterMap);
+                return await StartAsync(shellPath, argsText, cwd, timeout, ct, outputEncoding: Encoding.UTF8, observer: observer,
+                    protectedInput: protectedInput).ConfigureAwait(false);
             }
             finally
             {
@@ -255,7 +260,6 @@ namespace NetRatel.Client.Service.Shells
                 {
                     TryDeletePrivateTemp(wrapperPath);
                 }
-                if (parameterPath is not null) TryDeletePrivateTemp(parameterPath);
             }
         }
 
@@ -288,32 +292,24 @@ namespace NetRatel.Client.Service.Shells
             if (protectedParameters.Values.Any(value => value.Contains('\0')))
                 throw new InvalidOperationException("Bash protected parameters cannot contain a NUL character.");
             var shellPath = FindShell("bash") ?? Throw("bash");
-            var paths = new List<string>(protectedParameters.Count + 1);
             var script = new StringBuilder();
+            var input = new StringBuilder();
+            foreach (var (name, value) in protectedParameters)
+            {
+                var variable = $"NETRATEL_SECRET_{name}";
+                script.Append("unset -v ").Append(variable).AppendLine(" || exit 126");
+                script.Append("IFS= read -r -d '' ").Append(variable).AppendLine(" || exit 126");
+                input.Append(value).Append('\0');
+            }
+            script.Append(content);
+            var scriptPath = WritePrivateTemp(".sh", script.ToString());
             try
             {
-                foreach (var (name, value) in protectedParameters)
-                {
-                    var file = WritePrivateTemp(".parameter", value);
-                    paths.Add(file);
-                    var variable = $"NETRATEL_SECRET_{name}";
-                    var quotedFile = "'" + file.Replace("'", "'\"'\"'", StringComparison.Ordinal) + "'";
-                    script.Append("unset -v ").Append(variable).AppendLine(" || exit 126");
-                    script.Append("[[ -r ").Append(quotedFile).AppendLine(" ]] || exit 126");
-                    script.Append("IFS= read -r -d '' ").Append(variable).Append(" < ").Append(quotedFile)
-                        .AppendLine(" || [[ $? == 1 ]] || exit 126");
-                }
-                script.Append(content);
-                var scriptPath = WritePrivateTemp(".sh", script.ToString());
-                paths.Add(scriptPath);
                 var timeout = TimeSpan.FromSeconds(payload.TimeoutSeconds ?? (int)_defaultTimeout.TotalSeconds);
                 return await StartAsync(shellPath, $"--noprofile --norc -p -- {QuoteArgument(scriptPath)}", payload.WorkingDirectory,
-                    timeout, ct, CreateBashParameterEnvironment(parameters), observer: observer).ConfigureAwait(false);
+                    timeout, ct, CreateBashParameterEnvironment(parameters), observer: observer, protectedInput: input.ToString()).ConfigureAwait(false);
             }
-            finally
-            {
-                foreach (var path in paths) TryDeletePrivateTemp(path);
-            }
+            finally { TryDeletePrivateTemp(scriptPath); }
         }
 
         private static Dictionary<string, string>? CreateBashParameterEnvironment(
@@ -911,7 +907,8 @@ namespace NetRatel.Client.Service.Shells
             CancellationToken ct,
             IReadOnlyDictionary<string, string>? environment = null,
             Encoding? outputEncoding = null,
-            ExecutionObserver? observer = null)
+            ExecutionObserver? observer = null,
+            string? protectedInput = null)
         {
             ct.ThrowIfCancellationRequested();
             if (timeout <= TimeSpan.Zero || timeout.TotalMilliseconds > uint.MaxValue - 1)
@@ -922,6 +919,8 @@ namespace NetRatel.Client.Service.Shells
             {
                 WorkingDirectory = resolvedCwd,
                 UseShellExecute = false,
+                RedirectStandardInput = protectedInput is not null,
+                StandardInputEncoding = protectedInput is null ? null : new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 StandardOutputEncoding = outputEncoding,
@@ -1015,9 +1014,11 @@ namespace NetRatel.Client.Service.Shells
 
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             cts.CancelAfter(timeout);
+            var inputSent = protectedInput is null ? Task.FromResult(true) : SendProtectedInputAsync(proc, protectedInput, cts.Token);
 
             try
             {
+                res.ProtectedInputDeliveryFailed = !await inputSent.WaitAsync(cts.Token).ConfigureAwait(false);
                 await proc.WaitForExitAsync(cts.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cts.IsCancellationRequested)
@@ -1040,6 +1041,8 @@ namespace NetRatel.Client.Service.Shells
                 {
                     await proc.WaitForExitAsync(cleanup.Token).ConfigureAwait(false);
                     await Task.WhenAll(tcsOut.Task, tcsErr.Task).WaitAsync(cleanup.Token).ConfigureAwait(false);
+                    try { await inputSent.WaitAsync(cleanup.Token).ConfigureAwait(false); }
+                    catch (OperationCanceledException) when (!cleanup.IsCancellationRequested) { }
                 }
                 catch (OperationCanceledException) when (cleanup.IsCancellationRequested)
                 {
@@ -1058,6 +1061,7 @@ namespace NetRatel.Client.Service.Shells
             await Task.WhenAll(tcsOut.Task, tcsErr.Task);
             sw.Stop();
             res.ExitCode = proc.ExitCode;
+            if (res.ProtectedInputDeliveryFailed) res.Error.Add("The private input pipe closed before the protected parameters were delivered.");
             res.DurationMs = sw.Elapsed.TotalMilliseconds;
             output.Writer.TryComplete();
             await publisher.ConfigureAwait(false);
@@ -1066,6 +1070,19 @@ namespace NetRatel.Client.Service.Shells
                 res.Error.Add($"Process exited with code {res.ExitCode} without emitting stdout/stderr.");
             }
             return res;
+        }
+
+        private static async Task<bool> SendProtectedInputAsync(Process process, string input, CancellationToken ct)
+        {
+            var bytes = Encoding.UTF8.GetBytes(input);
+            try
+            {
+                using var writer = process.StandardInput;
+                await writer.BaseStream.WriteAsync(bytes, ct).ConfigureAwait(false);
+                return true;
+            }
+            catch (IOException) { return false; }
+            finally { CryptographicOperations.ZeroMemory(bytes); }
         }
     }
 }

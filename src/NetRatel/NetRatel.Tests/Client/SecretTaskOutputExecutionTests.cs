@@ -20,14 +20,18 @@ public sealed class SecretTaskOutputExecutionTests
     public async Task Protected_library_binding_uses_private_transport_or_fails_before_start(bool expired, bool wrongScript)
     {
         const string secret = "synthetic-protected-909\n◆multiline-edge\n";
+        var largeSecret = new string('q', 48 * 1024);
         var valueHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(secret)));
+        var largeHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(largeSecret)));
         var windows = OperatingSystem.IsWindows();
         var hashProgram = OperatingSystem.IsMacOS() ? "/usr/bin/shasum -a 256" : "sha256sum";
         var script = windows
             ? $$"""
-                param([string]$Canary)
+                param([string]$Canary, [string]$LargeSecret)
                 $hash = [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($Canary))).Replace('-', '')
                 if ($hash -ne '{{valueHash}}' -or $env:NETRATEL_SECRET_Canary) { exit 41 }
+                $largeHash = [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($LargeSecret))).Replace('-', '')
+                if ($largeHash -ne '{{largeHash}}' -or [Console]::In.Read() -ne -1) { exit 42 }
                 [Console]::Out.Write($Canary)
                 [Console]::Error.Write($Canary)
                 [Console]::Out.WriteLine('private-input-intact')
@@ -37,12 +41,15 @@ public sealed class SecretTaskOutputExecutionTests
                 actual=$(printf '%s' "$NETRATEL_SECRET_Canary" | {{hashProgram}})
                 [[ ${actual%% *} == '{{valueHash.ToLowerInvariant()}}' ]] || exit 41
                 [[ $(command env) != *NETRATEL_SECRET_Canary=* ]] || exit 42
+                actual_large=$(printf '%s' "$NETRATEL_SECRET_LargeSecret" | {{hashProgram}})
+                [[ ${actual_large%% *} == '{{largeHash.ToLowerInvariant()}}' ]] || exit 43
+                if IFS= read -r -n 1; then exit 44; fi
                 printf '%s' "$NETRATEL_SECRET_Canary"
                 printf '%s' "$NETRATEL_SECRET_Canary" >&2
                 printf 'private-input-intact\n'
                 """;
         var scriptHash = wrongScript ? new string('f', 64) : Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(script)));
-        var policy = TaskOutputPolicy.Create([("Canary", "secret")], 19, 3, scriptHash);
+        var policy = TaskOutputPolicy.Create([("Canary", "secret"), ("LargeSecret", "secret")], 19, 3, scriptHash);
         var updates = new ConcurrentQueue<(string Status, string? Result, int? ExitCode)>();
         var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var manager = new ClientTaskManager((_, status, result, exitCode) =>
@@ -59,7 +66,7 @@ public sealed class SecretTaskOutputExecutionTests
             ScriptContent = script, OutputPolicy = policy, TimeoutSeconds = 10
         });
         Assert.True(manager.EnqueueProtectedJobStep("protected-library-binding", TaskKinds.ExecLibraryScript, payload, 7, 0,
-            new Dictionary<string, string> { ["Canary"] = secret }, DateTimeOffset.UtcNow.AddSeconds(expired ? -1 : 30)));
+            new Dictionary<string, string> { ["Canary"] = secret, ["LargeSecret"] = largeSecret }, DateTimeOffset.UtcNow.AddSeconds(expired ? -1 : 30)));
         await completion.Task.WaitAsync(TimeSpan.FromSeconds(15), TestContext.Current.CancellationToken);
         foreach (var update in updates)
         {
