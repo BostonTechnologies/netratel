@@ -14,7 +14,7 @@
         <form class="param-editor" id="@_formId" autocomplete="off" aria-label="Parameter definition" @onsubmit:preventDefault="true">
             <div class="param-editor-row">
                 <MudTextField @bind-Value="_name" Label="Name" InputId="@FieldId("parameter-name")" UserAttributes="@JobParameterInput.OperationalAttributes(FieldId("parameter-name"))" Required="true" Variant="Variant.Outlined" Margin="Margin.Dense" Error="@(_validated && string.IsNullOrWhiteSpace(_name))" ErrorText="Name is required." Disabled="_saving" />
-                <MudSelect T="string" Label="Type" @bind-Value="_type" InputId="@FieldId("parameter-type")" UserAttributes="@JobParameterInput.OperationalAttributes(FieldId("parameter-type"))" Required="true" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_saving">
+                <MudSelect T="string" Label="Type" @bind-Value="_type" @bind-Value:after="LoadProviderPermissionAsync" InputId="@FieldId("parameter-type")" UserAttributes="@JobParameterInput.OperationalAttributes(FieldId("parameter-type"))" Required="true" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_saving">
                     @foreach (var option in _typeOptions)
                     { <MudSelectItem T="string" Value="@option.Key">@option.Value</MudSelectItem> }
                 </MudSelect>
@@ -95,7 +95,7 @@
     private string _name = string.Empty, _type = "string", _optionsText = string.Empty;
     private string? _default, _description, _optionsJson, _saveError;
     private bool _required, _saving, _saved, _validated, _advanced, _clearProtectedDefault;
-    private bool _canSelectProvider, _useProvider;
+    private bool _canSelectProvider, _checkedProviderPermission, _useProvider;
     private SecretReference? _defaultReference;
     private string DefaultHelp => _type == "secret" && ExistingParam?.HasProtectedDefault == true
         ? "Leave blank to keep the protected default. Enter a value to replace it." : "Optional. Used when no value is supplied.";
@@ -122,7 +122,12 @@
             _advanced = !string.IsNullOrWhiteSpace(_optionsJson) && (_type != "select" || JobParameterInput.SelectOptions(_optionsJson).Count == 0);
             (_useProvider, _defaultReference) = (p.HasProviderDefault, p.DefaultSecretReference);
         }
-        if (TenantId is not { } tenant) return;
+        await LoadProviderPermissionAsync();
+    }
+    private async Task LoadProviderPermissionAsync()
+    {
+        if (_checkedProviderPermission || _type != "secret" || TenantId is not { } tenant) return;
+        _checkedProviderPermission = true;
         var ct = _lifetime.Token;
         try
         {

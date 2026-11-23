@@ -66,7 +66,10 @@ public sealed class SecretVaultApi(IHttpClientFactory factory)
         }
         using var response = await http.SendAsync(message, ct);
         if (response.IsSuccessStatusCode)
-            return await response.Content.ReadFromJsonAsync<T>(ct) ?? throw new SecretVaultUiException("The vault returned an empty response.");
+        {
+            try { return await response.Content.ReadFromJsonAsync<T>(ct) ?? throw new SecretVaultUiException("The vault returned an empty response."); }
+            catch (JsonException) { throw new SecretVaultUiException("The vault returned an invalid response."); }
+        }
 
         if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
             throw new SecretVaultUiException("Your account cannot perform this operation in this tenant.");

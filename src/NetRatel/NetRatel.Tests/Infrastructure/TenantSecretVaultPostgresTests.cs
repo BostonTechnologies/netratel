@@ -131,7 +131,7 @@ public sealed class TenantSecretVaultPostgresTests(PostgreSqlPersistenceFixture 
     }
 
     [Fact]
-    public async Task Infisical_browse_requests_use_exact_scope_and_never_project_returned_values()
+    public async Task Infisical_v4_protocol_checks_scoped_crud_and_versions_without_projecting_values()
     {
         var ct = TestContext.Current.CancellationToken;
         var handler = new InfisicalMetadataFixture();
@@ -152,6 +152,25 @@ public sealed class TenantSecretVaultPostgresTests(PostgreSqlPersistenceFixture 
         var page = await vault.BrowseAsync(tenant.Id, connection.Id, new("jobs"), ct);
         Assert.Equal("jobs/KEY", Assert.Single(page.Entries).Locator);
         Assert.DoesNotContain(InfisicalMetadataFixture.CanaryValue, JsonSerializer.Serialize(page));
+        const string original = "synthetic infisical first\n◆";
+        const string changed = "synthetic infisical replacement\n◇";
+        var created = await vault.WriteAsync(tenant.Id, connection.Id, new() { Locator = "jobs/NEW", Value = original }, ct);
+        var latest = new SecretReference(1, connection.Id, created.Locator, null, SecretVersionMode.LatestAtExecution, null);
+        var pinned = latest with { VersionMode = SecretVersionMode.Pinned, Version = created.Version };
+        Assert.DoesNotContain("synthetic infisical first", JsonSerializer.Serialize(created));
+        Assert.Equal(original, (await vault.RevealAsync(tenant.Id, pinned, ct)).Value);
+        var updated = await vault.WriteAsync(tenant.Id, connection.Id, new()
+        { Locator = created.Locator, ExpectedRevision = created.Revision, ExpectedVersion = created.Version, Value = changed }, ct);
+        Assert.Equal("2", updated.Version);
+        Assert.Equal(original, (await vault.RevealAsync(tenant.Id, pinned, ct)).Value);
+        Assert.Equal(changed, (await vault.RevealAsync(tenant.Id, latest, ct)).Value);
+        Assert.Equal(SecretProviderFailure.Conflict, (await Assert.ThrowsAsync<SecretProviderException>(() => vault.WriteAsync(tenant.Id,
+            connection.Id, new() { Locator = created.Locator, ExpectedRevision = created.Revision, ExpectedVersion = created.Version, Value = original }, ct))).Reason);
+        var removed = await vault.DeleteAsync(tenant.Id, connection.Id, connection.Revision,
+            new(created.Locator, updated.Revision!, updated.Version!), ct);
+        Assert.Equal(SecretDeletionMode.RemoveEntry, removed.Mode);
+        Assert.Equal(SecretProviderFailure.VersionUnavailable, (await Assert.ThrowsAsync<SecretProviderException>(() =>
+            vault.RevealAsync(tenant.Id, pinned, ct))).Reason);
         Assert.Equal(1, handler.LoginCount);
         Assert.Equal(1, handler.ListCount);
     }
@@ -294,8 +313,9 @@ public sealed class TenantSecretVaultPostgresTests(PostgreSqlPersistenceFixture 
         public const string CanaryValue = "synthetic provider response value";
         public int LoginCount { get; private set; }
         public int ListCount { get; private set; }
+        private readonly Dictionary<int, string> _versions = [];
 
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
             var uri = request.RequestUri!;
             Assert.Equal("infisical.example.test", uri.Host);
@@ -318,12 +338,47 @@ public sealed class TenantSecretVaultPostgresTests(PostgreSqlPersistenceFixture 
                         Assert.Contains(expected, query);
                     return Respond(new { secrets = new[] { new { _id = "fixture", workspace = "fixture-project", environment = "stage", version = 1,
                         type = "shared", secretKey = "KEY", secretPath = "/tools/jobs", secretValue = CanaryValue } } });
+                case "/api/v4/secrets/NEW":
+                    Assert.Equal("fixture-token", request.Headers.Authorization?.Parameter);
+                    if (request.Method == HttpMethod.Get)
+                    {
+                        var actual = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(uri.Query);
+                        Assert.Equal("fixture-project", actual["projectId"].ToString());
+                        Assert.Equal("stage", actual["environment"].ToString());
+                        Assert.Equal("/tools/jobs", actual["secretPath"].ToString());
+                        Assert.Equal("shared", actual["type"].ToString());
+                        Assert.Equal("false", actual["expandSecretReferences"].ToString());
+                        Assert.Equal("false", actual["includeImports"].ToString());
+                        var version = int.TryParse(actual["version"].ToString(), out var exact) ? exact : _versions.Keys.DefaultIfEmpty().Max();
+                        return _versions.TryGetValue(version, out var value) ? Entry(version, value) : new HttpResponseMessage(HttpStatusCode.NotFound);
+                    }
+                    var body = await request.Content!.ReadFromJsonAsync<JsonElement>(ct);
+                    Assert.Equal("fixture-project", body.GetProperty("projectId").GetString());
+                    Assert.Equal("stage", body.GetProperty("environment").GetString());
+                    Assert.Equal("/tools/jobs", body.GetProperty("secretPath").GetString());
+                    Assert.Equal("shared", body.GetProperty("type").GetString());
+                    if (request.Method == HttpMethod.Delete)
+                    {
+                        _versions.Clear();
+                        return new HttpResponseMessage(HttpStatusCode.OK);
+                    }
+                    Assert.True(request.Method == HttpMethod.Post && _versions.Count == 0 || request.Method == HttpMethod.Patch && _versions.Count > 0);
+                    Assert.True(body.GetProperty("skipMultilineEncoding").GetBoolean());
+                    var next = _versions.Keys.DefaultIfEmpty().Max() + 1;
+                    var changed = body.GetProperty("secretValue").GetString()!;
+                    _versions.Add(next, changed);
+                    return Entry(next, changed);
                 default:
                     throw new InvalidOperationException("Unexpected Infisical fixture route.");
             }
         }
 
-        private static Task<HttpResponseMessage> Respond(object body) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
-            { Content = JsonContent.Create(body) });
+        private static HttpResponseMessage Entry(int version, string value) => Respond(new { secret = new
+        {
+            _id = "fixture-new", workspace = "fixture-project", environment = "stage", version, type = "shared", secretKey = "NEW",
+            secretPath = "/tools/jobs", secretValue = value
+        } });
+
+        private static HttpResponseMessage Respond(object body) => new(HttpStatusCode.OK) { Content = JsonContent.Create(body) };
     }
 }
