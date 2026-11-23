@@ -18,7 +18,7 @@ using Xunit;
 namespace NetRatel.Tests.Infrastructure;
 
 [Collection(PostgreSqlPersistenceCollection.Name)]
-public sealed class TenantSecretVaultPostgresTests(PostgreSqlPersistenceFixture postgres)
+public sealed partial class TenantSecretVaultPostgresTests(PostgreSqlPersistenceFixture postgres)
 {
     [Fact]
     public async Task Local_rotation_preserves_pins_and_legacy_scope_and_blocks_referenced_deletion()
