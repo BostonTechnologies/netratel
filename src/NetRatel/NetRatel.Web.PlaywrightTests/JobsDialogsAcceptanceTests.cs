@@ -38,7 +38,15 @@ public sealed class JobsDialogsAcceptanceTests(ClientsManagementBrowserFixture b
         await page.GetByRole(AriaRole.Button, new() { Name = "Run Nightly backup", Exact = true }).ClickAsync();
         var run = page.GetByRole(AriaRole.Dialog).Last;
         await Assertions.Expect(run.GetByText("902 · Latest at execution", new() { Exact = true })).ToBeVisibleAsync();
-        await CaptureAsync(page, "job-provider-reference-portrait-dark");
+        await WaitForDialogAnimationAsync(run);
+        var bounds = await run.BoundingBoxAsync();
+        Assert.NotNull(bounds);
+        Assert.InRange(bounds.Width, 388, 390);
+        Assert.InRange(bounds.Height, 842, 844);
+        await CaptureAsync(page, "job-provider-reference-portrait-dark", viewportOnly: true);
+        await page.SetViewportSizeAsync(390, 620);
+        await Assertions.Expect(run.GetByRole(AriaRole.Button, new() { Name = "Start Run", Exact = true })).ToBeInViewportAsync(new() { Ratio = 1 });
+        await page.SetViewportSizeAsync(390, 844);
         await PickAsync("Choose secret for Token");
         await run.GetByRole(AriaRole.Button, new() { Name = "Start Run", Exact = true }).ClickAsync();
         var submitted = await accepted.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
@@ -288,11 +296,11 @@ public sealed class JobsDialogsAcceptanceTests(ClientsManagementBrowserFixture b
     }
     private static async Task WaitForDialogAnimationAsync(ILocator dialog) =>
         await dialog.EvaluateAsync("e => Promise.all(e.getAnimations().map(animation => animation.finished.catch(() => {})))");
-    private static async Task CaptureAsync(IPage page, string name)
+    private static async Task CaptureAsync(IPage page, string name, bool viewportOnly = false)
     {
         Assert.False(await page.EvaluateAsync<bool>("() => document.documentElement.scrollWidth > innerWidth + 1"));
         var root = Environment.GetEnvironmentVariable("NETRATEL_PLAYWRIGHT_ARTIFACT_ROOT") ?? Path.Combine(Directory.GetCurrentDirectory(), "TestResults", "playwright");
         Directory.CreateDirectory(root);
-        await page.ScreenshotAsync(new() { Path = Path.Combine(root, name + ".png"), FullPage = true, Animations = ScreenshotAnimations.Disabled });
+        await page.ScreenshotAsync(new() { Path = Path.Combine(root, name + ".png"), FullPage = !viewportOnly, Animations = ScreenshotAnimations.Disabled });
     }
 }

@@ -349,7 +349,7 @@ public sealed class TenantSecretVaultPostgresTests(PostgreSqlPersistenceFixture 
                         Assert.Equal("shared", actual["type"].ToString());
                         Assert.Equal("false", actual["expandSecretReferences"].ToString());
                         Assert.Equal("false", actual["includeImports"].ToString());
-                        var version = int.TryParse(actual["version"].ToString(), out var exact) ? exact : _versions.Keys.DefaultIfEmpty().Max();
+                        var version = int.TryParse(actual.GetValueOrDefault("version").ToString(), out var exact) ? exact : _versions.Keys.DefaultIfEmpty().Max();
                         return _versions.TryGetValue(version, out var value) ? Entry(version, value) : new HttpResponseMessage(HttpStatusCode.NotFound);
                     }
                     var body = await request.Content!.ReadFromJsonAsync<JsonElement>(ct);

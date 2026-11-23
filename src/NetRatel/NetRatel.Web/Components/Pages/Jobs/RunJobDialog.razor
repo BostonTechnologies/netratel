@@ -11,7 +11,7 @@
 @inject NavigationManager NavManager
 @inject IDialogService Dialogs
 
-<MudDialog Class="@(_params?.Count > 1 || _availableNodes.Count > 25 ? "jobs-run-dialog jobs-run-dialog-wide" : "jobs-run-dialog")">
+<MudDialog Class="@DialogClass">
     <DialogContent>
         <form class="run-job-dialog" id="@_formId" autocomplete="off" aria-label="Job inputs" @onsubmit:preventDefault="true">
             <div class="run-job-context">
@@ -87,13 +87,15 @@
                             }
                             @if (_providerMode.Contains(p.Name))
                             {
-                                <MudButton Variant="Variant.Outlined" OnClick="@(() => PickProviderInputAsync(p))" Disabled="_isSubmitting"
-                                           aria-label="@($"Choose secret for {p.Name}")">Choose secret</MudButton>
-                                @if ((_providerInputs.GetValueOrDefault(p.Name) ?? p.DefaultSecretReference) is { } reference)
-                                {
-                                    <MudText Typo="Typo.caption" Style="overflow-wrap:anywhere">@SecretVaultPresentation.Reference(reference)</MudText>
-                                }
-                                else if (p.HasProviderDefault) { <MudText Typo="Typo.caption">Saved provider reference</MudText> }
+                                <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1" Class="flex-wrap">
+                                    <MudButton Variant="Variant.Outlined" OnClick="@(() => PickProviderInputAsync(p))" Disabled="_isSubmitting"
+                                               aria-label="@($"Choose secret for {p.Name}")">Choose secret</MudButton>
+                                    @if ((_providerInputs.GetValueOrDefault(p.Name) ?? p.DefaultSecretReference) is { } reference)
+                                    {
+                                        <MudText Typo="Typo.caption" Style="overflow-wrap:anywhere">@SecretVaultPresentation.Reference(reference)</MudText>
+                                    }
+                                    else if (p.HasProviderDefault) { <MudText Typo="Typo.caption">Saved provider reference</MudText> }
+                                </MudStack>
                             }
                             else if (type == "bool")
                             {
@@ -152,6 +154,8 @@
     private CancellationTokenSource? _targetResolution;
     private JobTargetsApiClient? _targetsApi;
     private readonly CancellationTokenSource _dispose = new();
+    private string DialogClass => "jobs-run-dialog" + (_params?.Count > 1 || _availableNodes.Count > 25 ? " jobs-run-dialog-wide" : "") +
+        (_providerInputsAllowed ? " secret-vault-dialog" : "");
     private string TargetSummary => Job.Target?.Source switch
     {
         JobTargetSource.ExecutionGroup => "HA Group",

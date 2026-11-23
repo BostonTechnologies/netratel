@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Threading.Channels;
+using AutomationTrace.Contracts;
 using NetRatel.Shared.Contracts.Tasks;
 using NetRatel.Application.Jobs;
 using Microsoft.Extensions.DependencyInjection;
@@ -92,6 +93,9 @@ internal static class JobsWorkspaceFixture
         {
             Initialize();
             var path = request.RequestUri!.AbsolutePath;
+            if (request.Method == HttpMethod.Get && path.StartsWith("/api/v1/tenants/3/automation-resources/", StringComparison.Ordinal))
+                return path.EndsWith("/origins", StringComparison.Ordinal) ? Ok(Array.Empty<AutomationOriginContext>()) :
+                    Ok(new PagedResult<AutomationResourceSearchDto>([], 1, 25, 0));
             if (secretVault && path.StartsWith("/api/v1/tenants/3/secret-vault/", StringComparison.Ordinal))
             {
                 if (path.EndsWith("/permissions", StringComparison.Ordinal)) return Ok(new SecretVaultPermissions(true, true, true, true, true, true, true)

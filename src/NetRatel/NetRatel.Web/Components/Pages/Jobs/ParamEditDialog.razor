@@ -9,7 +9,8 @@
 @inject IDialogService Dialogs
 @inject IHttpClientFactory HttpClients
 
-<MudDialog Style="width:min(680px,calc(100vw - 32px))" ContentStyle="max-height:calc(100dvh - 180px);overflow-y:auto">
+<MudDialog Class="@(_type == "secret" && _canSelectProvider ? "secret-vault-dialog" : null)" Style="width:min(680px,calc(100vw - 32px))"
+           ContentStyle="@(_type == "secret" && _canSelectProvider ? null : "max-height:calc(100dvh - 180px);overflow-y:auto")">
     <DialogContent>
         <form class="param-editor" id="@_formId" autocomplete="off" aria-label="Parameter definition" @onsubmit:preventDefault="true">
             <div class="param-editor-row">
