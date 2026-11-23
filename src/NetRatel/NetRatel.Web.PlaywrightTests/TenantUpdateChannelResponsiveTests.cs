@@ -29,13 +29,13 @@ public sealed class TenantUpdateChannelResponsiveTests(ClientsManagementBrowserF
         await switcher.WaitForAsync(new() { State = WaitForSelectorState.Attached });
         if (await switcher.IsVisibleAsync())
         {
-            await Assertions.Expect(switcher.Locator("option").Last).ToHaveTextAsync("Metrics");
+            await Assertions.Expect(switcher.Locator("option").Nth(4)).ToHaveTextAsync("Metrics");
             await switcher.SelectOptionAsync(new SelectOptionValue { Label = "Metrics" });
         }
         else
         {
             var metrics = dialog.GetByRole(AriaRole.Tab, new() { Name = "Metrics", Exact = true });
-            await Assertions.Expect(dialog.GetByRole(AriaRole.Tab).Last).ToHaveTextAsync("Metrics");
+            await Assertions.Expect(dialog.GetByRole(AriaRole.Tab).Nth(4)).ToHaveTextAsync("Metrics");
             await metrics.PressAsync("Enter");
         }
         var retention = dialog.GetByRole(AriaRole.Spinbutton).First;

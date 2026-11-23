@@ -87,7 +87,7 @@
                             }
                             else
                             {
-                                <MudTextField T="string" Value="@GetValue(p.Name)" ValueChanged="value => SetValue(p.Name, value)" Label="@p.Name" InputId="@FieldId(p)" UserAttributes="@JobParameterInput.OperationalAttributes(FieldId(p), type == "secret")" Required="p.Required" Variant="Variant.Outlined" Margin="Margin.Dense" Lines="@(type == "json" || type == "string" && GetValue(p.Name)?.Contains('\n') == true ? 3 : 1)" InputType="@(type == "secret" ? InputType.Password : InputType.Text)" InputMode="@(type == "int" ? InputMode.numeric : InputMode.text)" Error="@(error is not null)" HelperText="@p.Description" Disabled="_isSubmitting" />
+                                <MudTextField T="string" Value="@GetValue(p.Name)" ValueChanged="value => SetValue(p.Name, value)" Label="@p.Name" InputId="@FieldId(p)" UserAttributes="@JobParameterInput.OperationalAttributes(FieldId(p), type == "secret")" Required="@(p.Required && !p.HasProtectedDefault)" Variant="Variant.Outlined" Margin="Margin.Dense" Lines="@(type == "json" || type == "string" && GetValue(p.Name)?.Contains('\n') == true ? 3 : 1)" InputType="@(type == "secret" ? InputType.Password : InputType.Text)" InputMode="@(type == "int" ? InputMode.numeric : InputMode.text)" Error="@(error is not null)" HelperText="@(p.HasProtectedDefault ? "Leave blank to use the protected default." : p.Description)" Disabled="_isSubmitting" />
                             }
                             @if (error is not null) { <div class="run-job-field-error" role="alert">@error</div> }
                         </div>
@@ -143,7 +143,7 @@
         : Job.Target.RuntimeInput?.Kind is JobRuntimeTargetKind.ClientId or JobRuntimeTargetKind.Hostname or JobRuntimeTargetKind.Tag && RuntimeValues.Length != 1 ? "This target type requires exactly one value."
         : Job.Target.RuntimeInput?.Kind is JobRuntimeTargetKind.ClientId or JobRuntimeTargetKind.ClientIds && RuntimeIds.Count != RuntimeValues.Length ? "Enter complete stable client IDs or select clients below."
         : null;
-    private bool ValidInputs => _params is not null && _params.All(p => JobParameterInput.Validate(p.Type, GetValue(p.Name), p.Required, p.OptionsJson) is null);
+    private bool ValidInputs => _params is not null && _params.All(p => JobParameterInput.Validate(p.Type, GetValue(p.Name), p.Required && !p.HasProtectedDefault, p.OptionsJson) is null);
     private bool CanResolve => ValidInputs && RuntimeInputError is null;
     private bool CanRun => !_isSubmitting && !_submitted && _params is not null && !string.IsNullOrWhiteSpace(_startedBy)
         && ValidInputs && RuntimeInputError is null && (Job.Target is null || !_targetsLoading && _launchPreview is not null);
@@ -172,7 +172,7 @@
     }
     private string? GetValue(string key) => _values.GetValueOrDefault(key);
     private string? FieldError(JobParamDto p) => _touched.Contains(p.Name) || !string.IsNullOrWhiteSpace(GetValue(p.Name))
-        ? JobParameterInput.Validate(p.Type, GetValue(p.Name), p.Required, p.OptionsJson) : null;
+        ? JobParameterInput.Validate(p.Type, GetValue(p.Name), p.Required && !p.HasProtectedDefault, p.OptionsJson) : null;
     private Task SetValue(string key, string? value) { _values[key] = value; _touched.Add(key); return RefreshTargetsAsync(_invocationSubset is null, true); }
     private Task RuntimeValuesChangedAsync(string? value) { _runtimeValues = value ?? ""; return RefreshTargetsAsync(true, true); }
     private Task RuntimeNodesChangedAsync(IReadOnlyList<Guid> ids) { _runtimeValues = string.Join("\n", ids); return RefreshTargetsAsync(true, false); }
@@ -242,7 +242,7 @@
     private RunJobRequest BuildRequest(bool reviewed)
     {
         var payload = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
-        foreach (var p in _params ?? [])
+        foreach (var p in (_params ?? []).Where(p => !p.HasProtectedDefault || !string.IsNullOrEmpty(GetValue(p.Name))))
             payload[p.Name] = p.Type.Equals("bool", StringComparison.OrdinalIgnoreCase) ? GetBoolValue(p.Name) : GetValue(p.Name);
         return new RunJobRequest(_startedBy, JsonSerializer.Serialize(payload), ClientIdentityOverride: null, Environment: Job.Environment)
         {

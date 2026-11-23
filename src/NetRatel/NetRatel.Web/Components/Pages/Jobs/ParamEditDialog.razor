@@ -30,7 +30,11 @@
             }
             else
             {
-                <MudTextField @bind-Value="_default" Label="Default value" InputId="@FieldId("default-value")" UserAttributes="@JobParameterInput.OperationalAttributes(FieldId("default-value"), _type == "secret")" InputType="@(_type == "secret" ? InputType.Password : InputType.Text)" InputMode="@(_type == "int" ? InputMode.numeric : InputMode.text)" Lines="@(_type == "json" ? 3 : 1)" Variant="Variant.Outlined" Margin="Margin.Dense" Error="@(DefaultError is not null)" ErrorText="@DefaultError" Disabled="_saving" HelperText="Optional; used when no value is supplied." />
+                <MudTextField @bind-Value="_default" Label="Default value" InputId="@FieldId("default-value")" UserAttributes="@JobParameterInput.OperationalAttributes(FieldId("default-value"), _type == "secret")" InputType="@(_type == "secret" ? InputType.Password : InputType.Text)" InputMode="@(_type == "int" ? InputMode.numeric : InputMode.text)" Lines="@(_type == "json" ? 3 : 1)" Variant="Variant.Outlined" Margin="Margin.Dense" Error="@(DefaultError is not null)" ErrorText="@DefaultError" Disabled="@(_saving || _clearProtectedDefault)" HelperText="@DefaultHelp" />
+            }
+            @if (_type == "secret" && ExistingParam?.HasProtectedDefault == true)
+            {
+                <MudCheckBox T="bool" @bind-Value="_clearProtectedDefault" Disabled="_saving" Label="Remove the protected default" />
             }
             <MudTextField @bind-Value="_description" Label="Description" InputId="@FieldId("description")" UserAttributes="@JobParameterInput.OperationalAttributes(FieldId("description"))" Lines="2" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_saving" />
             @if (_type == "select")
@@ -62,7 +66,9 @@
     { ["string"] = "Text", ["int"] = "Whole number", ["bool"] = "True / false", ["json"] = "JSON", ["select"] = "Choice", ["secret"] = "Secret" };
     private string _name = string.Empty, _type = "string", _optionsText = string.Empty;
     private string? _default, _description, _optionsJson, _saveError;
-    private bool _required, _saving, _saved, _validated, _advanced;
+    private bool _required, _saving, _saved, _validated, _advanced, _clearProtectedDefault;
+    private string DefaultHelp => _type == "secret" && ExistingParam?.HasProtectedDefault == true
+        ? "Leave blank to keep the protected default. Enter a value to replace it." : "Optional. Used when no value is supplied.";
     private string? DefaultError => _validated ? JobParameterInput.Validate(_type, _default, false, _optionsJson) : null;
     private string? OptionsError
     {
@@ -103,7 +109,9 @@
         {
             var param = ExistingParam is null
                 ? await JobApi.AddJobParamAsync(JobId, new AddJobParamRequest(_name, _type, _required, _default, _description, _optionsJson))
-                : await JobApi.UpdateJobParamAsync(ExistingParam.Id, new UpdateJobParamRequest(_name, _type, _required, _default, _description, _optionsJson));
+                : await JobApi.UpdateJobParamAsync(ExistingParam.Id, new UpdateJobParamRequest(_name, _type, _required,
+                    _type == "secret" && (_clearProtectedDefault || string.IsNullOrEmpty(_default)) ? null : _default, _description, _optionsJson)
+                    { ClearProtectedDefault = _type == "secret" && _clearProtectedDefault });
             _saved = true;
             Snackbar.Add("Parameter saved.", Severity.Success);
             MudDialog.Close(DialogResult.Ok(param));

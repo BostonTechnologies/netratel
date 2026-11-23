@@ -46,7 +46,11 @@ public record JobParamDto(
     string? Default,
     string? Description,
     string? OptionsJson
-);
+)
+{
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    public bool HasProtectedDefault { get; init; }
+}
 
 public enum JobStepTypeDto { RunCommand = 0, LibraryScript = 1, HttpAction = 2 }
 
@@ -129,7 +133,11 @@ public record UpdateJobParamRequest(
     string? Default,
     string? Description,
     string? OptionsJson
-);
+)
+{
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    public bool ClearProtectedDefault { get; init; }
+}
 
 public record AddJobStepRequest(
     int? Ordinal,

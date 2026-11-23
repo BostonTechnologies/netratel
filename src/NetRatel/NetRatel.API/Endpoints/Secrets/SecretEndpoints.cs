@@ -59,8 +59,12 @@ public static class SecretEndpoints
             if (string.IsNullOrWhiteSpace(request.Value))
                 return Results.BadRequest("Value is required.");
 
-            var updated = await secrets.UpdateAsync(new UpdateSecretCommand(id, request.Value, request.Description), scope, ct);
-            return updated is null ? Results.NotFound() : Results.Ok(updated);
+            try
+            {
+                var updated = await secrets.UpdateAsync(new UpdateSecretCommand(id, request.Value, request.Description), scope, ct);
+                return updated is null ? Results.NotFound() : Results.Ok(updated);
+            }
+            catch (SecretProviderException error) { return SecretVaultEndpoints.ProviderProblem(error); }
         });
 
         group.MapDelete("/{id:int}", async (int id, HttpContext http, IEffectiveAccessService access, ISecretService secrets,
@@ -70,8 +74,12 @@ public static class SecretEndpoints
             if (scope is { Length: 0 })
                 return Results.Forbid();
 
-            var deleted = await secrets.DeleteAsync(id, scope, ct);
-            return deleted is null ? Results.NotFound() : Results.Accepted($"/api/v1/secrets/{id}", deleted);
+            try
+            {
+                var deleted = await secrets.DeleteAsync(id, scope, ct);
+                return deleted is null ? Results.NotFound() : Results.Accepted($"/api/v1/secrets/{id}", deleted);
+            }
+            catch (SecretProviderException error) { return SecretVaultEndpoints.ProviderProblem(error); }
         });
 
         return app;

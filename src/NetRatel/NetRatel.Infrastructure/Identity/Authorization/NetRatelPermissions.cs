@@ -24,8 +24,12 @@ public static class NetRatelPermissions
     public const string ComputerUseView = "computer-use.view";
     public const string ComputerUseControl = "computer-use.control";
     public const string SecretUse = "secret.use";
+    public const string SecretBrowse = "secret.browse";
     public const string SecretReveal = "secret.reveal";
     public const string SecretManage = "secret.manage";
+    public const string SecretProviderAdministration = "secret.provider.admin";
+    public const string CredentialProfileManagement = "credential.profile.manage";
+    public const string RunAs = "execution.run-as";
     public const string EventDeliveryManage = "event-delivery.manage";
     public const string AuditRead = "audit.read";
     public const string IntegrationManagement = "integration.manage";
@@ -46,7 +50,8 @@ public static class NetRatelPermissions
         TelemetryRead, MonitoringRead, MonitoringManage, MonitoringAcknowledge,
         MonitoringClear, MonitoringBypass, MonitoringAllTargets,
         ScriptEdit, ScriptExecute, JobManagement, TerminalAccess,
-        FileRead, FileWrite, FileDelete, RemoteSupport, ComputerUseView, ComputerUseControl, SecretUse, SecretReveal, SecretManage,
+        FileRead, FileWrite, FileDelete, RemoteSupport, ComputerUseView, ComputerUseControl,
+        SecretBrowse, SecretUse, SecretReveal, SecretManage, SecretProviderAdministration, CredentialProfileManagement, RunAs,
         AuditRead, EventDeliveryManage, IntegrationManagement, ArtifactPublication, McpPolicyAdministration, McpDiscoveryRead,
         McpConnectivityRead, McpConnectivityTest,
         FlowRead, FlowEdit, FlowDelete, FlowPublish, FlowExecute

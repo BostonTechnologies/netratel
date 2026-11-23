@@ -35,7 +35,11 @@ public sealed record JobParameterInfo(
     bool Required,
     string? DefaultValue,
     string? Description,
-    string? OptionsJson);
+    string? OptionsJson)
+{
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    public bool HasProtectedDefault { get; init; }
+}
 
 public sealed record JobStepInfo(
     ulong Id,
@@ -100,7 +104,10 @@ public sealed record UpdateJobParameterCommand(
     bool? Required,
     string? DefaultValue,
     string? Description,
-    string? OptionsJson);
+    string? OptionsJson)
+{
+    public bool ClearProtectedDefault { get; init; }
+}
 
 public sealed record AddJobStepCommand(
     ulong JobId,

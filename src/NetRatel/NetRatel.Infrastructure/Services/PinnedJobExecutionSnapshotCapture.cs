@@ -10,7 +10,8 @@ using NetRatel.Shared.Contracts.Tasks;
 namespace NetRatel.Infrastructure.Services;
 
 /// <summary>Captures the same canonical definitions used by normal job admission under their existing source fences.</summary>
-public sealed class PinnedJobExecutionSnapshotCapture(OrchestratorDbContext db, IJobDefinitionService jobs, IScriptService scripts)
+public sealed class PinnedJobExecutionSnapshotCapture(OrchestratorDbContext db, IJobDefinitionService jobs, IScriptService scripts,
+    JobSecretDefaultProtection? defaults = null)
     : IJobExecutionSnapshotCapture
 {
     public async Task<PinnedJobExecutionSnapshot> CaptureAsync(ulong jobId, int tenantId, CancellationToken cancellationToken)
@@ -40,7 +41,9 @@ public sealed class PinnedJobExecutionSnapshotCapture(OrchestratorDbContext db, 
             pinnedScripts.Add(new(script, parameters,
                 Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(script.Content)))));
         }
-        var snapshot = new PinnedJobExecutionSnapshot(definition, pinnedScripts);
+        var protectedDefaults = defaults is null ? [] : await defaults.CaptureAsync(checked((long)jobId), cancellationToken);
+        var snapshot = new PinnedJobExecutionSnapshot(definition, pinnedScripts)
+            { SecretDefaults = protectedDefaults.Length == 0 ? null : protectedDefaults };
         snapshot.Validate(tenantId);
         if (System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(snapshot).Length > ExecutionAdmissionSubmission.MaximumPayloadBytes)
             throw new InvalidOperationException("The pinned job source exceeds the execution payload bound.");

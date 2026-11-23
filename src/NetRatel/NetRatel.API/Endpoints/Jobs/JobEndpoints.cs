@@ -122,7 +122,11 @@ public static class JobEndpoints
         group.MapPut("/params/{id:long}", async (ulong id, [FromBody] UpdateJobParamRequest r, HttpContext http, [FromServices] IEffectiveAccessService access, [FromServices] OrchestratorDbContext db, IJobDefinitionService jobs, CancellationToken ct) =>
         {
             var scope = await JobScopeForParameterAsync(db, id, ct); if (scope is null) return Results.NotFound();
-            return !await CanManageAsync(http, access, scope.TenantId, ct) ? Results.Forbid() : (await jobs.UpdateParamAsync(new UpdateJobParameterCommand(id, r.Name, r.Type, r.Required, r.Default, r.Description, r.OptionsJson), ct)) is { } p ? Results.Ok(MapParam(p)) : Results.NotFound();
+            if (!await CanManageAsync(http, access, scope.TenantId, ct)) return Results.Forbid();
+            if (r.ClearProtectedDefault && r.Default is not null) return Results.BadRequest("Choose one protected default change.");
+            var param = await jobs.UpdateParamAsync(new UpdateJobParameterCommand(id, r.Name, r.Type, r.Required, r.Default, r.Description, r.OptionsJson)
+                { ClearProtectedDefault = r.ClearProtectedDefault }, ct);
+            return param is null ? Results.NotFound() : Results.Ok(MapParam(param));
         });
         group.MapDelete("/params/{id:long}", async (ulong id, HttpContext http, [FromServices] IEffectiveAccessService access, [FromServices] OrchestratorDbContext db, IJobDefinitionService jobs, CancellationToken ct) =>
         {
@@ -232,7 +236,8 @@ public static class JobEndpoints
         return string.IsNullOrWhiteSpace(runner) ? label : $"{runner}: {label}";
     }
     private static bool Matches(JobDto job, string? search) => string.IsNullOrWhiteSpace(search) || ($"{job.Name} {job.FolderPath} {job.TenantDisplayName} {job.ClientDisplayName}").Contains(search.Trim(), StringComparison.OrdinalIgnoreCase);
-    private static JobParamDto MapParam(JobParameterInfo p) => new(p.Id, p.JobId, p.Name, p.Type, p.Required, p.DefaultValue, p.Description, p.OptionsJson);
+    private static JobParamDto MapParam(JobParameterInfo p) => new(p.Id, p.JobId, p.Name, p.Type, p.Required, p.DefaultValue, p.Description, p.OptionsJson)
+        { HasProtectedDefault = p.HasProtectedDefault };
     private static JobStepDto MapStep(JobStepInfo s) => new(s.Id, s.JobId, s.Ordinal, (JobStepTypeDto)s.Type, s.Runner, s.Command, s.ScriptId, s.PayloadJson, s.Enabled);
     private static string NormalizeFolder(string? folder) { var value = string.IsNullOrWhiteSpace(folder) ? "/" : folder.Replace('\\', '/'); return (value.StartsWith('/') ? value : "/" + value).TrimEnd('/') + "/"; }
     private static Task RecordAsync(IEventRecorder events, ICorrelationContext correlation, string type, JobDefinitionInfo job, string action, CancellationToken ct, string? actor = null) => events.RecordAsync(new DomainEvent { EventType = type, Source = "Orchestration", CorrelationId = correlation.GetOrCreate(), TenantId = job.TenantId?.ToString(), EntityId = job.Id.ToString(), Severity = "Info", Message = $"Job {job.Name} {action}.", Payload = new { job.Id, job.TenantId, job.AgentId, Actor = actor } }, ct);

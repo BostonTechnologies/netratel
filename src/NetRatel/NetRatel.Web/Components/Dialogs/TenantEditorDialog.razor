@@ -2,16 +2,17 @@
 @using NetRatel.Shared.Contracts.Requests
 @using NetRatel.Shared.Contracts.Monitoring
 @using NetRatel.Web.Components.Shared.Monitoring
+@using NetRatel.Web.Components.Shared.Secrets
 @using NetRatel.Web.Components.SoftwareInventory
 @inject IDialogService Dialogs
 
-<NavigationLock ConfirmExternalNavigation="@(_metricsDirty || _metricsSaving)" OnBeforeInternalNavigation="ConfirmNavigationAsync" />
+<NavigationLock ConfirmExternalNavigation="@(_metricsDirty || _metricsSaving || _vaultDirty || _vaultSaving)" OnBeforeInternalNavigation="ConfirmNavigationAsync" />
 
-<MudDialog Class="tenant-editor-dialog">
+<MudDialog Class="@(Section == VaultSection ? "tenant-editor-dialog tenant-vault-active" : "tenant-editor-dialog")">
     <DialogContent>
         <div class="tenant-editor-workspace">
         <MudStack Spacing="3">
-            <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Start" Class="flex-wrap">
+            <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Start" Class="flex-wrap tenant-editor-heading">
                 <div>
                     <MudText Typo="Typo.h6">@DialogTitle</MudText>
                     <MudText Typo="Typo.caption" Color="Color.Secondary">
@@ -41,6 +42,7 @@
                     <option value="2">Auto update</option>
                     <option value="3">HA Groups</option>
                     <option value="4">Metrics</option>
+                    <option value="5">Secrets &amp; credentials</option>
                 </select>
             </label>
             <MudForm @ref="_form">
@@ -180,6 +182,16 @@
                             @MetricsEditor
                         }
                     </MudTabPanel>
+                    <MudTabPanel Text="Secrets &amp; credentials">
+                        @if (TenantId <= 0)
+                        {
+                            <MudText Class="pa-4">Create the tenant before configuring its vault.</MudText>
+                        }
+                        else if (_vaultOpened)
+                        {
+                            <TenantSecretProviderEditor @key="TenantId" TenantId="TenantId" Active="@(Section == VaultSection)" DraftChanged="VaultDraftChanged" />
+                        }
+                    </MudTabPanel>
                 </MudTabs>
             </MudForm>
             }
@@ -191,18 +203,19 @@
             {
                 <p role="status">The Metrics tab has unsaved changes.</p>
             }
+            @if (_vaultDirty && Section != VaultSection) { <p role="status">The default secret provider has unsaved changes.</p> }
         </MudStack>
         </div>
     </DialogContent>
 
     <DialogActions>
-        <MudButton Variant="Variant.Text" OnClick="CancelAsync" Disabled="@(_metricsSaving || _confirmingDrafts)">
-            @(ScopedMetricsTenant is null ? "Cancel tenant changes" : "Close")
+        <MudButton Variant="Variant.Text" OnClick="CancelAsync" Disabled="@(_metricsSaving || _vaultSaving || _confirmingDrafts)">
+            @(ScopedMetricsTenant is null && Section != VaultSection ? "Cancel tenant changes" : "Close")
         </MudButton>
         @if (ScopedMetricsTenant is null)
         {
-            <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="SubmitAsync" Disabled="@(_metricsSaving || _confirmingDrafts)">
-                @(IsEditMode ? "Save tenant changes" : "Create Tenant")
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="SubmitAsync" Disabled="@(_metricsSaving || _vaultSaving || _confirmingDrafts)">
+                @(IsEditMode ? Section == VaultSection ? "Save tenant" : "Save tenant changes" : "Create Tenant")
             </MudButton>
         }
     </DialogActions>
@@ -221,6 +234,7 @@
     private string _domainsText = string.Empty;
     private bool _pinTargetVersion;
     private const int MetricsSection = 4;
+    private const int VaultSection = 5;
     private int _section;
     private int Section
     {
@@ -231,10 +245,12 @@
             _inventoryOpened |= value == 1;
             _groupsOpened |= value == 3;
             _metricsOpened |= value == MetricsSection;
+            _vaultOpened |= value == VaultSection;
         }
     }
     private bool _groupsOpened, _groupDirty, _inventoryOpened;
     private bool _metricsOpened, _metricsDirty, _metricsSaving, _confirmingDrafts;
+    private bool _vaultOpened, _vaultDirty, _vaultSaving;
     private int TenantId => ScopedMetricsTenant?.TenantId ?? (IsEditMode ? Tenant?.TenantId ?? 0 : 0);
     private RenderFragment MetricsEditor => @<MetricHistorySettingsEditor @key="TenantId" TenantId="TenantId"
         Active="@(ScopedMetricsTenant is not null || Section == MetricsSection)" DraftChanged="MetricsDraftChanged" />;
@@ -243,30 +259,30 @@
         MudDialog.Options with { BackdropClick = false, CloseOnEscapeKey = false, CloseButton = false });
     private void GroupDirtyChanged(bool dirty) { _groupsOpened = true; _groupDirty = dirty; }
     private void MetricsDraftChanged((bool Dirty, bool Saving) draft) => (_metricsDirty, _metricsSaving) = draft;
+    private void VaultDraftChanged((bool Dirty, bool Saving) draft) => (_vaultDirty, _vaultSaving) = draft;
 
     private async Task<bool> ConfirmDraftsAsync()
     {
-        if (_metricsSaving || _confirmingDrafts) return false;
-        if (!_groupDirty && !_metricsDirty) return true;
+        if (_metricsSaving || _vaultSaving || _confirmingDrafts) return false;
+        if (!_groupDirty && !_metricsDirty && !_vaultDirty) return true;
         _confirmingDrafts = true;
         try
         {
-            var section = (_groupDirty, _metricsDirty) switch
-            {
-                (true, true) => "HA Groups and Metrics",
-                (true, _) => "HA Groups",
-                _ => "Metrics"
-            };
+            var sections = new List<string>();
+            if (_groupDirty) sections.Add("HA Groups");
+            if (_metricsDirty) sections.Add("Metrics");
+            if (_vaultDirty) sections.Add("Secrets & credentials");
+            var section = string.Join(", ", sections);
             return await Dialogs.ShowMessageBoxAsync("Unsaved tenant drafts",
                 $"Discard the unsaved changes in {section} and close the editor?",
-                yesText: "Discard drafts", cancelText: "Keep editing") == true && !_metricsSaving;
+                yesText: "Discard drafts", cancelText: "Keep editing") == true && !_metricsSaving && !_vaultSaving;
         }
         finally { _confirmingDrafts = false; }
     }
 
     private async Task ConfirmNavigationAsync(LocationChangingContext context)
     {
-        if ((_metricsDirty || _metricsSaving) && !await ConfirmDraftsAsync()) context.PreventNavigation();
+        if ((_metricsDirty || _metricsSaving || _vaultDirty || _vaultSaving) && !await ConfirmDraftsAsync()) context.PreventNavigation();
     }
 
     protected override void OnParametersSet()
@@ -300,7 +316,7 @@
 
     private async Task SubmitAsync()
     {
-        if (ScopedMetricsTenant is not null || _metricsSaving || _confirmingDrafts) return;
+        if (ScopedMetricsTenant is not null || _metricsSaving || _vaultSaving || _confirmingDrafts) return;
         if (_form is not null)
         {
             await _form.ValidateAsync();

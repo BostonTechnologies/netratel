@@ -7,6 +7,7 @@ using NetRatel.Shared.Contracts.Jobs;
 using NetRatel.Shared.Contracts.Monitoring;
 using NetRatel.Shared.Contracts.Netclaw;
 using NetRatel.Shared.Contracts.Services;
+using NetRatel.Shared.Contracts.Secrets;
 using NetRatel.Shared.Contracts.SoftwareInventory;
 
 namespace NetRatel.Shared.Operations;
@@ -46,6 +47,7 @@ public sealed record ManagedOperationDescriptor(string Tool, string Operation, s
     {
         ("netratel_ai", "create" or "archive") => ["telemetry.read"],
         ("netratel_ai", "send" or "respond" or "reconcile") => ["telemetry.read", "secret.use"],
+        ("netratel_secrets", "profiles") => ["secret.use", "execution.run-as"],
         _ => []
     };
 
@@ -68,6 +70,10 @@ public static class ManagedOperationCatalog
 
     public static IReadOnlyList<ManagedOperationDescriptor> Operations { get; } =
     [
+        new("netratel_secrets", "connections", "secret.browse", false, false),
+        new("netratel_secrets", "browse", "secret.browse", false, false, typeof(SecretBrowseQuery), "connectionId"),
+        new("netratel_secrets", "entry", "secret.browse", false, false, typeof(SecretEntryMetadataQuery), "connectionId"),
+        new("netratel_secrets", "profiles", "secret.browse", false, false),
         new("netratel_execution_groups", "list", "tenant.admin", false, false, typeof(JobTargetDirectoryRequest)),
         new("netratel_execution_groups", "get", "tenant.admin", false, false, IdProperty: "groupId"),
         new("netratel_execution_groups", "create", "tenant.admin", true, false, typeof(ExecutionGroupWriteDto)),

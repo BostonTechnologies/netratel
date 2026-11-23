@@ -99,6 +99,13 @@ if (args is ["--gssapi-application-smoke"])
 }
 
 var builder = WebApplication.CreateBuilder(args);
+var secretKeyRing = new SecretKeyRing(builder.Configuration);
+if (args is [SecretKeyRing.WrapCommand])
+{
+    var wrapped = secretKeyRing.WrapExistingKeys();
+    Console.WriteLine($"Enrolled {wrapped} existing API key files.");
+    return;
+}
 builder.AddNetRatelDiagnosticLogging();
 // Public install URLs are bearer capabilities; framework request-start logs include raw paths.
 builder.Logging.AddFilter("Microsoft.AspNetCore.Hosting.Diagnostics", LogLevel.Warning);
@@ -770,19 +777,7 @@ builder.Services.AddAuthorization(options =>
 #endregion
 
 #region DataProtection keys
-// Appsettings-driven key directory with local fallback.
-var configuredKeysDir = builder.Configuration["DataProtection:KeysDirectory"];
-string keyRingPath = string.IsNullOrWhiteSpace(configuredKeysDir)
-    ? Path.Combine(AppContext.BaseDirectory, ".keys")
-    : (Path.IsPathRooted(configuredKeysDir) ? configuredKeysDir : Path.Combine(AppContext.BaseDirectory, configuredKeysDir));
-
-Directory.CreateDirectory(keyRingPath);
-
-builder.Services.AddDataProtection()
-    .PersistKeysToFileSystem(new DirectoryInfo(keyRingPath))
-    .SetApplicationName(
-        builder.Configuration.GetSection("DataProtection")["ApplicationName"]
-        ?? "NetRatel-Keyring");
+secretKeyRing.Configure(builder.Services);
 builder.Services.AddSingleton<NetRatel.Application.RatelDesk.IRatelDeskCredentialProtector,
     NetRatel.API.Services.RatelDesk.RatelDeskCredentialProtector>();
 #endregion
@@ -1004,6 +999,12 @@ builder.WebHost.ConfigureKestrel(k =>
 });
 
 var app = builder.Build();
+secretKeyRing.VerifyRestoredKeys(app.Services);
+await using (var keyScope = app.Services.CreateAsyncScope())
+{
+    await secretKeyRing.RequireRingForProtectedVaultAsync(keyScope.ServiceProvider.GetRequiredService<NetRatel.Infrastructure.Persistence.OrchestratorDbContext>(),
+        app.Lifetime.ApplicationStopping);
+}
 
 var storageInit = app.Services.GetRequiredService<StorageInitializer>();
 storageInit.EnsureCreated();
@@ -1111,6 +1112,8 @@ await using (var secretMigrationScope = app.Services.CreateAsyncScope())
     await secretMigrationScope.ServiceProvider
         .GetRequiredService<NetRatel.Infrastructure.Services.SecretService>()
         .ProtectLegacyValuesAsync(app.Lifetime.ApplicationStopping);
+    await secretMigrationScope.ServiceProvider.GetRequiredService<NetRatel.Infrastructure.Services.JobSecretDefaultProtection>()
+        .ProtectLegacyDefaultsAsync(app.Lifetime.ApplicationStopping);
 }
 
 app.Run();

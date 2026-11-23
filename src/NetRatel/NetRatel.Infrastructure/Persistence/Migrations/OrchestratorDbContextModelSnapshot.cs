@@ -2700,6 +2700,53 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.ToTable("ComputerUseSessions", (string)null);
                 });
 
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.CredentialProfileRecord", b =>
+                {
+                    b.Property<int>("TenantId")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("DisplayName")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<string>("MappingJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb");
+
+                    b.Property<long>("MappingRevision")
+                        .HasColumnType("bigint");
+
+                    b.Property<Guid?>("PasswordConnectionId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("PasswordLocator")
+                        .HasMaxLength(1024)
+                        .HasColumnType("character varying(1024)");
+
+                    b.Property<long>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint");
+
+                    b.Property<Guid?>("UsernameConnectionId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("UsernameLocator")
+                        .HasMaxLength(1024)
+                        .HasColumnType("character varying(1024)");
+
+                    b.HasKey("TenantId", "Id");
+
+                    b.HasIndex("TenantId", "PasswordConnectionId", "PasswordLocator");
+
+                    b.HasIndex("TenantId", "UsernameConnectionId", "UsernameLocator");
+
+                    b.ToTable("CredentialProfiles", (string)null);
+                });
+
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.DevelopmentMcpFileArtifactRecord", b =>
                 {
                     b.Property<Guid>("Id")
@@ -3855,6 +3902,9 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                         .HasColumnType("text");
 
                     b.Property<string>("OptionsJson")
+                        .HasColumnType("text");
+
+                    b.Property<string>("ProtectedDefaultValue")
                         .HasColumnType("text");
 
                     b.Property<bool>("Required")
@@ -7380,6 +7430,60 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.ToTable("ScriptParameters", (string)null);
                 });
 
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.SecretProviderConnectionRecord", b =>
+                {
+                    b.Property<int>("TenantId")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid");
+
+                    b.Property<long>("AuthenticationRevision")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("ConfigurationJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb");
+
+                    b.Property<string>("DisplayName")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<bool>("Enabled")
+                        .HasColumnType("boolean");
+
+                    b.Property<bool>("IsDefault")
+                        .HasColumnType("boolean");
+
+                    b.Property<int>("Kind")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("LastTestJson")
+                        .HasColumnType("jsonb");
+
+                    b.Property<string>("ProtectedAuthentication")
+                        .HasColumnType("text");
+
+                    b.Property<long>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint");
+
+                    b.Property<long>("ScopeRevision")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("TenantId", "Id");
+
+                    b.HasIndex("TenantId")
+                        .IsUnique()
+                        .HasFilter("\"IsDefault\"");
+
+                    b.ToTable("SecretProviderConnections", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_SecretProviderConnections_DefaultEnabled", "NOT \"IsDefault\" OR \"Enabled\"");
+                        });
+                });
+
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.SecretRecord", b =>
                 {
                     b.Property<int>("Id")
@@ -7397,6 +7501,16 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.Property<string>("Description")
                         .HasColumnType("text");
 
+                    b.Property<string>("Name")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<long>("Revision")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasDefaultValue(1L);
+
                     b.Property<int?>("TenantId")
                         .HasColumnType("integer");
 
@@ -7410,6 +7524,14 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.Property<bool>("ValueProtected")
                         .HasColumnType("boolean");
 
+                    b.Property<long>("Version")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasDefaultValue(1L);
+
+                    b.Property<bool>("VersionBoundProtection")
+                        .HasColumnType("boolean");
+
                     b.HasKey("Id");
 
                     b.HasIndex("ClientIdentity");
@@ -7418,7 +7540,26 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("TenantId");
 
+                    b.HasIndex("TenantId", "Id");
+
                     b.ToTable("Secrets", (string)null);
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.SecretVersionRecord", b =>
+                {
+                    b.Property<int>("SecretId")
+                        .HasColumnType("integer");
+
+                    b.Property<long>("Version")
+                        .HasColumnType("bigint");
+
+                    b.Property<string>("ProtectedValue")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.HasKey("SecretId", "Version");
+
+                    b.ToTable("SecretVersions", (string)null);
                 });
 
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.SoftwareInstallationRecord", b =>
@@ -8397,6 +8538,15 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.Navigation("Release");
                 });
 
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.CredentialProfileRecord", b =>
+                {
+                    b.HasOne("NetRatel.Infrastructure.Persistence.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.DevelopmentMcpFileArtifactRecord", b =>
                 {
                     b.HasOne("NetRatel.Infrastructure.Persistence.DevelopmentOperatorTargetGrant", null)
@@ -9068,6 +9218,24 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                         .IsRequired();
 
                     b.Navigation("Script");
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.SecretProviderConnectionRecord", b =>
+                {
+                    b.HasOne("NetRatel.Infrastructure.Persistence.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.SecretVersionRecord", b =>
+                {
+                    b.HasOne("NetRatel.Infrastructure.Persistence.SecretRecord", null)
+                        .WithMany()
+                        .HasForeignKey("SecretId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.SoftwareInstallationRecord", b =>

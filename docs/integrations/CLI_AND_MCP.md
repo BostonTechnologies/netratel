@@ -131,6 +131,27 @@ See [bridge acquisition and migration](http-mcp-bridge.md) for exact runtime,
 archive and profile commands. Other CLI/MCP runtime archives are not advertised
 until their matching runners build and smoke-test them.
 
+## Tenant secrets
+
+Use `netratel secrets vault` with the exact tenant and saved connection IDs. Configure the provider and its permissions using the [tenant secrets guide](../operations/SECRETS.md).
+
+```sh
+netratel secrets vault connections --tenant-id 7
+netratel secrets vault browse --tenant-id 7 --connection-id b59b9b79-2e0c-4d0b-950c-000000000007
+netratel secrets vault entry --tenant-id 7 --connection-id b59b9b79-2e0c-4d0b-950c-000000000007 --locator 42
+netratel secrets vault profiles --tenant-id 7
+```
+
+Connection and entry writes accept the corresponding REST JSON object from `--stdin` or an owner-only `--request-file`. Keep passwords and provider authentication out of command arguments and shell history. For deletion or disable, `preview-removal` returns the exact request and confirmation token for `confirm-removal`. `reveal --confirm` explicitly displays the value and requires an authorized human account. Use the typed reference as the reveal request body.
+
+| Operation | Web | REST | CLI | stdio and HTTP MCP |
+| --- | --- | --- | --- | --- |
+| Provider, entry and credential metadata | Secrets & credentials | Secret vault routes | `secrets vault` reads | `netratel_secrets` connections, browse, entry and profiles |
+| Connection/default/test, entry writes and profile changes | Secrets & credentials | Secret vault writes | `secrets vault` writes | Metadata and references |
+| Human value reveal | Explicit Reveal action | Authorized reveal route | `secrets vault reveal --confirm` | Metadata and references |
+
+MCP `netratel_secrets` requires `secret.browse` and current policy for the tenant. Credential profile selection additionally requires `secret.use` and `execution.run-as`. Follow the returned cursor with the same folder, limit and search. See [HTTP MCP access](../mcp-http/README.md) for deployment and delegation.
+
 ## Execution groups and multi-node jobs
 
 The operator capability is now **HA Groups**. Compatibility command/tool and

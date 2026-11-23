@@ -2564,6 +2564,7 @@ internal static partial class NetRatelCli
     private static Command BuildSecretsCommand(CliRuntime runtime, GlobalOptions globals)
     {
         var secrets = new Command("secrets", "Manage orchestrator secrets.");
+        secrets.AddCommand(BuildTenantVaultCommand(runtime, globals));
         secrets.AddCommand(GetListCommand(runtime, globals, "list", "/api/v1/secrets/"));
         secrets.AddCommand(GetByIdCommand(runtime, globals, "get", "/api/v1/secrets/{id}", intId: true));
         secrets.AddCommand(BodyCommand(runtime, globals, "create", HttpMethod.Post, "/api/v1/secrets/", ("--name", "name"), ("--value", "value"), ("--description", "description")));

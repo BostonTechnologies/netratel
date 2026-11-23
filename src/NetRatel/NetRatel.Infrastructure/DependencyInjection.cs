@@ -22,6 +22,7 @@ using NetRatel.Infrastructure.Persistence;
 using NetRatel.Infrastructure.Flows;
 using NetRatel.Infrastructure.Requests;
 using NetRatel.Infrastructure.Services;
+using NetRatel.Infrastructure.Secrets;
 using NetRatel.Infrastructure.RatelDesk;
 using NetRatel.Shared.Operations;
 
@@ -74,6 +75,7 @@ public static class DependencyInjection
         services.AddScoped<IJobNodeDirectory, JobNodeDirectory>();
         services.AddScoped<IJobTargetResolver, JobTargetResolver>();
         services.AddScoped<IJobDefinitionService, JobDefinitionService>();
+        services.AddScoped<JobSecretDefaultProtection>();
         services.AddScoped<IJobRunService, JobRunService>();
         services.AddScoped<IExecutionAdmissionStore, ExecutionAdmissionStore>();
         services.AddScoped<IScriptExecutionReplayStore, ScriptExecutionReplayStore>();
@@ -86,6 +88,16 @@ public static class DependencyInjection
         services.AddScoped<ITenantService, TenantService>();
         services.AddScoped<SecretService>();
         services.AddScoped<ISecretService>(provider => provider.GetRequiredService<SecretService>());
+        services.AddSingleton<SecretProviderNetworkPolicy>();
+        services.AddSingleton<SecretProviderTokenCache>();
+        services.AddHttpClient<SecretProviderHttp>()
+            .ConfigurePrimaryHttpMessageHandler(sp => SecretProviderHttp.CreateHandler(sp.GetRequiredService<SecretProviderNetworkPolicy>()))
+            .RemoveAllLoggers();
+        services.AddScoped<ISecretProvider, LocalSecretProvider>();
+        services.AddScoped<ISecretProvider, OpenBaoSecretProvider>();
+        services.AddScoped<ISecretProvider, InfisicalSecretProvider>();
+        services.AddSingleton<ISecretProvider, AzureKeyVaultSecretProvider>();
+        services.AddScoped<ITenantSecretService, TenantSecretService>();
         services.AddScoped<IScriptService, ScriptService>();
 
         services.AddScoped<IM2MConnectivityService, NetRatel.Infrastructure.SystemPairing.PairingConnectivityService>();

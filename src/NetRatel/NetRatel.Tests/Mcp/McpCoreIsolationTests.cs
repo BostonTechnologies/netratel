@@ -158,8 +158,8 @@ public sealed class McpCoreIsolationTests
         var httpToolNames = httpTools.Select(tool => tool.GetProperty("Name").GetString()).ToArray();
         var stdioToolNames = stdioTools.Select(tool => tool.GetProperty("Name").GetString()).ToArray();
 
-        httpToolNames.Should().HaveCount(29).And.NotContain(["netratel_config", "netratel_remote_support_v2", "netratel_connectivity", "netratel_events"]);
-        stdioToolNames.Should().HaveCount(31).And.Contain(["netratel_config", "netratel_remote_support_v2"]);
+        httpToolNames.Should().HaveCount(30).And.NotContain(["netratel_config", "netratel_remote_support_v2", "netratel_connectivity", "netratel_events"]);
+        stdioToolNames.Should().HaveCount(32).And.Contain(["netratel_config", "netratel_remote_support_v2", "netratel_secrets"]);
         httpToolNames.Should().Contain(["netratel_services", "netratel_monitoring", "netratel_flows", "netratel_ai", "netratel_software", "netratel_execution_groups", "netratel_job_targets"]);
         stdioToolNames.Should().Contain(["netratel_services", "netratel_monitoring", "netratel_flows", "netratel_ai", "netratel_software", "netratel_execution_groups", "netratel_job_targets"]);
         httpDocument.RootElement.GetProperty("toolCount").GetInt32().Should().Be(httpTools.Length);
@@ -299,7 +299,7 @@ public sealed class McpCoreIsolationTests
             .ToArray();
 
         sharedHttpToolNames.Should().Equal(cataloguedHttpToolNames);
-        sharedHttpToolNames.Should().HaveCount(35).And.Contain(["netratel_software", "netratel_execution_groups", "netratel_job_targets"]);
+        sharedHttpToolNames.Should().HaveCount(36).And.Contain(["netratel_software", "netratel_execution_groups", "netratel_job_targets", "netratel_secrets"]);
         sharedHttpToolNames.Should().NotContain("netratel_config");
         sharedHttpToolNames.Should().Contain("netratel_remote_support_v2");
         sharedHttpToolNames.Should().Contain("netratel_computer_use");
@@ -351,11 +351,11 @@ public sealed class McpCoreIsolationTests
         var productionTools = NetRatelMcpToolDefinitions.CreateForHttp("prod")
             .ToDictionary(tool => tool.ProtocolTool.Name, StringComparer.Ordinal);
 
-        tools.Should().HaveCount(34);
-        productionTools.Should().HaveCount(34);
+        tools.Should().HaveCount(35);
+        productionTools.Should().HaveCount(35);
         tools.Should().ContainKey("netratel_computer_use");
         productionTools.Should().ContainKey("netratel_computer_use");
-        tools.Should().ContainKeys("netratel_services", "netratel_monitoring", "netratel_flows", "netratel_ai", "netratel_software", "netratel_execution_groups", "netratel_job_targets");
+        tools.Should().ContainKeys("netratel_services", "netratel_monitoring", "netratel_flows", "netratel_ai", "netratel_software", "netratel_execution_groups", "netratel_job_targets", "netratel_secrets");
         tools.Should().ContainKeys("netratel_commands", "netratel_connectivity", "netratel_events", "netratel_requests");
         tools.Should().NotContainKey("netratel_marker_jobs");
         productionTools.Should().NotContainKey("netratel_marker_jobs", "marker jobs are a Development-only QA compatibility contract, not a Production operator capability");
