@@ -33,6 +33,7 @@ public sealed class TenantSecretVaultBrowserTests(ClientsManagementBrowserFixtur
             await context.AddInitScriptAsync($"localStorage.setItem('netratel.theme.preference', '{theme}')");
             var page = await context.NewPageAsync();
             await page.GotoAsync(_host!.BaseAddress + "/tenants");
+            await Assertions.Expect(page.Locator($"html[data-netratel-theme={theme}]")).ToBeVisibleAsync();
             await page.GetByRole(AriaRole.Button, new() { Name = "Manage Visual fixture", Exact = true }).ClickAsync();
             await page.GetByRole(AriaRole.Menuitem, new() { Name = "Edit Tenant", Exact = true }).ClickAsync();
             var tenant = page.GetByRole(AriaRole.Dialog);
@@ -41,9 +42,8 @@ public sealed class TenantSecretVaultBrowserTests(ClientsManagementBrowserFixtur
             if (await sections.IsVisibleAsync())
                 await sections.SelectOptionAsync(new SelectOptionValue { Label = "Secrets & credentials" });
             else
-                await tenant.GetByRole(AriaRole.Tab, new() { Name = "Secrets & credentials", Exact = true }).PressAsync("Enter");
+                await tenant.GetByRole(AriaRole.Tab, new() { Name = "Secrets & credentials", Exact = true }).ClickAsync();
             await Assertions.Expect(tenant.GetByText(VaultFixtureFactory.LongSecret, new() { Exact = true })).ToBeVisibleAsync();
-            await Assertions.Expect(page.Locator($"html[data-netratel-theme={theme}]")).ToBeVisibleAsync();
             await AssertFitsAsync(page, tenant, width);
 
             var screenshots = Path.Combine(Environment.GetEnvironmentVariable("NETRATEL_PLAYWRIGHT_ARTIFACT_ROOT")
