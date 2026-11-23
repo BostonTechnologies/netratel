@@ -91,6 +91,12 @@ jobs:
           dotnet build $project --configuration Release --no-restore
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           dotnet test --project $project --configuration Release --no-build --no-restore `
+            --filter-method NetRatel.Tests.Client.CommandCancellationTests.Parameter_wrapper_temp_directory_is_private_to_its_owner_and_system_administrators NetRatel.Tests.Client.CommandCancellationTests.Existing_windows_private_root_with_safe_inherited_aces_is_protected_but_unsafe_aces_are_rejected `
+            --minimum-expected-tests 2 --results-directory TestResults/vault-windows --report-trx --report-trx-filename private-files.trx
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tools/ci/verify-mtp-trx.py TestResults/vault-windows/private-files.trx --expected-executed 2
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet test --project $project --configuration Release --no-build --no-restore `
             --filter-class NetRatel.Tests.Client.TerminalHostTests NetRatel.Tests.Client.SecretTaskOutputExecutionTests `
             --minimum-expected-tests 10 --results-directory TestResults/vault-windows --report-trx --report-trx-filename native.trx
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
