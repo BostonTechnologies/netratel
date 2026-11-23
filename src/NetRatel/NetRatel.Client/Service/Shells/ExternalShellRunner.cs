@@ -1042,7 +1042,10 @@ namespace NetRatel.Client.Service.Shells
                     await proc.WaitForExitAsync(cleanup.Token).ConfigureAwait(false);
                     await Task.WhenAll(tcsOut.Task, tcsErr.Task).WaitAsync(cleanup.Token).ConfigureAwait(false);
                     try { await inputSent.WaitAsync(cleanup.Token).ConfigureAwait(false); }
-                    catch (OperationCanceledException) when (!cleanup.IsCancellationRequested) { }
+                    catch (OperationCanceledException) when (!cleanup.IsCancellationRequested)
+                    {
+                        res.ProtectedInputDeliveryFailed = true;
+                    }
                 }
                 catch (OperationCanceledException) when (cleanup.IsCancellationRequested)
                 {
