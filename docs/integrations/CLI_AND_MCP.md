@@ -149,6 +149,7 @@ Connection and entry writes accept the corresponding REST JSON object from `--st
 | Provider, entry and credential metadata | Secrets & credentials | Secret vault routes | `secrets vault` reads | `netratel_secrets` connections, browse, entry and profiles |
 | Connection/default/test, entry writes and profile changes | Secrets & credentials | Secret vault writes | `secrets vault` writes | Metadata and references |
 | Human value reveal | Explicit Reveal action | Authorized reveal route | `secrets vault reveal --confirm` | Metadata and references |
+| Provider inputs for a job run | Run Job reference picker | `providerInputs` on the job run request | `job-runs start --provider-inputs` | Reference discovery with `netratel_secrets` |
 
 MCP `netratel_secrets` requires `secret.browse` and current policy for the tenant. Credential profile selection additionally requires `secret.use` and `execution.run-as`. Follow the returned cursor with the same folder, limit and search. See [HTTP MCP access](../mcp-http/README.md) for deployment and delegation.
 

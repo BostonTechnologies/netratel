@@ -12,6 +12,10 @@ internal sealed class SecretProviderHttp(HttpClient http, SecretProviderNetworkP
 {
     private const int MaximumBodySize = 2 * 1024 * 1024;
     private static readonly HttpRequestOptionsKey<Uri> BoundOrigin = new("NetRatel.SecretProvider.Origin");
+    private readonly Func<HttpMessageHandler> _originTransportFactory = () => CreateHandler(policy);
+
+    internal SecretProviderHttp(HttpClient http, SecretProviderNetworkPolicy policy, Func<HttpMessageHandler> originTransportFactory)
+        : this(http, policy) => _originTransportFactory = originTransportFactory;
 
     public async Task<JsonDocument?> SendAsync(SecretProviderContext context, HttpMethod method, string route,
         CancellationToken ct, object? body = null, ProviderAccessToken? token = null, bool allowNotFound = false, bool readBody = true,
@@ -50,7 +54,7 @@ internal sealed class SecretProviderHttp(HttpClient http, SecretProviderNetworkP
 
     public HttpClient CreateOriginBoundClient(Uri origin) => new(new OriginBindingHandler(origin)
     {
-        InnerHandler = CreateHandler(policy)
+        InnerHandler = _originTransportFactory()
     }) { Timeout = TimeSpan.FromSeconds(15) };
 
     internal static SocketsHttpHandler CreateHandler(SecretProviderNetworkPolicy policy) => new()
