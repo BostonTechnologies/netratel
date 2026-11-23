@@ -7,7 +7,7 @@ on:
         description: Run only this optional suite (client measurements use matching hosted OS runners)
         type: choice
         required: true
-        options: [pairing, gateway, mcp-campaign, stdio-assessment, browser, vault-fixture, filesystem, deployment, release-images, candidate-images, native-client, upgrade-local, upgrade-oidc, client-measurement, client-trim-windows, client-trim-macos, client-control-macos, client-pty-debug-macos, windows-mcp, migrations-image, api-image, api-rid, cli-tool]
+        options: [pairing, gateway, mcp-campaign, stdio-assessment, browser, vault-fixture, vault-windows, filesystem, deployment, release-images, candidate-images, native-client, upgrade-local, upgrade-oidc, client-measurement, client-trim-windows, client-trim-macos, client-control-macos, client-pty-debug-macos, windows-mcp, migrations-image, api-image, api-rid, cli-tool]
       source_ref:
         description: Source ref to test (published-image and upgrade suites use release_tag)
         default: main
@@ -68,6 +68,42 @@ permissions:
   actions: read
 
 jobs:
+  vault-windows:
+    name: Windows protected job transport and native account observation
+    if: inputs.suite == 'vault-windows'
+    runs-on: windows-latest
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source_ref }}
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6
+        with:
+          global-json-file: global.json
+      - name: Build and run native Windows tests
+        shell: pwsh
+        run: |
+          $project = 'src/NetRatel/NetRatel.Tests/NetRatel.Tests.csproj'
+          New-Item -ItemType Directory -Force 'TestResults/vault-windows' | Out-Null
+          git rev-parse HEAD | Set-Content 'TestResults/vault-windows/source.txt'
+          dotnet restore $project
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet build $project --configuration Release --no-restore
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet test --project $project --configuration Release --no-build --no-restore `
+            --filter-class NetRatel.Tests.Client.TerminalHostTests NetRatel.Tests.Client.SecretTaskOutputExecutionTests `
+            --minimum-expected-tests 10 --results-directory TestResults/vault-windows --report-trx --report-trx-filename native.trx
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tools/ci/verify-mtp-trx.py TestResults/vault-windows/native.trx
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: windows-vault-fixture-evidence
+          path: TestResults/vault-windows
+          if-no-files-found: warn
+          retention-days: 14
+
   vault-fixture:
     name: Disposable Infisical provider acceptance
     if: inputs.suite == 'vault-fixture'
@@ -103,7 +139,7 @@ jobs:
 
   selected-suite:
     name: Manual ${{ inputs.suite }} (Linux)
-    if: inputs.suite != 'vault-fixture' && inputs.suite != 'client-measurement' && inputs.suite != 'filesystem' && inputs.suite != 'client-trim-windows' && inputs.suite != 'client-trim-macos' && inputs.suite != 'client-control-macos' && inputs.suite != 'client-pty-debug-macos' && inputs.suite != 'windows-mcp' && inputs.suite != 'migrations-image' && inputs.suite != 'api-image' && inputs.suite != 'api-rid' && inputs.suite != 'cli-tool' && inputs.suite != 'candidate-images'
+    if: inputs.suite != 'vault-fixture' && inputs.suite != 'vault-windows' && inputs.suite != 'client-measurement' && inputs.suite != 'filesystem' && inputs.suite != 'client-trim-windows' && inputs.suite != 'client-trim-macos' && inputs.suite != 'client-control-macos' && inputs.suite != 'client-pty-debug-macos' && inputs.suite != 'windows-mcp' && inputs.suite != 'migrations-image' && inputs.suite != 'api-image' && inputs.suite != 'api-rid' && inputs.suite != 'cli-tool' && inputs.suite != 'candidate-images'
     runs-on: ubuntu-latest
     timeout-minutes: ${{ (inputs.suite == 'native-client' || inputs.suite == 'deployment' || inputs.suite == 'upgrade-local' || inputs.suite == 'upgrade-oidc') && 45 || inputs.suite == 'release-images' && 60 || 40 }}
     env:
