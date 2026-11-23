@@ -29,9 +29,9 @@ public sealed record SetupCheck(string Name, string Status, string Detail, int? 
 /// <summary>Headless setup operations shared by the TUI and noninteractive entry points.</summary>
 public sealed partial class SetupSession : IAsyncDisposable
 {
-    // The production HTTP catalog is approximately 331 KiB; keep a bounded
-    // response budget that also admits the complete advertised tool schemas.
     private const int MaximumMcpResponseCharacters = 512 * 1024;
+    // The production tool catalog includes full schemas and can exceed the normal response limit.
+    private const int MaximumMcpCatalogCharacters = MaximumMcpResponseCharacters + 32 * 1024;
     private readonly NetRatelConfigurationService _configuration = new();
     private readonly HttpClient _http;
     private readonly Func<string, string?> _environment;
@@ -379,7 +379,8 @@ public sealed partial class SetupSession : IAsyncDisposable
                 var notification = await SendMcpAsync(target, token, new { jsonrpc = "2.0", method = "notifications/initialized" }, initialize.SessionId, ct);
                 if (notification.Status is < 200 or >= 300)
                 { checks.Add(Failure("MCP initialize", "mcp_initialized_notification_failed", "MCP", notification.Status)); return checks; }
-                var tools = await SendMcpAsync(target, token, new { jsonrpc = "2.0", id = 2, method = "tools/list" }, initialize.SessionId, ct);
+                var tools = await SendMcpAsync(target, token, new { jsonrpc = "2.0", id = 2, method = "tools/list" }, initialize.SessionId, ct,
+                    MaximumMcpCatalogCharacters);
                 if (tools.Status is < 200 or >= 300 || tools.Result is null || !IsMcpReply(tools.Result.Value, 2) || !tools.Result.Value.TryGetProperty("result", out var catalog) || !catalog.TryGetProperty("tools", out var offered) || offered.ValueKind != JsonValueKind.Array || !offered.EnumerateArray().Any(t => t.ValueKind == JsonValueKind.Object && t.TryGetProperty("name", out var name) && name.ValueKind == JsonValueKind.String && name.GetString() == "netratel_auth"))
                 { checks.Add(Failure("permitted read-only tool", "mcp_catalog_incomplete", "MCP", tools.Status)); return checks; }
                 var read = await SendMcpAsync(target, token, new { jsonrpc = "2.0", id = 3, method = "tools/call", @params = new { name = "netratel_auth", arguments = new { operation = "status" } } }, initialize.SessionId, ct);
@@ -461,7 +462,8 @@ public sealed partial class SetupSession : IAsyncDisposable
         value.TryGetProperty("jsonrpc", out var rpc) && rpc.ValueKind == JsonValueKind.String && rpc.GetString() == "2.0" &&
         value.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.Number && id.TryGetInt32(out var received) && received == expectedId &&
         !value.TryGetProperty("error", out _) && value.TryGetProperty("result", out var result) && result.ValueKind == JsonValueKind.Object;
-    private async Task<(int Status, string? SessionId, JsonElement? Result)> SendMcpAsync(Uri target, string token, object body, string? sessionId, CancellationToken ct)
+    private async Task<(int Status, string? SessionId, JsonElement? Result)> SendMcpAsync(Uri target, string token, object body,
+        string? sessionId, CancellationToken ct, int maximumCharacters = MaximumMcpResponseCharacters)
     {
         using var request = new HttpRequestMessage(HttpMethod.Post, target) { Content = JsonContent.Create(body) };
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
@@ -492,14 +494,14 @@ public sealed partial class SetupSession : IAsyncDisposable
                     if (read == 0) break;
                     for (var index = 0; index < read; index++)
                     {
-                        if (++size > MaximumMcpResponseCharacters) throw new AgentClientValidationException("MCP response exceeds the setup validation bound.");
+                        if (++size > maximumCharacters) throw new AgentClientValidationException("MCP response exceeds the setup validation bound.");
                         if (chunk[index] != '\n') { line.Append(chunk[index]); continue; }
                         if (TakeDataLine() is { } data) return ((int)response.StatusCode, assigned, data);
                     }
                 }
                 return ((int)response.StatusCode, assigned, TakeDataLine());
             }
-            var buffer = new char[MaximumMcpResponseCharacters + 1]; var count = 0;
+            var buffer = new char[maximumCharacters + 1]; var count = 0;
             while (count < buffer.Length)
             {
                 var read = await reader.ReadAsync(buffer.AsMemory(count), bound.Token);

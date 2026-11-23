@@ -221,7 +221,8 @@ public sealed partial class CommittedConnectionOwnershipMigrationPostgresTests(P
                 .Append(ComputerUseSessionsMigration).Append(IntegrationPolicyHierarchyMigration).Append(SoftwareInventoryMigration)
                 .Append(ConversationTraceAndScriptPlacementMigration).Append(TenantAndUpdateRetirementMigration).Append(ExecutionAdmissionsMigration).Append(FlowExecutionPinsMigration).Append(ScriptExecutionDispatchMigration).Append(ScriptExecutionReplayMigration)
                 .Append(FlowDeletionMigration).Append(FlowDeletionAuditCorrelationMigration).Append(JobTargetPlansMigration).Append(ExecutionGroupsMigration).Append(AgentTenantMetadataMutableMigration).Append(McpReviewedJobAdmissionsAndQuotasMigration).Append(HaGroupWorkerCursorMigration).Append(ManagedAggregateBindingsMigration).Append(AutomationTraceabilityMigration)
-                .Append(HistoricalMetricsMigration).Append(ProtectSecretValuesMigration),
+                .Append(HistoricalMetricsMigration).Append(ProtectSecretValuesMigration)
+                .Concat(TenantSecretVaultPostgresTests.MigrationIds),
             "the exact historical ownership range precedes the registered additive migrations");
         // These historical Down/Up proofs explicitly stop at the shipped native-refresh range.
         // Later pairing, client metadata/offboarding, notification connector, client operation,
@@ -410,7 +411,7 @@ public sealed partial class CommittedConnectionOwnershipMigrationPostgresTests(P
         (await db.Database.GetAppliedMigrationsAsync(ct)).Should().Equal(plan.CurrentMigrationIds);
         (await db.Database.GetPendingMigrationsAsync(ct)).Should().Equal(
             [PairingCutoverMigration, ClientMetadataAndOffboardingMigration, NotificationConnectorsMigration, ClientOperationsAndNetclawMigration, TenantPromptsAndAiFlowContinuationsMigration, LocalClientReleaseDeletionMigration, ExecutionContextAndLifecycleReceiptsMigration, ClientUpdateReconciliationEvidenceMigration, ProtectJobRunInputsMigration, ProtectTaskOutputsMigration, ScopeOrchestrationExecutionAttemptsMigration, PairedCatalogInputPresentationMigration, CallbackTerminalRejectionMigration, RetainJobDefinitionHistoryMigration, ComputerUseSessionsMigration, IntegrationPolicyHierarchyMigration, SoftwareInventoryMigration, ConversationTraceAndScriptPlacementMigration, TenantAndUpdateRetirementMigration, ExecutionAdmissionsMigration, FlowExecutionPinsMigration, ScriptExecutionDispatchMigration, ScriptExecutionReplayMigration, FlowDeletionMigration, FlowDeletionAuditCorrelationMigration, JobTargetPlansMigration, ExecutionGroupsMigration, AgentTenantMetadataMutableMigration, McpReviewedJobAdmissionsAndQuotasMigration, HaGroupWorkerCursorMigration, ManagedAggregateBindingsMigration, AutomationTraceabilityMigration,
-                 HistoricalMetricsMigration, ProtectSecretValuesMigration],
+                 HistoricalMetricsMigration, ProtectSecretValuesMigration, .. TenantSecretVaultPostgresTests.MigrationIds],
             "the historical range leaves exactly the later pairing, client metadata/offboarding, notification connector, client operation, Netclaw investigation, tenant prompt, AI flow continuation and local client release deletion migrations unapplied");
         db.Database.HasPendingModelChanges().Should().BeFalse();
     }

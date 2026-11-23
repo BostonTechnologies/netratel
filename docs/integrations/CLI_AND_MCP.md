@@ -153,6 +153,8 @@ Connection and entry writes accept the corresponding REST JSON object from `--st
 
 MCP `netratel_secrets` requires `secret.browse` and current policy for the tenant. Credential profile selection additionally requires `secret.use` and `execution.run-as`. Follow the returned cursor with the same folder, limit and search. See [HTTP MCP access](../mcp-http/README.md) for deployment and delegation.
 
+Use the setup client from the vault-enabled version to run HTTP doctor against its full catalog. The advertised tool schemas exceed the v0.1.6 doctor's 512 KiB response budget.
+
 ## Execution groups and multi-node jobs
 
 The operator capability is now **HA Groups**. Compatibility command/tool and

@@ -20,6 +20,14 @@ namespace NetRatel.Tests.Infrastructure;
 [Collection(PostgreSqlPersistenceCollection.Name)]
 public sealed partial class TenantSecretVaultPostgresTests(PostgreSqlPersistenceFixture postgres)
 {
+    internal static IReadOnlyList<string> MigrationIds { get; } =
+    [
+        "20261123150934_AddTenantSecretProviders",
+        "20261123153551_ProtectJobSecretDefaults",
+        "20261123155559_PinJobProviderInputs",
+        "20261123160739_StoreJobProviderDefaults"
+    ];
+
     [Fact]
     public async Task Local_rotation_preserves_pins_and_legacy_scope_and_blocks_referenced_deletion()
     {
