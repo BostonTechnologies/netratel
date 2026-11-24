@@ -15,6 +15,7 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Threading.Channels;
+using NetRatel.AgentGateway.Contracts.V1;
 using NetRatel.Shared.Security;
 using NetRatel.Client.Service.Logging;
 using NetRatel.Client.Service.Tasks;
@@ -61,7 +62,10 @@ namespace NetRatel.Client.Service.Shells
         }
 
         public sealed record ExecutionObserver(Func<Task> Started, Func<string, string, Task> Output,
-            Func<string, string>? RedactOutput = null);
+            Func<string, string>? RedactOutput = null)
+        {
+            internal RunAsCredential? Credential { get; init; }
+        }
 
         private readonly TimeSpan _defaultTimeout;
 
@@ -192,6 +196,10 @@ namespace NetRatel.Client.Service.Shells
             IReadOnlyDictionary<string, string>? protectedParameters = null)
         {
             var timeout = TimeSpan.FromSeconds(timeoutSec ?? (int)_defaultTimeout.TotalSeconds);
+            if (observer?.Credential is not null)
+                return await RunPowerShellFromPipeAsync(
+                    ResolvePowerShellHost(pref, requirementsContent ?? content, FindShell, OperatingSystem.IsWindows()),
+                    content, cwd, timeout, ct, observer, parameters, protectedParameters).ConfigureAwait(false);
             var scriptPath = WritePrivateTemp(".ps1", content);
             string? wrapperPath = null;
 
@@ -302,10 +310,13 @@ namespace NetRatel.Client.Service.Shells
                 input.Append(value).Append('\0');
             }
             script.Append(content);
+            var timeout = TimeSpan.FromSeconds(payload.TimeoutSeconds ?? (int)_defaultTimeout.TotalSeconds);
+            if (observer.Credential is not null)
+                return await StartAsync(shellPath, $"--noprofile --norc -p -c {QuoteArgument(script.ToString())}", payload.WorkingDirectory,
+                    timeout, ct, CreateBashParameterEnvironment(parameters), observer: observer, protectedInput: input.ToString()).ConfigureAwait(false);
             var scriptPath = WritePrivateTemp(".sh", script.ToString());
             try
             {
-                var timeout = TimeSpan.FromSeconds(payload.TimeoutSeconds ?? (int)_defaultTimeout.TotalSeconds);
                 return await StartAsync(shellPath, $"--noprofile --norc -p -- {QuoteArgument(scriptPath)}", payload.WorkingDirectory,
                     timeout, ct, CreateBashParameterEnvironment(parameters), observer: observer, protectedInput: input.ToString()).ConfigureAwait(false);
             }
@@ -676,6 +687,8 @@ namespace NetRatel.Client.Service.Shells
 
         private async Task<RunResult> RunViaTempPs1Async(string shellPath, string command, TimeSpan timeout, string? cwd, CancellationToken ct, ExecutionObserver? observer)
         {
+            if (observer?.Credential is not null)
+                return await RunPowerShellFromPipeAsync(shellPath, WrapPSBlock(command), cwd, timeout, ct, observer).ConfigureAwait(false);
             var ps1 = WritePrivateTemp(".ps1", WrapPSBlock(command));
             try
             {
@@ -690,6 +703,38 @@ namespace NetRatel.Client.Service.Shells
             {
                 TryDeletePrivateTemp(ps1);
             }
+        }
+
+        private Task<RunResult> RunPowerShellFromPipeAsync(string executable, string script, string? cwd, TimeSpan timeout,
+            CancellationToken ct, ExecutionObserver observer, IReadOnlyDictionary<string, string>? parameters = null,
+            IReadOnlyDictionary<string, string>? protectedParameters = null)
+        {
+            var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var (key, value) in parameters ?? new Dictionary<string, string>())
+            {
+                var name = key.Trim().TrimStart('-');
+                if (name.Length > 0) values[name] = value;
+            }
+            if (protectedParameters is not null)
+                foreach (var (name, value) in protectedParameters) values[name] = value;
+            var input = JsonSerializer.Serialize(new RunAsPowerShellInput(script, values), ClientShellJsonContext.Default.RunAsPowerShellInput);
+            const string bootstrap = """
+                [Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
+                [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+                $ErrorActionPreference = 'Stop'
+                $ProgressPreference = 'SilentlyContinue'
+                try {
+                    $request = ConvertFrom-Json -InputObject ([Console]::In.ReadToEnd())
+                    $arguments = @{}
+                    foreach ($property in $request.Parameters.PSObject.Properties) { $arguments[$property.Name] = $property.Value }
+                    $script = [scriptblock]::Create($request.Script)
+                } catch { [Console]::Error.WriteLine('The private script input could not be read.'); exit 126 }
+                & $script @arguments
+                if ($null -ne $LASTEXITCODE) { exit $LASTEXITCODE }
+                """;
+            var encoded = Convert.ToBase64String(Encoding.Unicode.GetBytes(bootstrap));
+            return StartAsync(executable, $"-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand {encoded}",
+                cwd, timeout, ct, outputEncoding: Encoding.UTF8, observer: observer, protectedInput: input);
         }
 
         private Task<RunResult> RunDirectAsync(
@@ -910,13 +955,20 @@ namespace NetRatel.Client.Service.Shells
             ct.ThrowIfCancellationRequested();
             if (timeout <= TimeSpan.Zero || timeout.TotalMilliseconds > uint.MaxValue - 1)
                 throw new InvalidOperationException("Execution timeout must be positive and supported by the process timer.");
+            var credential = observer?.Credential;
+            using var windowsAccount = OperatingSystem.IsWindows() && credential?.Mode == RunAsCredential.Types.Mode.WindowsPassword
+                ? WindowsExecutionAccount.LogOn(credential, terminal: false) : null;
+            var unixAccount = credential?.Mode == RunAsCredential.Types.Mode.UnixPrivilegedLocal
+                ? await UnixExecutionAccount.ResolveAsync(credential, ct).ConfigureAwait(false) : null;
+            if (credential is not null && windowsAccount is null && unixAccount is null)
+                throw new InvalidOperationException("The selected execution account mode is unavailable on this client.");
             var res = new RunResult();
             var resolvedCwd = ResolveWorkingDirectory(cwd);
             var psi = new ProcessStartInfo(fileName, arguments)
             {
                 WorkingDirectory = resolvedCwd,
                 UseShellExecute = false,
-                RedirectStandardInput = protectedInput is not null,
+                RedirectStandardInput = protectedInput is not null || credential is not null,
                 StandardInputEncoding = protectedInput is null ? null : new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
@@ -935,7 +987,12 @@ namespace NetRatel.Client.Service.Shells
             res.Arguments = arguments;
             res.WorkingDirectory = resolvedCwd;
 
-            using var proc = new Process { StartInfo = psi, EnableRaisingEvents = true };
+            unixAccount?.PrepareJob(psi, cwd, environment);
+            using var windowsProcess = OperatingSystem.IsWindows() && windowsAccount is not null
+                ? WindowsAccountJobProcess.Start(windowsAccount, psi,
+                    string.IsNullOrWhiteSpace(cwd) ? null : cwd, environment, outputEncoding ?? Encoding.UTF8) : null;
+            using var proc = OperatingSystem.IsWindows() && windowsProcess is not null
+                ? windowsProcess.Process : new Process { StartInfo = psi, EnableRaisingEvents = true };
             var sw = Stopwatch.StartNew();
 
             var tcsOut = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -974,12 +1031,22 @@ namespace NetRatel.Client.Service.Shells
                     output.Writer.TryWrite((stream, text));
                 }
             }
-            proc.OutputDataReceived += (_, e) => Capture("stdout", e.Data, tcsOut);
-            proc.ErrorDataReceived += (_, e) => Capture("stderr", e.Data, tcsErr);
-
-            if (!proc.Start()) throw new InvalidOperationException($"Failed to start: {fileName}");
+            if (!(OperatingSystem.IsWindows() && windowsProcess is not null) && !proc.Start())
+                throw new InvalidOperationException($"Failed to start: {fileName}");
+            var stdout = OperatingSystem.IsWindows() && windowsProcess is not null ? windowsProcess.Output : proc.StandardOutput;
+            var stderr = OperatingSystem.IsWindows() && windowsProcess is not null ? windowsProcess.Error : proc.StandardError;
+            if (unixAccount is not null)
+            {
+                try { await unixAccount.VerifyJobAsync(stderr, ct).ConfigureAwait(false); }
+                catch
+                {
+                    if (!proc.HasExited) await ShutdownUnverifiedProcessAsync(proc).ConfigureAwait(false);
+                    throw;
+                }
+            }
             res.ProcessStarted = true;
-            res.ObservedIdentity = NativeProcessIdentity.ObserveStartedProcess(proc);
+            res.ObservedIdentity = OperatingSystem.IsWindows() && windowsProcess is not null ? windowsProcess.Identity :
+                unixAccount?.Identity ?? NativeProcessIdentity.ObserveStartedProcess(proc);
             async Task PublishOutputAsync()
             {
                 if (observer is not null) await observer.Started().ConfigureAwait(false);
@@ -1006,12 +1073,23 @@ namespace NetRatel.Client.Service.Shells
                 await publisher.ConfigureAwait(false);
                 return new ExecutionOutcomeUnknownException("Native process termination could not be confirmed.", res, cause);
             }
-            proc.BeginOutputReadLine();
-            proc.BeginErrorReadLine();
+            async Task DrainAsync(StreamReader reader, string stream, TaskCompletionSource done)
+            {
+                try
+                {
+                    while (await reader.ReadLineAsync().ConfigureAwait(false) is { } line) Capture(stream, line, done);
+                }
+                finally { done.TrySetResult(); }
+            }
+            var outputDrain = DrainAsync(stdout, "stdout", tcsOut);
+            var errorDrain = DrainAsync(stderr, "stderr", tcsErr);
 
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             cts.CancelAfter(timeout);
-            var inputSent = protectedInput is null ? Task.FromResult(true) : SendProtectedInputAsync(proc, protectedInput, cts.Token);
+            var inputStream = OperatingSystem.IsWindows() && windowsProcess is not null ? windowsProcess.Input :
+                psi.RedirectStandardInput ? proc.StandardInput.BaseStream : null;
+            if (protectedInput is null) inputStream?.Dispose();
+            var inputSent = protectedInput is null ? Task.FromResult(true) : SendProtectedInputAsync(inputStream!, protectedInput, cts.Token);
 
             try
             {
@@ -1058,7 +1136,7 @@ namespace NetRatel.Client.Service.Shells
                 return res;
             }
 
-            await Task.WhenAll(tcsOut.Task, tcsErr.Task);
+            await Task.WhenAll(outputDrain, errorDrain).ConfigureAwait(false);
             sw.Stop();
             res.ExitCode = proc.ExitCode;
             if (res.ProtectedInputDeliveryFailed) res.Error.Add("The private input pipe closed before the protected parameters were delivered.");
@@ -1072,13 +1150,20 @@ namespace NetRatel.Client.Service.Shells
             return res;
         }
 
-        private static async Task<bool> SendProtectedInputAsync(Process process, string input, CancellationToken ct)
+        private static async Task ShutdownUnverifiedProcessAsync(Process process)
+        {
+            try { process.Kill(entireProcessTree: true); }
+            catch (InvalidOperationException) when (process.HasExited) { return; }
+            await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+        }
+
+        private static async Task<bool> SendProtectedInputAsync(Stream stream, string input, CancellationToken ct)
         {
             var bytes = Encoding.UTF8.GetBytes(input);
             try
             {
-                using var writer = process.StandardInput;
-                await writer.BaseStream.WriteAsync(bytes, ct).ConfigureAwait(false);
+                using (stream)
+                    await stream.WriteAsync(bytes, ct).ConfigureAwait(false);
                 return true;
             }
             catch (IOException) { return false; }

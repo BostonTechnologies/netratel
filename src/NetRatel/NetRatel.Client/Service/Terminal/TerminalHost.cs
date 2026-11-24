@@ -1,6 +1,7 @@
 using NetRatel.Client.Service.Logging;
 using NetRatel.Client.Service.Shells;
 using NetRatel.Shared.Contracts.Secrets;
+using NetRatel.AgentGateway.Contracts.V1;
 using NetRatel.Shared.Service.Shells;
 using System;
 using System.Collections.Generic;
@@ -91,7 +92,16 @@ internal sealed class TerminalHostFactory
         throw new InvalidOperationException("No terminal backend is available.");
     }
 
-    public IReadOnlyList<ITerminalHostSession> CreateCandidates(Terminal.TerminalOpenPayload? payload)
+    public string[] ExecutionAccountModes => _options.BackendPreference switch
+    {
+        TerminalBackendPreference.Redirected => [],
+        TerminalBackendPreference.UnixPty when OperatingSystem.IsWindows() => [],
+        TerminalBackendPreference.ConPty when !OperatingSystem.IsWindows() => [],
+        _ when !OperatingSystem.IsWindows() && (!_options.EnableNativeUnixPty || !NativeUnixPtyTerminalHost.IsForkPtyAvailable()) => [],
+        _ => NativeExecutionAccounts.Capabilities
+    };
+
+    public IReadOnlyList<ITerminalHostSession> CreateCandidates(Terminal.TerminalOpenPayload? payload, RunAsCredential? credential = null)
     {
         var shellType = NormalizeShellType(payload?.ShellType);
         var executable = ResolveExecutable(shellType);
@@ -110,6 +120,16 @@ internal sealed class TerminalHostFactory
             _options);
 
         var preference = _options.BackendPreference;
+        if (credential is not null)
+        {
+            var mode = NativeExecutionAccounts.Capability(credential.Mode);
+            if (mode is null || !NativeExecutionAccounts.IsValid(credential) || !ExecutionAccountModes.Contains(mode))
+                throw new InvalidOperationException("This terminal backend cannot launch the selected account.");
+            var accountHost = OperatingSystem.IsWindows()
+                ? ConPtyTerminalHost.TryCreate(context, credential)
+                : NativeUnixPtyTerminalHost.TryCreate(context, credential);
+            return [accountHost ?? throw new InvalidOperationException("The native terminal backend is unavailable.")];
+        }
         if (preference == TerminalBackendPreference.Redirected)
         {
             return new[] { new RedirectedProcessTerminalHost(context) };
@@ -981,6 +1001,7 @@ internal sealed class NativeUnixPtyTerminalHost : ITerminalHostSession
     private const string LinuxSpawnLibrary = "netratel_terminal_pty";
     private readonly TerminalHostContext _context;
     private readonly string _shellCommand;
+    private RunAsCredential? _credential;
     private readonly object _lifecycleLock = new();
     private readonly object _writeLock = new();
     private int _masterFd = -1;
@@ -999,10 +1020,11 @@ internal sealed class NativeUnixPtyTerminalHost : ITerminalHostSession
         }
     }
 
-    private NativeUnixPtyTerminalHost(TerminalHostContext context)
+    private NativeUnixPtyTerminalHost(TerminalHostContext context, RunAsCredential? credential)
     {
         _context = context;
         _shellCommand = BuildShellCommand(context);
+        _credential = credential;
     }
 
     public string Backend => "unix-pty-native";
@@ -1035,17 +1057,17 @@ internal sealed class NativeUnixPtyTerminalHost : ITerminalHostSession
 
     public event Action<string?>? Exited;
 
-    public static ITerminalHostSession? TryCreate(TerminalHostContext context)
+    public static ITerminalHostSession? TryCreate(TerminalHostContext context, RunAsCredential? credential = null)
     {
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows) || !IsForkPtyAvailable())
         {
             return null;
         }
 
-        return new NativeUnixPtyTerminalHost(context);
+        return new NativeUnixPtyTerminalHost(context, credential);
     }
 
-    public Task StartAsync(Func<TerminalOutputChunk, Task> onOutput, CancellationToken ct)
+    public async Task StartAsync(Func<TerminalOutputChunk, Task> onOutput, CancellationToken ct)
     {
         _onOutput = onOutput;
         var (initialCols, initialRows) = ClampSize(_context.Cols, _context.Rows);
@@ -1059,8 +1081,10 @@ internal sealed class NativeUnixPtyTerminalHost : ITerminalHostSession
 
         try
         {
-            var identity = NativeProcessIdentity.ObserveInheritedUnix();
-            using var argv = NativeArgv.ForShellCommand(_shellCommand);
+            var credential = Interlocked.Exchange(ref _credential, null);
+            var account = credential is null ? null : await UnixExecutionAccount.ResolveAsync(credential, ct).ConfigureAwait(false);
+            var identity = account?.Identity ?? NativeProcessIdentity.ObserveInheritedUnix();
+            using var argv = NativeArgv.ForArguments(account?.TerminalArguments(_context.WorkingDirectory, _shellCommand) ?? BuildShellArgv(_shellCommand));
             var pid = ForkPtyAndExec(out _masterFd, argv.Path, argv.Argv, ref size);
             if (pid < 0)
             {
@@ -1088,11 +1112,11 @@ internal sealed class NativeUnixPtyTerminalHost : ITerminalHostSession
             var writeHandle = new SafeFileHandle(new IntPtr(writeFd), ownsHandle: true);
             _masterReadStream = new FileStream(readHandle, FileAccess.Read, 4096, isAsync: false);
             _masterWriteStream = new FileStream(writeHandle, FileAccess.Write, 4096, isAsync: false);
+            if (account is not null) await account.VerifyTerminalAsync(_masterReadStream, ct).ConfigureAwait(false);
             ObservedIdentity = identity;
             _ = Task.Run(() => ReadOutputLoop(ct));
             _ = Task.Run(() => WaitForExitAsync(ct));
             LogManager.WriteLog($"[TerminalHost] Started {Backend} shell={ShellType} pid={_childPid} cols={size.Col} rows={size.Row}");
-            return Task.CompletedTask;
         }
         catch
         {
@@ -1304,7 +1328,7 @@ internal sealed class NativeUnixPtyTerminalHost : ITerminalHostSession
         return HasExited;
     }
 
-    private static bool IsForkPtyAvailable()
+    internal static bool IsForkPtyAvailable()
     {
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
         {
@@ -1445,9 +1469,8 @@ internal sealed class NativeUnixPtyTerminalHost : ITerminalHostSession
         public IntPtr Path { get; }
         public IntPtr Argv { get; }
 
-        public static NativeArgv ForShellCommand(string command)
+        public static NativeArgv ForArguments(IReadOnlyList<string> values)
         {
-            var values = BuildShellArgv(command);
             var args = values
                 .Select(Marshal.StringToHGlobalAnsi)
                 .Append(IntPtr.Zero)
@@ -1478,6 +1501,8 @@ internal sealed class NativeUnixPtyTerminalHost : ITerminalHostSession
 internal sealed class ConPtyTerminalHost : ITerminalHostSession
 {
     private readonly TerminalHostContext _context;
+    private RunAsCredential? _credential;
+    private WindowsExecutionAccount? _windowsAccount;
     private SafeFileHandle? _inputWrite;
     private SafeFileHandle? _outputRead;
     private FileStream? _inputStream;
@@ -1489,9 +1514,10 @@ internal sealed class ConPtyTerminalHost : ITerminalHostSession
     private int _processId;
     private Func<TerminalOutputChunk, Task>? _onOutput;
 
-    private ConPtyTerminalHost(TerminalHostContext context)
+    private ConPtyTerminalHost(TerminalHostContext context, RunAsCredential? credential)
     {
         _context = context;
+        _credential = credential;
     }
 
     public string Backend => "conpty";
@@ -1500,14 +1526,14 @@ internal sealed class ConPtyTerminalHost : ITerminalHostSession
     public bool HasExited => _processHandle == IntPtr.Zero || WaitForSingleObject(_processHandle, 0) == WaitObject0;
     public event Action<string?>? Exited;
 
-    public static ITerminalHostSession? TryCreate(TerminalHostContext context)
+    public static ITerminalHostSession? TryCreate(TerminalHostContext context, RunAsCredential? credential = null)
     {
         if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {
             return null;
         }
 
-        return new ConPtyTerminalHost(context);
+        return new ConPtyTerminalHost(context, credential);
     }
 
     public Task StartAsync(Func<TerminalOutputChunk, Task> onOutput, CancellationToken ct)
@@ -1533,7 +1559,7 @@ internal sealed class ConPtyTerminalHost : ITerminalHostSession
             outputWrite.Dispose();
 
             StartAttachedProcess();
-            if (OperatingSystem.IsWindows())
+            if (OperatingSystem.IsWindows() && ObservedIdentity is null)
             {
                 using var process = new SafeProcessHandle(_processHandle, ownsHandle: false);
                 ObservedIdentity = NativeProcessIdentity.ObserveWindowsProcess(process);
@@ -1702,6 +1728,25 @@ internal sealed class ConPtyTerminalHost : ITerminalHostSession
             ? _context.WorkingDirectory
             : null;
 
+        if (Interlocked.Exchange(ref _credential, null) is { } credential)
+        {
+            if (!OperatingSystem.IsWindows()) throw new InvalidOperationException("Windows accounts require Windows ConPTY.");
+            _windowsAccount = WindowsExecutionAccount.LogOn(credential, terminal: true);
+            var accountStartup = new WindowsExecutionAccount.StartupInfoEx
+            {
+                Info = new() { Size = Marshal.SizeOf<WindowsExecutionAccount.StartupInfoEx>() },
+                Attributes = _attributeList
+            };
+            var (started, observed) = _windowsAccount.StartSuspended(_context.Executable, _context.Arguments, _context.WorkingDirectory,
+                WindowsExecutionAccount.ExtendedStartupInfo, inheritHandles: false, ref accountStartup);
+            _processHandle = started.ProcessHandle;
+            _threadHandle = started.ThreadHandle;
+            _processId = started.ProcessId;
+            WindowsExecutionAccount.Resume(started);
+            ObservedIdentity = observed;
+            return;
+        }
+
         if (!CreateProcessW(
                 null,
                 commandLine,
@@ -1768,6 +1813,7 @@ internal sealed class ConPtyTerminalHost : ITerminalHostSession
             CloseHandle(_processHandle);
             _processHandle = IntPtr.Zero;
         }
+        if (OperatingSystem.IsWindows()) _windowsAccount?.Dispose();
     }
 
     private const int ExtendedStartupInfoPresent = 0x00080000;

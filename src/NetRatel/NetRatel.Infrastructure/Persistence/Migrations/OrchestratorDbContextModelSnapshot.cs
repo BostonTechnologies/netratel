@@ -767,6 +767,12 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.Property<string>("CreatedBy")
                         .HasColumnType("text");
 
+                    b.Property<Guid?>("DefaultJobCredentialProfileId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid?>("DefaultTerminalCredentialProfileId")
+                        .HasColumnType("uuid");
+
                     b.Property<DateTimeOffset?>("DeletedAtUtc")
                         .HasColumnType("timestamp with time zone");
 
@@ -3740,6 +3746,9 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
 
                     b.Property<bool>("DispatchClosed")
                         .HasColumnType("boolean");
+
+                    b.Property<string>("ExecutionAccountBindingsJson")
+                        .HasColumnType("jsonb");
 
                     b.Property<string>("GateReason")
                         .HasMaxLength(256)

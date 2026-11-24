@@ -25,9 +25,19 @@ Use **Credentials** to save a profile with `credential.profile.manage` and `secr
 
 Under **Allowed clients**, open the node picker to search by computer name, tags, or operating system. **Select all tenant clients** and **Select all Windows clients** replace the selection with the current matching clients. Save up to 1,000 clients, and edit the list when you want to include later enrollments. Select **Jobs**, **Terminals**, or both for the intended execution surfaces.
 
-You can leave the approved account ID blank while saving the profile. It is needed before the profile is eligible for Run as selection. For a local Windows account, open PowerShell on the selected client and run `(Get-LocalUser -Name 'test-operator').SID.Value`, replacing the example name with the selected account. The SID identifies that account on that computer. Use separate profiles for local accounts with different SIDs. For a Unix local account, run `id -u test-operator` in a terminal on the client to find the numeric UID. For deployment and recovery, see [API key-ring protection](../deployment/CONFIGURATION.md#api-key-ring-protection).
+The client resolves and verifies the Windows SID or Unix UID when it starts the selected account. For a Windows local account, enter the username and leave **Windows domain** blank. For Active Directory, supply a domain and username or enter a UPN such as `svc-example@example.test` with the domain field blank. The same domain profile can cover multiple eligible clients. Use profiles for each client when their local account credentials differ. Profiles saved with an explicit SID or UID retain that restriction. Edit the profile and select **Use automatic resolution in place of the existing account restriction** to remove it. The profile pins the username reference when you save it. An older unpinned username reference without an identity restriction needs to be saved again before use.
+
+For deployment and recovery, see [API key-ring protection](../deployment/CONFIGURATION.md#api-key-ring-protection).
 
 Local provider metadata and the new REST operations live under `/api/v1/tenants/{tenantId}/secret-vault`. In the generated API reference, use the **Secret vault** group. To remove a secret, profile or provider connection, preview the exact current revision and confirm with the returned token. The browser shows provider-specific deletion behavior before confirmation.
+
+## Running jobs and terminals as saved accounts
+
+Select **Run as** in the job's **Execution** tab. **Client default** uses the job account set in **Fleet → Clients → Edit client**. A saved job account applies to clients without a job default. Select **Override each client's default job account** to use the saved job account across the job's eligible nodes. An HA Group uses the selected worker's default unless the job overrides it. With no selected profile or client default, the job uses the agent service account.
+
+Set **Default account for terminals** in **Edit client** to use that profile for fresh browser terminals. Click the account chip in a running terminal to choose another eligible profile or **Agent service account**. The new shell starts on the same client with the selected identity. A shell that fails to start leaves the original session available. The operator needs terminal or job access with **Run as** and `secret.use` to launch saved accounts.
+
+Windows clients authenticate through Windows logon. The selected Windows account needs batch logon rights for jobs and interactive logon rights for terminals. Unix profiles require an agent running as root with native execution support. Unix privileged-local mode uses the client's account and group configuration. It does not use a stored password or apply PAM password policy. Use a login-capable user for an interactive terminal. A client that cannot start the configured identity reports a launch failure.
 
 ## Protected inputs for jobs
 

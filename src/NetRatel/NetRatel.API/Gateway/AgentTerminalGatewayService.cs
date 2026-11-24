@@ -15,7 +15,8 @@ public sealed class AgentTerminalGatewayService(
     IClientPresenceRouter presenceRouter,
     IAgentTerminalSessionRegistry terminals,
     IServiceScopeFactory scopes,
-    ILogger<AgentTerminalGatewayService> logger)
+    ILogger<AgentTerminalGatewayService> logger,
+    TimeProvider? clock = null)
     : AgentTerminalGateway.AgentTerminalGatewayBase
 {
     public override async Task Connect(IAsyncStreamReader<AgentTerminalFrame> requestStream, IServerStreamWriter<GatewayTerminalFrame> responseStream, ServerCallContext context)
@@ -294,11 +295,17 @@ public sealed class AgentTerminalGatewayService(
             await foreach (var frame in registration.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                await writer.WriteAsync(frame, cancellationToken).ConfigureAwait(false);
-                cancellationToken.ThrowIfCancellationRequested();
-                // Start deadlines are tied to actual gRPC delivery, not to a
-                // successful in-memory channel enqueue.
-                registration.MarkWritten(frame);
+                var protectedStart = frame.ProtectedStart;
+                try
+                {
+                    if (protectedStart is not null && protectedStart.ExpiresAtUtc.ToDateTimeOffset() <= (clock ?? TimeProvider.System).GetUtcNow()) continue;
+                    await writer.WriteAsync(frame, cancellationToken).ConfigureAwait(false);
+                    cancellationToken.ThrowIfCancellationRequested();
+                    // Start deadlines are tied to actual gRPC delivery, not to a
+                    // successful in-memory channel enqueue.
+                    registration.MarkWritten(frame);
+                }
+                finally { ExecutionAccountServiceCapability.Clear(protectedStart?.Credential); }
             }
 
             logger.LogInformation(

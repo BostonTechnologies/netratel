@@ -61,9 +61,12 @@
           @if (_session is not null)
           {
             var account = _session.ObservedIdentity?.Account ?? "Agent service account";
-            <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Icon="@Icons.Material.Filled.Person">
-              <span class="terminal-account-name" title="@account">@account</span>
-            </MudChip>
+            <MudTooltip Text="Change execution context">
+              <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Icon="@Icons.Material.Filled.Person"
+                       Disabled="@(!CanSwitchAccount)" OnClick="SwitchExecutionAccountAsync" aria-label="Change execution context">
+                <span class="terminal-account-name" title="@account">@account</span>
+              </MudChip>
+            </MudTooltip>
             <MudChip @key="_session.Backend" T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Info">@(_session.Backend ?? "agent-pty")</MudChip>
             <MudChip @key="_session.Transport" T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Primary">@FormatTransport(_session.Transport)</MudChip>
           }
@@ -80,9 +83,9 @@
         </div>
       </div>
       <div class="client-terminal-session-console">
-        <TerminalConsole @ref="_console"
+        <TerminalConsole @key="_consoleGeneration" @ref="_console"
                          SessionId="@(_session?.SessionId ?? string.Empty)"
-                         IsInputEnabled="@(_session is not null && _inputEnabled)"
+                         IsInputEnabled="@(_session is not null && _inputEnabled && !_accountSwitchRunning && !_session.AwaitingAccountSwitch)"
                          OnReady="HandleConsoleReadyAsync"
                          OnResized="HandleConsoleResizedAsync"
                          OnResizeApplied="RefreshSessionMetadataAsync"
@@ -177,6 +180,13 @@
 
       _attachmentHeartbeatModule = await JS.InvokeAsync<IJSObjectReference>("import", "./js/terminalAttachmentHeartbeat.js");
       _attachmentHeartbeatReference = DotNetObjectReference.Create(this);
+      await SynchronizeGatewayTerminalAttachmentHeartbeatAsync();
+    }
+
+    if (_attachAccountSessionAfterRender && _console is not null && !IsCloseRequested)
+    {
+      _attachAccountSessionAfterRender = false;
+      await StartSessionObservationAsync();
       await SynchronizeGatewayTerminalAttachmentHeartbeatAsync();
     }
   }
@@ -320,6 +330,7 @@
       return true;
     }
 
+    if (restored is not null) restored = await ResolveAccountHandoverAsync(restored) ?? restored;
     if (restored is null || IsTerminalFinalState(restored))
     {
       await RemoveGatewayTerminalHandleAsync(handle.SessionId);
@@ -437,6 +448,8 @@
         // former copied handle after this ownership handoff succeeds.
         await PersistGatewayTerminalHandleAsync(sessionId, _session);
       }
+
+      if (_session?.AwaitingAccountSwitch == true) QueueSessionReconciliation();
 
       return new(true, OwnershipConfirmed: true, renewed.AttachmentLeaseId);
     }
@@ -1228,6 +1241,13 @@
 
   private void ApplySessionLifecycle(TerminalSessionDto session)
   {
+    if (session.AwaitingAccountSwitch && !IsTerminalFinalState(session))
+    {
+      _connectionLabel = "connecting";
+      _inputEnabled = false;
+      _terminalNotice = "Attaching the new shell.";
+      return;
+    }
     if (IsSessionInputCapable(session))
     {
       ApplyConnectedState();

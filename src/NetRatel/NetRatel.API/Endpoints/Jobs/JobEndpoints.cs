@@ -4,6 +4,7 @@ using NetRatel.Application.Events;
 using NetRatel.Application.Jobs;
 using NetRatel.Application.Tenants;
 using NetRatel.API.Services.Jobs;
+using NetRatel.API.Services.Secrets;
 using NetRatel.API.Services.AgentDirectory;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Infrastructure.Identity.Authorization;
@@ -23,6 +24,8 @@ public static class JobEndpoints
         {
             try { return await next(context); }
             catch (JobTargetValidationException error)
+            { return Results.Json(new { code = error.Code, detail = error.Message }, statusCode: error.StatusCode); }
+            catch (ExecutionAccountException error)
             { return Results.Json(new { code = error.Code, detail = error.Message }, statusCode: error.StatusCode); }
         });
         group.MapGet("/", async (HttpContext http, IJobDefinitionService jobs, ITenantService tenants, [FromServices] IEffectiveAccessService access, [FromServices] OrchestratorDbContext db, [FromQuery] string? folder, [FromQuery] string? search, CancellationToken ct) =>
@@ -55,6 +58,8 @@ public static class JobEndpoints
         {
             if (!await CanManageAsync(http, access, request.TenantId, ct)) return Results.Forbid();
             var targetError = await ValidateTargetAsync(db, request.TenantId, request.AgentId, request.Target, request.ExecutionPolicy, ct); if (targetError is not null) return targetError;
+            if (request.ExecutionPolicy?.RunAs is { } runAs)
+                await ValidateExecutionAccountAsync(http, request.TenantId, runAs, ct);
             if (string.IsNullOrWhiteSpace(request.Name)) return Results.BadRequest("Name is required.");
             if (request.Environment is { } environment && !Enum.IsDefined(environment)) return Results.ValidationProblem(new Dictionary<string, string[]> { ["environment"] = ["Environment is invalid."] });
             var options = JobSchedulePolicy.MergeOptionsJson(JobExecutionRuntimePolicy.MergeOptionsJson(null, JobExecutionRuntimePolicy.FromValues(request.ExpectedRuntimeSeconds, request.GraceSeconds, request.HardTimeoutSeconds)), request.Schedule);
@@ -75,6 +80,9 @@ public static class JobEndpoints
             var target = request.Target ?? (request.AgentId.HasValue ? null : current.Target);
             if (!await CanManageAsync(http, access, targetTenant, ct)) return Results.Forbid();
             var targetError = await ValidateTargetAsync(db, targetTenant, targetAgent, target, request.ExecutionPolicy ?? current.ExecutionPolicy, ct); if (targetError is not null) return targetError;
+            if ((request.ExecutionPolicy?.RunAs ?? current.ExecutionPolicy?.RunAs) is { } runAs &&
+                (targetTenant != current.TenantId || request.ExecutionPolicy is { } policy && policy.RunAs != current.ExecutionPolicy?.RunAs))
+                await ValidateExecutionAccountAsync(http, targetTenant, request.ExecutionPolicy is null ? runAs : request.ExecutionPolicy.RunAs, ct);
             var savedRuntime = JobExecutionRuntimePolicy.FromJob(current);
             var options = JobExecutionRuntimePolicy.MergeOptionsJson(current.OptionsJson,
                 JobExecutionRuntimePolicy.FromValues(request.ExpectedRuntimeSeconds ?? savedRuntime.ExpectedRuntimeSeconds,
@@ -169,6 +177,14 @@ public static class JobEndpoints
             return !await CanManageAsync(http, access, scope.TenantId, ct) ? Results.Forbid() : await jobs.DeleteStepAsync(id, ct) ? Results.NoContent() : Results.NotFound();
         });
         return app;
+    }
+
+    private static async Task ValidateExecutionAccountAsync(HttpContext http, int? tenantId, NetRatel.Shared.Contracts.Secrets.ExecutionIdentitySetting? requested, CancellationToken ct)
+    {
+        if (tenantId is not > 0) throw new ExecutionAccountException("run_as_tenant_required", "Select a tenant before configuring an execution account.", 400);
+        var accounts = http.RequestServices.GetRequiredService<ExecutionAccountService>();
+        await accounts.RequireAsync(http.User, tenantId.Value, ct);
+        if (requested is not null) await accounts.ValidateJobSettingAsync(tenantId.Value, requested, ct);
     }
 
     private static async Task<IResult?> ValidateTargetAsync(OrchestratorDbContext db, int? tenantId, Guid? agentId, JobTargetDefinition? target, JobExecutionPolicy? executionPolicy, CancellationToken ct)

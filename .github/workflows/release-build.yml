@@ -226,6 +226,9 @@ jobs:
       - name: Package and inventory Client
         shell: bash
         run: |
+          if [[ "${{ matrix.runtime }}" != win-* ]]; then
+            test -x "artifacts/netratel-client-${{ matrix.runtime }}/netratel-run-as"
+          fi
           python3 tools/ci/prepare-windows-client-repair.py --distribution "artifacts/netratel-client-${{ matrix.runtime }}"
           cp LICENSE NOTICE "artifacts/netratel-client-${{ matrix.runtime }}/"
           python3 tools/ci/generate-runtime-sbom.py \

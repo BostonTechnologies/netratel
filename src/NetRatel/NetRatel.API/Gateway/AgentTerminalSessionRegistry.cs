@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Threading.Channels;
 using Google.Protobuf;
+using Google.Protobuf.WellKnownTypes;
 using Microsoft.Extensions.Logging;
 using NetRatel.AgentGateway.Contracts.V1;
 using NetRatel.Akka.Observability;
@@ -146,6 +147,11 @@ public sealed record GatewayTerminalSession(
     long DroppedOutputFrames = 0)
 {
     public ObservedExecutionIdentity? ObservedIdentity { get; init; }
+    public ExecutionIdentitySetting? RequestedRunAs { get; init; }
+    internal string? AccountOwner { get; init; }
+    public string? ReplacementSessionId { get; init; }
+    public string? OriginalSessionId { get; init; }
+    public bool AwaitingAccountSwitch { get; init; }
 }
 
 public class TerminalGatewayActionException(string code, string message) : InvalidOperationException(message)
@@ -156,7 +162,7 @@ public class TerminalGatewayActionException(string code, string message) : Inval
 public sealed class AgentTerminalSessionUnavailableException(ClientKey client)
     : TerminalGatewayActionException("terminal_transport_unavailable", $"No active terminal gateway transport exists for tenant {client.TenantId}, agent {client.AgentId:D}.");
 
-public sealed class AgentTerminalSessionRegistry(
+public sealed partial class AgentTerminalSessionRegistry(
     TimeProvider timeProvider,
     IRealtimeFanoutSink fanout,
     TerminalTimingRecorder? timing = null,
@@ -183,7 +189,8 @@ public sealed class AgentTerminalSessionRegistry(
 
     private AgentTerminalGatewayRegistration RegisterCore(ClientKey client, Guid connectionId, ulong connectionEpoch, IReadOnlyList<string> availableShells, IReadOnlyList<string>? capabilities, bool provisional)
     {
-        var transport = new AgentTerminalTransport(client, connectionId, connectionEpoch, NormalizeShells(availableShells), SupportsIdempotentClose(capabilities), timeProvider.GetUtcNow());
+        var transport = new AgentTerminalTransport(client, connectionId, connectionEpoch, NormalizeShells(availableShells), SupportsIdempotentClose(capabilities), timeProvider.GetUtcNow(),
+            ExecutionAccountServiceCapability.Recognized(capabilities ?? []));
         AgentTerminalTransport? previous = null;
         var sameFenceReplacement = false;
         lock (_transportSync)
@@ -328,7 +335,11 @@ public sealed class AgentTerminalSessionRegistry(
         string? workingDirectory,
         int columns,
         int rows,
-        CancellationToken ct)
+        CancellationToken ct,
+        ExecutionIdentitySetting? runAs = null,
+        RunAsCredential? credential = null,
+        string? accountOwner = null,
+        AccountSwitch? handover = null)
     {
         AgentTerminalTransport transport;
         TerminalSession session;
@@ -342,6 +353,13 @@ public sealed class AgentTerminalSessionRegistry(
             {
                 throw new TerminalGatewayActionException("terminal_shell_unavailable", $"Shell '{shell}' is not available on this agent.");
             }
+            if ((runAs is { CredentialProfileId: not null }) != (credential is not null) ||
+                (credential is not null && !transport.SupportsExecutionAccount(ExecutionAccountServiceCapability.For(credential.Mode))) ||
+                (handover is not null && !transport.SupportsIdempotentClose))
+                throw new TerminalGatewayActionException("terminal_run_as_unsupported", "Update this client to a version that supports the selected terminal account.");
+            if (handover is not null && (!handover.Original.Opened ||
+                !handover.Original.ConnectionMatches(transport.ConnectionId, transport.ConnectionEpoch)))
+                throw TransportReconnecting(client);
 
             session = new TerminalSession(
                 sessionId,
@@ -354,7 +372,11 @@ public sealed class AgentTerminalSessionRegistry(
                 rows,
                 transport.SupportsIdempotentClose,
                 timeProvider.GetUtcNow(),
-                generation);
+                generation)
+            {
+                RequestedRunAs = runAs, AccountOwner = accountOwner, ExpectedAccountId = credential?.ExpectedAccountId,
+                IncomingSwitch = handover
+            };
             if (!_sessions.TryAdd(session.Id, session)) throw new TerminalGatewayActionException("terminal_session_collision", "The terminal session identifier is already active.");
         }
 
@@ -364,7 +386,7 @@ public sealed class AgentTerminalSessionRegistry(
                 OverallOpeningTimeout,
                 timeProvider,
                 () => HandleOpeningTimeout(session, dispatchAttempt: null));
-            await DispatchStartAsync(session, transport, ct).ConfigureAwait(false);
+            await DispatchStartAsync(session, transport, ct, credential).ConfigureAwait(false);
             logger?.LogInformation(
                 "api.terminal.open.created tenantId={TenantId} agentId={AgentId} sessionId={SessionId} generation={Generation} connectionId={ConnectionId} connectionEpoch={ConnectionEpoch}",
                 client.TenantId,
@@ -378,7 +400,7 @@ public sealed class AgentTerminalSessionRegistry(
             NetRatelAkkaTelemetry.SetTerminalActiveSessions(ActiveSessionCount());
             return session.Snapshot();
         }
-        catch (TerminalGatewayActionException exception) when (exception.Code is "terminal_transport_reconnecting" or "terminal_transport_backpressured")
+        catch (TerminalGatewayActionException exception) when (credential is null && (exception.Code is "terminal_transport_reconnecting" or "terminal_transport_backpressured"))
         {
             // The immutable Start stays on the session. A lost transport
             // replays it on the next matching registration; a saturated but
@@ -542,6 +564,14 @@ public sealed class AgentTerminalSessionRegistry(
         }
 
         if (!TryReadObservedIdentity(opened, out var identity)) return false;
+        if (session.RequestedRunAs is { CredentialProfileId: not null } requested && (identity is null ||
+            (requested.Mode == ExecutionIdentityMode.WindowsPassword ? !ObservedExecutionIdentity.IsWindowsAccountId(identity.AccountId) :
+                !ObservedExecutionIdentity.IsUnixAccountId(identity.AccountId)) ||
+            (!string.IsNullOrEmpty(session.ExpectedAccountId) && session.ExpectedAccountId != identity.AccountId)))
+        {
+            Fail(session, "terminal_run_as_identity_mismatch", "The client did not confirm the requested execution identity.");
+            return false;
+        }
         var wasSuspended = session.IsSuspended;
         var transition = session.TryOpen(identity);
         if (transition == TerminalOpenTransition.Rejected) return false;
@@ -970,6 +1000,8 @@ public sealed class AgentTerminalSessionRegistry(
     private (TerminalSession Session, AgentTerminalTransport Transport) ResolveInputDispatchLocked(string sessionId, ulong generation)
     {
         var session = GetSession(sessionId, generation);
+        if (session.OutgoingSwitch is { State: not AccountSwitchState.Aborted } || session.IncomingSwitch is { State: not AccountSwitchState.Committed })
+            throw new TerminalGatewayActionException("terminal_account_switch_pending", "Wait for the terminal account switch to finish.");
         if (session.IsTerminal || session.IsClosing)
         {
             throw new TerminalGatewayActionException(
@@ -1016,6 +1048,7 @@ public sealed class AgentTerminalSessionRegistry(
         }
 
         NetRatelAkkaTelemetry.TerminalSessionClosed();
+        RejectFailedAccountSwitch(session);
         NetRatelAkkaTelemetry.SetTerminalActiveSessions(ActiveSessionCount());
         Publish(session, RealtimeFanoutEventType.Completed, RealtimeFanoutStatus.Completed);
         ScheduleRemoval(session);
@@ -1031,6 +1064,7 @@ public sealed class AgentTerminalSessionRegistry(
         }
 
         NetRatelAkkaTelemetry.RecordAuthorityFailure("terminal", "akka", "dev");
+        RejectFailedAccountSwitch(session);
         NetRatelAkkaTelemetry.SetTerminalActiveSessions(ActiveSessionCount());
         Publish(session, RealtimeFanoutEventType.Completed, RealtimeFanoutStatus.Failed);
         ScheduleRemoval(session);
@@ -1133,13 +1167,19 @@ public sealed class AgentTerminalSessionRegistry(
         }
     });
 
-    private Task DispatchStartAsync(TerminalSession session, AgentTerminalTransport transport, CancellationToken cancellationToken)
+    private Task DispatchStartAsync(TerminalSession session, AgentTerminalTransport transport, CancellationToken cancellationToken,
+        RunAsCredential? credential = null)
     {
         ulong dispatchAttempt;
         TerminalTransportEnqueueResult enqueue;
         cancellationToken.ThrowIfCancellationRequested();
         lock (_transportSync)
         {
+            if (session.RequestedRunAs is { CredentialProfileId: not null } && credential is null)
+            {
+                Fail(session, "terminal_run_as_transport_lost", "The protected terminal launch was interrupted. Open a new session.");
+                return Task.CompletedTask;
+            }
             if (!_agents.TryGetValue(session.Client, out var current) || !ReferenceEquals(current, transport) || !transport.IsAdmitted)
             {
                 if (session.TrySuspend())
@@ -1186,7 +1226,7 @@ public sealed class AgentTerminalSessionRegistry(
                         OpeningTimeout,
                         timeProvider,
                         () => HandleOpeningTimeout(session, dispatchAttempt));
-                });
+                }, credential, credential is null ? default : timeProvider.GetUtcNow().Add(OpeningTimeout));
 
             if (enqueue == TerminalTransportEnqueueResult.Accepted)
             {
@@ -1210,7 +1250,7 @@ public sealed class AgentTerminalSessionRegistry(
 
         if (enqueue == TerminalTransportEnqueueResult.Backpressured)
         {
-            ScheduleStartRetry(session, transport);
+            if (credential is null) ScheduleStartRetry(session, transport);
             throw TransportBackpressured(session.Client);
         }
 
@@ -1646,6 +1686,7 @@ public sealed class AgentTerminalSessionRegistry(
         private TaskCompletionSource _outputChanged = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private int _outputHistoryBytes;
         private bool _outputCompleted;
+        private bool _initialAccountOutputAttached;
         private readonly CancellationTokenSource _overallOpeningCts = new();
         private CancellationTokenSource? _dispatchOpeningCts;
         private ulong _browser;
@@ -1666,6 +1707,12 @@ public sealed class AgentTerminalSessionRegistry(
         private string? _failureMessage;
         private string? _pendingCloseReason;
         private ObservedExecutionIdentity? _observedIdentity;
+        public ExecutionIdentitySetting? RequestedRunAs { get; init; }
+        public string? ExpectedAccountId { get; init; }
+        public string? AccountOwner { get; init; }
+        public volatile AccountSwitch? OutgoingSwitch;
+        public AccountSwitch? IncomingSwitch { get; init; }
+        public bool HasOutputSubscriber { get { lock (_sync) return _outputSubscribers.Count > 0; } }
 
         public string Id { get; } = id;
         public ClientKey Client { get; } = client;
@@ -2143,6 +2190,11 @@ public sealed class AgentTerminalSessionRegistry(
                     }
 
                     _outputSubscribers.Add(subscriberId, subscriber);
+                    if ((IncomingSwitch is not null || RequestedRunAs?.CredentialProfileId is not null) && !_initialAccountOutputAttached)
+                    {
+                        foreach (var record in _outputHistory) subscriber.Writer.TryWrite(record.Content);
+                        _initialAccountOutputAttached = true;
+                    }
                 }
             }
 
@@ -2173,7 +2225,13 @@ public sealed class AgentTerminalSessionRegistry(
                     _ => "failed"
                 };
                 return new GatewayTerminalSession(Id, Client.TenantId, Client.AgentId, Generation, ShellType, _columns, _rows, state, created, "akka", _failureCode, _failureMessage, Interlocked.Read(ref _droppedOutputFrames))
-                { ObservedIdentity = _observedIdentity };
+                {
+                    ObservedIdentity = _observedIdentity, RequestedRunAs = RequestedRunAs, AccountOwner = AccountOwner,
+                    ReplacementSessionId = OutgoingSwitch is { State: AccountSwitchState.Opened or AccountSwitchState.Committed } handover
+                        ? handover.Replacement : null,
+                    OriginalSessionId = IncomingSwitch is { State: not AccountSwitchState.Committed } incoming ? incoming.Original.Id : null,
+                    AwaitingAccountSwitch = IncomingSwitch is { State: not AccountSwitchState.Committed }
+                };
             }
         }
 
@@ -2258,7 +2316,8 @@ public sealed class AgentTerminalGatewayRegistration(
     public void Dispose() { if (Interlocked.Exchange(ref _disposed, 1) == 0) dispose(); }
 }
 
-internal sealed class AgentTerminalTransport(ClientKey client, Guid connectionId, ulong epoch, IReadOnlyList<string> availableShells, bool supportsIdempotentClose, DateTimeOffset registeredAtUtc)
+internal sealed class AgentTerminalTransport(ClientKey client, Guid connectionId, ulong epoch, IReadOnlyList<string> availableShells, bool supportsIdempotentClose,
+    DateTimeOffset registeredAtUtc, IReadOnlyCollection<string>? executionCapabilities = null)
 {
     private const int OutboundCapacity = 64;
     private const int PendingRejectionLimit = 64;
@@ -2341,8 +2400,19 @@ internal sealed class AgentTerminalTransport(ClientKey client, Guid connectionId
         }
     }
 
-    public TerminalTransportEnqueueResult TryStart(string id, ulong generation, string shellType, string? workingDirectory, int columns, int rows, Action written) =>
-        TryWriteWithRejectionPriority(new GatewayTerminalFrame { Start = new TerminalSessionStart { SessionId = id, Generation = generation, ShellType = shellType, WorkingDirectory = workingDirectory ?? string.Empty, Columns = (uint)columns, Rows = (uint)rows } }, written);
+    public bool SupportsExecutionAccount(string capability) => SupportsIdempotentClose && executionCapabilities?.Contains(capability, StringComparer.Ordinal) == true;
+
+    public TerminalTransportEnqueueResult TryStart(string id, ulong generation, string shellType, string? workingDirectory, int columns, int rows,
+        Action written, RunAsCredential? credential = null, DateTimeOffset expiresAt = default)
+    {
+        var start = new TerminalSessionStart { SessionId = id, Generation = generation, ShellType = shellType,
+            WorkingDirectory = workingDirectory ?? "", Columns = (uint)columns, Rows = (uint)rows };
+        if (credential is null) return TryWriteWithRejectionPriority(new GatewayTerminalFrame { Start = start }, written);
+        var protectedStart = new ProtectedTerminalSessionStart { Start = start, Credential = credential.Clone(), ExpiresAtUtc = Timestamp.FromDateTimeOffset(expiresAt) };
+        var outcome = TryWriteWithRejectionPriority(new GatewayTerminalFrame { ProtectedStart = protectedStart }, written);
+        if (outcome != TerminalTransportEnqueueResult.Accepted) ExecutionAccountServiceCapability.Clear(protectedStart.Credential);
+        return outcome;
+    }
     public TerminalTransportEnqueueResult TryInput(string id, ulong generation, ulong sequence, ReadOnlyMemory<byte> content) =>
         TryWriteWithRejectionPriority(new GatewayTerminalFrame { Input = new TerminalInput { SessionId = id, Generation = generation, SessionSequence = sequence, Content = ByteString.CopyFrom(content.Span) } });
     public TerminalTransportEnqueueResult TryResize(string id, ulong generation, ulong sequence, int columns, int rows) =>

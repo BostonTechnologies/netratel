@@ -16,6 +16,44 @@ namespace NetRatel.Tests.API;
 public sealed class AgentTerminalSessionRegistryTests
 {
     [Fact]
+    public async Task Account_switch_fences_input_and_commits_only_after_verified_attachment()
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(5));
+        var ct = deadline.Token;
+        var client = new ClientKey(3, Guid.NewGuid());
+        var registry = new AgentTerminalSessionRegistry(TimeProvider.System, new ThrowingRealtimeFanoutSink());
+        using var connection = registry.Register(client, Guid.NewGuid(), 1, ["sh"],
+            [AgentTerminalSessionRegistry.IdempotentCloseCapability, ExecutionAccountCapabilities.UnixPrivilegedLocal]);
+        var original = await registry.OpenAsync(client, "sh", null, 80, 24, ct);
+        await connection.Reader.ReadAsync(ct);
+        Assert.True(registry.TryReceiveOpened(client, connection.RegistrationId, new()
+        { SessionId = original.SessionId, Generation = original.Generation, ObservedIdentity = new() { Account = "root", AccountId = "0" } }));
+
+        var profile = Guid.NewGuid();
+        var choice = new ExecutionIdentitySetting(ExecutionIdentityMode.UnixPrivilegedLocal, profile);
+        var credential = new RunAsCredential { Mode = RunAsCredential.Types.Mode.UnixPrivilegedLocal, ProfileId = profile.ToString(), Username = "test-user", ExpectedAccountId = "1702" };
+        var action = Guid.NewGuid();
+        var replacement = await registry.BeginAccountSwitchAsync(original.SessionId, original.Generation, action, choice, "test-operator",
+            (_, _) => Task.FromResult<RunAsCredential?>(credential), ct);
+        var start = await connection.Reader.ReadAsync(ct);
+        Assert.Null(start.Start);
+        Assert.Equal(replacement.SessionId, start.ProtectedStart.Start.SessionId);
+        var retry = await registry.BeginAccountSwitchAsync(original.SessionId, original.Generation, action, choice, "test-operator",
+            (_, _) => throw new InvalidOperationException("Duplicate materialization"), ct);
+        Assert.Equal(replacement.SessionId, retry.SessionId);
+        await Assert.ThrowsAsync<TerminalGatewayActionException>(() => registry.SendInputAsync(original.SessionId, original.Generation, "blocked"u8.ToArray(), ct));
+        Assert.True(registry.TryReceiveOpened(client, connection.RegistrationId, new()
+        { SessionId = replacement.SessionId, Generation = replacement.Generation, ObservedIdentity = new() { Account = "test-user", AccountId = "1702" } }));
+        Assert.Null(await registry.CommitAttachedAccountSwitchAsync(replacement.SessionId, replacement.Generation, "test-operator"));
+        using var subscription = registry.Subscribe(replacement.SessionId, replacement.Generation);
+        Assert.Null(await registry.CommitAttachedAccountSwitchAsync(replacement.SessionId, replacement.Generation, "another-operator"));
+        Assert.NotNull(await registry.CommitAttachedAccountSwitchAsync(replacement.SessionId, replacement.Generation, "test-operator"));
+        Assert.Equal(original.SessionId, (await connection.Reader.ReadAsync(ct)).Close.SessionId);
+        Assert.False(registry.Get(replacement.SessionId)!.AwaitingAccountSwitch);
+    }
+
+    [Fact]
     public async Task Opened_observation_is_fenced_and_retained_when_the_transport_reconnects()
     {
         var ct = TestContext.Current.CancellationToken;

@@ -6,6 +6,8 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using NetRatel.API.Gateway;
 using NetRatel.API.Services.Orchestration;
+using NetRatel.API.Services.Secrets;
+using NetRatel.AgentGateway.Contracts.V1;
 using System.Globalization;
 using NetRatel.Application.Jobs;
 using NetRatel.Application.Operations;
@@ -16,6 +18,7 @@ using NetRatel.Infrastructure.Identity.Authorization;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Infrastructure.Services;
 using NetRatel.Shared.Contracts.Jobs;
+using NetRatel.Shared.Contracts.Secrets;
 
 namespace NetRatel.API.Services.Jobs;
 
@@ -71,12 +74,46 @@ public sealed class JobAggregateOrchestrator(
                 throw new JobTargetValidationException("invocation_targets_invalid", "Choose at least one node from this job's available targets. Added or unavailable targets cannot be used for this run.");
             nodes = nodes.Where(node => ids.Contains(node.AgentId)).ToArray();
         }
+        nodes = await ResolveExecutionAccountsAsync(job.TenantId.Value, nodes, job.ExecutionPolicy?.RunAs, ct);
         var version = target.Source == JobTargetSource.ExecutionGroup || request.SelectedTargetAgentIds is not null ? 2 : 1;
         var plan = new JobResolvedTargetPlan(version, job.TenantId.Value, job.Id, snapshot.ComputeDigest(), target,
             result.GroupRevision, result.Bindings, nodes, job.ExecutionPolicy ?? new(), request.SelectedTargetAgentIds,
             null, version == 2 ? result.GroupName : null);
         RequireExpectedPlan(request, plan);
         return plan;
+    }
+
+    private async Task<IReadOnlyList<JobTargetNode>> ResolveExecutionAccountsAsync(int tenantId, IReadOnlyList<JobTargetNode> nodes,
+        ExecutionIdentitySetting? requested, CancellationToken ct)
+    {
+        if (requested is { IsValid: false } or { Mode: ExecutionIdentityMode.AgentServiceAccount })
+            throw new JobTargetValidationException("run_as_invalid", "Choose a valid saved job account or use the client default.");
+        var ids = nodes.Select(node => node.AgentId).ToArray();
+        var clients = await db.Agents.AsNoTracking().Where(agent => agent.TenantId == tenantId && ids.Contains(agent.Id) &&
+            (requested != null || agent.DefaultJobCredentialProfileId != null)).ToDictionaryAsync(agent => agent.Id, ct);
+        if (clients.Count == 0 && requested is null) return nodes;
+        await using var scope = scopes.CreateAsyncScope();
+        var accounts = scope.ServiceProvider.GetRequiredService<ExecutionAccountService>();
+        var profiles = new Dictionary<Guid, CredentialProfile>();
+        var result = new List<JobTargetNode>(nodes.Count);
+        try
+        {
+            foreach (var node in nodes)
+            {
+                if (!clients.TryGetValue(node.AgentId, out var client))
+                {
+                    if (requested is not null)
+                        throw new ExecutionAccountException("run_as_target_unavailable", "A target for this execution credential is unavailable.");
+                    result.Add(node);
+                    continue;
+                }
+                var account = await accounts.ChooseJobAccountAsync(client, requested, profiles, ct);
+                result.Add(node with { ExecutionAccount = account });
+            }
+        }
+        catch (ExecutionAccountException error) { throw new JobTargetValidationException(error.Code, error.Message, error.StatusCode); }
+        catch (SecretProviderException error) { throw new JobTargetValidationException("run_as_profile_unavailable", error.Message, 409); }
+        return result;
     }
 
     public async Task<JobRunInfo> StartFreshAsync(ulong jobId, RunJobRequest request, CancellationToken ct,
@@ -317,6 +354,9 @@ public sealed class JobAggregateOrchestrator(
                     receipt.AgentId == reviewedRoute.AgentId && receipt.PayloadHash == payloadHash, ct))
                 throw new ExecutionAdmissionDeniedException("The reviewed target admission is no longer pending for this original protected submission.");
         }
+        var currentAccounts = await ResolveExecutionAccountsAsync(plan.TenantId, plan.Nodes, plan.ExecutionPolicy.RunAs, ct);
+        if (!plan.Nodes.Select(node => node.ExecutionAccount).SequenceEqual(currentAccounts.Select(node => node.ExecutionAccount)))
+            throw new JobTargetValidationException("run_as_plan_changed", "The execution accounts changed. Review the job targets again.", 409);
         if (plan.NeedsHaWorkerSelection)
         {
             if (haWorkers is null) throw new ExecutionAdmissionDeniedException("HA worker admission is unavailable.");
@@ -348,6 +388,7 @@ public sealed class JobAggregateOrchestrator(
             catch (SecretProviderException error)
             { throw new JobTargetValidationException("job_provider_input_unavailable", error.Message); }
         }
+        var accountBindings = await BindExecutionAccountsAsync(plan, principalId, credentialId, ct);
         if (mcpSnapshot is null) runs.BindPinnedExecutionSnapshot(parentId, snapshot);
         else runs.BindMcpExecutionSnapshot(parentId, mcpSnapshot);
         var now = clock.GetUtcNow();
@@ -365,7 +406,7 @@ public sealed class JobAggregateOrchestrator(
         {
             ParentRunId = row.Id, AdmissionKey = admissionKey, PrincipalId = principalId,
             IntegrationCredentialId = credentialId, SourceKind = sourceKind, ActionDeadlineAtUtc = actionDeadline,
-            ProviderInputBindingsJson = providerInputs
+            ProviderInputBindingsJson = providerInputs, ExecutionAccountBindingsJson = accountBindings
         });
         db.Set<JobRunNodeRecord>().AddRange(plan.Nodes.Select((node, index) => new JobRunNodeRecord
         {
@@ -576,6 +617,52 @@ public sealed class JobAggregateOrchestrator(
         var json = await db.JobAggregateControls.AsNoTracking().Where(row => row.ParentRunId == checked((long)parentRunId))
             .Select(row => row.ProviderInputBindingsJson).SingleAsync(ct);
         return JobProviderExecutionInputs.ReadBindings(json);
+    }
+
+    private async Task<string?> BindExecutionAccountsAsync(JobResolvedTargetPlan plan, string? principalId, string? credentialId,
+        CancellationToken ct)
+    {
+        if (plan.Nodes.All(node => node.ExecutionAccount is null)) return null;
+        await using var scope = scopes.CreateAsyncScope();
+        var accounts = scope.ServiceProvider.GetRequiredService<ExecutionAccountService>();
+        try
+        {
+            await accounts.RequireSavedAsync(principalId, credentialId, plan.TenantId, ct);
+            var bindings = new Dictionary<Guid, ExecutionAccountService.Binding>();
+            var byAccount = new Dictionary<JobExecutionAccount, ExecutionAccountService.Binding>();
+            foreach (var node in plan.Nodes)
+            {
+                if (node.ExecutionAccount is not { } account) continue;
+                if (!byAccount.TryGetValue(account, out var binding))
+                {
+                    var client = await accounts.GetClientAsync(plan.TenantId, node.AgentId, ct);
+                    binding = await accounts.BindAsync(client, account, false, ct);
+                    byAccount.Add(account, binding);
+                }
+                bindings.Add(node.AgentId, binding);
+            }
+            return JsonSerializer.Serialize(bindings, Json);
+        }
+        catch (ExecutionAccountException error) { throw new JobTargetValidationException(error.Code, error.Message, error.StatusCode); }
+        catch (SecretProviderException error) { throw new JobTargetValidationException("run_as_secret_unavailable", error.Message, 409); }
+    }
+
+    internal async Task<RunAsCredential> ResolveExecutionAccountAsync(JobRunInfo run, JobExecutionAccount account, CancellationToken ct)
+    {
+        if (run.ParentRunId is not { } parentId || run.AgentId is not { } agentId || run.TenantId is not { } tenantId)
+            throw new ExecutionAccountException("run_as_admission_unavailable", "The native execution has no saved account admission.");
+        var control = await db.JobAggregateControls.AsNoTracking().SingleAsync(row => row.ParentRunId == checked((long)parentId), ct);
+        var bindings = control.ExecutionAccountBindingsJson is { } json
+            ? JsonSerializer.Deserialize<Dictionary<Guid, ExecutionAccountService.Binding>>(json, Json) : null;
+        if (bindings is null || !bindings.TryGetValue(agentId, out var binding) || binding.Account != account)
+            throw new ExecutionAccountException("run_as_admission_unavailable", "The admitted execution account binding is unavailable.");
+        await using var scope = scopes.CreateAsyncScope();
+        var accounts = scope.ServiceProvider.GetRequiredService<ExecutionAccountService>();
+        await accounts.RequireSavedAsync(control.PrincipalId, control.IntegrationCredentialId, tenantId, ct);
+        var client = await accounts.GetClientAsync(tenantId, agentId, ct);
+        var credential = await accounts.ResolveAsync(client, binding, false, ct);
+        await accounts.RequireSavedAsync(control.PrincipalId, control.IntegrationCredentialId, tenantId, ct);
+        return credential;
     }
 
     internal async Task<IReadOnlyDictionary<string, string>> ResolveProviderInputsAsync(JobRunInfo run,

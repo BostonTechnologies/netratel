@@ -35,6 +35,7 @@ public sealed class JobAggregateControlRecord
     public DateTimeOffset? TerminalReadyAtUtc { get; set; }
     public string? TerminalResultHash { get; set; }
     public string? ProviderInputBindingsJson { get; set; }
+    public string? ExecutionAccountBindingsJson { get; set; }
     public string? PinnedProviderInputBindingsJson { get; set; }
 }
 
@@ -92,6 +93,7 @@ public static class JobAggregateModelConfiguration
             entity.Property(row => row.PrincipalId).HasMaxLength(256);
             entity.Property(row => row.IntegrationCredentialId).HasMaxLength(256);
             entity.Property(row => row.SourceKind).HasMaxLength(32);
+            entity.Property(row => row.ExecutionAccountBindingsJson).HasColumnType("jsonb");
             entity.HasIndex(row => row.AdmissionKey).IsUnique();
             entity.Property(row => row.GateReason).HasMaxLength(256);
             entity.Property(row => row.TerminalResultHash).HasMaxLength(64);

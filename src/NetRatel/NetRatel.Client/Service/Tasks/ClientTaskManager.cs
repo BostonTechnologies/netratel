@@ -9,6 +9,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading;
 using System.Threading.Tasks;
+using NetRatel.AgentGateway.Contracts.V1;
 
 using NetRatel.Client.Service.Logging;
 using NetRatel.Client.Service.Shells;
@@ -49,6 +50,7 @@ public sealed class ClientTaskManager : IDisposable
         string RequestId)
     {
         public TaskOutputRedactor Output { get; init; } = new(null);
+        public RunAsCredential? Credential { get; init; }
     }
 
     private sealed record CommandWorkItem(
@@ -59,7 +61,8 @@ public sealed class ClientTaskManager : IDisposable
         int Environment,
         CancellationTokenSource Cancellation,
         IReadOnlyDictionary<string, string>? ProtectedParameters = null,
-        DateTimeOffset ProtectedExpires = default) : IDisposable
+        DateTimeOffset ProtectedExpires = default,
+        RunAsCredential? Credential = null) : IDisposable
     {
         private int _disposed;
         public CancellationToken Token { get; } = Cancellation.Token;
@@ -70,7 +73,9 @@ public sealed class ClientTaskManager : IDisposable
         }
         public void Dispose()
         {
-            if (Interlocked.Exchange(ref _disposed, 1) == 0) Cancellation.Dispose();
+            if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+            NativeExecutionAccounts.Clear(Credential);
+            Cancellation.Dispose();
         }
     }
 
@@ -172,20 +177,22 @@ public sealed class ClientTaskManager : IDisposable
         EnqueueCommand(commandId, taskType, payload, tenantId, environment);
 
     internal bool EnqueueProtectedJobStep(string commandId, string taskType, string payload, int tenantId, int environment,
-        IReadOnlyDictionary<string, string>? parameters, DateTimeOffset expires) =>
+        IReadOnlyDictionary<string, string>? parameters, DateTimeOffset expires, RunAsCredential? credential = null) =>
         expires != default && taskType is TaskKinds.ExecLibraryScript or TaskKinds.ExecShellCommand &&
         (parameters is null || taskType == TaskKinds.ExecLibraryScript && ProtectedJobParameterRules.AreValid(parameters)) &&
-        EnqueueCommand(commandId, taskType, payload, tenantId, environment, parameters, expires);
+        (credential is null || NativeExecutionAccounts.IsValid(credential)) &&
+        EnqueueCommand(commandId, taskType, payload, tenantId, environment, parameters, expires, credential);
 
     private bool EnqueueCommand(string commandId, string taskType, string? payload, int tenantId, int environment,
-        IReadOnlyDictionary<string, string>? protectedParameters = null, DateTimeOffset protectedExpires = default)
+        IReadOnlyDictionary<string, string>? protectedParameters = null, DateTimeOffset protectedExpires = default,
+        RunAsCredential? credential = null)
     {
         if (string.IsNullOrWhiteSpace(commandId) || string.IsNullOrWhiteSpace(taskType)) return false;
         lock (_lifecycleLock)
         {
             if (!_started || _cts is null || _queue is not { IsAddingCompleted: false } queue) return false;
             var work = new CommandWorkItem(commandId, taskType, payload, tenantId, environment,
-                CancellationTokenSource.CreateLinkedTokenSource(_cts.Token), protectedParameters, protectedExpires);
+                CancellationTokenSource.CreateLinkedTokenSource(_cts.Token), protectedParameters, protectedExpires, credential);
             if (!_enqueued.TryAdd(commandId, work))
             {
                 work.Dispose();
@@ -281,7 +288,7 @@ public sealed class ClientTaskManager : IDisposable
             workItem.Environment,
             workItem.CommandType,
             workItem.Payload,
-            workItem.CommandId);
+            workItem.CommandId) { Credential = workItem.Credential };
         if (workItem.ProtectedParameters is { } protectedParameters)
             task = task with { Output = new TaskOutputRedactor(null, additionalSecretValues: protectedParameters) };
 
@@ -446,7 +453,8 @@ public sealed class ClientTaskManager : IDisposable
             return;
         }
 
-        task = task with { Output = new TaskOutputRedactor(payload.OutputPolicy, additionalSecretValues: payload.OutputSecretValues) };
+        task = task with { Output = new TaskOutputRedactor(payload.OutputPolicy,
+            additionalSecretValues: IncludeCredentialPassword(payload.OutputSecretValues, task.Credential)) };
 
         if (!EnvironmentReferencesAreAvailable(payload.EnvironmentReferences))
         {
@@ -513,7 +521,8 @@ public sealed class ClientTaskManager : IDisposable
             outputSecrets = new(payload.OutputSecretValues ?? [], StringComparer.OrdinalIgnoreCase);
             foreach (var (key, value) in protectedParameters) outputSecrets.Add(key, value);
         }
-        task = task with { Output = new TaskOutputRedactor(payload.OutputPolicy, payload.Parameters, outputSecrets) };
+        task = task with { Output = new TaskOutputRedactor(payload.OutputPolicy, payload.Parameters,
+            IncludeCredentialPassword(outputSecrets, task.Credential)) };
 
         var hasSnapshotContent = !string.IsNullOrEmpty(payload.ScriptContent);
         if (payload.ScriptId <= 0 && !hasSnapshotContent)
@@ -626,7 +635,15 @@ public sealed class ClientTaskManager : IDisposable
                     ++sequence, false, task.Output.Binding), ClientShellJsonContext.Default.ShellProgressEnvelope);
                 try { await _gatewayStatusPublisher(task.RequestId, "progress", payload, null).ConfigureAwait(false); }
                 catch (Exception ex) { _logError($"Output update failed for command {task.RequestId}: {ex.GetType().Name}"); }
-            }, line => task.Output.Redact(line)!);
+            }, line => task.Output.Redact(line)!) { Credential = task.Credential };
+    }
+
+    private static IReadOnlyDictionary<string, string>? IncludeCredentialPassword(IReadOnlyDictionary<string, string>? values, RunAsCredential? credential)
+    {
+        if (credential?.Password is not { Length: > 0 } password) return values;
+        var result = new Dictionary<string, string>(values ?? new Dictionary<string, string>(), StringComparer.OrdinalIgnoreCase);
+        result["$run-as.password"] = password;
+        return result;
     }
 
     private static IReadOnlyList<string> BoundOutput(IReadOnlyList<string> lines, ref int remainingBytes, out bool truncated)

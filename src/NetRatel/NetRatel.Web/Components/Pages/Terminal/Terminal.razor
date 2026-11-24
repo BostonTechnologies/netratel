@@ -3,8 +3,14 @@
 @implements IAsyncDisposable
 
 @using NetRatel.Shared.Contracts.Terminals
+@using NetRatel.Shared.Contracts.Secrets
+@using NetRatel.Web.Components.Shared.Secrets
+@using Microsoft.JSInterop
 @inject ITerminalService Term
 @inject ISnackbar Snack
+@inject IDialogService Dialogs
+@inject NavigationManager Navigation
+@inject IJSRuntime JS
 
 <PageTitle>Terminal</PageTitle>
 
@@ -25,7 +31,8 @@
       <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2" Class="flex-wrap">
         <MudText Typo="Typo.h5">Terminal @_session.ShellType</MudText>
         <MudChip T="string" Variant="Variant.Outlined">@_session.State</MudChip>
-        <MudChip T="string" Variant="Variant.Outlined" Icon="@Icons.Material.Filled.Person">
+        <MudChip T="string" Variant="Variant.Outlined" Icon="@Icons.Material.Filled.Person"
+                 Disabled="@(!CanSwitchAccount)" OnClick="SwitchAccountAsync" aria-label="Change execution context">
           <span class="terminal-account-name" title="@TerminalAccount">@TerminalAccount</span>
         </MudChip>
         @if (!string.IsNullOrWhiteSpace(_session.Backend))
@@ -53,9 +60,9 @@
       <MudText Typo="Typo.caption" Class="text-secondary">Session @_session.SessionId</MudText>
 
       <MudPaper Class="pa-0 terminal-console-surface">
-        <TerminalConsole @ref="_console"
+        <TerminalConsole @key="_session.SessionId" @ref="_console"
                          SessionId="@_session.SessionId"
-                         IsInputEnabled="@_inputEnabled"
+                         IsInputEnabled="@(_inputEnabled && !_switching && !_session.AwaitingAccountSwitch)"
                          OnClosed="HandleClosedAsync" />
       </MudPaper>
     </MudStack>
@@ -73,10 +80,17 @@
   private Task? _streamTask;
   private bool _streamStarted;
   private bool _inputEnabled;
+  private bool _switching;
+  private long? _heartbeatId;
+  private IJSObjectReference? _heartbeat;
+  private DotNetObjectReference<Terminal>? _heartbeatReference;
+  private bool CanSwitchAccount => !_switching && _session is { TenantId: > 0, Generation: > 0,
+    AttachmentLeaseId.Length: > 0, AwaitingAccountSwitch: false } session && TerminalAccountHandover.IsOpen(session);
 
   protected override async Task OnParametersSetAsync()
   {
     await DisposeStreamAsync();
+    await StopHeartbeatAsync();
     _isLoading = true;
     _streamStarted = false;
     _inputEnabled = false;
@@ -84,8 +98,7 @@
     try
     {
       _session = await Term.GetSessionAsync(SessionId);
-      _inputEnabled = _session is not null &&
-                      !string.Equals(_session.State, "closed", StringComparison.OrdinalIgnoreCase);
+      _inputEnabled = _session is not null && TerminalAccountHandover.IsOpen(_session);
     }
     catch (Exception ex)
     {
@@ -98,23 +111,89 @@
     }
   }
 
-  protected override Task OnAfterRenderAsync(bool firstRender)
+  protected override async Task OnAfterRenderAsync(bool firstRender)
   {
-    if (_session is not null && _console is not null && !_streamStarted)
-    {
-      _streamStarted = true;
-      _streamCts = new CancellationTokenSource();
-      _streamTask = PumpTerminalStreamAsync(_streamCts.Token);
-    }
+    if (_session is not { } session || _console is null || _streamStarted) return;
 
-    return Task.CompletedTask;
+    if (session.ReplacementSessionId is { } replacementId && await Term.GetGatewaySessionAsync(replacementId) is { } replacement && TerminalAccountHandover.IsOpen(replacement))
+    {
+      Navigation.NavigateTo($"/terminal/{replacementId}", replace: true);
+      return;
+    }
+    _streamStarted = true;
+    _streamCts = new CancellationTokenSource();
+    _streamTask = PumpTerminalStreamAsync(_streamCts.Token);
+    if (session.Generation is not { } generation || string.IsNullOrEmpty(session.AttachmentLeaseId)) return;
+    _heartbeat ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/terminalAttachmentHeartbeat.js");
+    _heartbeatReference ??= DotNetObjectReference.Create(this);
+    _heartbeatId = await _heartbeat.InvokeAsync<long>("startTerminalAttachmentHeartbeat", _heartbeatReference,
+      session.SessionId, generation.ToString(System.Globalization.CultureInfo.InvariantCulture), session.AttachmentLeaseId);
+  }
+
+  private async Task SwitchAccountAsync()
+  {
+    if (!CanSwitchAccount || _session is not { } original || !Guid.TryParse(original.ClientIdentityHex, out var agentId)) return;
+    var dialog = await Dialogs.ShowAsync<TerminalAccountSwitchDialog>("Change execution context",
+      new DialogParameters<TerminalAccountSwitchDialog> { { x => x.TenantId, original.TenantId!.Value }, { x => x.AgentId, agentId } },
+      SecretVaultPresentation.Options);
+    if (await dialog.Result is not { Canceled: false, Data: ExecutionIdentitySetting requested } ||
+        !CanSwitchAccount || _session?.SessionId != original.SessionId) return;
+    original = _session;
+    _switching = true;
+    try
+    {
+      using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(55));
+      var replacement = await TerminalAccountHandover.SwitchAsync(Term, original, requested, deadline.Token);
+      Navigation.NavigateTo($"/terminal/{replacement.SessionId}", replace: true);
+    }
+    catch (Exception error) when (error is HttpRequestException or InvalidOperationException or OperationCanceledException)
+    {
+      Snack.Add(error is OperationCanceledException ? "The terminal account switch timed out." : error.Message, Severity.Error);
+    }
+    finally { _switching = false; }
+  }
+
+  [JSInvokable]
+  public async Task<TerminalAttachmentHeartbeatResult> OnGatewayTerminalAttachmentHeartbeat(string sessionId, string generation,
+    string leaseId, string browserId, bool claimOwnership)
+  {
+    if (!ulong.TryParse(generation, out var epoch) || _session is not { } session || session.SessionId != sessionId ||
+        session.Generation != epoch || session.AttachmentLeaseId != leaseId) return new(false);
+    try
+    {
+      using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+      var renewed = await Term.RenewGatewayAttachmentAsync(sessionId, epoch, leaseId, browserId, claimOwnership, deadline.Token);
+      if (renewed.AttachmentLeaseId is not { } next || _session?.SessionId != sessionId) return new(false);
+      var latest = session.AwaitingAccountSwitch ? await Term.GetGatewaySessionAsync(sessionId, deadline.Token) : null;
+      _session = (latest ?? session) with { AttachmentLeaseId = next };
+      _inputEnabled = TerminalAccountHandover.IsOpen(_session);
+      await InvokeAsync(StateHasChanged);
+      return new(true, true, next);
+    }
+    catch (HttpRequestException error) when (error.StatusCode is System.Net.HttpStatusCode.Conflict or System.Net.HttpStatusCode.Forbidden or System.Net.HttpStatusCode.NotFound)
+    {
+      _inputEnabled = false;
+      await InvokeAsync(StateHasChanged);
+      return new(false);
+    }
+  }
+
+  [JSInvokable]
+  public Task OnGatewayTerminalBrowserActive(string sessionId, string generation, string leaseId) => Task.CompletedTask;
+
+  private async Task StopHeartbeatAsync()
+  {
+    if (_heartbeatId is not { } id || _heartbeat is null) return;
+    _heartbeatId = null;
+    try { await _heartbeat.InvokeVoidAsync("stopTerminalAttachmentHeartbeat", id); }
+    catch (JSDisconnectedException) { }
   }
 
   private async Task CloseSessionAsync()
   {
     try
     {
-      var response = await Term.CloseAsync(SessionId);
+      var response = await Term.CloseAsync(_session?.SessionId ?? SessionId);
       Snack.Add(response.Message, Severity.Info);
       _session = await Term.GetSessionAsync(SessionId);
     }
@@ -148,7 +227,8 @@
   {
     try
     {
-      await foreach (var message in Term.StreamSessionAsync(SessionId, ct))
+      var streamSessionId = _session?.SessionId ?? SessionId;
+      await foreach (var message in Term.StreamSessionAsync(streamSessionId, ct))
       {
         if (message.Kind.Equals("data", StringComparison.OrdinalIgnoreCase))
         {
@@ -237,5 +317,12 @@
   public async ValueTask DisposeAsync()
   {
     await DisposeStreamAsync();
+    await StopHeartbeatAsync();
+    _heartbeatReference?.Dispose();
+    if (_heartbeat is not null)
+    {
+      try { await _heartbeat.DisposeAsync(); }
+      catch (JSDisconnectedException) { }
+    }
   }
 }

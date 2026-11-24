@@ -3,7 +3,9 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using NetRatel.API.Security.Authorization;
 using NetRatel.API.Services.AgentDirectory;
+using NetRatel.API.Services.Secrets;
 using NetRatel.Application.Events;
+using NetRatel.Application.Secrets;
 using NetRatel.Infrastructure.Identity.Authorization;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Shared.Contracts;
@@ -48,7 +50,26 @@ public static class ClientMetadataEndpoints
         var agent = await AgentLifecycleLock.LockAsync(db, tenantId, agentId, cancellationToken).ConfigureAwait(false);
         if (agent is null || agent.DeletedAtUtc is not null) return Results.NotFound();
         var tags = normalized.Tags!.ToArray();
-        if (agent.FriendlyName == normalized.FriendlyName && agent.Tags.SequenceEqual(tags, StringComparer.Ordinal))
+        var changeDefaults = normalized.ExecutionDefaults is { } defaults &&
+            (agent.DefaultJobCredentialProfileId != defaults.JobProfileId || agent.DefaultTerminalCredentialProfileId != defaults.TerminalProfileId);
+        if (changeDefaults)
+        {
+            var accounts = http.RequestServices.GetRequiredService<ExecutionAccountService>();
+            if (!await accounts.IsAllowedAsync(http.User, tenantId, cancellationToken)) return Results.Forbid();
+            try
+            {
+                var selection = normalized.ExecutionDefaults!;
+                if (selection.JobProfileId is { } job && job != agent.DefaultJobCredentialProfileId)
+                    await accounts.GetEligibleAsync(agent, job, false, cancellationToken);
+                if (selection.TerminalProfileId is { } terminal && terminal != agent.DefaultTerminalCredentialProfileId)
+                    await accounts.GetEligibleAsync(agent, terminal, true, cancellationToken);
+                agent.DefaultJobCredentialProfileId = selection.JobProfileId;
+                agent.DefaultTerminalCredentialProfileId = selection.TerminalProfileId;
+            }
+            catch (ExecutionAccountException failure) { return Results.Problem(failure.Message, statusCode: failure.StatusCode); }
+            catch (SecretProviderException failure) { return Results.Problem(failure.Message, statusCode: StatusCodes.Status409Conflict); }
+        }
+        if (!changeDefaults && agent.FriendlyName == normalized.FriendlyName && agent.Tags.SequenceEqual(tags, StringComparer.Ordinal))
             return Results.Ok(Map(agent));
 
         agent.FriendlyName = normalized.FriendlyName;
@@ -60,13 +81,13 @@ public static class ClientMetadataEndpoints
             Id = Guid.NewGuid(),
             OccurredUtc = now,
             Type = NetRatelEventTypes.Agent.MetadataUpdated,
-            PayloadJson = JsonSerializer.Serialize(new { agentId, tenantId, actor, hasFriendlyName = agent.FriendlyName is not null, tagCount = tags.Length }),
+            PayloadJson = JsonSerializer.Serialize(new { agentId, tenantId, actor, hasFriendlyName = agent.FriendlyName is not null, tagCount = tags.Length, executionDefaultsChanged = changeDefaults }),
             Source = "Agent",
             CorrelationId = $"netratel-agent-{agentId:N}",
             TenantId = tenantId.ToString(System.Globalization.CultureInfo.InvariantCulture),
             EntityId = agentId.ToString("D"),
             Severity = "Info",
-            Message = $"Client labels updated for agent {agentId}.",
+            Message = $"Client settings updated for agent {agentId}.",
             Status = OutboxStatuses.Pending,
             Attempts = 0,
             NextAttemptUtc = now
@@ -80,6 +101,6 @@ public static class ClientMetadataEndpoints
     {
         var directory = AgentDirectoryPresentation.Create(agent.TenantId, agent.Id, agent.Name,
             agent.IsEnabled, agent.DeviceInfoJson, string.Empty);
-        return new(agent.TenantId, agent.Id, directory.HostName, agent.FriendlyName, agent.Tags);
+        return new(agent.TenantId, agent.Id, directory.HostName, agent.FriendlyName, agent.Tags) { ExecutionDefaults = agent.GetExecutionDefaults() };
     }
 }

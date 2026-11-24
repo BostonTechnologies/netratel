@@ -217,7 +217,7 @@ internal sealed partial class TenantSecretService(OrchestratorDbContext db, IDat
         if (metadata.Entry.IsFolder || metadata.Entry.Enabled == false ||
             (reference.Field is not null && !metadata.Fields.Any(field => field.Name == reference.Field)))
             throw Invalid("Select an available secret value or field from this provider.");
-        return new(reference with { Locator = metadata.Entry.Locator }, connection.ScopeRevision);
+        return new(reference with { Locator = metadata.Entry.Locator }, connection.ScopeRevision, metadata.Entry.Version);
     }
 
     public async Task<IReadOnlyList<ResolvedSecret>> ResolveForExecutionAsync(int tenantId, IReadOnlyList<SecretReference> references, CancellationToken ct)

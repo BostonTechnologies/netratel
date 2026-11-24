@@ -23,7 +23,7 @@ public interface ITenantSecretService
     Task DeleteProfileAsync(int tenantId, Guid profileId, long expectedRevision, CancellationToken ct);
 }
 
-public sealed record BoundSecretReference(SecretReference Reference, long ScopeRevision);
+public sealed record BoundSecretReference(SecretReference Reference, long ScopeRevision, string? ExactVersion = null);
 
 // Server-side execution material. It is never a read model or an actor message.
 public sealed class ResolvedSecret(SecretReference exactReference, long scopeRevision, string value)
