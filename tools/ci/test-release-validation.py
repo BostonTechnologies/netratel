@@ -927,7 +927,8 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
         jobs = manual.split("\njobs:\n", 1)
         self.assertEqual(2, len(jobs))
         sections = dict(re.findall(r"(?ms)^  ([a-z-]+):\n(.*?)(?=^  [a-z-]+:|\Z)", jobs[1]))
-        self.assertEqual(["vault-fixture", "selected-suite", "candidate-images", "filesystem", "windows-mcp", "client-measurement", "migrations-image", "api-image", "cli-tool"], list(sections))
+        self.assertEqual(["vault-fixture", "selected-suite", "candidate-images", "execution-accounts", "filesystem", "windows-mcp",
+                          "client-measurement", "migrations-image", "api-image", "cli-tool"], list(sections))
         selected, measurement, portable = (sections[name] for name in ("selected-suite", "client-measurement", "cli-tool"))
         vault = sections["vault-fixture"]
         self.assertIn("inputs.suite != 'vault-fixture'", selected)
@@ -945,6 +946,11 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
         self.assertIn("scan-public-image.sh", candidates)
         self.assertNotIn("packages: write", candidates)
         self.assertNotIn("docker push", candidates)
+        accounts = sections["execution-accounts"]
+        self.assertIn("inputs.suite != 'execution-accounts'", selected)
+        self.assertIn("if: inputs.suite == 'execution-accounts'", accounts)
+        self.assertIn("runs-on: windows-latest", accounts)
+        self.assertIn("./tools/ci/test-windows-execution-account.ps1", accounts)
         filesystem = sections["filesystem"]
         self.assertIn("inputs.suite != 'filesystem'", selected)
         self.assertIn("if: inputs.suite == 'filesystem'", filesystem)

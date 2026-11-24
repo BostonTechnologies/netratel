@@ -40,6 +40,12 @@ public sealed class SavedAccountExecutionTests
         var wrongPin = credential.Clone();
         wrongPin.ExpectedAccountId = windows ? "S-1-5-18" : "0";
         await Assert.ThrowsAsync<InvalidOperationException>(() => runner.RunShellCommandAsync(payload, ct, observer with { Credential = wrongPin }));
+        if (windows)
+        {
+            var wrongPassword = credential.Clone();
+            wrongPassword.Password += "A!";
+            await Assert.ThrowsAsync<InvalidOperationException>(() => runner.RunShellCommandAsync(payload, ct, observer with { Credential = wrongPassword }));
+        }
 
         var factory = new TerminalHostFactory(new());
         using var host = Assert.Single(factory.CreateCandidates(new NetRatel.Client.Service.Terminal.Terminal.TerminalOpenPayload
@@ -52,8 +58,9 @@ public sealed class SavedAccountExecutionTests
         {
             lock (recorded)
             {
-                if (!identityPrinted.Task.IsCompleted && recorded.Append(chunk.Data).ToString().Split('\n').Any(line =>
-                    IsObservedId(line, expectedId!, windows)))
+                var transcript = recorded.Append(chunk.Data).ToString();
+                if (windows ? IsObservedId(transcript, expectedId!, true) :
+                    transcript.Contains($"netratel-id={expectedId}\r\n", StringComparison.Ordinal))
                     identityPrinted.TrySetResult();
             }
             return Task.CompletedTask;
@@ -61,8 +68,9 @@ public sealed class SavedAccountExecutionTests
         try
         {
             Assert.Equal(expectedId, host.ObservedIdentity?.AccountId);
-            await host.WriteInputAsync(command + (windows ? "\r\n" : "\n"), deadline.Token);
-            await identityPrinted.Task.WaitAsync(deadline.Token);
+            await host.WriteInputAsync(windows ? command + "\r\n" : "printf 'netratel-id=%s\\n' \"$(id -u)\"\n", deadline.Token);
+            var found = await Task.WhenAny(identityPrinted.Task, Task.Delay(TimeSpan.FromSeconds(12), deadline.Token)) == identityPrinted.Task;
+            lock (recorded) Assert.True(found, recorded.ToString());
         }
         finally { await host.RequestCloseAsync("test complete", ct); }
 

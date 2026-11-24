@@ -112,6 +112,8 @@ internal sealed class ExecutionAccountService(OrchestratorDbContext db, ITenantS
 
     public async Task<RunAsCredential> ResolveAsync(Agent client, Binding binding, bool forTerminal, CancellationToken ct)
     {
+        if (!client.IsEnabled || client.Status != AgentStatus.Active)
+            throw new ExecutionAccountException("run_as_client_unavailable", "This client cannot start an execution account while it is disabled.");
         var profile = await ReadBoundProfileAsync(client, binding.Account, forTerminal, ct);
         var bindings = new[] { binding.Username, binding.Password }.OfType<BoundSecretReference>().ToArray();
         var resolved = bindings.Length == 0 ? [] :
