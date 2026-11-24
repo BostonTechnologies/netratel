@@ -1743,7 +1743,11 @@ internal sealed class ConPtyTerminalHost : ITerminalHostSession
                 Info = new() { Size = Marshal.SizeOf<WindowsExecutionAccount.StartupInfoEx>() },
                 Attributes = _attributeList
             };
-            var (started, observed) = _windowsAccount.StartSuspended(_context.Executable, _context.Arguments, _context.WorkingDirectory,
+            // Bind the selected shell to the pseudo console even if the service's own stdout is redirected.
+            // The command interpreter opens those devices in the verified account's console.
+            var commandInterpreter = Path.Combine(Environment.SystemDirectory, "cmd.exe");
+            var terminalArguments = $"/d /s /c \"{commandLine} <CONIN$ >CONOUT$ 2>&1\"";
+            var (started, observed) = _windowsAccount.StartSuspended(commandInterpreter, terminalArguments, _context.WorkingDirectory,
                 WindowsExecutionAccount.ExtendedStartupInfo, inheritHandles: false, ref accountStartup);
             _processHandle = started.ProcessHandle;
             _threadHandle = started.ThreadHandle;
