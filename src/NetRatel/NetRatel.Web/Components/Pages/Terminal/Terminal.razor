@@ -186,7 +186,7 @@
     if (_heartbeatId is not { } id || _heartbeat is null) return;
     _heartbeatId = null;
     try { await _heartbeat.InvokeVoidAsync("stopTerminalAttachmentHeartbeat", id); }
-    catch (JSDisconnectedException) { }
+    catch (JSDisconnectedException) { return; }
   }
 
   private async Task CloseSessionAsync()
@@ -322,7 +322,7 @@
     if (_heartbeat is not null)
     {
       try { await _heartbeat.DisposeAsync(); }
-      catch (JSDisconnectedException) { }
+      catch (JSDisconnectedException) { return; }
     }
   }
 }
