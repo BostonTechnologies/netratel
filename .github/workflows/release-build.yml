@@ -185,7 +185,7 @@ jobs:
             runner: windows-latest
             extension: zip
           - runtime: osx-arm64
-            runner: macos-15
+            runner: macos-15-intel
             extension: tar.gz
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -199,6 +199,14 @@ jobs:
         run: |
           dotnet restore src/NetRatel/NetRatel.Client/NetRatel.Client.csproj --runtime "${{ matrix.runtime }}"
           dotnet publish src/NetRatel/NetRatel.Client/NetRatel.Client.csproj --configuration Release --no-restore --runtime "${{ matrix.runtime }}" --self-contained true --output "artifacts/netratel-client-${{ matrix.runtime }}" -p:SourceRevisionId="$GITHUB_SHA"
+      - name: Verify macOS client binaries target ARM64
+        if: matrix.runtime == 'osx-arm64'
+        shell: bash
+        run: |
+          distribution=artifacts/netratel-client-osx-arm64
+          for binary in NetRatel.Client libnetratel_terminal_pty_resize.dylib netratel-run-as; do
+            xcrun lipo "$distribution/$binary" -verify_arch arm64
+          done
       - name: Publish Client and PTY helper in the Alpine SDK
         if: matrix.runtime == 'linux-musl-x64'
         shell: bash
