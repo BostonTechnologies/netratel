@@ -64,6 +64,7 @@
     [Parameter] public bool Disabled { get; set; }
     [Parameter] public int? MaximumSelection { get; set; }
     [Parameter] public string Label { get; set; } = "Nodes";
+    [Parameter] public bool ForCredentialProfiles { get; set; }
     private const int PageSize = 25;
     private JobTargetsApiClient Api => _api ??= new(HttpClients);
     private JobTargetsApiClient? _api;
@@ -74,7 +75,7 @@
     private IReadOnlyCollection<Guid> VisibleSelection => _items.Where(node => _selected.Contains(node.AgentId)).Select(node => node.AgentId).ToArray();
     private int _loadedTenant, _page = 1, _total;
     private ClientEnvironment? _loadedEnvironment;
-    private bool _expanded, _selectedOnly, _loading;
+    private bool _expanded, _selectedOnly, _loading, _loadedForCredentialProfiles;
     private string _search = "";
     private string? _error;
     private readonly CancellationTokenSource _dispose = new();
@@ -82,13 +83,14 @@
 
     protected override async Task OnParametersSetAsync()
     {
-        var scopeChanged = _loadedTenant != TenantId || _loadedEnvironment != Environment;
+        var scopeChanged = _loadedTenant != TenantId || _loadedEnvironment != Environment || _loadedForCredentialProfiles != ForCredentialProfiles;
         var candidatesChanged = !ReferenceEquals(_receivedCandidates, Candidates);
         var changed = !_selected.SetEquals(Value);
         if (!scopeChanged && !changed && !candidatesChanged) return;
         _loadedTenant = TenantId; _loadedEnvironment = Environment; _receivedCandidates = Candidates;
+        _loadedForCredentialProfiles = ForCredentialProfiles;
         _selected.Clear(); _selected.UnionWith(Value);
-        if (scopeChanged) { _identities.Clear(); _page = 1; _search = ""; }
+        if (scopeChanged) { _identities.Clear(); _items = []; _total = 0; _page = 1; _search = ""; }
         if (_expanded) await ReloadAsync();
     }
 
@@ -118,7 +120,7 @@
                 {
                     try
                     {
-                        var found = await Api.GetNodeIdentitiesAsync(TenantId, batch, _dispose.Token);
+                        var found = await Api.GetNodeIdentitiesAsync(TenantId, batch, _dispose.Token, ForCredentialProfiles);
                         if (generation != _generation) return;
                         foreach (var node in found) _identities[node.AgentId] = node;
                     }
@@ -134,7 +136,7 @@
             }
             else
             {
-                var result = await Api.GetNodesAsync(TenantId, _search, _page, Environment, _dispose.Token);
+                var result = await Api.GetNodesAsync(TenantId, _search, _page, Environment, _dispose.Token, ForCredentialProfiles);
                 if (generation != _generation) return;
                 _total = result.TotalCount; _items = result.Items;
                 foreach (var node in _items) _identities[node.AgentId] = node;

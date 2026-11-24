@@ -33,15 +33,25 @@ public sealed class JobTargetsApiClient(IHttpClientFactory factory)
         await RequireSuccessAsync(response, ct);
     }
 
-    public Task<JobNodePageDto> GetNodesAsync(int tenantId, string? search, int page, ClientEnvironment? environment, CancellationToken ct) =>
-        ReadAsync<JobNodePageDto>($"/api/v2/tenants/{tenantId}/job-targets/nodes?search={Uri.EscapeDataString(search ?? "")}&page={page}&pageSize=25" +
+    public Task<JobNodePageDto> GetNodesAsync(int tenantId, string? search, int page, ClientEnvironment? environment,
+        CancellationToken ct, bool forCredentialProfiles = false) =>
+        ReadAsync<JobNodePageDto>($"{NodeInventoryPath(tenantId, forCredentialProfiles)}?search={Uri.EscapeDataString(search ?? "")}&page={page}&pageSize=25" +
             (environment is null ? "" : $"&environment={Uri.EscapeDataString(environment.Value.ToString())}"), ct);
 
-    public async Task<IReadOnlyList<JobNodeInventoryDto>> GetNodeIdentitiesAsync(int tenantId, IReadOnlyList<Guid> ids, CancellationToken ct)
+    public async Task<IReadOnlyList<JobNodeInventoryDto>> GetNodeIdentitiesAsync(int tenantId, IReadOnlyList<Guid> ids,
+        CancellationToken ct, bool forCredentialProfiles = false)
     {
-        using var response = await _http.PostAsJsonAsync($"/api/v2/tenants/{tenantId}/job-targets/nodes/identities", ids, ct);
+        using var request = new HttpRequestMessage(HttpMethod.Post, NodeInventoryPath(tenantId, forCredentialProfiles) + "/identities")
+        {
+            Content = JsonContent.Create(ids)
+        };
+        if (forCredentialProfiles) request.Headers.Add("X-NetRatel-Account-Request", "1");
+        using var response = await _http.SendAsync(request, ct);
         return await ReadResponseAsync<List<JobNodeInventoryDto>>(response, ct);
     }
+
+    private static string NodeInventoryPath(int tenantId, bool forCredentialProfiles) => forCredentialProfiles
+        ? $"/api/v1/tenants/{tenantId}/secret-vault/profile-targets" : $"/api/v2/tenants/{tenantId}/job-targets/nodes";
 
     public async Task<JobTargetPreviewDto> PreviewAsync(int tenantId, JobTargetPreviewRequest request, CancellationToken ct)
     {

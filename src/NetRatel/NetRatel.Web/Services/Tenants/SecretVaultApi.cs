@@ -11,6 +11,8 @@ public sealed class SecretVaultApi(IHttpClientFactory factory)
     public Task<SecretVaultPermissions> PermissionsAsync(int tenant, CancellationToken ct) => GetAsync<SecretVaultPermissions>(Root(tenant) + "/permissions", ct);
     public Task<SecretProviderConnection[]> ConnectionsAsync(int tenant, CancellationToken ct) => GetAsync<SecretProviderConnection[]>(Root(tenant) + "/connections", ct);
     public Task<CredentialProfile[]> ProfilesAsync(int tenant, CancellationToken ct) => GetAsync<CredentialProfile[]>(Root(tenant) + "/profiles", ct);
+    public Task<Guid[]> ProfileTargetIdsAsync(int tenant, bool windowsOnly, CancellationToken ct) =>
+        GetAsync<Guid[]>(Root(tenant) + $"/profile-targets/all?windowsOnly={windowsOnly}", ct);
 
     public Task<SecretProviderConnection> SaveConnectionAsync(int tenant, Guid? id, SaveSecretProviderRequest draft, CancellationToken ct) =>
         id is { } connection ? SendAsync<SecretProviderConnection>(HttpMethod.Put, Connection(tenant, connection), draft, ct)

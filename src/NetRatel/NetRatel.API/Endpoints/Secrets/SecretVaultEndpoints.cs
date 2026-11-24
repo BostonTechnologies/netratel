@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Security.Claims;
 using Microsoft.AspNetCore.Mvc;
+using NetRatel.API.Middleware;
 using NetRatel.API.Security;
 using NetRatel.API.Security.Authorization;
 using NetRatel.Application.Events;
@@ -30,6 +31,10 @@ internal static partial class SecretVaultEndpoints
         group.MapGet("/profiles", ListProfilesAsync);
         group.MapPost("/profiles", SaveNewProfileAsync);
         group.MapPut("/profiles/{profileId:guid}", SaveProfileAsync);
+        group.MapGet("/profile-targets", SearchProfileTargetsAsync);
+        group.MapPost("/profile-targets/identities", ReadProfileTargetIdentitiesAsync)
+            .WithMetadata(new MonitoringHttpBounds { MaximumBytes = 64 * 1024, ErrorCode = "profile_target_payload_capacity_exceeded" });
+        group.MapGet("/profile-targets/all", ReadAllProfileTargetsAsync);
         group.MapPost("/removals/preview", PreviewRemovalAsync);
         group.MapPost("/removals/confirm", ConfirmRemovalAsync);
     }
