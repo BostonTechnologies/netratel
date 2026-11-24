@@ -54,12 +54,13 @@ public sealed class SavedAccountExecutionTests
         deadline.CancelAfter(TimeSpan.FromSeconds(25));
         var identityPrinted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var recorded = new StringBuilder();
+        var localWindowsAccount = $"{Environment.MachineName}\\{username}";
         await host.StartAsync(chunk =>
         {
             lock (recorded)
             {
                 var transcript = recorded.Append(chunk.Data).ToString();
-                if (windows ? IsObservedId(transcript, expectedId!, true) :
+                if (windows ? transcript.Contains(localWindowsAccount, StringComparison.OrdinalIgnoreCase) :
                     transcript.Contains($"netratel-id={expectedId}\r\n", StringComparison.Ordinal))
                     identityPrinted.TrySetResult();
             }
@@ -68,7 +69,9 @@ public sealed class SavedAccountExecutionTests
         try
         {
             Assert.Equal(expectedId, host.ObservedIdentity?.AccountId);
-            await host.WriteInputAsync(windows ? command + "\r\n" : "printf 'netratel-id=%s\\n' \"$(id -u)\"\n", deadline.Token);
+            // The native observation verifies the SID. The short whoami output also verifies
+            // that the child inherits the same account and sends its output through ConPTY.
+            await host.WriteInputAsync(windows ? "whoami\r" : "printf 'netratel-id=%s\\n' \"$(id -u)\"\n", deadline.Token);
             try { await identityPrinted.Task.WaitAsync(TimeSpan.FromSeconds(12), deadline.Token); }
             catch (TimeoutException)
             {
