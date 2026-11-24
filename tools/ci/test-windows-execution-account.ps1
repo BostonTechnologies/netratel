@@ -47,7 +47,8 @@ $fixture = Get-Content (Join-Path $PSScriptRoot 'fixture.json') -Raw | ConvertFr
 $env:NETRATEL_TEST_EXECUTION_USER = $fixture.Username
 $env:NETRATEL_TEST_EXECUTION_ACCOUNT = $fixture.AccountId
 $env:NETRATEL_TEST_EXECUTION_PASSWORD = $fixture.Password
-& $fixture.Dotnet $fixture.Assembly --filter-class NetRatel.Tests.Client.SavedAccountExecutionTests --minimum-expected-tests 1 *> (Join-Path $PSScriptRoot 'test.log')
+& $fixture.Dotnet $fixture.Assembly -class NetRatel.Tests.Client.SavedAccountExecutionTests -noColor `
+    -xml (Join-Path $PSScriptRoot 'identity.xml') *> (Join-Path $PSScriptRoot 'test.log')
 $LASTEXITCODE | Set-Content (Join-Path $PSScriptRoot 'exit')
 '@ | Set-Content $driver
     $action = New-ScheduledTaskAction -Execute (Get-Command pwsh).Source -Argument "-NoProfile -NonInteractive -File `"$driver`""
@@ -60,6 +61,10 @@ $LASTEXITCODE | Set-Content (Join-Path $PSScriptRoot 'exit')
     if (Test-Path $log) { (Get-Content -Raw $log).Replace($password, '[redacted]') | Write-Host }
     if (-not (Test-Path $status) -or (Get-Content $status -Raw).Trim() -ne '0') {
         throw 'The synthetic Windows job and terminal identity probe failed.'
+    }
+    [xml]$receipt = Get-Content (Join-Path $root 'identity.xml') -Raw
+    if ($receipt.assemblies.assembly.passed -ne '1' -or $receipt.assemblies.assembly.total -ne '1') {
+        throw 'The native identity test did not execute successfully.'
     }
 }
 finally {
