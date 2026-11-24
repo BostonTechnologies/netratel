@@ -69,8 +69,11 @@ public sealed class SavedAccountExecutionTests
         {
             Assert.Equal(expectedId, host.ObservedIdentity?.AccountId);
             await host.WriteInputAsync(windows ? command + "\r\n" : "printf 'netratel-id=%s\\n' \"$(id -u)\"\n", deadline.Token);
-            var found = await Task.WhenAny(identityPrinted.Task, Task.Delay(TimeSpan.FromSeconds(12), deadline.Token)) == identityPrinted.Task;
-            lock (recorded) Assert.True(found, recorded.ToString());
+            try { await identityPrinted.Task.WaitAsync(TimeSpan.FromSeconds(12), deadline.Token); }
+            catch (TimeoutException)
+            {
+                lock (recorded) Assert.Fail($"The selected identity did not appear in the terminal output: {recorded}");
+            }
         }
         finally { await host.RequestCloseAsync("test complete", ct); }
 
