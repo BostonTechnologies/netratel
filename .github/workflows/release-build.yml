@@ -197,16 +197,37 @@ jobs:
         if: matrix.runtime != 'linux-musl-x64'
         shell: bash
         run: |
+          publish_properties=()
+          if [[ "${{ matrix.runtime }}" == osx-arm64 ]]; then
+            publish_properties=(
+              "-p:CustomAfterMicrosoftCommonTargets=$PWD/tools/ci/client-measurement.targets"
+              "-p:ClientMeasurementEvidenceDirectory=$RUNNER_TEMP/macos-publish-inputs"
+            )
+          fi
           dotnet restore src/NetRatel/NetRatel.Client/NetRatel.Client.csproj --runtime "${{ matrix.runtime }}"
-          dotnet publish src/NetRatel/NetRatel.Client/NetRatel.Client.csproj --configuration Release --no-restore --runtime "${{ matrix.runtime }}" --self-contained true --output "artifacts/netratel-client-${{ matrix.runtime }}" -p:SourceRevisionId="$GITHUB_SHA"
+          dotnet publish src/NetRatel/NetRatel.Client/NetRatel.Client.csproj --configuration Release --no-restore --runtime "${{ matrix.runtime }}" --self-contained true --output "artifacts/netratel-client-${{ matrix.runtime }}" -p:SourceRevisionId="$GITHUB_SHA" "${publish_properties[@]}"
       - name: Verify macOS client binaries target ARM64
         if: matrix.runtime == 'osx-arm64'
         shell: bash
         run: |
           distribution=artifacts/netratel-client-osx-arm64
-          for binary in NetRatel.Client libnetratel_terminal_pty_resize.dylib netratel-run-as; do
+          for binary in NetRatel.Client netratel-run-as; do
             xcrun lipo "$distribution/$binary" -verify_arch arm64
           done
+          python3 - "$RUNNER_TEMP/macos-publish-inputs/publish-inputs.txt" <<'PY'
+          from pathlib import Path
+          import subprocess
+          import sys
+
+          inputs = Path(sys.argv[1]).read_text(encoding="utf-8-sig").splitlines()
+          libraries = {
+              path for path, name, excluded in (line.split("|") for line in inputs)
+              if name == "libnetratel_terminal_pty_resize.dylib" and excluded.lower() != "true"
+          }
+          if len(libraries) != 1:
+              raise SystemExit("Expected one bundled Darwin PTY resize library.")
+          subprocess.run(["xcrun", "lipo", libraries.pop(), "-verify_arch", "arm64"], check=True)
+          PY
       - name: Publish Client and PTY helper in the Alpine SDK
         if: matrix.runtime == 'linux-musl-x64'
         shell: bash
