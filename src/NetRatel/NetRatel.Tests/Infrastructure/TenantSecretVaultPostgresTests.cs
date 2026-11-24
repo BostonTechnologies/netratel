@@ -303,17 +303,14 @@ public sealed partial class TenantSecretVaultPostgresTests(PostgreSqlPersistence
 
     private async Task<ServiceProvider> CreateServicesAsync(CancellationToken ct, string? testOrigin = null, Action<IServiceCollection>? configure = null)
     {
-        var connection = await postgres.CreateDatabaseAsync(ct);
+        var connection = await postgres.CreateOrchestratorDatabaseAsync(ct);
         var host = Host.CreateApplicationBuilder(new HostApplicationBuilderSettings { EnvironmentName = Environments.Development });
         host.Configuration["ConnectionStrings:NetRatelDb"] = connection;
         if (testOrigin is not null) host.Configuration["SecretProviders:DevelopmentHttpOrigins:0"] = testOrigin;
         host.Services.AddDataProtection().UseEphemeralDataProtectionProvider();
         host.Services.AddNetRatelInfrastructure(host.Configuration);
         configure?.Invoke(host.Services);
-        var services = host.Services.BuildServiceProvider();
-        await using var scope = services.CreateAsyncScope();
-        await scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>().Database.MigrateAsync(ct);
-        return services;
+        return host.Services.BuildServiceProvider();
     }
 
     private sealed class InfisicalMetadataFixture : HttpMessageHandler

@@ -975,14 +975,13 @@ public sealed class MonitoringStorePostgresTests(PostgreSqlPersistenceFixture fi
 
     private async Task<Rig> CreateRigAsync(bool flow = false)
     {
-        var connection = await fixture.CreateDatabaseAsync();
+        var connection = await fixture.CreateOrchestratorDatabaseAsync();
         var time = new MonitoringTestTime(); var directory = new TestMonitoringDirectory();
         var provider = CreateProvider(connection, directory, time);
         var client = new ClientKey(80, Guid.NewGuid());
         await using (var scope = provider.CreateAsyncScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
-            await db.Database.MigrateAsync();
             db.Agents.Add(new() { Id = client.AgentId, TenantId = client.TenantId, CreatedAtUtc = time.GetUtcNow() });
             await db.SaveChangesAsync();
         }

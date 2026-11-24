@@ -378,7 +378,8 @@ public sealed class CommandCancellationTests
 
         public async Task WaitUntilRunningAsync()
         {
-            await _ready.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            // A cold PowerShell process can take longer to start on a busy runner.
+            await _ready.Task.WaitAsync(TimeSpan.FromSeconds(15));
             _child = Process.GetProcessById(int.Parse(await File.ReadAllTextAsync(ReadyPath)));
         }
 

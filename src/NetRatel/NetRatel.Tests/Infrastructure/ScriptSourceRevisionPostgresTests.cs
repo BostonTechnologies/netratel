@@ -26,10 +26,8 @@ public sealed class ScriptSourceRevisionPostgresTests(PostgreSqlPersistenceFixtu
 
     public async ValueTask InitializeAsync()
     {
-        _connectionString = await postgres.CreateDatabaseAsync();
+        _connectionString = await postgres.CreateOrchestratorDatabaseAsync();
         options = new DbContextOptionsBuilder<OrchestratorDbContext>().UseNpgsql(_connectionString).Options;
-        await using var db = new OrchestratorDbContext(options);
-        await db.Database.MigrateAsync();
     }
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;

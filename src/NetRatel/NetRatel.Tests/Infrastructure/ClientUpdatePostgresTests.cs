@@ -19,11 +19,9 @@ public sealed class ClientUpdatePostgresTests(PostgreSqlPersistenceFixture postg
 
     public async ValueTask InitializeAsync()
     {
-        _connectionString = await postgres.CreateDatabaseAsync();
+        _connectionString = await postgres.CreateOrchestratorDatabaseAsync();
         _options = new DbContextOptionsBuilder<OrchestratorDbContext>()
             .UseNpgsql(_connectionString).Options;
-        await using var db = new OrchestratorDbContext(_options);
-        await db.Database.MigrateAsync();
     }
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;

@@ -303,11 +303,10 @@ public sealed class ClientConnectionOwnerGuardPostgresTests(PostgreSqlPersistenc
 
     private async Task<string> PrepareAsync()
     {
-        var connection = await fixture.CreateDatabaseAsync();
+        var connection = await fixture.CreateOrchestratorDatabaseAsync();
         await using var provider = Provider(connection); await using var scope = provider.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
         Assert.False(db.Database.HasPendingModelChanges());
-        await db.Database.MigrateAsync();
         // Copy the work-only test SQL to the integrated test output explicitly;
         // never install production guards from tests instead of real migration.
         var sql = TestBarrierSql;
