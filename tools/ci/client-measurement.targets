@@ -1,6 +1,6 @@
 <Project>
-  <!-- Imported only by the optional client measurement command. Capture the actual
-       post-link publish inputs before the SDK removes them into the single file. -->
+  <!-- Capture the actual post-link publish inputs before the SDK removes them
+       into the single file. Used by client measurement and macOS packaging. -->
   <Target Name="RecordClientMeasurementInputs" BeforeTargets="GenerateSingleFileBundle"
           Condition="'$(MSBuildProjectName)' == 'NetRatel.Client' and '$(ClientMeasurementEvidenceDirectory)' != ''">
     <ItemGroup>
