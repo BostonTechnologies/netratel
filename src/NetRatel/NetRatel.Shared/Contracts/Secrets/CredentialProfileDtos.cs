@@ -34,7 +34,10 @@ public sealed record ObservedExecutionIdentity(string Account, string AccountId)
         uid != uint.MaxValue && uid.ToString(CultureInfo.InvariantCulture) == value;
 }
 
-public sealed record CredentialExecutionScope(Guid[] AgentIds, string AccountId, bool Jobs, bool Terminals);
+public sealed record CredentialExecutionScope(Guid[] AgentIds, string? AccountId, bool Jobs, bool Terminals)
+{
+    public const int MaximumClients = 1000;
+}
 
 public sealed record CredentialProfile(
     Guid Id,

@@ -103,11 +103,13 @@ internal sealed partial class TenantSecretService
             throw Invalid("Choose separate username and password fields from one version of the entry.");
 
         var scope = request.Scope ?? throw Invalid("An execution scope is required.");
-        if (scope.AgentIds is not { Length: > 0 and <= 1000 } || scope.AgentIds.Contains(Guid.Empty) || !(scope.Jobs || scope.Terminals))
-            throw Invalid("Select exact client targets and at least one execution surface.");
-        var accountId = RequiredText(scope.AccountId, 184, "Approved account ID");
+        if (scope.AgentIds is not { Length: > 0 and <= CredentialExecutionScope.MaximumClients } || scope.AgentIds.Contains(Guid.Empty))
+            throw Invalid($"Select between 1 and {CredentialExecutionScope.MaximumClients} clients in this tenant.");
+        if (!(scope.Jobs || scope.Terminals))
+            throw Invalid("Select Jobs, Terminals, or both.");
+        var accountId = OptionalText(scope.AccountId, 184, "Approved account ID");
         var windows = request.Mode == ExecutionIdentityMode.WindowsPassword;
-        if (windows ? !ObservedExecutionIdentity.IsWindowsAccountId(accountId) : !ObservedExecutionIdentity.IsUnixAccountId(accountId))
+        if (accountId is not null && (windows ? !ObservedExecutionIdentity.IsWindowsAccountId(accountId) : !ObservedExecutionIdentity.IsUnixAccountId(accountId)))
             throw Invalid(windows ? "Supply the approved Windows account SID." : "Supply the approved Unix numeric UID.");
         return new(request.Mode, username, request.UsernameReference, domain, request.PasswordReference,
             scope with { AccountId = accountId, AgentIds = scope.AgentIds.Distinct().Order().ToArray() });

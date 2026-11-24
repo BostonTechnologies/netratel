@@ -17,6 +17,12 @@ public sealed class JobTargetApiService(IJobNodeDirectory directory, IJobTargetR
         ClaimsPrincipal principal, CancellationToken ct, IReadOnlySet<Guid>? authorizedAgentIds)
     {
         await RequireReadAsync(tenantId, principal, ct).ConfigureAwait(false);
+        return await ReadNodesAsync(tenantId, search, page, pageSize, authorizedAgentIds, ct).ConfigureAwait(false);
+    }
+
+    internal async Task<JobNodePageDto> ReadNodesAsync(int tenantId, string? search, int page, int pageSize,
+        IReadOnlySet<Guid>? authorizedAgentIds, CancellationToken ct)
+    {
         ExecutionGroupService.RequirePage(page, pageSize);
         if (search?.Length > 256) throw new JobTargetValidationException("target_search_too_large", "Node search is limited to 256 characters.");
         var all = (await directory.ReadAsync(tenantId, authorizedAgentIds, false, ct).ConfigureAwait(false)).Where(x => JobNodeFilterEvaluator.MatchesSearch(x, search)).ToArray();
@@ -28,6 +34,12 @@ public sealed class JobTargetApiService(IJobNodeDirectory directory, IJobTargetR
         ClaimsPrincipal principal, CancellationToken ct, IReadOnlySet<Guid>? authorizedAgentIds)
     {
         await RequireReadAsync(tenantId, principal, ct).ConfigureAwait(false);
+        return await ReadIdentitiesAsync(tenantId, requested, authorizedAgentIds, ct).ConfigureAwait(false);
+    }
+
+    internal async Task<IReadOnlyList<JobNodeInventoryDto>> ReadIdentitiesAsync(int tenantId, IReadOnlyList<Guid> requested,
+        IReadOnlySet<Guid>? authorizedAgentIds, CancellationToken ct)
+    {
         if (requested is null || requested.Count > 1000 || requested.Any(id => id == Guid.Empty))
             throw new JobTargetValidationException("target_identity_batch_invalid", "Read 0–1000 stable client identities per request.");
         var ids = requested.ToHashSet();
