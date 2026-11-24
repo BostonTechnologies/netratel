@@ -89,7 +89,7 @@ public static partial class AgentTerminalGatewayEndpoints
         if (requested.CredentialProfileId is not { } id) return null;
         var profile = await accounts.GetEligibleAsync(client, id, true, ct);
         if (profile.Mode != requested.Mode) throw new ExecutionAccountException("run_as_mode_mismatch", "Choose the execution mode of the saved credential.");
-        var binding = await accounts.BindAsync(client, new(profile.Id, profile.Mode, profile.MappingRevision), true, ct);
+        var binding = await accounts.BindAccountAsync(client, new(profile.Id, profile.Mode, profile.MappingRevision), true, ct);
         return await accounts.ResolveAsync(client, binding, true, ct);
     }
 

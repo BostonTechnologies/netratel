@@ -2,8 +2,10 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Schema;
 using System.Text.Json.Serialization.Metadata;
+using NetRatel.Shared.Contracts;
 using NetRatel.Shared.Operations;
 using NetRatel.Shared.Contracts.Flows;
+using NetRatel.Shared.Contracts.Jobs;
 using NetRatel.Shared.Contracts.Monitoring;
 
 namespace NetRatel.Mcp.Core;
@@ -12,10 +14,20 @@ public static partial class NetRatelMcpToolDefinitions
 {
     private static JsonObject JobTargetContractSchema(Type type)
     {
+        var resolver = new DefaultJsonTypeInfoResolver();
+        resolver.Modifiers.Add(ExcludeSavedAccountSchemaFields);
         var options = new JsonSerializerOptions(ManagedOperationCatalog.JsonOptions)
-        { TypeInfoResolver = new DefaultJsonTypeInfoResolver() };
+        { TypeInfoResolver = resolver };
         var schema = options.GetJsonSchemaAsNode(type);
         return InlineManagedSchema(schema, schema, new HashSet<string>(StringComparer.Ordinal)).AsObject();
+    }
+
+    private static void ExcludeSavedAccountSchemaFields(JsonTypeInfo typeInfo)
+    {
+        var field = typeInfo.Type == typeof(JobExecutionPolicy) ? "runAs" :
+            typeInfo.Type == typeof(UpdateClientMetadataRequest) ? "executionDefaults" : null;
+        if (field is not null && typeInfo.Properties.SingleOrDefault(candidate => candidate.Name == field) is { } property)
+            typeInfo.Properties.Remove(property);
     }
 
     private static RequestDefinition ManagedRequestSchema(ManagedOperationDescriptor operation)
@@ -68,6 +80,7 @@ public static partial class NetRatelMcpToolDefinitions
             // admission is enabled. Use the real DTO, with only that unsupported additive metadata
             // excluded from this export; never change persistence or HTTP serializer options.
             var resolver = new DefaultJsonTypeInfoResolver();
+            resolver.Modifiers.Add(ExcludeSavedAccountSchemaFields);
             if (operation.Tool == "netratel_flows") resolver.Modifiers.Add(LegacyFlowSchemaMetadata);
             var options = new JsonSerializerOptions(ManagedOperationCatalog.JsonOptions)
             { TypeInfoResolver = resolver };

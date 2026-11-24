@@ -159,7 +159,7 @@ internal static partial class SecretVaultEndpoints
         tenantId, null, request, http, access, vault, audit, ct);
 
     private static async Task<IResult> ListExecutionAccountsAsync(int tenantId, Guid? agentId, bool forTerminal,
-        HttpContext http, ExecutionAccountService accounts, CancellationToken ct)
+        HttpContext http, [FromServices] ExecutionAccountService accounts, CancellationToken ct)
     {
         if (forTerminal && agentId is null) return Results.BadRequest();
         if (!Supported(http, tenantId) || !await accounts.IsAllowedAsync(http.User, tenantId, ct)) return Results.Forbid();

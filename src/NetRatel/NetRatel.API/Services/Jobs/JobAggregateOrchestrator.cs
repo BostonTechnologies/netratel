@@ -636,7 +636,7 @@ public sealed class JobAggregateOrchestrator(
                 if (!byAccount.TryGetValue(account, out var binding))
                 {
                     var client = await accounts.GetClientAsync(plan.TenantId, node.AgentId, ct);
-                    binding = await accounts.BindAsync(client, account, false, ct);
+                    binding = await accounts.BindAccountAsync(client, account, false, ct);
                     byAccount.Add(account, binding);
                 }
                 bindings.Add(node.AgentId, binding);

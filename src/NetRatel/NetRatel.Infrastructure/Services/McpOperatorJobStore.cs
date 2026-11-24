@@ -283,7 +283,7 @@ public sealed partial class McpOperatorJobStore(OrchestratorDbContext db) : IMcp
             row.job.ClientIdentity = string.Empty;
         }
         if (request.Draft.ExecutionPolicy is { } policy)
-            row.job.ExecutionPolicyJson = JsonSerializer.Serialize(policy);
+            row.job.ExecutionPolicyJson = JsonSerializer.Serialize(policy with { RunAs = ReadPolicy(row.job.ExecutionPolicyJson)?.RunAs });
         row.job.UpdatedAtUtc = request.OccurredAtUtc;
         Advance(row.owner, request.Decision, request.OccurredAtUtc);
         _db.McpOperatorJobAudits.Add(JobAudit(row.owner, "updated", request.AcceptedAudit.AuditId, request.OccurredAtUtc));
@@ -679,6 +679,8 @@ public sealed partial class McpOperatorJobStore(OrchestratorDbContext db) : IMcp
         ArgumentNullException.ThrowIfNull(draft);
         draft.Target?.Validate();
         draft.ExecutionPolicy?.Validate();
+        if (draft.ExecutionPolicy?.RunAs is not null)
+            throw new ArgumentException("Set the saved execution account in the job editor.");
         return new PreparedJobDraft(
             NormalizeText(draft.Name, 120, "name"),
             NormalizeFolder(tenantId, draft.FolderPath),

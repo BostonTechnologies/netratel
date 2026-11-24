@@ -103,7 +103,7 @@ internal sealed class ExecutionAccountService(OrchestratorDbContext db, ITenantS
             agent.DeletedAtUtc == null && agent.RevokedAtUtc == null && agent.SupersededAtUtc == null && agent.SupersededByAgentId == null, ct)
         ?? throw new ExecutionAccountException("run_as_client_unavailable", "This client is unavailable in the tenant.", 404);
 
-    public async Task<Binding> BindAsync(Agent client, JobExecutionAccount account, bool forTerminal, CancellationToken ct)
+    public async Task<Binding> BindAccountAsync(Agent client, JobExecutionAccount account, bool forTerminal, CancellationToken ct)
     {
         var profile = await ReadBoundProfileAsync(client, account, forTerminal, ct);
         return new(account, await PinAsync(client.TenantId, profile.UsernameReference, ct),
