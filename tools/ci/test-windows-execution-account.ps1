@@ -48,7 +48,7 @@ $env:NETRATEL_TEST_EXECUTION_USER = $fixture.Username
 $env:NETRATEL_TEST_EXECUTION_ACCOUNT = $fixture.AccountId
 $env:NETRATEL_TEST_EXECUTION_PASSWORD = $fixture.Password
 & $fixture.Dotnet $fixture.Assembly -class NetRatel.Tests.Client.SavedAccountExecutionTests -noColor `
-    -xml (Join-Path $PSScriptRoot 'identity.xml') *> (Join-Path $PSScriptRoot 'test.log')
+    -result-xml (Join-Path $PSScriptRoot 'identity.xml') *> (Join-Path $PSScriptRoot 'test.log')
 $LASTEXITCODE | Set-Content (Join-Path $PSScriptRoot 'exit')
 '@ | Set-Content $driver
     $action = New-ScheduledTaskAction -Execute (Get-Command pwsh).Source -Argument "-NoProfile -NonInteractive -File `"$driver`""

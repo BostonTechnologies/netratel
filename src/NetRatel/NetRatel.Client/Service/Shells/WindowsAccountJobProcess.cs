@@ -34,9 +34,11 @@ internal sealed class WindowsAccountJobProcess(Process process, AnonymousPipeSer
         var initialized = false;
         try
         {
-            InitializeAttributeList(IntPtr.Zero, 1, 0, out var size);
+            var size = IntPtr.Zero;
+            InitializeAttributeList(IntPtr.Zero, 1, 0, ref size);
+            if (size == IntPtr.Zero) throw LaunchFailed();
             attributes = Marshal.AllocHGlobal(size);
-            if (!InitializeAttributeList(attributes, 1, 0, out _)) throw LaunchFailed();
+            if (!InitializeAttributeList(attributes, 1, 0, ref size)) throw LaunchFailed();
             initialized = true;
             handles = Marshal.AllocHGlobal(3 * IntPtr.Size);
             var childInput = stdin.ClientSafePipeHandle.DangerousGetHandle();
@@ -95,11 +97,12 @@ internal sealed class WindowsAccountJobProcess(Process process, AnonymousPipeSer
         Process.Dispose();
     }
 
-    private static InvalidOperationException LaunchFailed() => new("The private Windows execution streams could not be created.");
+    private static InvalidOperationException LaunchFailed() =>
+        new($"The private Windows execution streams could not be created (Windows error {Marshal.GetLastPInvokeError()}).");
 
     [DllImport("kernel32.dll", EntryPoint = "InitializeProcThreadAttributeList", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool InitializeAttributeList(IntPtr attributes, int count, int flags, out IntPtr size);
+    private static extern bool InitializeAttributeList(IntPtr attributes, int count, int flags, ref IntPtr size);
 
     [DllImport("kernel32.dll", EntryPoint = "UpdateProcThreadAttribute", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]

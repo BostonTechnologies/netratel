@@ -1702,12 +1702,18 @@ internal sealed class ConPtyTerminalHost : ITerminalHostSession
         var startupInfo = new StartupInfoEx();
         startupInfo.StartupInfo.cb = Marshal.SizeOf<StartupInfoEx>();
 
-        InitializeProcThreadAttributeList(IntPtr.Zero, 1, 0, out var attributeListSize);
-        _attributeList = Marshal.AllocHGlobal(attributeListSize);
-        if (!InitializeProcThreadAttributeList(_attributeList, 1, 0, out attributeListSize))
+        var attributeListSize = IntPtr.Zero;
+        InitializeProcThreadAttributeList(IntPtr.Zero, 1, 0, ref attributeListSize);
+        if (attributeListSize == IntPtr.Zero)
+            throw new Win32Exception(Marshal.GetLastPInvokeError(), "Could not size the ConPTY process attributes.");
+        var attributes = Marshal.AllocHGlobal(attributeListSize);
+        if (!InitializeProcThreadAttributeList(attributes, 1, 0, ref attributeListSize))
         {
-            throw new Win32Exception(Marshal.GetLastWin32Error(), "InitializeProcThreadAttributeList failed.");
+            var error = Marshal.GetLastPInvokeError();
+            Marshal.FreeHGlobal(attributes);
+            throw new Win32Exception(error, "InitializeProcThreadAttributeList failed.");
         }
+        _attributeList = attributes;
 
         if (!UpdateProcThreadAttribute(
                 _attributeList,
@@ -1889,7 +1895,7 @@ internal sealed class ConPtyTerminalHost : ITerminalHostSession
     private static extern void ClosePseudoConsole(IntPtr hPC);
 
     [DllImport("kernel32.dll", SetLastError = true)]
-    private static extern bool InitializeProcThreadAttributeList(IntPtr lpAttributeList, int dwAttributeCount, int dwFlags, out IntPtr lpSize);
+    private static extern bool InitializeProcThreadAttributeList(IntPtr lpAttributeList, int dwAttributeCount, int dwFlags, ref IntPtr lpSize);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool UpdateProcThreadAttribute(IntPtr lpAttributeList, uint dwFlags, IntPtr attribute, IntPtr lpValue, IntPtr cbSize, IntPtr lpPreviousValue, IntPtr lpReturnSize);
