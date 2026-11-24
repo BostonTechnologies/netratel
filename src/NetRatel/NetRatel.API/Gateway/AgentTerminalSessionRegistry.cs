@@ -1711,7 +1711,7 @@ public sealed partial class AgentTerminalSessionRegistry(
         public string? ExpectedAccountId { get; init; }
         public string? AccountOwner { get; init; }
         public volatile AccountSwitch? OutgoingSwitch;
-        public AccountSwitch? IncomingSwitch { get; init; }
+        public volatile AccountSwitch? IncomingSwitch;
         public bool HasOutputSubscriber { get { lock (_sync) return _outputSubscribers.Count > 0; } }
 
         public string Id { get; } = id;

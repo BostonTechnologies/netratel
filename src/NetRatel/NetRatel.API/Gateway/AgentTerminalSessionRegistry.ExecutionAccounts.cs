@@ -82,6 +82,7 @@ public sealed partial class AgentTerminalSessionRegistry
                 return null;
             handover = pending;
             handover.State = AccountSwitchState.Committed;
+            replacement.IncomingSwitch = null;
         }
 
         await CloseAccountSwitchSessionAsync(handover.Original.Id, handover.Original.Generation, "terminal_account_switched");
