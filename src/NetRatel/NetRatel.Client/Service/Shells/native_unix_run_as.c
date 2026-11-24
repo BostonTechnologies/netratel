@@ -20,7 +20,7 @@ static int fail(void)
 static int resolve(void)
 {
     // The account may come from a secret reference. Take it only on stdin.
-    char name[258];
+    char name[258] = { 0 };
     if (fgets(name, sizeof(name), stdin) == NULL) return fail();
     size_t length = strcspn(name, "\n");
     if (length == 0 || length > 256 || name[length] != '\n') return fail();
