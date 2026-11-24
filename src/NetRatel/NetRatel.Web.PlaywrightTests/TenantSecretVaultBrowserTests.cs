@@ -100,12 +100,13 @@ public sealed class TenantSecretVaultBrowserTests(ClientsManagementBrowserFixtur
             await profile.GetByRole(AriaRole.Button, new() { Name = "Select all Windows clients", Exact = true }).PressAsync("Enter");
             await Assertions.Expect(nodes.GetByText("Allowed clients (2)", new() { Exact = true })).ToBeVisibleAsync();
             var saveProfile = profile.GetByRole(AriaRole.Button, new() { Name = "Save credential profile", Exact = true });
+            await Assertions.Expect(profile.GetByText("The client resolves the account when it starts a job or terminal.", new() { Exact = true })).ToBeVisibleAsync();
+            await Assertions.Expect(profile.GetByLabel("Approved Windows account SID (optional)")).ToHaveCountAsync(0);
             await AssertFitsAsync(page, saveProfile, width);
             await page.ScreenshotAsync(new() { Path = Path.Combine(screenshots, $"credential-clients-{width}-{theme}.png") });
             await saveProfile.PressAsync("Enter");
             await Assertions.Expect(page.GetByRole(AriaRole.Dialog)).ToHaveCountAsync(1);
             await Assertions.Expect(tenant.GetByText("Test Windows credential", new() { Exact = true })).ToBeVisibleAsync();
-            await Assertions.Expect(tenant.GetByText("Account approval needed for Run as", new() { Exact = true })).ToBeVisibleAsync();
             Assert.False(await page.Locator("#blazor-error-ui").IsVisibleAsync());
         }
     }

@@ -16,7 +16,13 @@ public sealed record OpenTerminalRequest(
     int? Cols = null,
     int? Rows = null,
     string? WorkingDirectory = null,
-    TerminalTransportKind? Transport = null);
+    TerminalTransportKind? Transport = null)
+{
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public ExecutionIdentitySetting? RunAs { get; init; }
+}
+
+public sealed record SwitchTerminalAccountRequest(ulong Generation, Guid SwitchId, string AttachmentLeaseId, ExecutionIdentitySetting RunAs);
 
 public sealed record CloseTerminalRequest(string? Reason);
 
@@ -90,6 +96,11 @@ public sealed record TerminalSessionDto(
     public ulong? Generation { get; init; }
 
     public ObservedExecutionIdentity? ObservedIdentity { get; init; }
+    public ExecutionIdentitySetting? RequestedRunAs { get; init; }
+    public string? ReplacementSessionId { get; init; }
+    public string? OriginalSessionId { get; init; }
+    public bool AwaitingAccountSwitch { get; init; }
+    public int? TenantId { get; init; }
 
     /// <summary>
     /// Opaque browser attachment fence. It is stored with the non-secret V2

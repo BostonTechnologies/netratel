@@ -71,6 +71,10 @@ public sealed class GatewayTerminalBrowserAttachmentLeaseRegistry(
             : null;
     }
 
+    internal bool HasCurrentLease(GatewayTerminalSession session, string leaseId) =>
+        IsValidAttachmentIdentity(leaseId) && _leases.TryGetValue(session.SessionId, out var current) &&
+        current.Matches(session) && current.ExpiresAtUtc > timeProvider.GetUtcNow() && current.AttachmentLeaseId == leaseId;
+
     /// <summary>
     /// Renews only the exact session generation. This must only be called by
     /// the dedicated browser heartbeat route: ordinary server-side terminal

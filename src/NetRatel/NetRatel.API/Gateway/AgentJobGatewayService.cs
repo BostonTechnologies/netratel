@@ -51,7 +51,7 @@ public sealed class AgentJobGatewayService(
         try
         {
             registration = sessions.RegisterWithCapabilities(session.Client, session.ConnectionId, session.ConnectionEpoch,
-                provisional: true, session.SupportsProtectedParameters);
+                provisional: true, session.SupportsProtectedParameters, session.ExecutionCapabilities);
         }
         catch (AgentGatewayRegistrationFencedException exception)
         {
@@ -78,7 +78,7 @@ public sealed class AgentJobGatewayService(
                 ConnectionEpoch = session.ConnectionEpoch,
                 ConnectionId = session.ConnectionId.ToString("D"),
                 Sequence = 0,
-                Accepted = new JobConnectAccepted { JobAuthority = Authority, Capabilities = { "lifecycle-receipts-v1", ProtectedJobParameterRules.Capability } }
+                Accepted = new JobConnectAccepted { JobAuthority = Authority, Capabilities = { "lifecycle-receipts-v1", ProtectedJobParameterRules.Capability, session.ExecutionCapabilities } }
             }, admissionCancellation.Token).ConfigureAwait(false);
             logger.LogInformation("Job gateway admitted. authority={Authority} tenantId={TenantId} agentId={AgentId}", Authority, session.Client.TenantId, session.Client.AgentId);
 
@@ -117,7 +117,7 @@ public sealed class AgentJobGatewayService(
         var client = new ClientKey(identity.TenantId, identity.AgentId);
         await RequirePresenceAsync(client, connectionId, frame.ConnectionEpoch, cancellationToken).ConfigureAwait(false);
         return new ValidatedSession(client, connectionId, frame.ConnectionEpoch, frame.Hello.Capabilities.Contains("lifecycle-receipts-v1"),
-            frame.Hello.Capabilities.Contains(ProtectedJobParameterRules.Capability));
+            frame.Hello.Capabilities.Contains(ProtectedJobParameterRules.Capability), ExecutionAccountServiceCapability.Recognized(frame.Hello.Capabilities));
     }
 
     private async Task<ulong> ProcessInboundAsync(AgentJobFrame frame, ValidatedSession session, ulong lastSequence, AgentJobGatewayRegistration registration, CancellationToken cancellationToken)
@@ -276,7 +276,11 @@ public sealed class AgentJobGatewayService(
                 if (protectedDispatch is null || protectedDispatch.ExpiresAtUtc.ToDateTimeOffset() > clock.GetUtcNow())
                     await responseStream.WriteAsync(frame, cancellationToken).ConfigureAwait(false);
             }
-            finally { protectedDispatch?.Parameters.Clear(); }
+            finally
+            {
+                protectedDispatch?.Parameters.Clear();
+                ExecutionAccountServiceCapability.Clear(protectedDispatch?.Credential);
+            }
             cancellationToken.ThrowIfCancellationRequested();
         }
     }
@@ -287,5 +291,6 @@ public sealed class AgentJobGatewayService(
             throw new RpcException(new Status(StatusCode.Aborted, "The gateway registration is no longer current."));
     }
 
-    private sealed record ValidatedSession(ClientKey Client, Guid ConnectionId, ulong ConnectionEpoch, bool SupportsReceipts, bool SupportsProtectedParameters);
+    private sealed record ValidatedSession(ClientKey Client, Guid ConnectionId, ulong ConnectionEpoch, bool SupportsReceipts, bool SupportsProtectedParameters,
+        string[] ExecutionCapabilities);
 }

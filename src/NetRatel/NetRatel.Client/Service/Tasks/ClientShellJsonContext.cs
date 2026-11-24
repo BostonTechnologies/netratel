@@ -31,4 +31,7 @@ internal sealed record ShellCancellationDiagnostics(string TaskType, bool Cancel
 [JsonSerializable(typeof(ShellCancelledEnvelope))]
 [JsonSerializable(typeof(string))]
 [JsonSerializable(typeof(IReadOnlyDictionary<string, string>), TypeInfoPropertyName = "ParameterMap")]
+[JsonSerializable(typeof(RunAsPowerShellInput))]
 internal partial class ClientShellJsonContext : JsonSerializerContext;
+
+internal sealed record RunAsPowerShellInput(string Script, Dictionary<string, string> Parameters);

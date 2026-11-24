@@ -7,6 +7,7 @@ using NetRatel.Shared;
 using Microsoft.EntityFrameworkCore;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.API.Services.Orchestration;
+using NetRatel.API.Services.Secrets;
 using NetRatel.Akka.Observability;
 using NetRatel.Akka.Configuration;
 using NetRatel.API.Gateway;
@@ -147,7 +148,7 @@ public sealed class AkkaJobAuthorityService(
             throw new InvalidOperationException("A fixed job cannot be retargeted through ClientIdentityOverride.");
         var definition = await jobDefinitions.GetAsync(jobId, cancellationToken);
         if (definition?.Target is not null || definition?.ExecutionPolicy is not null || request.ProviderInputs is { Count: > 0 } ||
-            definition is not null && await HasProviderDefaultsAsync(jobId, cancellationToken))
+            definition is not null && (await HasProviderDefaultsAsync(jobId, cancellationToken) || await HasClientJobDefaultAsync(definition, cancellationToken)))
             return await (aggregates ?? throw new InvalidOperationException("Aggregate job admission is unavailable."))
                 .StartFreshAsync(jobId, request, cancellationToken);
         if (request.RuntimeTarget is not null)
@@ -334,7 +335,7 @@ public sealed class AkkaJobAuthorityService(
         }
         var currentDefinition = await jobDefinitions.GetAsync(jobId, cancellationToken);
         if (currentDefinition?.Target is not null || currentDefinition?.ExecutionPolicy is not null ||
-            currentDefinition is not null && await HasProviderDefaultsAsync(jobId, cancellationToken))
+            currentDefinition is not null && (await HasProviderDefaultsAsync(jobId, cancellationToken) || await HasClientJobDefaultAsync(currentDefinition, cancellationToken)))
             return await (aggregates ?? throw new CanonicalRequestAdmissionRejectedException("Aggregate Request admission is unavailable."))
                 .StartRequestAsync(material, cancellationToken);
         ulong runId;
@@ -380,6 +381,11 @@ public sealed class AkkaJobAuthorityService(
     private async Task<bool> HasProviderDefaultsAsync(ulong jobId, CancellationToken ct) =>
         (await jobDefinitions.ListParamsAsync(jobId, ct)).Any(parameter => parameter.ProviderDefault is not null);
 
+    private Task<bool> HasClientJobDefaultAsync(JobDefinitionInfo definition, CancellationToken ct) =>
+        db is not null && definition.AgentId is { } id && definition.TenantId is { } tenantId
+            ? db.Agents.AsNoTracking().AnyAsync(agent => agent.Id == id && agent.TenantId == tenantId && agent.DefaultJobCredentialProfileId != null, ct)
+            : Task.FromResult(false);
+
     private async Task<JobRunInfo> StartCoreAsync(ulong jobId, RunJobRequest request, int? recordedRequestId, ClaimsPrincipal? principal, CancellationToken cancellationToken,
         McpOperatorJobExecutionSnapshot? mcpSnapshot = null)
     {
@@ -404,6 +410,8 @@ public sealed class AkkaJobAuthorityService(
             throw new ArgumentException("The node context is server-owned and cannot be supplied as a job parameter.");
         var definition = pinnedSnapshot?.Definition ?? mcpSnapshot?.Definition ?? await jobDefinitions.GetDetailsAsync(jobId, cancellationToken).ConfigureAwait(false)
             ?? throw new KeyNotFoundException($"Job {jobId} was not found.");
+        if (!preparedNativeIntent && (definition.Job.ExecutionPolicy?.RunAs is not null || await HasClientJobDefaultAsync(definition.Job, cancellationToken)))
+            throw new ExecutionAdmissionDeniedException("This execution source has no admitted per-node execution account plan.");
         if (db is not null && definition.Job.TenantId is > 0)
             await ExecutionLifecycleSubscriptions.AcquireTenantAsync(db, definition.Job.TenantId.Value, cancellationToken);
         if (pinnedSnapshot is null && mcpSnapshot is null && snapshotCapture is not null &&
@@ -801,6 +809,7 @@ public sealed class AkkaJobAuthorityService(
                 ?? throw new InvalidOperationException("The frozen node context is unavailable.");
         }
         if (nodeContext is not null) resolvedInputs = JobNodeTemplateContext.Bind(resolvedInputs, nodeContext);
+        var executionAccount = nodeContext?.ExecutionAccount;
         var runtimePolicy = JobExecutionRuntimePolicy.FromOptions(await jobRuns.GetExecutionOptionsAsync(run.Id, cancellationToken));
         var outputPolicy = await jobRuns.GetRunOutputPolicyAsync(run.Id, cancellationToken);
         if (outputPolicy is not null && providerBindings.Length != 0)
@@ -831,6 +840,13 @@ public sealed class AkkaJobAuthorityService(
             await FailBeforeDispatchAsync(run, cancellationToken, "protected_parameters_unsupported: the current agent cannot receive protected job parameters.");
             return (await jobRuns.GetAsync(run.Id, cancellationToken))!;
         }
+        if (executionAccount is not null && (dispatchOwner is not { } accountOwner ||
+            !sessions.SupportsExecutionAccount(accountOwner, executionAccount.Mode) ||
+            invocation.TaskType is not (TaskKinds.ExecShellCommand or TaskKinds.ExecLibraryScript)))
+        {
+            await FailBeforeDispatchAsync(run, cancellationToken, "run_as_unsupported: The current agent or job step cannot launch the selected execution account.");
+            return (await jobRuns.GetAsync(run.Id, cancellationToken))!;
+        }
         var now = _clock.GetUtcNow();
         var running = await jobRuns.UpsertRunAsync(new UpsertJobRunCommand(
             run.Id, run.JobId, run.TenantId, run.ClientIdentity, run.StartedBy, JobRunState.Running, next.Ordinal,
@@ -849,7 +865,7 @@ public sealed class AkkaJobAuthorityService(
             Environment: run.Environment, TargetDisplayName: run.TargetDisplayName, TargetHostName: run.TargetHostName, TargetName: run.TargetName,
             ScriptName: invocation.ScriptName, ScriptType: invocation.ScriptType, CommandLabel: invocation.CommandLabel, ScriptContentHash: invocation.ScriptContentHash,
             OutputPolicy: invocation.OutputPolicy), cancellationToken).ConfigureAwait(false);
-        if (providerBindings.Length == 0 && scriptReplayPins is not null && pinnedSnapshot is not null && step.Type == JobStepKind.LibraryScript &&
+        if (providerBindings.Length == 0 && executionAccount is null && scriptReplayPins is not null && pinnedSnapshot is not null && step.Type == JobStepKind.LibraryScript &&
             invocation.TaskType == TaskKinds.ExecLibraryScript)
         {
             var script = pinnedSnapshot.Scripts.Single(item => item.Script.Id == step.ScriptId);
@@ -899,12 +915,20 @@ public sealed class AkkaJobAuthorityService(
             var dispatch = new JobGatewayStepDispatch(
                 run.Id, step.Id, next.Id, next.Ordinal, activity.RequestId, $"akka-job-{run.Id}", invocation.TaskType, invocation.PayloadJson,
                 Environment: (int)(run.Environment ?? ClientEnvironment.None), nextVersion, nextSequence, now, ExpectedOwner: dispatchOwner);
-            if (providerBindings.Length != 0)
+            if (providerBindings.Length != 0 || executionAccount is not null)
             {
                 if (!sessions.SupportsProtectedParameters(dispatchOwner!.Value)) throw new ProtectedJobDispatchUnavailableException();
-                var values = await aggregates!.ResolveProviderInputsAsync(run, providerBindings, providerStepNames, cancellationToken);
-                await aggregates.RequireNodeAuthorityAsync(run, cancellationToken);
-                await sessions.DispatchProtectedAsync(dispatchOwner.Value, dispatch, values, cancellationToken);
+                IReadOnlyDictionary<string, string> values = providerBindings.Length != 0
+                    ? await aggregates!.ResolveProviderInputsAsync(run, providerBindings, providerStepNames, cancellationToken)
+                    : System.Collections.Immutable.ImmutableDictionary<string, string>.Empty;
+                var credential = executionAccount is null ? null : await aggregates!.ResolveExecutionAccountAsync(run, executionAccount, cancellationToken);
+                try
+                {
+                    await aggregates!.RequireNodeAuthorityAsync(run, cancellationToken);
+                    if (credential is null) await sessions.DispatchProtectedAsync(dispatchOwner.Value, dispatch, values, cancellationToken);
+                    else await sessions.DispatchProtectedAsync(dispatchOwner.Value, dispatch, values, credential, cancellationToken);
+                }
+                finally { ExecutionAccountServiceCapability.Clear(credential); }
             }
             else await sessions.DispatchAsync(client, dispatch, cancellationToken);
             await BeginAfterTransportAsync(cancellationToken);
@@ -916,11 +940,12 @@ public sealed class AkkaJobAuthorityService(
                 await db.SaveChangesAsync(cancellationToken);
             }
         }
-        catch (Exception error) when (providerBindings.Length != 0 &&
-            error is ExecutionAdmissionDeniedException or SecretProviderException or ProtectedJobDispatchUnavailableException or JobTargetValidationException)
+        catch (Exception error) when ((providerBindings.Length != 0 || executionAccount is not null) &&
+            error is ExecutionAdmissionDeniedException or SecretProviderException or ProtectedJobDispatchUnavailableException or JobTargetValidationException or ExecutionAccountException)
         {
             await BeginAfterTransportAsync(cancellationToken);
-            var code = error is SecretProviderException provider ? $"protected_parameters_{provider.Reason.ToString().ToLowerInvariant()}" : "protected_parameters_unavailable";
+            var code = error is ExecutionAccountException accountError ? accountError.Code : executionAccount is not null ? "run_as_unavailable" :
+                error is SecretProviderException provider ? $"protected_parameters_{provider.Reason.ToString().ToLowerInvariant()}" : "protected_parameters_unavailable";
             await FailBeforeDispatchAsync(running, cancellationToken, $"{code}: {error.Message}");
             return (await jobRuns.GetAsync(run.Id, cancellationToken))!;
         }

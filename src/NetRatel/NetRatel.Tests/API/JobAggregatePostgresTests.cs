@@ -551,6 +551,7 @@ public sealed partial class JobAggregatePostgresTests(PostgreSqlPersistenceFixtu
                 services.AddSingleton(new SecretProviderNetworkPolicy(new ConfigurationBuilder().Build(), new FixtureEnvironment()));
                 services.AddScoped<ITenantSecretService, TenantSecretService>();
                 services.AddScoped<JobProviderExecutionInputs>();
+                services.AddScoped<NetRatel.API.Services.Secrets.ExecutionAccountService>();
             }
             if (keyedFlow)
             {
@@ -632,6 +633,7 @@ public sealed partial class JobAggregatePostgresTests(PostgreSqlPersistenceFixtu
         public ConcurrentDictionary<ulong, JobGatewayStepDispatch> Active { get; } = new();
         public ConcurrentQueue<(ClientKey Client, JobGatewayStepDispatch Dispatch)> Dispatches { get; } = new();
         public ConcurrentQueue<(ulong RunId, IReadOnlyDictionary<string, string> Parameters)> ProtectedValues { get; } = new();
+        public ConcurrentQueue<(Guid AgentId, Guid ProfileId)> ExecutionAccounts { get; } = new();
         public ConcurrentBag<ulong> Cancellations { get; } = [];
         public bool ProtectedParametersSupported { get; set; }
         public int Peak;
@@ -639,6 +641,13 @@ public sealed partial class JobAggregatePostgresTests(PostgreSqlPersistenceFixtu
         public bool IsAvailable(ClientKey client) => Owners.ContainsKey(client);
         public OwnerKey? GetRegisteredOwner(ClientKey client) => Owners.TryGetValue(client, out var owner) ? owner : null;
         public bool SupportsProtectedParameters(OwnerKey owner) => ProtectedParametersSupported && GetRegisteredOwner(owner.Client) == owner;
+        public bool SupportsExecutionAccount(OwnerKey owner, NetRatel.Shared.Contracts.Secrets.ExecutionIdentityMode mode) => SupportsProtectedParameters(owner);
+        public Task DispatchProtectedAsync(OwnerKey owner, JobGatewayStepDispatch dispatch, IReadOnlyDictionary<string, string> parameters,
+            NetRatel.AgentGateway.Contracts.V1.RunAsCredential credential, CancellationToken ct)
+        {
+            ExecutionAccounts.Enqueue((owner.Client.AgentId, Guid.Parse(credential.ProfileId)));
+            return DispatchProtectedAsync(owner, dispatch, parameters, ct);
+        }
         public Task DispatchProtectedAsync(OwnerKey owner, JobGatewayStepDispatch dispatch, IReadOnlyDictionary<string, string> parameters, CancellationToken ct)
         {
             Assert.True(SupportsProtectedParameters(owner));

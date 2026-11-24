@@ -155,6 +155,12 @@ public partial class ClientTerminalSessionDialog
             return;
         }
 
+        if (!_accountSwitchRunning && await ResolveAccountHandoverAsync(latest) is { } transition &&
+            IsObservedSession(previous.SessionId, version))
+        {
+            await AttachAccountSessionAsync(transition);
+            return;
+        }
         MergeSessionMetadata(latest);
         var ownershipLost = previous.Generation is { } generation &&
             IsGatewayTerminalAttachmentOwnershipLost(previous.SessionId, generation);
@@ -246,7 +252,7 @@ public partial class ClientTerminalSessionDialog
         _openError = null;
         _connectionLabel = "reconnecting";
         _terminalNotice = "Connection refreshed. Starting a new shell...";
-        var request = new OpenTerminalRequest(Shell, EffectiveCols, EffectiveRows, WorkingDirectory);
+        var request = new OpenTerminalRequest(Shell, EffectiveCols, EffectiveRows, WorkingDirectory) { RunAs = previous.RequestedRunAs };
         ++_sessionObservationVersion;
         await InvokeAsync(StateHasChanged);
         try
@@ -287,6 +293,7 @@ public partial class ClientTerminalSessionDialog
                 AttachmentLeaseId = null,
                 FailureCode = null,
                 CloseReason = null,
+                ObservedIdentity = null,
                 Cols = request.Cols,
                 Rows = request.Rows
             };

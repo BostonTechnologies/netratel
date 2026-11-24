@@ -631,6 +631,23 @@ message ProtectedJobStepDispatch {
   JobStepDispatch step = 1;
   google.protobuf.Timestamp expires_at_utc = 2;
   map<string, string> parameters = 3;
+  RunAsCredential credential = 4;
+}
+
+// The sensitive account is valid only for this authenticated dispatch.
+// Its fields are excluded from lifecycle receipts and durable transport state.
+message RunAsCredential {
+  enum Mode {
+    MODE_UNSPECIFIED = 0;
+    MODE_WINDOWS_PASSWORD = 1;
+    MODE_UNIX_PRIVILEGED_LOCAL = 2;
+  }
+  Mode mode = 1;
+  string profile_id = 2;
+  string username = 3;
+  string domain = 4;
+  string password = 5;
+  string expected_account_id = 6;
 }
 
 message JobLifecycleUpdate {
@@ -1197,7 +1214,14 @@ message GatewayTerminalFrame {
     TerminalInput input = 12;
     TerminalResize resize = 13;
     TerminalSessionClose close = 14;
+    ProtectedTerminalSessionStart protected_start = 15;
   }
+}
+
+message ProtectedTerminalSessionStart {
+  TerminalSessionStart start = 1;
+  google.protobuf.Timestamp expires_at_utc = 2;
+  RunAsCredential credential = 3;
 }
 
 message AgentTerminalHello {

@@ -119,6 +119,7 @@ public static class NetRatelAkkaRuntimeRegistration
             .ValidateOnStart();
         services.TryAddScoped<JobAggregateOrchestrator>();
         services.TryAddScoped<JobProviderExecutionInputs>();
+        services.TryAddScoped<NetRatel.API.Services.Secrets.ExecutionAccountService>();
         services.TryAddScoped<HaGroupWorkerSelector>();
         services.TryAddScoped<IJobAggregatePump>(provider => provider.GetRequiredService<JobAggregateOrchestrator>());
         services.AddHostedService<JobAggregateRecoveryWorker>();

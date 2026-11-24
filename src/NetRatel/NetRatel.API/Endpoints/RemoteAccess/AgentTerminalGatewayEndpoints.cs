@@ -6,6 +6,9 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
 using NetRatel.API.Gateway;
 using NetRatel.API.Services;
+using NetRatel.API.Services.Secrets;
+using NetRatel.API.Security;
+using NetRatel.Application.Secrets;
 using NetRatel.Application.Presence;
 using NetRatel.Shared.Contracts.Terminals;
 
@@ -15,7 +18,7 @@ namespace NetRatel.API.Endpoints;
 /// Adapter for the fenced terminal gRPC transport. Session routes authorize
 /// against the tenant of the registered session before serving or changing it.
 /// </summary>
-public static class AgentTerminalGatewayEndpoints
+public static partial class AgentTerminalGatewayEndpoints
 {
     public static IEndpointRouteBuilder MapAgentTerminalGatewayEndpoints(this IEndpointRouteBuilder app)
     {
@@ -30,6 +33,7 @@ public static class AgentTerminalGatewayEndpoints
         sessions.MapGet("", GetAsync);
         sessions.MapPost("/close", CloseAsync);
         sessions.MapPost("/attachment/renew", RenewAttachmentAsync);
+        sessions.MapPost("/account/switch", SwitchAccountAsync).AddEndpointFilter(LocalCookieMutationFilter.InvokeAsync);
         sessions.MapPost("/stdin", SendInputAsync);
         sessions.MapGet("/stdin/ws", StreamInputWebSocketAsync);
         sessions.MapPost("/resize", ResizeAsync);
@@ -42,7 +46,7 @@ public static class AgentTerminalGatewayEndpoints
         Guid agentId,
         OpenTerminalRequest request,
         [FromServices] IAgentTerminalSessionRegistry terminals,
-        IServiceProvider services,
+        HttpContext http,
         CancellationToken cancellationToken)
     {
 
@@ -52,12 +56,13 @@ public static class AgentTerminalGatewayEndpoints
         var rows = Math.Clamp(request.Rows ?? 32, 10, 120);
         try
         {
-            var session = await terminals.OpenAsync(
-                new ClientKey(tenantId, agentId), shell, request.WorkingDirectory, columns, rows, cancellationToken)
-                .ConfigureAwait(false);
-            BrowserAttachments(services)?.Track(session);
+            var session = await OpenForCallerAsync(terminals, http, new ClientKey(tenantId, agentId), request,
+                shell, columns, rows, cancellationToken);
+            BrowserAttachments(http.RequestServices)?.Track(session);
             return Results.Accepted($"/api/v2/gateway-terminal/{session.SessionId}", new TerminalOpenResponse(NewTrackingId(), session.SessionId, "Akka terminal opening."));
         }
+        catch (ExecutionAccountException exception) { return AccountFailure(exception); }
+        catch (SecretProviderException exception) { return Results.Conflict(new TerminalActionResponse(NewTrackingId(), exception.Message, Code: "terminal_run_as_secret_unavailable")); }
         catch (TerminalGatewayActionException exception) { return GatewayFailure(exception); }
         catch (ArgumentException exception) { return Results.BadRequest(new TerminalActionResponse(NewTrackingId(), exception.Message)); }
     }
@@ -97,11 +102,11 @@ public static class AgentTerminalGatewayEndpoints
     /// generation and attachment fences it observed so a stale tab cannot
     /// prolong a replacement PTY or another browser runtime's ownership.
     /// </summary>
-    private static IResult RenewAttachmentAsync(
+    private static async Task<IResult> RenewAttachmentAsync(
         string sessionId,
         TerminalAttachmentRenewalRequest request,
         [FromServices] IAgentTerminalSessionRegistry terminals,
-        IServiceProvider services)
+        HttpContext http)
     {
 
         if (request.Generation == 0 ||
@@ -122,7 +127,7 @@ public static class AgentTerminalGatewayEndpoints
             return Results.NotFound();
         }
 
-        var attachments = BrowserAttachments(services);
+        var attachments = BrowserAttachments(http.RequestServices);
         if (attachments is null)
         {
             return Results.NotFound();
@@ -134,6 +139,10 @@ public static class AgentTerminalGatewayEndpoints
             request.AttachmentLeaseId,
             request.BrowserAttachmentId,
             request.ClaimOwnership);
+        if (renewal.Outcome == GatewayTerminalBrowserAttachmentRenewalOutcome.Renewed && session.AwaitingAccountSwitch &&
+            terminals is AgentTerminalSessionRegistry registry && await registry.CommitAttachedAccountSwitchAsync(session.SessionId,
+                session.Generation, ExecutionAccountService.PrincipalKey(http.User)) is { } original)
+            attachments.MarkClosePending(original);
         return renewal.Outcome switch
         {
             GatewayTerminalBrowserAttachmentRenewalOutcome.Renewed => Results.Accepted(
@@ -415,7 +424,12 @@ public static class AgentTerminalGatewayEndpoints
     {
         Generation = session.Generation,
         ObservedIdentity = session.ObservedIdentity,
-        AttachmentLeaseId = attachmentLeaseId
+        AttachmentLeaseId = attachmentLeaseId,
+        TenantId = session.TenantId,
+        RequestedRunAs = session.RequestedRunAs,
+        ReplacementSessionId = session.ReplacementSessionId,
+        OriginalSessionId = session.OriginalSessionId,
+        AwaitingAccountSwitch = session.AwaitingAccountSwitch
     };
 
     private static IResult GatewayFailure(TerminalGatewayActionException exception, string? sessionId = null)

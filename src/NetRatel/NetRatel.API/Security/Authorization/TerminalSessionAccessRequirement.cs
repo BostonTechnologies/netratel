@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using NetRatel.API.Gateway;
+using NetRatel.API.Services.Secrets;
 using NetRatel.Infrastructure.Identity.Authorization;
 
 namespace NetRatel.API.Security.Authorization;
@@ -35,7 +36,12 @@ public sealed class TerminalSessionAccessHandler(
             return;
         }
 
-        var tenantId = terminals.Get(sessionId)?.TenantId;
+        var session = terminals.Get(sessionId);
+        var tenantId = session?.TenantId;
+        if (session?.AccountOwner is { } owner &&
+            (ExecutionAccountService.PrincipalKey(context.User) != owner ||
+                !await http.RequestServices.GetRequiredService<ExecutionAccountService>()
+                    .IsAllowedAsync(context.User, session.TenantId, http.RequestAborted))) return;
         if (await access.AuthorizeAsync(
                 context.User,
                 NetRatelPermissions.TerminalAccess,

@@ -1,3 +1,5 @@
+using NetRatel.Shared.Contracts.Secrets;
+
 namespace NetRatel.Infrastructure.Persistence;
 
 public enum AgentStatus : short
@@ -13,6 +15,10 @@ public sealed class Agent
     public string? Name { get; set; }
     public string? FriendlyName { get; set; }
     public string[] Tags { get; set; } = [];
+    public Guid? DefaultJobCredentialProfileId { get; set; }
+    public Guid? DefaultTerminalCredentialProfileId { get; set; }
+    public ClientExecutionDefaults? GetExecutionDefaults() => DefaultJobCredentialProfileId is null && DefaultTerminalCredentialProfileId is null
+        ? null : new(DefaultJobCredentialProfileId, DefaultTerminalCredentialProfileId);
     public AgentStatus Status { get; set; }
     public bool IsEnabled { get; set; } = true;
     public string? DisabledReason { get; set; }

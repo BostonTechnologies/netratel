@@ -4,6 +4,8 @@
 @using MudBlazor
 @using NetRatel.Shared
 @using NetRatel.Shared.Contracts.Jobs
+@using NetRatel.Shared.Contracts.Secrets
+@using NetRatel.Web.Components.Shared.Secrets
 @using NetRatel.Shared.Contracts
 @using NetRatel.Web.Models.Clients
 @using NetRatel.Web.Services.Clients
@@ -117,10 +119,18 @@
                                     </MudStack>
                                 </MudTabPanel>
 <MudTabPanel Text="Targets" Icon="@Icons.Material.Filled.Devices">
-                    <JobTargetPicker TenantId="@(_selectedTenant?.Id ?? 0)" Environment="_environment" Value="_target" ValueChanged="TargetChanged" ExecutionPolicy="@(new JobExecutionPolicy(_threadCount, _nodeFailurePolicy))" PreviewCountChanged="TargetPreviewChanged" Parameters="TargetParameters" />
+                    <JobTargetPicker TenantId="@(_selectedTenant?.Id ?? 0)" Environment="_environment" Value="_target" ValueChanged="TargetChanged" ExecutionPolicy="CurrentExecutionPolicy" PreviewCountChanged="TargetPreviewChanged" Parameters="TargetParameters" />
                 </MudTabPanel>
 <MudTabPanel Text="Execution">
                                     <MudStack Spacing="2">
+                                    <ExecutionAccountPicker TenantId="@(_selectedTenant?.Id ?? 0)" TargetIds="_target.AgentIds"
+                                        ExecutionGroupId="_target.ExecutionGroupId" Value="_runAs?.CredentialProfileId" OnChanged="ExecutionAccountChanged"
+                                        Disabled="_isSaving" />
+                                    @if (_runAs?.CredentialProfileId is not null)
+                                    {
+                                        <MudCheckBox T="bool" Value="_runAs.OverrideClientDefault" ValueChanged="SetExecutionOverride" Label="Override each client's default job account" />
+                                    }
+                                    <MudText Typo="Typo.caption">Client default uses the job account configured in Fleet for the node that runs this job.</MudText>
                                     @if (_target.Source == JobTargetSource.ExecutionGroup)
                                     {
                                         <MudText Typo="Typo.body2">One healthy worker runs the complete workflow. New runs balance across the HA Group; offline workers are skipped.</MudText>
@@ -342,7 +352,7 @@
     private string DefinitionSnapshot => System.Text.Json.JsonSerializer.Serialize(new
     {
         Name = _name, Description = _description, TenantId = _selectedTenant?.Id, Environment = _environment,
-        Target = _target, ExecutionPolicy = new JobExecutionPolicy(_threadCount, _nodeFailurePolicy), Folder = _folderSubfolder,
+        Target = _target, ExecutionPolicy = CurrentExecutionPolicy, Folder = _folderSubfolder,
         ExpectedMinutes = _expectedRuntimeMinutes, GraceMinutes = _graceRuntimeMinutes,
         ScheduleEnabled = _scheduleEnabled, ScheduleTimeZone = _scheduleTimeZoneId, SchedulePreset = _schedulePreset, ScheduleTime = _scheduleTime,
         ScheduleDays = _selectedScheduleDays.OrderBy(day => day).ToArray()
@@ -397,6 +407,11 @@
     private JobTargetDefinition _target = new() { Source = JobTargetSource.ExplicitNodes, AgentIds = [] };
     private int _threadCount = 1;
     private JobNodeFailurePolicy _nodeFailurePolicy = JobNodeFailurePolicy.StopRemaining;
+    private ExecutionIdentitySetting? _runAs;
+    private JobExecutionPolicy CurrentExecutionPolicy => new(_threadCount, _nodeFailurePolicy) { RunAs = _runAs };
+    private void ExecutionAccountChanged(ExecutionAccountOption? option) => _runAs = option is null
+        ? null : new(option.Mode, option.Id, _runAs?.OverrideClientDefault ?? false);
+    private void SetExecutionOverride(bool useJobAccount) { if (_runAs is not null) _runAs = _runAs with { OverrideClientDefault = useJobAccount }; }
     private int? _targetPreviewCount;
     private IReadOnlyDictionary<string, string[]> TargetParameters => _params.Where(parameter => !parameter.Type.Equals("secret", StringComparison.OrdinalIgnoreCase) && parameter.Default is not null)
         .ToDictionary(parameter => parameter.Name, parameter => new[] { parameter.Default! }, StringComparer.OrdinalIgnoreCase);
@@ -411,6 +426,7 @@
         _target = job.Target ?? (job.AgentId is { } agent ? JobTargetDefinition.FromLegacy(agent) : new() { Source = JobTargetSource.ExplicitNodes, AgentIds = [] });
         _threadCount = job.ExecutionPolicy?.ThreadCount ?? 1;
         _nodeFailurePolicy = job.ExecutionPolicy?.NodeFailurePolicy ?? JobNodeFailurePolicy.StopRemaining;
+        _runAs = job.ExecutionPolicy?.RunAs;
     }
     private bool PreserveLegacyTarget => _jobId is not null && _definitionOrigin is { Target: null, AgentId: { } agent } origin &&
         origin.TenantId == _selectedTenant?.Id && origin.Environment == _environment && _target.Source == JobTargetSource.ExplicitNodes &&
@@ -419,7 +435,7 @@
     {
         get
         {
-            var current = new JobExecutionPolicy(_threadCount, _nodeFailurePolicy);
+            var current = CurrentExecutionPolicy;
             return _definitionOrigin?.ExecutionPolicy is not null || current != new JobExecutionPolicy() ? current : null;
         }
     }
@@ -567,6 +583,7 @@
 
     private void OnTenantChanged(TenantDto? tenant)
     {
+        if (tenant?.Id != _selectedTenant?.Id) _runAs = null;
         _selectedTenant = tenant;
         _target = _target.Source switch
         {
@@ -707,7 +724,7 @@
                  _validationMessage = "Please select a Tenant.";
                  return;
             }
-            try { _target.Validate(); new JobExecutionPolicy(_threadCount, _nodeFailurePolicy).Validate(); }
+            try { _target.Validate(); CurrentExecutionPolicy.Validate(); }
             catch (ArgumentException error) { _validationMessage = error.Message; _detailsTab = 1; return; }
             if (_scheduleEnabled && _target.Source == JobTargetSource.RuntimeInput && _target.RuntimeInput?.DefaultValues is not { Count: > 0 })
             {
@@ -741,7 +758,7 @@
                     HardTimeoutSeconds: EffectiveHardTimeoutSeconds,
                     Schedule: null,
                     AgentId: finalAgentId,
-                    Environment: _environment) { Target = _target, ExecutionPolicy = new(_threadCount, _nodeFailurePolicy) };
+                    Environment: _environment) { Target = _target, ExecutionPolicy = CurrentExecutionPolicy };
                 job = await JobApi.CreateJobAsync(req);
                 if (job.Id == 0) throw new InvalidOperationException("The server did not return a saved job ID.");
                 _jobId = job.Id;

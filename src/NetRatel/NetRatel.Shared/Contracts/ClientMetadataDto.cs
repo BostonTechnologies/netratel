@@ -1,3 +1,6 @@
+using System.Text.Json.Serialization;
+using NetRatel.Shared.Contracts.Secrets;
+
 namespace NetRatel.Shared.Contracts;
 
 /// <summary>Operator-managed labels, separate from the enrolled identity and reported hostname.</summary>
@@ -6,9 +9,17 @@ public sealed record ClientMetadataDto(
     Guid AgentId,
     string? HostName,
     string? FriendlyName,
-    IReadOnlyList<string> Tags);
+    IReadOnlyList<string> Tags)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public ClientExecutionDefaults? ExecutionDefaults { get; init; }
+}
 
-public sealed record UpdateClientMetadataRequest(string? FriendlyName, IReadOnlyList<string>? Tags);
+public sealed record UpdateClientMetadataRequest(string? FriendlyName, IReadOnlyList<string>? Tags)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public ClientExecutionDefaults? ExecutionDefaults { get; init; }
+}
 
 public static class ClientMetadataValidation
 {
@@ -60,7 +71,7 @@ public static class ClientMetadataValidation
             if (seen.Add(tag)) tags.Add(tag);
         }
 
-        normalized = new(name, tags.ToArray());
+        normalized = new(name, tags.ToArray()) { ExecutionDefaults = request.ExecutionDefaults };
         return true;
     }
 }

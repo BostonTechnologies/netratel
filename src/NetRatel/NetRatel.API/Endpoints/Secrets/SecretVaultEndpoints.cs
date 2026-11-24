@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Mvc;
 using NetRatel.API.Middleware;
 using NetRatel.API.Security;
 using NetRatel.API.Security.Authorization;
+using NetRatel.API.Services.Secrets;
 using NetRatel.Application.Events;
 using NetRatel.Application.Secrets;
 using NetRatel.Infrastructure.Identity.Authorization;
@@ -29,6 +30,7 @@ internal static partial class SecretVaultEndpoints
         group.MapPut("/connections/{connectionId:guid}/entry", WriteEntryAsync);
         group.MapPost("/reveal", RevealAsync);
         group.MapGet("/profiles", ListProfilesAsync);
+        group.MapGet("/execution-accounts", ListExecutionAccountsAsync);
         group.MapPost("/profiles", SaveNewProfileAsync);
         group.MapPut("/profiles/{profileId:guid}", SaveProfileAsync);
         group.MapGet("/profile-targets", SearchProfileTargetsAsync);
@@ -155,6 +157,15 @@ internal static partial class SecretVaultEndpoints
     private static Task<IResult> SaveNewProfileAsync(int tenantId, SaveCredentialProfileRequest request, HttpContext http,
         IEffectiveAccessService access, ITenantSecretService vault, IEventRecorder audit, CancellationToken ct) => SaveProfileCoreAsync(
         tenantId, null, request, http, access, vault, audit, ct);
+
+    private static async Task<IResult> ListExecutionAccountsAsync(int tenantId, Guid? agentId, bool forTerminal,
+        HttpContext http, [FromServices] ExecutionAccountService accounts, CancellationToken ct)
+    {
+        if (forTerminal && agentId is null) return Results.BadRequest();
+        if (!Supported(http, tenantId) || !await accounts.IsAllowedAsync(http.User, tenantId, ct)) return Results.Forbid();
+        try { return await ExecuteAsync(async () => Results.Ok(await accounts.ListAsync(tenantId, agentId, forTerminal, ct))); }
+        catch (ExecutionAccountException error) { return Results.Problem(error.Message, statusCode: error.StatusCode); }
+    }
 
     private static Task<IResult> SaveProfileAsync(int tenantId, Guid profileId, SaveCredentialProfileRequest request, HttpContext http,
         IEffectiveAccessService access, ITenantSecretService vault, IEventRecorder audit, CancellationToken ct) => SaveProfileCoreAsync(

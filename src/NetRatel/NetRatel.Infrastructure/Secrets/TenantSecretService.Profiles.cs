@@ -26,6 +26,14 @@ internal sealed partial class TenantSecretService
         await using var tx = await db.Database.BeginTransactionAsync(ct);
         await SecretConsumerQuery.LockTenantAsync(db, tenantId, ct);
         var row = profileId is { } id ? await GetProfileRecordAsync(tenantId, id, ct) : null;
+        if (row is not null)
+            CheckRevision(row.Revision, request.ExpectedRevision);
+        if (mapping.UsernameReference is { VersionMode: SecretVersionMode.LatestAtExecution } username && mapping.Scope.AccountId is null)
+        {
+            var binding = await BindReferenceAsync(tenantId, username, ct);
+            var version = binding.ExactVersion ?? throw Invalid("Select an exact version of the username reference.");
+            mapping = mapping with { UsernameReference = binding.Reference with { VersionMode = SecretVersionMode.Pinned, Version = version } };
+        }
         var serialized = JsonSerializer.Serialize(mapping, Json);
         if (row is null)
         {
@@ -34,11 +42,6 @@ internal sealed partial class TenantSecretService
             row = new() { Id = Guid.NewGuid(), TenantId = tenantId, DisplayName = name, MappingJson = serialized };
             db.CredentialProfiles.Add(row);
         }
-        else
-        {
-            CheckRevision(row.Revision, request.ExpectedRevision);
-        }
-
         if (row.MappingRevision == 0 || JsonSerializer.Serialize(Deserialize<ProfileMapping>(row.MappingJson), Json) != serialized)
         {
             var targetIds = mapping.Scope.AgentIds;
@@ -99,8 +102,8 @@ internal sealed partial class TenantSecretService
 
         if (request.UsernameReference is { } user && request.PasswordReference is { } password &&
             user.ConnectionId == password.ConnectionId && user.Locator == password.Locator &&
-            (user.VersionMode != password.VersionMode || user.Version != password.Version || user.Field == password.Field))
-            throw Invalid("Choose separate username and password fields from one version of the entry.");
+            user.Field == password.Field)
+            throw Invalid("Choose separate fields for the username and password.");
 
         var scope = request.Scope ?? throw Invalid("An execution scope is required.");
         if (scope.AgentIds is not { Length: > 0 and <= CredentialExecutionScope.MaximumClients } || scope.AgentIds.Contains(Guid.Empty))

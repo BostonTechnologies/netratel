@@ -75,9 +75,11 @@
     <PropertyGroup>
       <NativeUnixPtySpawnDirectory>$(IntermediateOutputPath)native-unix-pty</NativeUnixPtySpawnDirectory>
       <NativeUnixPtySpawnLibrary>$(NativeUnixPtySpawnDirectory)/libnetratel_terminal_pty.so</NativeUnixPtySpawnLibrary>
+      <NativeUnixRunAsLauncher>$(NativeUnixPtySpawnDirectory)/netratel-run-as</NativeUnixRunAsLauncher>
     </PropertyGroup>
     <MakeDir Directories="$(NativeUnixPtySpawnDirectory)" />
     <Exec Command="gcc -shared -fPIC -O2 -Wall -Wextra -Werror -o &quot;$(NativeUnixPtySpawnLibrary)&quot; &quot;$(MSBuildProjectDirectory)/Service/Terminal/native_unix_pty_spawn.c&quot; -lutil" />
+    <Exec Command="gcc -O2 -Wall -Wextra -Werror -o &quot;$(NativeUnixRunAsLauncher)&quot; &quot;$(MSBuildProjectDirectory)/Service/Shells/native_unix_run_as.c&quot;" />
     <Exec Condition="'$(RuntimeIdentifier)' == 'linux-musl-x64'" Command="readelf -d &quot;$(NativeUnixPtySpawnLibrary)&quot; | grep -F '[libc.musl-x86_64.so.1]'" />
     <ItemGroup>
       <Content Include="$(NativeUnixPtySpawnLibrary)" Link="libnetratel_terminal_pty.so" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="Always" />
@@ -86,12 +88,14 @@
 
   <Target Name="CopyNativeUnixPtySpawnHelper" DependsOnTargets="BuildNativeUnixPtySpawnHelper" BeforeTargets="CopyFilesToOutputDirectory">
     <Copy SourceFiles="$(NativeUnixPtySpawnLibrary)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(NativeUnixRunAsLauncher)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
   </Target>
 
   <Target Name="BuildNativeDarwinPtyResizeHelper" DependsOnTargets="_GetAppHostPaths" BeforeTargets="GetCopyToOutputDirectoryItems;ComputeFilesToPublish;CoreCompile" Condition="$([MSBuild]::IsOSPlatform('OSX'))">
     <PropertyGroup>
       <NativeDarwinPtyDirectory>$(IntermediateOutputPath)native-darwin-pty</NativeDarwinPtyDirectory>
       <NativeDarwinPtyLibrary>$(NativeDarwinPtyDirectory)/libnetratel_terminal_pty_resize.dylib</NativeDarwinPtyLibrary>
+      <NativeUnixRunAsLauncher>$(NativeDarwinPtyDirectory)/netratel-run-as</NativeUnixRunAsLauncher>
       <NativeDarwinPtyCompilerFlags Condition="'$(Configuration)' == 'Debug'">-g -O0</NativeDarwinPtyCompilerFlags>
       <NativeDarwinPtyCompilerFlags Condition="'$(Configuration)' != 'Debug'">-O2</NativeDarwinPtyCompilerFlags>
       <NativeDarwinPtyArchitecture Condition="'$(RuntimeIdentifier)' == 'osx-arm64'">-arch arm64</NativeDarwinPtyArchitecture>
@@ -106,6 +110,7 @@
     <Message Importance="High" Text="Darwin resize helper deployment floor $(NativeDarwinPtyMinimumOS) from target apphost $(NativeDarwinPtyAppHost)." />
     <MakeDir Directories="$(NativeDarwinPtyDirectory)" />
     <Exec Command="xcrun clang -dynamiclib $(NativeDarwinPtyArchitecture) -mmacosx-version-min=$(NativeDarwinPtyMinimumOS) $(NativeDarwinPtyCompilerFlags) -Wall -Wextra -Werror -install_name @rpath/libnetratel_terminal_pty_resize.dylib -o &quot;$(NativeDarwinPtyLibrary)&quot; &quot;$(MSBuildProjectDirectory)/Service/Terminal/native_darwin_pty_resize.c&quot;" />
+    <Exec Command="xcrun clang $(NativeDarwinPtyArchitecture) -mmacosx-version-min=$(NativeDarwinPtyMinimumOS) $(NativeDarwinPtyCompilerFlags) -Wall -Wextra -Werror -o &quot;$(NativeUnixRunAsLauncher)&quot; &quot;$(MSBuildProjectDirectory)/Service/Shells/native_unix_run_as.c&quot;" />
     <ItemGroup>
       <Content Include="$(NativeDarwinPtyLibrary)" Link="libnetratel_terminal_pty_resize.dylib" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="Always" />
     </ItemGroup>
@@ -113,6 +118,7 @@
 
   <Target Name="CopyNativeDarwinPtyResizeHelper" DependsOnTargets="BuildNativeDarwinPtyResizeHelper" BeforeTargets="CopyFilesToOutputDirectory" Condition="$([MSBuild]::IsOSPlatform('OSX'))">
     <Copy SourceFiles="$(NativeDarwinPtyLibrary)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(NativeUnixRunAsLauncher)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
   </Target>
 
   <!-- ComputeFilesToPublish already generates the bundle; add this native input
@@ -123,6 +129,11 @@
         <RelativePath>libnetratel_terminal_pty_resize.dylib</RelativePath>
         <CopyToPublishDirectory>Always</CopyToPublishDirectory>
       </ResolvedFileToPublish>
+      <ResolvedFileToPublish Include="$(NativeUnixRunAsLauncher)">
+        <RelativePath>netratel-run-as</RelativePath>
+        <CopyToPublishDirectory>Always</CopyToPublishDirectory>
+        <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
+      </ResolvedFileToPublish>
     </ItemGroup>
   </Target>
 
@@ -131,6 +142,11 @@
       <!-- The single-file bundle must know about the helper so it extracts beside AppContext.BaseDirectory. -->
       <ResolvedFileToPublish Include="$(NativeUnixPtySpawnLibrary)">
         <RelativePath>libnetratel_terminal_pty.so</RelativePath>
+        <CopyToPublishDirectory>Always</CopyToPublishDirectory>
+        <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
+      </ResolvedFileToPublish>
+      <ResolvedFileToPublish Include="$(NativeUnixRunAsLauncher)">
+        <RelativePath>netratel-run-as</RelativePath>
         <CopyToPublishDirectory>Always</CopyToPublishDirectory>
         <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
       </ResolvedFileToPublish>

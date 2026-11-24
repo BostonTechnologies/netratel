@@ -12,7 +12,9 @@ using Google.Protobuf;
 using Grpc.Core;
 using Grpc.Net.Client;
 using NetRatel.AgentGateway.Contracts.V1;
+using NetRatel.Client.Service.Shells;
 using NetRatel.Client.Service.Terminal;
+using NetRatel.Shared.Contracts.Jobs;
 using NetRatel.Shared.Contracts.Secrets;
 using static NetRatel.Client.Service.Terminal.Terminal;
 
@@ -166,7 +168,7 @@ public sealed class AgentTerminalGatewayClient : IDisposable
         {
             Hello = new AgentTerminalHello
             {
-                Capabilities = { "pty", "stdin", "stdout", "resize", "reconnect", "idempotent-close" },
+                Capabilities = { "pty", "stdin", "stdout", "resize", "reconnect", "idempotent-close", _hostFactory.ExecutionAccountModes },
                 TerminalCapability = new TerminalCapability { Supported = true, AvailableShells = { _terminalShells } }
             }
         }, streamCancellation.Token).ConfigureAwait(false);
@@ -240,6 +242,9 @@ public sealed class AgentTerminalGatewayClient : IDisposable
                 case GatewayTerminalFrame.PayloadOneofCase.Start:
                     await OpenAsync(frame.Start, writer, presenceFence, cancellationToken).ConfigureAwait(false);
                     break;
+                case GatewayTerminalFrame.PayloadOneofCase.ProtectedStart:
+                    await OpenProtectedAsync(frame.ProtectedStart, writer, presenceFence, cancellationToken).ConfigureAwait(false);
+                    break;
                 case GatewayTerminalFrame.PayloadOneofCase.Input:
                     await WriteInputAsync(frame.Input, presenceFence, cancellationToken).ConfigureAwait(false);
                     break;
@@ -302,11 +307,42 @@ public sealed class AgentTerminalGatewayClient : IDisposable
         }
     }
 
+    private async Task OpenProtectedAsync(ProtectedTerminalSessionStart envelope, GatewayWriter writer,
+        GatewayPresenceFence fence, CancellationToken ct)
+    {
+        if (envelope.Start is not { } start)
+            throw new RpcException(new Status(StatusCode.InvalidArgument, "The protected terminal start is missing its session."));
+        var credential = envelope.Credential;
+        envelope.Credential = null;
+        try
+        {
+            DateTimeOffset? expires = null;
+            try { expires = envelope.ExpiresAtUtc?.ToDateTimeOffset(); }
+            catch (Exception error) when (error is InvalidOperationException or ArgumentOutOfRangeException)
+            {
+                QueueControl(writer, FailedFrame(start.SessionId, start.Generation, "terminal_account_expired",
+                    "The protected terminal start has an invalid lifetime."), "terminal account admission");
+                return;
+            }
+            var now = DateTimeOffset.UtcNow;
+            if (credential is null || !NativeExecutionAccounts.IsValid(credential) || expires is null || expires <= now ||
+                expires > now + ProtectedJobParameterRules.DispatchLifetime + ProtectedJobParameterRules.MaximumClockSkew)
+            {
+                QueueControl(writer, FailedFrame(start.SessionId, start.Generation, "terminal_account_unavailable",
+                    "The execution account is unavailable or the protected terminal start expired."), "terminal account admission");
+                return;
+            }
+            await OpenAsync(start, writer, fence, ct, credential).ConfigureAwait(false);
+        }
+        finally { NativeExecutionAccounts.Clear(credential); }
+    }
+
     private async Task OpenAsync(
         TerminalSessionStart start,
         GatewayWriter writer,
         GatewayPresenceFence presenceFence,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        RunAsCredential? credential = null)
     {
         ThrowIfPresenceFenceSuperseded(presenceFence);
 
@@ -379,7 +415,7 @@ public sealed class AgentTerminalGatewayClient : IDisposable
         IReadOnlyList<ITerminalHostSession> candidates;
         try
         {
-            candidates = _hostFactory.CreateCandidates(payload);
+            candidates = _hostFactory.CreateCandidates(payload, credential);
         }
         catch (Exception exception)
         {

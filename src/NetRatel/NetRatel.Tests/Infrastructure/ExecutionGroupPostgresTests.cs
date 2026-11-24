@@ -198,9 +198,18 @@ public sealed class ExecutionGroupPostgresTests(PostgreSqlPersistenceFixture pos
         var now = DateTimeOffset.UtcNow;
         db.Tenants.AddRange(new Tenant { Id = 7, Name = "Synthetic lab", CreatedAtUtc = now, UpdatedAtUtc = now }, new Tenant { Id = 8, Name = "Other synthetic tenant", CreatedAtUtc = now, UpdatedAtUtc = now });
         var ids = Enumerable.Range(1, 5).Select(_ => Guid.NewGuid()).ToArray();
-        db.Agents.AddRange(ids.Select((id, index) => new Agent { Id = id, TenantId = 7, Name = $"lab-node-{index + 1:00}", Tags = ["TestSystem"], CreatedAtUtc = now,
-            DeviceInfoJson = JsonSerializer.Serialize(new { hostName = $"lab-node-{index + 1:00}", os = "Linux", architecture = "x64" }) }));
-        await db.SaveChangesAsync(ct); return ids;
+        await db.SaveChangesAsync(ct);
+        // This seed also runs against the historical execution-group schema.
+        for (var index = 0; index < ids.Length; index++)
+        {
+            var hostName = $"lab-node-{index + 1:00}";
+            var deviceInfo = JsonSerializer.Serialize(new { hostName, os = "Linux", architecture = "x64" });
+            await db.Database.ExecuteSqlInterpolatedAsync($"""
+                INSERT INTO "Agents" ("Id","TenantId","Name","Status","IsEnabled","CreatedAtUtc","Tags","DeviceInfoJson")
+                VALUES ({ids[index]},7,{hostName},0,TRUE,{now},ARRAY['TestSystem']::text[],{deviceInfo})
+                """, ct);
+        }
+        return ids;
     }
     private static ExecutionGroupService Service(OrchestratorDbContext db, IEffectiveAccessService? access = null) =>
         new(db, access ?? new ManagerAccess(), new JobNodeDirectory(db), [new PublishedFlowExecutionGroupReferences(db)], TimeProvider.System);

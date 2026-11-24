@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using NetRatel.Shared.Contracts.Secrets;
 
 namespace NetRatel.Shared.Contracts.Jobs;
 
@@ -12,10 +13,14 @@ public enum JobRuntimeTargetKind { ClientId = 1, ClientIds = 2, Hostname = 3, Ho
 public sealed record JobExecutionPolicy(int ThreadCount = 1,
     JobNodeFailurePolicy NodeFailurePolicy = JobNodeFailurePolicy.StopRemaining)
 {
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public ExecutionIdentitySetting? RunAs { get; init; }
+
     public void Validate()
     {
         if (ThreadCount is < 1 or > 100 || !Enum.IsDefined(NodeFailurePolicy))
             throw new ArgumentException("Thread Count must be between 1 and 100 and the node failure policy must be supported.");
+        if (RunAs is { } account && (!account.IsValid || account.Mode == ExecutionIdentityMode.AgentServiceAccount))
+            throw new ArgumentException("Choose a valid saved job account or use the client default.");
     }
 }
 
@@ -73,6 +78,7 @@ public sealed record JobTargetNode(Guid AgentId, string Hostname, string? Displa
     public ClientEnvironment? Environment { get; init; }
     public bool IsOnline { get; init; }
     public bool IsEnabled { get; init; } = true;
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public JobExecutionAccount? ExecutionAccount { get; init; }
 }
 
 /// <summary>Only binding origin belongs in the public plan; values remain in protected execution inputs.</summary>
@@ -159,7 +165,7 @@ public sealed record JobResolvedTargetPlan
         => left.Hostname == right.Hostname && left.DisplayName == right.DisplayName && left.Name == right.Name &&
            left.OperatingSystem == right.OperatingSystem && left.Architecture == right.Architecture &&
            left.Environment == right.Environment && left.IsOnline == right.IsOnline && left.IsEnabled == right.IsEnabled &&
-           left.Tags.SequenceEqual(right.Tags, StringComparer.Ordinal);
+           left.ExecutionAccount == right.ExecutionAccount && left.Tags.SequenceEqual(right.Tags, StringComparer.Ordinal);
 
     public void Validate()
     {
@@ -167,7 +173,9 @@ public sealed record JobResolvedTargetPlan
         ExecutionPolicy.Validate();
         if (Version is not (1 or 2) || TenantId <= 0 || JobId == 0 || DefinitionDigest.Length != 64 ||
             DefinitionDigest.Any(character => !Uri.IsHexDigit(character)) || Nodes.Count is < 1 or > 10_000 ||
-            Nodes.Any(node => node.AgentId == Guid.Empty || node.Hostname is null) || GroupRevision is < 1 ||
+            Nodes.Any(node => node.AgentId == Guid.Empty || node.Hostname is null || node.ExecutionAccount is { } account &&
+                (account.ProfileId == Guid.Empty || account.MappingRevision < 1 || account.Mode is not
+                    (ExecutionIdentityMode.WindowsPassword or ExecutionIdentityMode.UnixPrivilegedLocal))) || GroupRevision is < 1 ||
             (Target.Source == JobTargetSource.ExecutionGroup) != GroupRevision.HasValue ||
             Version == 1 && (InvocationAgentIds is not null || HaGroupSelection is not null || GroupName is not null) ||
             Target.Source == JobTargetSource.ExplicitNodes && !Target.AgentIds!.ToHashSet().IsSupersetOf(Nodes.Select(node => node.AgentId)) ||
@@ -226,6 +234,15 @@ public sealed record JobResolvedTargetPlan
             writer.WritePropertyName("nodes"); WriteNodes(writer, Nodes);
             writer.WriteNumber("threadCount", ExecutionPolicy.ThreadCount);
             writer.WriteNumber("nodeFailurePolicy", (int)ExecutionPolicy.NodeFailurePolicy);
+            if (ExecutionPolicy.RunAs is { } runAs)
+            {
+                writer.WritePropertyName("runAs");
+                writer.WriteStartObject();
+                writer.WriteNumber("mode", (int)runAs.Mode);
+                if (runAs.CredentialProfileId is { } id) writer.WriteString("profileId", id);
+                writer.WriteBoolean("overrideClientDefault", runAs.OverrideClientDefault);
+                writer.WriteEndObject();
+            }
             if (Version == 2)
             {
                 if (GroupName is not null) writer.WriteString("groupName", GroupName);
@@ -264,7 +281,17 @@ public sealed record JobResolvedTargetPlan
             writer.WriteBoolean("isEnabled", node.IsEnabled);
             writer.WritePropertyName("tags"); writer.WriteStartArray();
             foreach (var tag in node.Tags) writer.WriteStringValue(tag);
-            writer.WriteEndArray(); writer.WriteEndObject();
+            writer.WriteEndArray();
+            if (node.ExecutionAccount is { } account)
+            {
+                writer.WritePropertyName("executionAccount");
+                writer.WriteStartObject();
+                writer.WriteString("profileId", account.ProfileId);
+                writer.WriteNumber("mode", (int)account.Mode);
+                writer.WriteNumber("mappingRevision", account.MappingRevision);
+                writer.WriteEndObject();
+            }
+            writer.WriteEndObject();
         }
         writer.WriteEndArray();
     }

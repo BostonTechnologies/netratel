@@ -1,5 +1,7 @@
 @using System.Net
 @using NetRatel.Shared.Contracts
+@using NetRatel.Shared.Contracts.Secrets
+@using NetRatel.Web.Components.Shared.Secrets
 @using NetRatel.Web.Models.Clients
 @using NetRatel.Web.Services.Clients
 @using NetRatel.Web.Services.Authentication
@@ -44,6 +46,13 @@
             {
                 <MudAlert Severity="Severity.Warning" Dense="true" data-testid="client-metadata-validation">@_validationError</MudAlert>
             }
+            @if (_available)
+            {
+                <ExecutionAccountPicker TenantId="Client.TenantId" AgentId="Client.AgentId" Label="Default account for jobs"
+                    DefaultLabel="Agent service account" Disabled="_saving" Value="_defaults.JobProfileId" OnChanged="JobAccountChanged" />
+                <ExecutionAccountPicker TenantId="Client.TenantId" AgentId="Client.AgentId" ForTerminal="true" Label="Default account for terminals"
+                    DefaultLabel="Agent service account" Disabled="_saving" Value="_defaults.TerminalProfileId" OnChanged="TerminalAccountChanged" />
+            }
         </MudStack>
     </DialogContent>
     <DialogActions>
@@ -68,6 +77,8 @@
     private bool _loading = true;
     private bool _available;
     private bool _saving;
+    private ClientExecutionDefaults _defaults = new();
+    private ClientExecutionDefaults _originalDefaults = new();
 
     protected override async Task OnInitializedAsync()
     {
@@ -83,6 +94,7 @@
             _hostName = metadata.HostName;
             _friendlyName = metadata.FriendlyName;
             _tagsText = string.Join(", ", metadata.Tags);
+            _defaults = _originalDefaults = metadata.ExecutionDefaults ?? new();
             _available = true;
             ValidateInputs();
         }
@@ -97,9 +109,12 @@
 
     private void FriendlyNameChanged(string? value) { _friendlyName = value; ValidateInputs(); }
     private void TagsChanged(string? value) { _tagsText = value; ValidateInputs(); }
+    private void JobAccountChanged(ExecutionAccountOption? option) => _defaults = _defaults with { JobProfileId = option?.Id };
+    private void TerminalAccountChanged(ExecutionAccountOption? option) => _defaults = _defaults with { TerminalProfileId = option?.Id };
 
     private UpdateClientMetadataRequest Draft() => new(_friendlyName,
-        (_tagsText ?? string.Empty).Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries));
+        (_tagsText ?? string.Empty).Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
+        { ExecutionDefaults = _defaults == _originalDefaults ? null : _defaults };
 
     private void ValidateInputs()
     {
@@ -132,7 +147,8 @@
         HttpRequestException { StatusCode: HttpStatusCode.Unauthorized } => "Sign in again to edit this client.",
         HttpRequestException { StatusCode: HttpStatusCode.Forbidden } => "You do not have permission to manage this client's tenant.",
         HttpRequestException { StatusCode: HttpStatusCode.NotFound } => "This client has been removed or is no longer available.",
-        HttpRequestException { StatusCode: HttpStatusCode.BadRequest } => "The labels were rejected. Check the name and tags, then save again.",
+        HttpRequestException { StatusCode: HttpStatusCode.BadRequest } => "The settings were rejected. Check the labels and selected accounts, then save again.",
+        HttpRequestException { StatusCode: HttpStatusCode.Conflict } => "A selected execution account is no longer available for this client.",
         OperationCanceledException => "The request timed out. Try again.",
         _ => saving ? "The labels could not be saved. Try again." : "The client labels could not be loaded. Close the editor and try again."
     };

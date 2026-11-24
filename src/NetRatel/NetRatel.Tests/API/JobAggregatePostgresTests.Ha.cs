@@ -6,15 +6,58 @@ using Microsoft.Extensions.DependencyInjection;
 using NetRatel.API.Services.Jobs;
 using NetRatel.Application.Jobs;
 using NetRatel.Application.Presence;
+using NetRatel.Application.Secrets;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Infrastructure.Services;
 using NetRatel.Shared.Contracts.Jobs;
+using NetRatel.Shared.Contracts.Secrets;
 using Xunit;
 
 namespace NetRatel.Tests.API;
 
 public sealed partial class JobAggregatePostgresTests
 {
+    [Fact]
+    public async Task Ha_dispatch_uses_per_node_defaults_and_the_explicit_job_override()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var h = await AggregateHarness.CreateAsync(await postgres.CreateDatabaseAsync(ct), 1, ct, providerInputs: true);
+        await UseHaGroupAsync(h, 2, ct);
+        var agentIds = h.AgentIds.Take(2).ToArray();
+        await using var setup = h.Services.CreateAsyncScope();
+        var db = setup.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
+        var vault = setup.ServiceProvider.GetRequiredService<ITenantSecretService>();
+        var defaults = new Dictionary<Guid, Guid>();
+        foreach (var agentId in agentIds)
+        {
+            var profile = await vault.SaveProfileAsync(7, null, new($"Local account {defaults.Count + 1}", ExecutionIdentityMode.UnixPrivilegedLocal,
+                "local-runner", null, null, null, new([agentId], null, true, false), null), ct);
+            var client = await db.Agents.SingleAsync(agent => agent.Id == agentId, ct);
+            client.DeviceInfoJson = "{\"os\":\"Unix\"}";
+            client.DefaultJobCredentialProfileId = profile.Id;
+            defaults.Add(agentId, profile.Id);
+        }
+        await db.SaveChangesAsync(ct);
+        var shared = await vault.SaveProfileAsync(7, null, new("Shared job account", ExecutionIdentityMode.UnixPrivilegedLocal,
+            "shared-runner", null, null, null, new(agentIds, null, true, false), null), ct);
+        var job = await db.Jobs.SingleAsync(ct);
+        var setting = new ExecutionIdentitySetting(shared.Mode, shared.Id, OverrideClientDefault: false);
+        job.ExecutionPolicyJson = JsonSerializer.Serialize(new JobExecutionPolicy { RunAs = setting });
+        await db.SaveChangesAsync(ct);
+
+        var first = await h.StartAsync(ct);
+        await h.FillAsync(first.Id, ct);
+        var seen = Assert.Single(h.Gateway.ExecutionAccounts);
+        Assert.Equal(defaults[seen.AgentId], seen.ProfileId);
+
+        job.ExecutionPolicyJson = JsonSerializer.Serialize(new JobExecutionPolicy { RunAs = setting with { OverrideClientDefault = true } });
+        await db.SaveChangesAsync(ct);
+        var second = await h.StartAsync(ct);
+        await h.FillAsync(second.Id, ct);
+        var overridden = Assert.Single(h.Gateway.ExecutionAccounts, entry => entry.AgentId != seen.AgentId);
+        Assert.Equal(shared.Id, overridden.ProfileId);
+    }
+
     [Fact]
     public async Task Keyed_HA_redelivery_keeps_one_worker_original_rerun_keeps_its_choice_and_schema_one_remains_frozen()
     {

@@ -25,7 +25,8 @@ public sealed partial class TenantSecretVaultPostgresTests(PostgreSqlPersistence
         "20261123150934_AddTenantSecretProviders",
         "20261123153551_ProtectJobSecretDefaults",
         "20261123155559_PinJobProviderInputs",
-        "20261123160739_StoreJobProviderDefaults"
+        "20261123160739_StoreJobProviderDefaults",
+        "20261124151743_AddSavedExecutionAccounts"
     ];
 
     [Fact]

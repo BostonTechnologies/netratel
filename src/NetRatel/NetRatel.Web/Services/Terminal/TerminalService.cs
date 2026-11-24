@@ -20,6 +20,8 @@ public interface ITerminalService
 {
     Task EnsureSubscribedAsync(CancellationToken ct = default);
     Task<TerminalOpenResponse> OpenGatewaySessionAsync(int tenantId, Guid agentId, OpenTerminalRequest request, CancellationToken ct = default);
+    Task<TerminalSessionDto> SwitchGatewayAccountAsync(string sessionId, SwitchTerminalAccountRequest request, CancellationToken ct = default) =>
+        Task.FromException<TerminalSessionDto>(new NotSupportedException("Terminal account switching is unavailable."));
     Task<TerminalActionResponse> CloseAsync(string sessionId, string? reason = null, CancellationToken ct = default);
     Task<TerminalActionResponse> RenewGatewayAttachmentAsync(string sessionId, ulong generation, CancellationToken ct = default) =>
         Task.FromException<TerminalActionResponse>(new NotSupportedException("Gateway terminal browser attachment renewal is not available."));
@@ -85,6 +87,21 @@ public sealed class TerminalService : ITerminalService
         var http = _factory.CreateClient("OrchestratorApi");
         using var response = await http.PostAsJsonAsync($"/api/v2/agents/{tenantId}/{agentId:D}/terminal/sessions", request, ct).ConfigureAwait(false);
         return await ReadAsync<TerminalOpenResponse>(response, ct).ConfigureAwait(false);
+    }
+
+    public async Task<TerminalSessionDto> SwitchGatewayAccountAsync(string sessionId, SwitchTerminalAccountRequest request, CancellationToken ct = default)
+    {
+        using var http = _factory.CreateClient("OrchestratorApi");
+        using var message = new HttpRequestMessage(HttpMethod.Post, $"/api/v2/gateway-terminal/{sessionId}/account/switch")
+        { Content = JsonContent.Create(request) };
+        message.Headers.Add("X-NetRatel-Account-Request", "1");
+        using var response = await http.SendAsync(message, ct).ConfigureAwait(false);
+        if (response.IsSuccessStatusCode)
+            return await response.Content.ReadFromJsonAsync<TerminalSessionDto>(cancellationToken: ct).ConfigureAwait(false)
+                ?? throw new HttpRequestException("The terminal gateway returned no replacement session.");
+        var error = response.Content.Headers.ContentType?.MediaType == "application/json"
+            ? await response.Content.ReadFromJsonAsync<TerminalActionResponse>(cancellationToken: ct).ConfigureAwait(false) : null;
+        throw new HttpRequestException(error?.Message ?? "The terminal account switch was denied or unavailable.", null, response.StatusCode);
     }
 
     public async Task<TerminalActionResponse> CloseAsync(string sessionId, string? reason = null, CancellationToken ct = default)
