@@ -11,6 +11,10 @@ public sealed class JobParameterDefinition
     public string Type { get; set; } = "string";
     public bool Required { get; set; }
     public string? DefaultValue { get; set; }
+    public string? ProtectedDefaultValue { get; set; }
+    public string? ProviderDefaultReferenceJson { get; set; }
+    public Guid? ProviderDefaultConnectionId { get; set; }
+    public string? ProviderDefaultLocator { get; set; }
     public string? Description { get; set; }
     public string? OptionsJson { get; set; }
 }

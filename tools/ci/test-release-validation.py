@@ -927,8 +927,14 @@ class MtpCiRunnerSelectionTests(unittest.TestCase):
         jobs = manual.split("\njobs:\n", 1)
         self.assertEqual(2, len(jobs))
         sections = dict(re.findall(r"(?ms)^  ([a-z-]+):\n(.*?)(?=^  [a-z-]+:|\Z)", jobs[1]))
-        self.assertEqual(["selected-suite", "candidate-images", "filesystem", "windows-mcp", "client-measurement", "migrations-image", "api-image", "cli-tool"], list(sections))
+        self.assertEqual(["vault-fixture", "selected-suite", "candidate-images", "filesystem", "windows-mcp", "client-measurement", "migrations-image", "api-image", "cli-tool"], list(sections))
         selected, measurement, portable = (sections[name] for name in ("selected-suite", "client-measurement", "cli-tool"))
+        vault = sections["vault-fixture"]
+        self.assertIn("inputs.suite != 'vault-fixture'", selected)
+        self.assertIn("if: inputs.suite == 'vault-fixture'", vault)
+        self.assertIn("persist-credentials: false", vault)
+        self.assertNotIn("inputs.source_ref", vault)
+        self.assertIn("verify-mtp-trx.py TestResults/vault-fixture/provider.trx --expected-executed 1", vault)
         candidates = sections["candidate-images"]
         self.assertIn("inputs.suite != 'candidate-images'", selected)
         self.assertIn("if: inputs.suite == 'candidate-images'", candidates)

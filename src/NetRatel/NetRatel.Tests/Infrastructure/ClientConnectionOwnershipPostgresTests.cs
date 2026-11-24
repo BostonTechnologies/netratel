@@ -257,12 +257,11 @@ public sealed class ClientConnectionOwnershipPostgresTests(PostgreSqlPersistence
 
     private async Task<string> PrepareAsync()
     {
-        var connection=await fixture.CreateDatabaseAsync();
+        var connection=await fixture.CreateOrchestratorDatabaseAsync();
         await using var provider=Provider(connection,new AdvancingClock());
         await using var scope=provider.CreateAsyncScope();
         var db=scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
         db.Database.HasPendingModelChanges().Should().BeFalse("the refreshed #148 owner/admission migration must match the model");
-        await db.Database.MigrateAsync();
         return connection;
     }
     private static ServiceProvider Provider(string connection,TimeProvider clock) => new ServiceCollection()

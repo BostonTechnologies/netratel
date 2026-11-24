@@ -14,6 +14,7 @@ internal sealed class CliRuntime
 
     public TextWriter Out { get; init; } = Console.Out;
     public TextWriter Error { get; init; } = Console.Error;
+    public TextReader In { get; init; } = Console.In;
 
     public HttpClient CreateHttpClient(Uri baseAddress)
     {

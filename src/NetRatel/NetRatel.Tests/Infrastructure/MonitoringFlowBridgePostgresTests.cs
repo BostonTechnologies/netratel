@@ -1052,12 +1052,11 @@ public sealed class MonitoringFlowBridgePostgresTests(PostgreSqlPersistenceFixtu
 
         public static async Task<Rig> CreateAsync(PostgreSqlPersistenceFixture postgres, bool withAi = false)
         {
-            var rig = new Rig { Connection = await postgres.CreateDatabaseAsync(), WithAi = withAi };
+            var rig = new Rig { Connection = await postgres.CreateOrchestratorDatabaseAsync(), WithAi = withAi };
             rig.Provider = rig.NewProvider();
             await using (var scope = rig.Provider.CreateAsyncScope())
             {
                 var db = scope.ServiceProvider.GetRequiredService<OrchestratorDbContext>();
-                await db.Database.MigrateAsync();
                 db.Tenants.Add(new() { Id = rig.Client.TenantId, Name = "Bridge tenant" });
                 db.Agents.Add(new() { Id = rig.Client.AgentId, TenantId = rig.Client.TenantId, CreatedAtUtc = rig.Clock.GetUtcNow() });
                 await db.SaveChangesAsync();

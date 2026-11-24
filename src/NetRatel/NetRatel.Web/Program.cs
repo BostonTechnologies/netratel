@@ -136,6 +136,7 @@ builder.Services.AddScoped<ClientSettingsApiService>();
 builder.Services.AddScoped<IAgentApiService, AgentApiService>();
 builder.Services.AddScoped<IEnrollmentCodeApiService, EnrollmentCodeApiService>();
 builder.Services.AddScoped<ITenantApiService>(sp => sp.GetRequiredService<TenantApiService>());
+builder.Services.AddScoped<SecretVaultApi>();
 builder.Services.AddScoped<IClientApiService>(sp => sp.GetRequiredService<ClientApiService>());
 builder.Services.AddScoped<IScriptLibraryService>(sp => sp.GetRequiredService<ScriptService>());
 builder.Services.AddScoped<IJobApiClient, JobApiClient>();

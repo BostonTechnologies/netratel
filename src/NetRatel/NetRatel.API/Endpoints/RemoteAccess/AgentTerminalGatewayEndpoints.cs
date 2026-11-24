@@ -414,6 +414,7 @@ public static class AgentTerminalGatewayEndpoints
         session.FailureCode)
     {
         Generation = session.Generation,
+        ObservedIdentity = session.ObservedIdentity,
         AttachmentLeaseId = attachmentLeaseId
     };
 

@@ -25,6 +25,9 @@
       <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2" Class="flex-wrap">
         <MudText Typo="Typo.h5">Terminal @_session.ShellType</MudText>
         <MudChip T="string" Variant="Variant.Outlined">@_session.State</MudChip>
+        <MudChip T="string" Variant="Variant.Outlined" Icon="@Icons.Material.Filled.Person">
+          <span class="terminal-account-name" title="@TerminalAccount">@TerminalAccount</span>
+        </MudChip>
         @if (!string.IsNullOrWhiteSpace(_session.Backend))
         {
           <MudChip T="string" Variant="Variant.Outlined" Color="Color.Info">@_session.Backend</MudChip>
@@ -60,6 +63,7 @@
 </MudContainer>
 
 @code {
+  private string TerminalAccount => _session?.ObservedIdentity?.Account ?? "Agent service account";
   [Parameter] public string SessionId { get; set; } = string.Empty;
 
   private TerminalSessionDto? _session;
@@ -195,6 +199,7 @@
     }
     catch (OperationCanceledException) when (ct.IsCancellationRequested)
     {
+      return;
     }
     catch (Exception ex)
     {
@@ -219,6 +224,7 @@
     }
     catch (OperationCanceledException)
     {
+      return;
     }
     finally
     {

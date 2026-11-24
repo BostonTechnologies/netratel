@@ -108,6 +108,8 @@ public static partial class ManagedOperationEndpoints
         HttpContext http, CancellationToken ct, ManagedOperationAdmissionResult? admitted = null)
     {
         var tenant = request.GetProperty("tenantId").GetInt32();
+        if (descriptor.Tool == "netratel_secrets")
+            return VaultMetadataAsync(descriptor, tenant, request, http.RequestServices.GetRequiredService<NetRatel.Application.Secrets.ITenantSecretService>(), ct);
         var access = http.RequestServices.GetRequiredService<IEffectiveAccessService>();
         var db = http.RequestServices.GetRequiredService<OrchestratorDbContext>();
         if (descriptor.Tool is "netratel_execution_groups" or "netratel_job_targets")

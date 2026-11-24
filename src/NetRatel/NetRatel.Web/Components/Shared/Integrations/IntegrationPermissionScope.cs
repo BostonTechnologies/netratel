@@ -13,7 +13,7 @@ public sealed record IntegrationPermission(string Id, string Label, string Descr
         "tenant" or "tenants" or "user" or "users" or "role" or "roles" or "access" or "identity" => "Accounts and access",
         "mcp" => "MCP capabilities and policy",
         "notification" or "notifications" or "event-delivery" or "connector" or "connectors" or "integration" or "integrations" => "Connections and notifications",
-        "secret" or "secrets" => "Secrets and sensitive access",
+        "secret" or "secrets" or "credential" or "execution" => "Secrets and sensitive access",
         "audit" => "Audit history",
         "artifact" or "artifacts" => "Artifacts and distribution",
         _ => "Other capabilities"

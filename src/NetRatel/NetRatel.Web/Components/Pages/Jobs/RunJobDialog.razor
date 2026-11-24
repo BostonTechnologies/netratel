@@ -1,13 +1,17 @@
 @using System.Text.Json
 @using NetRatel.Shared
 @using NetRatel.Shared.Contracts.Jobs
+@using NetRatel.Shared.Contracts.Secrets
+@using NetRatel.Web.Components.Shared.Secrets
+@using NetRatel.Web.Services.Tenants
 @implements IDisposable
 @inject IJobApiClient JobApi
 @inject IHttpClientFactory HttpClients
 @inject ISnackbar Snackbar
 @inject NavigationManager NavManager
+@inject IDialogService Dialogs
 
-<MudDialog Class="@(_params?.Count > 1 || _availableNodes.Count > 25 ? "jobs-run-dialog jobs-run-dialog-wide" : "jobs-run-dialog")">
+<MudDialog Class="@DialogClass">
     <DialogContent>
         <form class="run-job-dialog" id="@_formId" autocomplete="off" aria-label="Job inputs" @onsubmit:preventDefault="true">
             <div class="run-job-context">
@@ -73,7 +77,27 @@
                         var type = p.Type.ToLowerInvariant();
                         var error = FieldError(p);
                         <div class="run-job-field @(type == "json" || type == "string" && (GetValue(p.Name)?.Contains('\n') == true || p.Default?.Length > 180) ? "run-job-field-wide" : "")" @key="p.Id">
-                            @if (type == "bool")
+                            @if (type == "secret" && _providerInputsAllowed && ProtectedJobParameterRules.IsName(p.Name))
+                            {
+                                <MudSelect T="bool" Value="@_providerMode.Contains(p.Name)" ValueChanged="value => SetProviderModeAsync(p, value)"
+                                    Label="@($"{p.Name} source")" Variant="Variant.Outlined" Margin="Margin.Dense" Disabled="_isSubmitting">
+                                    <MudSelectItem Value="false">Manual</MudSelectItem>
+                                    <MudSelectItem Value="true">Secret provider</MudSelectItem>
+                                </MudSelect>
+                            }
+                            @if (_providerMode.Contains(p.Name))
+                            {
+                                <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1" Class="flex-wrap">
+                                    <MudButton Variant="Variant.Outlined" OnClick="@(() => PickProviderInputAsync(p))" Disabled="_isSubmitting"
+                                               aria-label="@($"Choose secret for {p.Name}")">Choose secret</MudButton>
+                                    @if ((_providerInputs.GetValueOrDefault(p.Name) ?? p.DefaultSecretReference) is { } reference)
+                                    {
+                                        <MudText Typo="Typo.caption" Style="overflow-wrap:anywhere">@SecretVaultPresentation.Reference(reference)</MudText>
+                                    }
+                                    else if (p.HasProviderDefault) { <MudText Typo="Typo.caption">Saved provider reference</MudText> }
+                                </MudStack>
+                            }
+                            else if (type == "bool")
                             {
                                 <MudSwitch T="bool" Value="GetBoolValue(p.Name)" ValueChanged="value => SetBoolValue(p.Name, value)" Label="@(p.Name + (p.Required ? " *" : ""))" Disabled="_isSubmitting" Color="Color.Primary" />
                                 @if (!string.IsNullOrWhiteSpace(p.Description)) { <MudText Typo="Typo.caption">@p.Description</MudText> }
@@ -87,7 +111,7 @@
                             }
                             else
                             {
-                                <MudTextField T="string" Value="@GetValue(p.Name)" ValueChanged="value => SetValue(p.Name, value)" Label="@p.Name" InputId="@FieldId(p)" UserAttributes="@JobParameterInput.OperationalAttributes(FieldId(p), type == "secret")" Required="p.Required" Variant="Variant.Outlined" Margin="Margin.Dense" Lines="@(type == "json" || type == "string" && GetValue(p.Name)?.Contains('\n') == true ? 3 : 1)" InputType="@(type == "secret" ? InputType.Password : InputType.Text)" InputMode="@(type == "int" ? InputMode.numeric : InputMode.text)" Error="@(error is not null)" HelperText="@p.Description" Disabled="_isSubmitting" />
+                                <MudTextField T="string" Value="@GetValue(p.Name)" ValueChanged="value => SetValue(p.Name, value)" Label="@p.Name" InputId="@FieldId(p)" UserAttributes="@JobParameterInput.OperationalAttributes(FieldId(p), type == "secret")" Required="@(p.Required && !p.HasProtectedDefault)" Variant="Variant.Outlined" Margin="Margin.Dense" Lines="@(type == "json" || type == "string" && GetValue(p.Name)?.Contains('\n') == true ? 3 : 1)" InputType="@(type == "secret" ? InputType.Password : InputType.Text)" InputMode="@(type == "int" ? InputMode.numeric : InputMode.text)" Error="@(error is not null)" HelperText="@(p.HasProtectedDefault ? "Leave blank to use the protected default." : p.Description)" Disabled="_isSubmitting" />
                             }
                             @if (error is not null) { <div class="run-job-field-error" role="alert">@error</div> }
                         </div>
@@ -114,10 +138,12 @@
     private string FieldId(JobParamDto parameter) => $"{_formId}-parameter-{parameter.Id}";
     private List<JobParamDto>? _params;
     private readonly Dictionary<string, string?> _values = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _providerMode = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, SecretReference> _providerInputs = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _touched = new(StringComparer.OrdinalIgnoreCase);
     private string _startedBy = "ui";
     private string? _launchError;
-    private bool _isSubmitting, _parameterLoadFailed, _loadingParameters, _submitted, _targetsLoading;
+    private bool _isSubmitting, _parameterLoadFailed, _loadingParameters, _submitted, _targetsLoading, _providerInputsAllowed;
     private string _runtimeValues = "";
     private JobLaunchPreviewDto? _launchPreview;
     private IReadOnlyList<JobNodeInventoryDto> _availableNodes = [];
@@ -128,6 +154,8 @@
     private CancellationTokenSource? _targetResolution;
     private JobTargetsApiClient? _targetsApi;
     private readonly CancellationTokenSource _dispose = new();
+    private string DialogClass => "jobs-run-dialog" + (_params?.Count > 1 || _availableNodes.Count > 25 ? " jobs-run-dialog-wide" : "") +
+        (_providerInputsAllowed ? " secret-vault-dialog" : "");
     private string TargetSummary => Job.Target?.Source switch
     {
         JobTargetSource.ExecutionGroup => "HA Group",
@@ -143,7 +171,7 @@
         : Job.Target.RuntimeInput?.Kind is JobRuntimeTargetKind.ClientId or JobRuntimeTargetKind.Hostname or JobRuntimeTargetKind.Tag && RuntimeValues.Length != 1 ? "This target type requires exactly one value."
         : Job.Target.RuntimeInput?.Kind is JobRuntimeTargetKind.ClientId or JobRuntimeTargetKind.ClientIds && RuntimeIds.Count != RuntimeValues.Length ? "Enter complete stable client IDs or select clients below."
         : null;
-    private bool ValidInputs => _params is not null && _params.All(p => JobParameterInput.Validate(p.Type, GetValue(p.Name), p.Required, p.OptionsJson) is null);
+    private bool ValidInputs => _params is not null && _params.All(p => ValidateInput(p) is null);
     private bool CanResolve => ValidInputs && RuntimeInputError is null;
     private bool CanRun => !_isSubmitting && !_submitted && _params is not null && !string.IsNullOrWhiteSpace(_startedBy)
         && ValidInputs && RuntimeInputError is null && (Job.Target is null || !_targetsLoading && _launchPreview is not null);
@@ -161,9 +189,19 @@
         try
         {
             _params = (await JobApi.GetJobParamsAsync(Job.Id)).ToList();
+            if (Job.TenantId is { } tenantId && _params.Any(p => p.Type.Equals("secret", StringComparison.OrdinalIgnoreCase)))
+            {
+                var ct = _dispose.Token;
+                try { _providerInputsAllowed = (await new SecretVaultApi(HttpClients).PermissionsAsync(tenantId, ct)).SubmitProtectedJobInputs; }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
+                catch (Exception error) when (error is SecretVaultUiException or HttpRequestException) { _providerInputsAllowed = false; }
+            }
             foreach (var p in _params)
                 if (!_values.ContainsKey(p.Name))
+                {
                     _values[p.Name] = p.Type.Equals("bool", StringComparison.OrdinalIgnoreCase) && string.IsNullOrWhiteSpace(p.Default) ? "false" : p.Default ?? string.Empty;
+                    if (_providerInputsAllowed && p.HasProviderDefault) _providerMode.Add(p.Name);
+                }
             await MudDialog.SetOptionsAsync(MudDialog.Options with { MaxWidth = _params.Count > 1 ? MaxWidth.Large : MaxWidth.Small, FullWidth = true, BackdropClick = false, CloseOnEscapeKey = false });
         }
         catch { _parameterLoadFailed = true; _params = null; }
@@ -171,8 +209,30 @@
         if (_params is not null) await RefreshTargetsAsync(true, false);
     }
     private string? GetValue(string key) => _values.GetValueOrDefault(key);
-    private string? FieldError(JobParamDto p) => _touched.Contains(p.Name) || !string.IsNullOrWhiteSpace(GetValue(p.Name))
-        ? JobParameterInput.Validate(p.Type, GetValue(p.Name), p.Required, p.OptionsJson) : null;
+    private string? ValidateInput(JobParamDto parameter) => _providerMode.Contains(parameter.Name)
+        ? (_providerInputs.ContainsKey(parameter.Name) || parameter.HasProviderDefault ? null : "Choose a secret reference.")
+        : JobParameterInput.Validate(parameter.Type, GetValue(parameter.Name), parameter.Required && !parameter.HasProtectedDefault, parameter.OptionsJson);
+    private string? FieldError(JobParamDto p) => _touched.Contains(p.Name) || !string.IsNullOrWhiteSpace(GetValue(p.Name)) ? ValidateInput(p) : null;
+    private Task SetProviderModeAsync(JobParamDto parameter, bool provider)
+    {
+        if (provider) _providerMode.Add(parameter.Name);
+        else _providerMode.Remove(parameter.Name);
+        return RefreshTargetsAsync(_invocationSubset is null, false);
+    }
+    private async Task PickProviderInputAsync(JobParamDto parameter)
+    {
+        if (!_providerInputsAllowed || Job.TenantId is not { } tenantId) return;
+        var ct = _dispose.Token;
+        var picker = await Dialogs.ShowAsync<SecretPickerDialog>("Choose job secret", new DialogParameters<SecretPickerDialog>
+        {
+            { value => value.TenantId, tenantId }, { value => value.Current, _providerInputs.GetValueOrDefault(parameter.Name) ?? parameter.DefaultSecretReference },
+            { value => value.OwnerLifetime, ct }
+        }, SecretVaultPresentation.Options);
+        if (await picker.Result is not { Canceled: false, Data: SecretReference reference } || ct.IsCancellationRequested) return;
+        _providerInputs[parameter.Name] = reference;
+        _touched.Add(parameter.Name);
+        await RefreshTargetsAsync(_invocationSubset is null, false);
+    }
     private Task SetValue(string key, string? value) { _values[key] = value; _touched.Add(key); return RefreshTargetsAsync(_invocationSubset is null, true); }
     private Task RuntimeValuesChangedAsync(string? value) { _runtimeValues = value ?? ""; return RefreshTargetsAsync(true, true); }
     private Task RuntimeNodesChangedAsync(IReadOnlyList<Guid> ids) { _runtimeValues = string.Join("\n", ids); return RefreshTargetsAsync(true, false); }
@@ -242,13 +302,15 @@
     private RunJobRequest BuildRequest(bool reviewed)
     {
         var payload = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
-        foreach (var p in _params ?? [])
+        foreach (var p in (_params ?? []).Where(p => !_providerMode.Contains(p.Name) && (!p.HasProtectedDefault || !string.IsNullOrEmpty(GetValue(p.Name)))))
             payload[p.Name] = p.Type.Equals("bool", StringComparison.OrdinalIgnoreCase) ? GetBoolValue(p.Name) : GetValue(p.Name);
         return new RunJobRequest(_startedBy, JsonSerializer.Serialize(payload), ClientIdentityOverride: null, Environment: Job.Environment)
         {
             RuntimeTarget = Job.Target?.Source == JobTargetSource.RuntimeInput && Job.Target.RuntimeInput is { } runtime ? new(runtime.Kind, RuntimeValues, runtime.AllOf) : null,
             ExpectedTargetPlanDigest = reviewed ? _launchPreview?.Digest : null,
-            SelectedTargetAgentIds = _invocationSubset
+            SelectedTargetAgentIds = _invocationSubset,
+            ProviderInputs = _providerMode.Count == 0 ? null : _providerInputs.Where(pair => _providerMode.Contains(pair.Key))
+                .Select(pair => new JobProviderInput(pair.Key, pair.Value)).ToArray()
         };
     }
     private bool GetBoolValue(string key) => bool.TryParse(GetValue(key), out var value) && value;

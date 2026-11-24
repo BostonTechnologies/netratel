@@ -128,6 +128,10 @@
                                         <MudStack Spacing="2" Class="job-run-diagnostics">
                                             <MudText Typo="Typo.body2">@GetStepSummary(step)</MudText>
                                             <MudText Typo="Typo.caption" Color="Color.Secondary">Started @FormatTimestamp(step.StartedAtMicros) · @(step.Status == JobStepRunStatusDto.Unknown ? "Reconciled" : "Completed") @FormatTimestamp(step.CompletedAtMicros)</MudText>
+                                            @if (step.ObservedIdentity is { } identity)
+                                            {
+                                                <MudText Typo="Typo.caption" Style="overflow-wrap:anywhere">Account @identity.Account (@identity.AccountId)</MudText>
+                                            }
                                             @if (!string.IsNullOrWhiteSpace(step.Error))
                                             {
                                                 <pre class="job-run-diagnostic-text">@BoundText(step.Error)</pre>

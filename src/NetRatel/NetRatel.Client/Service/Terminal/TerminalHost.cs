@@ -1,4 +1,6 @@
 using NetRatel.Client.Service.Logging;
+using NetRatel.Client.Service.Shells;
+using NetRatel.Shared.Contracts.Secrets;
 using NetRatel.Shared.Service.Shells;
 using System;
 using System.Collections.Generic;
@@ -43,6 +45,7 @@ internal interface ITerminalHostSession : IDisposable
 {
     string Backend { get; }
     string ShellType { get; }
+    ObservedExecutionIdentity? ObservedIdentity => null;
     bool HasExited { get; }
     event Action<string?>? Exited;
     Task StartAsync(Func<TerminalOutputChunk, Task> onOutput, CancellationToken ct);
@@ -233,6 +236,7 @@ internal sealed class UnixPtyHelperTerminalHost : ITerminalHostSession
 
     public string Backend => "unix-pty-python";
     public string ShellType => _context.ShellType;
+    public ObservedExecutionIdentity? ObservedIdentity { get; private set; }
     public bool HasExited
     {
         get
@@ -301,6 +305,7 @@ internal sealed class UnixPtyHelperTerminalHost : ITerminalHostSession
             throw new InvalidOperationException($"Unix PTY helper failed readiness handshake: {detail}");
         }
 
+        ObservedIdentity = NativeProcessIdentity.ObserveInheritedUnix();
         _ = Task.Run(() => ReadOutputLoopAsync(_lifetimeCts.Token));
         _ = Task.Run(() => WaitForExitAsync(_lifetimeCts.Token));
         LogManager.WriteLog(
@@ -665,6 +670,7 @@ internal class RedirectedProcessTerminalHost : ITerminalHostSession
 
     public virtual string Backend => "redirected";
     public string ShellType => _context.ShellType;
+    public ObservedExecutionIdentity? ObservedIdentity { get; private set; }
     public bool HasExited => _process?.HasExited ?? true;
     public event Action<string?>? Exited;
     protected TerminalHostContext Context => _context;
@@ -685,6 +691,7 @@ internal class RedirectedProcessTerminalHost : ITerminalHostSession
             throw new InvalidOperationException("Process.Start returned false.");
         }
 
+        ObservedIdentity = NativeProcessIdentity.ObserveStartedProcess(_process);
         _inputWriter = new StreamWriter(_process.StandardInput.BaseStream, new UTF8Encoding(false), leaveOpen: false)
         {
             AutoFlush = true
@@ -1000,6 +1007,7 @@ internal sealed class NativeUnixPtyTerminalHost : ITerminalHostSession
 
     public string Backend => "unix-pty-native";
     public string ShellType => _context.ShellType;
+    public ObservedExecutionIdentity? ObservedIdentity { get; private set; }
     public bool HasExited
     {
         get
@@ -1051,6 +1059,7 @@ internal sealed class NativeUnixPtyTerminalHost : ITerminalHostSession
 
         try
         {
+            var identity = NativeProcessIdentity.ObserveInheritedUnix();
             using var argv = NativeArgv.ForShellCommand(_shellCommand);
             var pid = ForkPtyAndExec(out _masterFd, argv.Path, argv.Argv, ref size);
             if (pid < 0)
@@ -1079,6 +1088,7 @@ internal sealed class NativeUnixPtyTerminalHost : ITerminalHostSession
             var writeHandle = new SafeFileHandle(new IntPtr(writeFd), ownsHandle: true);
             _masterReadStream = new FileStream(readHandle, FileAccess.Read, 4096, isAsync: false);
             _masterWriteStream = new FileStream(writeHandle, FileAccess.Write, 4096, isAsync: false);
+            ObservedIdentity = identity;
             _ = Task.Run(() => ReadOutputLoop(ct));
             _ = Task.Run(() => WaitForExitAsync(ct));
             LogManager.WriteLog($"[TerminalHost] Started {Backend} shell={ShellType} pid={_childPid} cols={size.Col} rows={size.Row}");
@@ -1486,6 +1496,7 @@ internal sealed class ConPtyTerminalHost : ITerminalHostSession
 
     public string Backend => "conpty";
     public string ShellType => _context.ShellType;
+    public ObservedExecutionIdentity? ObservedIdentity { get; private set; }
     public bool HasExited => _processHandle == IntPtr.Zero || WaitForSingleObject(_processHandle, 0) == WaitObject0;
     public event Action<string?>? Exited;
 
@@ -1522,6 +1533,11 @@ internal sealed class ConPtyTerminalHost : ITerminalHostSession
             outputWrite.Dispose();
 
             StartAttachedProcess();
+            if (OperatingSystem.IsWindows())
+            {
+                using var process = new SafeProcessHandle(_processHandle, ownsHandle: false);
+                ObservedIdentity = NativeProcessIdentity.ObserveWindowsProcess(process);
+            }
             // CreatePipe returns synchronous handles. Opening these FileStreams as async
             // requires overlapped handles and fails on Windows service agents.
             _inputStream = new FileStream(_inputWrite, FileAccess.Write, 4096, isAsync: false);

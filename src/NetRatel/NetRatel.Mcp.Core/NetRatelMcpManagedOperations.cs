@@ -9,6 +9,10 @@ namespace NetRatel.Mcp.Core;
 
 public sealed partial class NetRatelMcpOperationalTools
 {
+    [McpServerTool(UseStructuredContent = true), Description("Read tenant-scoped provider connection metadata, secret locators, field names, versions and credential profile references. Use the exact tenantId and saved connectionId. Follow the returned cursor with the same folder, search and limit. The tool returns metadata and references only.")]
+    public Task<NetRatelToolResponse> netratel_secrets(string operation, JsonElement? request = null, CancellationToken cancellationToken = default) =>
+        ManagedOperationAsync("netratel_secrets", operation, request, false, cancellationToken);
+
     [McpServerTool(UseStructuredContent = true), Description("Manage tenant HA Groups: each fresh job run uses one healthy worker, balanced across the pool. list uses bounded data {search,page,pageSize}; get uses groupId. create/update use typed name, description, enabled/archive state and stable AgentIds; update/delete require the current revision. Mutations require tenant.admin and confirm:true. Group membership never grants job execution authority. The execution-groups wire name remains compatible.")]
     public Task<NetRatelToolResponse> netratel_execution_groups(string operation, JsonElement? request = null,
         bool confirm = false, CancellationToken cancellationToken = default) =>

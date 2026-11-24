@@ -60,6 +60,10 @@
                    Icon="@GetConnectionIcon()">@_connectionLabel</MudChip>
           @if (_session is not null)
           {
+            var account = _session.ObservedIdentity?.Account ?? "Agent service account";
+            <MudChip T="string" Size="Size.Small" Variant="Variant.Outlined" Icon="@Icons.Material.Filled.Person">
+              <span class="terminal-account-name" title="@account">@account</span>
+            </MudChip>
             <MudChip @key="_session.Backend" T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Info">@(_session.Backend ?? "agent-pty")</MudChip>
             <MudChip @key="_session.Transport" T="string" Size="Size.Small" Variant="Variant.Outlined" Color="Color.Primary">@FormatTransport(_session.Transport)</MudChip>
           }

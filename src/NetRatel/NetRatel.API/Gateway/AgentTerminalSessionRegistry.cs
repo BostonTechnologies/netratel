@@ -9,6 +9,7 @@ using NetRatel.API.Services.Terminal;
 using NetRatel.Application.Fanout;
 using NetRatel.Application.Operations;
 using NetRatel.Application.Presence;
+using NetRatel.Shared.Contracts.Secrets;
 using NetRatel.Shared.Contracts.Terminals;
 
 namespace NetRatel.API.Gateway;
@@ -142,7 +143,10 @@ public sealed record GatewayTerminalSession(
     string Authority,
     string? FailureCode = null,
     string? FailureMessage = null,
-    long DroppedOutputFrames = 0);
+    long DroppedOutputFrames = 0)
+{
+    public ObservedExecutionIdentity? ObservedIdentity { get; init; }
+}
 
 public class TerminalGatewayActionException(string code, string message) : InvalidOperationException(message)
 {
@@ -537,8 +541,9 @@ public sealed class AgentTerminalSessionRegistry(
             return true;
         }
 
+        if (!TryReadObservedIdentity(opened, out var identity)) return false;
         var wasSuspended = session.IsSuspended;
-        var transition = session.TryOpen();
+        var transition = session.TryOpen(identity);
         if (transition == TerminalOpenTransition.Rejected) return false;
         if (transition == TerminalOpenTransition.AlreadyOpened) return true;
 
@@ -552,6 +557,13 @@ public sealed class AgentTerminalSessionRegistry(
             session.Generation);
         Publish(session, RealtimeFanoutEventType.Updated, RealtimeFanoutStatus.Active);
         return true;
+    }
+
+    private static bool TryReadObservedIdentity(TerminalSessionOpened opened, out ObservedExecutionIdentity? identity)
+    {
+        var wire = opened.ObservedIdentity;
+        identity = wire is null ? null : ObservedExecutionIdentity.FromObservation(wire.Account, wire.AccountId);
+        return wire is null || identity is not null;
     }
 
     public bool IsCurrentRegistration(ClientKey client, Guid registrationId)
@@ -617,7 +629,8 @@ public sealed class AgentTerminalSessionRegistry(
             : TryReceiveOpened(client, opened);
         if (received)
             return true;
-        if (scopeFactory is null || string.IsNullOrWhiteSpace(opened.SessionId) || opened.Generation == 0)
+        if (scopeFactory is null || string.IsNullOrWhiteSpace(opened.SessionId) || opened.Generation == 0 ||
+            !TryReadObservedIdentity(opened, out var identity))
             return false;
 
         await using var scope = scopeFactory.CreateAsyncScope();
@@ -687,7 +700,7 @@ public sealed class AgentTerminalSessionRegistry(
                     session.TryBeginClosing(persisted.CloseReason ?? "terminal_policy_lease_expired");
                     closePending = true;
                 }
-                else if (session.TryOpen() == TerminalOpenTransition.Rejected)
+                else if (session.TryOpen(identity) == TerminalOpenTransition.Rejected)
                 {
                     session.Dispose();
                     return false;
@@ -1652,6 +1665,7 @@ public sealed class AgentTerminalSessionRegistry(
         private string? _failureCode;
         private string? _failureMessage;
         private string? _pendingCloseReason;
+        private ObservedExecutionIdentity? _observedIdentity;
 
         public string Id { get; } = id;
         public ClientKey Client { get; } = client;
@@ -1823,16 +1837,19 @@ public sealed class AgentTerminalSessionRegistry(
 
         public ulong NextBrowserSequence() => checked(Interlocked.Increment(ref _browser));
 
-        public TerminalOpenTransition TryOpen()
+        public TerminalOpenTransition TryOpen(ObservedExecutionIdentity? identity)
         {
             lock (_sync)
             {
+                if (identity is not null && _observedIdentity is not null && identity != _observedIdentity)
+                    return TerminalOpenTransition.Rejected;
                 if (_state == TerminalLifecycle.Opened) return TerminalOpenTransition.AlreadyOpened;
                 if (_state is not TerminalLifecycle.Requested and not TerminalLifecycle.Dispatching and not TerminalLifecycle.Opening and not TerminalLifecycle.Suspended)
                 {
                     return TerminalOpenTransition.Rejected;
                 }
 
+                _observedIdentity ??= identity;
                 _state = TerminalLifecycle.Opened;
                 _suspendedFrom = null;
                 CancelDispatchOpeningTimer();
@@ -2155,7 +2172,8 @@ public sealed class AgentTerminalSessionRegistry(
                     TerminalLifecycle.Failed => "failed",
                     _ => "failed"
                 };
-                return new GatewayTerminalSession(Id, Client.TenantId, Client.AgentId, Generation, ShellType, _columns, _rows, state, created, "akka", _failureCode, _failureMessage, Interlocked.Read(ref _droppedOutputFrames));
+                return new GatewayTerminalSession(Id, Client.TenantId, Client.AgentId, Generation, ShellType, _columns, _rows, state, created, "akka", _failureCode, _failureMessage, Interlocked.Read(ref _droppedOutputFrames))
+                { ObservedIdentity = _observedIdentity };
             }
         }
 

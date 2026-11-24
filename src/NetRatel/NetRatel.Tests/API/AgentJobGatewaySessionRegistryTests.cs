@@ -1,12 +1,44 @@
 using AwesomeAssertions;
+using NetRatel.AgentGateway.Contracts.V1;
 using NetRatel.API.Gateway;
 using NetRatel.Application.Presence;
+using NetRatel.Shared.Contracts.Tasks;
 using Xunit;
 
 namespace NetRatel.Tests.API;
 
 public sealed class AgentJobGatewaySessionRegistryTests
 {
+    [Fact]
+    public async Task Protected_dispatch_requires_an_exact_capable_session_and_uses_its_own_frame()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var registry = new AgentJobGatewaySessionRegistry();
+        var client = new ClientKey(71, Guid.NewGuid());
+        var connection = Guid.NewGuid();
+        var owner = new OwnerKey(client, connection, 4);
+        var dispatch = new JobGatewayStepDispatch(501, 502, 503, 1, "task", "correlation", TaskKinds.ExecLibraryScript,
+            "{}", 1, 3, 3, DateTimeOffset.UtcNow, owner);
+        var parameters = new Dictionary<string, string> { ["Canary"] = "synthetic-protected-value" };
+        using var older = registry.Register(client, connection, 4);
+        await Assert.ThrowsAsync<ProtectedJobDispatchUnavailableException>(() => registry.DispatchProtectedAsync(owner, dispatch, parameters, ct));
+        Assert.False(older.Reader.TryRead(out _));
+
+        using var current = registry.RegisterWithCapabilities(client, connection, 4, provisional: false, supportsProtectedParameters: true);
+        var foreign = new OwnerKey(new ClientKey(72, client.AgentId), connection, 4);
+        await Assert.ThrowsAsync<ProtectedJobDispatchUnavailableException>(() => registry.DispatchProtectedAsync(foreign, dispatch with { ExpectedOwner = foreign }, parameters, ct));
+        Assert.False(current.Reader.TryRead(out _));
+        await registry.DispatchProtectedAsync(owner, dispatch, parameters, ct);
+        var frame = await current.Reader.ReadAsync(ct);
+        Assert.Equal(GatewayJobFrame.PayloadOneofCase.ProtectedDispatch, frame.PayloadCase);
+        Assert.Null(frame.Dispatch);
+        Assert.Equal("{}", frame.ProtectedDispatch.Step.PayloadJson);
+        Assert.Equal(parameters["Canary"], frame.ProtectedDispatch.Parameters["Canary"]);
+        Assert.Equal(client.TenantId, frame.ProtectedDispatch.Step.TenantId);
+        Assert.Equal(connection.ToString("D"), frame.ConnectionId);
+        Assert.True(frame.ProtectedDispatch.ExpiresAtUtc.ToDateTimeOffset() > dispatch.RequestedAtUtc);
+    }
+
     [Fact]
     public async Task DispatchAndCancel_AreFencedToTheRegisteredAgentSession()
     {

@@ -13,6 +13,7 @@ using Grpc.Core;
 using Grpc.Net.Client;
 using NetRatel.AgentGateway.Contracts.V1;
 using NetRatel.Client.Service.Terminal;
+using NetRatel.Shared.Contracts.Secrets;
 using static NetRatel.Client.Service.Terminal.Terminal;
 
 namespace NetRatel.Client.Service.Gateway;
@@ -938,8 +939,15 @@ public sealed class AgentTerminalGatewayClient : IDisposable
         }
     }
 
-    private static AgentTerminalFrame OpenedFrame(string sessionId, ulong generation) =>
-        new() { Opened = new TerminalSessionOpened { SessionId = sessionId, Generation = generation } };
+    private static AgentTerminalFrame OpenedFrame(string sessionId, ulong generation, ObservedExecutionIdentity? identity) => new()
+    {
+        Opened = new TerminalSessionOpened
+        {
+            SessionId = sessionId,
+            Generation = generation,
+            ObservedIdentity = identity is null ? null : new ObservedProcessIdentity { Account = identity.Account, AccountId = identity.AccountId }
+        }
+    };
 
     private static AgentTerminalFrame ClosedFrame(string sessionId, ulong generation, string reason) =>
         new()
@@ -1425,7 +1433,7 @@ public sealed class AgentTerminalGatewayClient : IDisposable
             {
                 if (IsFenced || IsClosing || Volatile.Read(ref _disposed) != 0 || _writer is not { } writer)
                     return false;
-                return writer.TryQueueControl(OpenedFrame(SessionId, Generation), () => OpenedWritten(writer));
+                return writer.TryQueueControl(OpenedFrame(SessionId, Generation, Host.ObservedIdentity), () => OpenedWritten(writer));
             }
         }
 
@@ -1435,7 +1443,7 @@ public sealed class AgentTerminalGatewayClient : IDisposable
             {
                 if (IsFenced || IsClosing || Volatile.Read(ref _disposed) != 0 || !ReferenceEquals(_writer, writer))
                     return ValueTask.CompletedTask;
-                return writer.QueueControlAsync(OpenedFrame(SessionId, Generation), cancellationToken, () => OpenedWritten(writer));
+                return writer.QueueControlAsync(OpenedFrame(SessionId, Generation, Host.ObservedIdentity), cancellationToken, () => OpenedWritten(writer));
             }
         }
 

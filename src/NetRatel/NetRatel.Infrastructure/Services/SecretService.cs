@@ -3,10 +3,11 @@ using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using NetRatel.Application.Secrets;
 using NetRatel.Infrastructure.Persistence;
+using NetRatel.Infrastructure.Secrets;
 
 namespace NetRatel.Infrastructure.Services;
 
-public sealed class SecretService(OrchestratorDbContext db, IDataProtectionProvider protection) : ISecretService
+public sealed partial class SecretService(OrchestratorDbContext db, IDataProtectionProvider protection) : ISecretService
 {
     public async Task<IReadOnlyList<SecretInfo>> ListAsync(int[]? authorizedTenantIds, CancellationToken ct = default)
     {
@@ -26,10 +27,17 @@ public sealed class SecretService(OrchestratorDbContext db, IDataProtectionProvi
     public async Task<SecretMetadata> CreateAsync(CreateSecretCommand command, CancellationToken ct = default)
     {
         ValidateValue(command.Value);
+        var secret = await CreateRecordAsync(command, name: null, ct);
+        return Metadata(secret);
+    }
+
+    private async Task<SecretRecord> CreateRecordAsync(CreateSecretCommand command, string? name, CancellationToken ct)
+    {
         var now = DateTimeOffset.UtcNow;
         var secret = new SecretRecord
         {
             TenantId = command.TenantId,
+            Name = name,
             ClientIdentity = NormalizeNullable(command.ClientIdentity),
             Description = NormalizeNullable(command.Description),
             CreatedAtUtc = now,
@@ -40,10 +48,10 @@ public sealed class SecretService(OrchestratorDbContext db, IDataProtectionProvi
         await using var transaction = await db.Database.BeginTransactionAsync(ct);
         db.Secrets.Add(secret);
         await db.SaveChangesAsync(ct);
-        Protect(secret, command.Value);
+        ProtectVersion(secret, command.Value);
         await db.SaveChangesAsync(ct);
         await transaction.CommitAsync(ct);
-        return Metadata(secret);
+        return secret;
     }
 
     public async Task<SecretMetadata?> UpdateAsync(UpdateSecretCommand command, int[]? authorizedTenantIds, CancellationToken ct = default)
@@ -53,22 +61,32 @@ public sealed class SecretService(OrchestratorDbContext db, IDataProtectionProvi
             return null;
 
         ValidateValue(command.Value);
-        Protect(secret, command.Value);
+        ReplaceValue(secret, command.Value);
         secret.Description = NormalizeNullable(command.Description);
         secret.UpdatedAtUtc = DateTimeOffset.UtcNow;
+        secret.Revision++;
 
-        await db.SaveChangesAsync(ct);
+        await SaveChangesAsync(ct);
         return Metadata(secret);
     }
 
     public async Task<SecretMetadata?> DeleteAsync(int id, int[]? authorizedTenantIds, CancellationToken ct = default)
     {
+        await using var transaction = await db.Database.BeginTransactionAsync(ct);
         var secret = await InScope(authorizedTenantIds).FirstOrDefaultAsync(x => x.Id == id, ct);
         if (secret is null)
             return null;
 
+        if (secret.TenantId is { } tenantId)
+        {
+            await SecretConsumerQuery.LockTenantAsync(db, tenantId, ct, requireTenant: false);
+            if (await SecretConsumerQuery.HasConsumersAsync(db, tenantId, TenantSecretService.LocalConnectionId(tenantId),
+                    secret.Id.ToString(CultureInfo.InvariantCulture), ct))
+                throw SecretProviderValidation.InUse();
+        }
         db.Secrets.Remove(secret);
-        await db.SaveChangesAsync(ct);
+        await SaveChangesAsync(ct);
+        await transaction.CommitAsync(ct);
         return Metadata(secret);
     }
 
@@ -103,12 +121,54 @@ public sealed class SecretService(OrchestratorDbContext db, IDataProtectionProvi
 
     private SecretInfo Reveal(SecretRecord secret)
     {
+        return new SecretInfo(secret.Id, secret.TenantId, secret.ClientIdentity, ReadValue(secret),
+            secret.Description, secret.CreatedAtUtc, secret.UpdatedAtUtc);
+    }
+
+    private string ReadValue(SecretRecord secret)
+    {
         if (!secret.ValueProtected)
             throw new InvalidOperationException("Secret protection migration is incomplete.");
 
-        return new SecretInfo(secret.Id, secret.TenantId, secret.ClientIdentity, Protector(secret).Unprotect(secret.Value),
-            secret.Description, secret.CreatedAtUtc, secret.UpdatedAtUtc);
+        var protector = secret.VersionBoundProtection ? VersionProtector(secret, secret.Version) : Protector(secret);
+        return protector.Unprotect(secret.Value);
     }
+
+    private void ReplaceValue(SecretRecord secret, string value)
+    {
+        if (secret.TenantId is not null)
+        {
+            db.SecretVersions.Add(new SecretVersionRecord
+            {
+                SecretId = secret.Id,
+                Version = secret.Version,
+                ProtectedValue = secret.VersionBoundProtection
+                    ? secret.Value
+                    : VersionProtector(secret, secret.Version).Protect(ReadValue(secret))
+            });
+        }
+        secret.Version++;
+        ProtectVersion(secret, value);
+    }
+
+    private void ProtectVersion(SecretRecord secret, string value)
+    {
+        secret.Value = VersionProtector(secret, secret.Version).Protect(value);
+        secret.ValueProtected = true;
+        secret.VersionBoundProtection = true;
+    }
+
+    private async Task SaveChangesAsync(CancellationToken ct)
+    {
+        try { await db.SaveChangesAsync(ct); }
+        catch (DbUpdateConcurrencyException) { throw SecretProviderValidation.Conflict(); }
+    }
+
+    private IDataProtector VersionProtector(SecretRecord secret, long version) => protection.CreateProtector(
+        "NetRatel.GeneralSecret.Version.v1",
+        secret.TenantId?.ToString(CultureInfo.InvariantCulture) ?? "instance",
+        secret.Id.ToString(CultureInfo.InvariantCulture),
+        version.ToString(CultureInfo.InvariantCulture));
 
     private IDataProtector Protector(SecretRecord secret) => protection.CreateProtector(
         "NetRatel.GeneralSecret.Value.v1",

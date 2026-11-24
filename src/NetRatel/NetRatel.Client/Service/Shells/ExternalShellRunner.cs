@@ -6,16 +6,21 @@ using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Security.AccessControl;
+using System.Security.Cryptography;
 using System.Security.Principal;
 using System.Runtime.Versioning;
 using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Threading.Channels;
 using NetRatel.Shared.Security;
 using NetRatel.Client.Service.Logging;
+using NetRatel.Client.Service.Tasks;
 using NetRatel.Shared.Contracts.Execution;
+using NetRatel.Shared.Contracts.Jobs;
+using NetRatel.Shared.Contracts.Secrets;
 using NetRatel.Shared.Contracts.Tasks;
 using NetRatel.Shared.Service.Shells;
 
@@ -37,14 +42,16 @@ namespace NetRatel.Client.Service.Shells
             public bool TimedOut { get; set; }
             public bool OutputTruncated { get; set; }
             public bool OutcomeUnknown { get; set; }
+            internal bool ProtectedInputDeliveryFailed { get; set; }
             // Stderr also carries warnings and progress; the process exit code owns success.
-            public bool Success => ExitCode == 0 && !Cancelled && !TimedOut && !OutcomeUnknown;
+            public bool Success => ExitCode == 0 && !Cancelled && !TimedOut && !OutcomeUnknown && !ProtectedInputDeliveryFailed;
             public List<string> Output { get; } = new();
             public List<string> Error { get; } = new();
             public string? ShellPath { get; set; }
             public string? Arguments { get; set; }
             public string? WorkingDirectory { get; set; }
             public double DurationMs { get; set; }
+            public ObservedExecutionIdentity? ObservedIdentity { get; set; }
         }
 
         public sealed class ExecutionOutcomeUnknownException(string message, RunResult execution, Exception cause)
@@ -80,6 +87,21 @@ namespace NetRatel.Client.Service.Shells
             IReadOnlyDictionary<string, string>? parameters,
             ExecutionObserver? observer = null)
             => RunScriptByTypeAsync(payload.ScriptType, payload.Preferred, scriptContent, payload.WorkingDirectory, payload.TimeoutSeconds, ct, parameters, observer);
+
+        internal Task<RunResult> RunProtectedLibraryScriptAsync(ExecLibraryScriptPayload payload, string content, CancellationToken ct,
+            IReadOnlyDictionary<string, string>? parameters, IReadOnlyDictionary<string, string> protectedParameters, ExecutionObserver observer)
+        {
+            if (!ProtectedJobParameterRules.AreValid(protectedParameters))
+                throw new InvalidOperationException("The protected script parameters are invalid.");
+            return payload.ScriptType switch
+            {
+                ScriptType.PowerShell => RunPowerShellScriptFileAsync(payload.Preferred, content, payload.WorkingDirectory, payload.TimeoutSeconds,
+                    ct, parameters, observer: observer, protectedParameters: protectedParameters),
+                ScriptType.Bash when payload.Preferred is ShellExecutor.Auto or ShellExecutor.Bash =>
+                    RunProtectedBashScriptAsync(payload, content, ct, parameters, protectedParameters, observer),
+                _ => throw new InvalidOperationException("Protected parameters require a PowerShell or Bash library script with its matching executor.")
+            };
+        }
 
         public Task<RunResult> RunPowerShellScriptAsync(
             string content,
@@ -166,7 +188,8 @@ namespace NetRatel.Client.Service.Shells
             CancellationToken ct,
             IReadOnlyDictionary<string, string>? parameters,
             string? requirementsContent = null,
-            ExecutionObserver? observer = null)
+            ExecutionObserver? observer = null,
+            IReadOnlyDictionary<string, string>? protectedParameters = null)
         {
             var timeout = TimeSpan.FromSeconds(timeoutSec ?? (int)_defaultTimeout.TotalSeconds);
             var scriptPath = WritePrivateTemp(".ps1", content);
@@ -175,7 +198,7 @@ namespace NetRatel.Client.Service.Shells
             try
             {
                 var shellPath = ResolvePowerShellHost(pref, requirementsContent ?? content, FindShell, OperatingSystem.IsWindows());
-                var hasParameters = parameters is { Count: > 0 };
+                var hasParameters = parameters is { Count: > 0 } || protectedParameters is not null;
                 var windowsPowerShell = OperatingSystem.IsWindows() &&
                     Path.GetFileName(shellPath).Equals("powershell.exe", StringComparison.OrdinalIgnoreCase);
                 if (hasParameters || windowsPowerShell)
@@ -189,7 +212,7 @@ namespace NetRatel.Client.Service.Shells
                         wrapper.AppendLine("$ErrorActionPreference = 'Stop'");
                         wrapper.AppendLine("$ProgressPreference = 'SilentlyContinue'");
                         wrapper.AppendLine("$__netratelParams = @{}");
-                        foreach (var kv in parameters!)
+                        foreach (var kv in parameters?.AsEnumerable() ?? [])
                         {
                             if (string.IsNullOrWhiteSpace(kv.Key)) continue;
                             var name = kv.Key.Trim().TrimStart('-');
@@ -199,6 +222,15 @@ namespace NetRatel.Client.Service.Shells
                                    .Append("'] = '")
                                    .Append(Esc(kv.Value))
                                    .AppendLine("'");
+                        }
+                        if (protectedParameters is not null)
+                        {
+                            wrapper.AppendLine("try {");
+                            wrapper.AppendLine("    [Console]::InputEncoding = [Text.UTF8Encoding]::new($false)");
+                            wrapper.AppendLine("    $__netratelSecret = ConvertFrom-Json -InputObject ([Console]::In.ReadToEnd()) -ErrorAction Stop");
+                            wrapper.AppendLine("} catch { [Console]::Error.WriteLine('Protected parameters could not be read.'); exit 126 }");
+                            wrapper.AppendLine("if ($null -eq $__netratelSecret) { exit 126 }");
+                            wrapper.AppendLine("foreach ($p in $__netratelSecret.PSObject.Properties) { $__netratelParams[$p.Name] = $p.Value }");
                         }
                         wrapper.Append("& '").Append(Esc(scriptPath)).AppendLine("' @__netratelParams");
                         wrapper.AppendLine("exit $LASTEXITCODE");
@@ -217,7 +249,9 @@ namespace NetRatel.Client.Service.Shells
                 var fileToRun = wrapperPath ?? scriptPath;
                 var argsText = $"-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File {QuoteArgument(fileToRun)}";
                 LogManager.WriteLog($"[Shell] {shellPath} {MaskArgumentsForLog(argsText)}");
-                return await StartAsync(shellPath, argsText, cwd, timeout, ct, outputEncoding: Encoding.UTF8, observer: observer).ConfigureAwait(false);
+                var protectedInput = protectedParameters is null ? null : JsonSerializer.Serialize(protectedParameters, ClientShellJsonContext.Default.ParameterMap);
+                return await StartAsync(shellPath, argsText, cwd, timeout, ct, outputEncoding: Encoding.UTF8, observer: observer,
+                    protectedInput: protectedInput).ConfigureAwait(false);
             }
             finally
             {
@@ -250,6 +284,32 @@ namespace NetRatel.Client.Service.Shells
             var environment = CreateBashParameterEnvironment(parameters);
             var shellPath = (FindShell("bash") ?? FindShell("sh")) ?? Throw("bash/sh");
             return RunDirectAsync(shellPath, "-lc", script, timeout, cwd, ct, observer, environment);
+        }
+
+        private async Task<RunResult> RunProtectedBashScriptAsync(ExecLibraryScriptPayload payload, string content, CancellationToken ct,
+            IReadOnlyDictionary<string, string>? parameters, IReadOnlyDictionary<string, string> protectedParameters, ExecutionObserver observer)
+        {
+            if (protectedParameters.Values.Any(value => value.Contains('\0')))
+                throw new InvalidOperationException("Bash protected parameters cannot contain a NUL character.");
+            var shellPath = FindShell("bash") ?? Throw("bash");
+            var script = new StringBuilder();
+            var input = new StringBuilder();
+            foreach (var (name, value) in protectedParameters)
+            {
+                var variable = $"NETRATEL_SECRET_{name}";
+                script.Append("unset -v ").Append(variable).AppendLine(" || exit 126");
+                script.Append("IFS= read -r -d '' ").Append(variable).AppendLine(" || exit 126");
+                input.Append(value).Append('\0');
+            }
+            script.Append(content);
+            var scriptPath = WritePrivateTemp(".sh", script.ToString());
+            try
+            {
+                var timeout = TimeSpan.FromSeconds(payload.TimeoutSeconds ?? (int)_defaultTimeout.TotalSeconds);
+                return await StartAsync(shellPath, $"--noprofile --norc -p -- {QuoteArgument(scriptPath)}", payload.WorkingDirectory,
+                    timeout, ct, CreateBashParameterEnvironment(parameters), observer: observer, protectedInput: input.ToString()).ConfigureAwait(false);
+            }
+            finally { TryDeletePrivateTemp(scriptPath); }
         }
 
         private static Dictionary<string, string>? CreateBashParameterEnvironment(
@@ -317,7 +377,10 @@ namespace NetRatel.Client.Service.Shells
                 // encoding. Both external engines understand a UTF-8 script BOM.
                 var powerShellScript = ext.Equals(".ps1", StringComparison.OrdinalIgnoreCase);
                 var scriptContents = powerShellScript && contents.StartsWith('\uFEFF') ? contents[1..] : contents;
-                File.WriteAllText(path, scriptContents, new UTF8Encoding(powerShellScript));
+                var options = new FileStreamOptions { Mode = FileMode.CreateNew, Access = FileAccess.Write, Share = FileShare.None };
+                if (!OperatingSystem.IsWindows()) options.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+                using var writer = new StreamWriter(path, new UTF8Encoding(powerShellScript), options);
+                writer.Write(scriptContents);
                 return path;
             }
             catch
@@ -348,10 +411,9 @@ namespace NetRatel.Client.Service.Shells
                 var privateRoot = Path.Combine(applicationRoot, "PrivateParameters");
                 EnsureWindowsPrivateDirectory(privateRoot, owner);
                 var windowsExecutionDirectory = Path.Combine(privateRoot, $"netratel_private_{Guid.NewGuid():N}");
-                Directory.CreateDirectory(windowsExecutionDirectory);
+                new DirectoryInfo(windowsExecutionDirectory).Create(CreateWindowsPrivateSecurity(owner));
                 try
                 {
-                    ProtectWindowsPrivateDirectory(windowsExecutionDirectory);
                     ValidateWindowsPrivateDirectory(windowsExecutionDirectory, owner, protectContents: true);
                     return windowsExecutionDirectory;
                 }
@@ -362,13 +424,8 @@ namespace NetRatel.Client.Service.Shells
                 }
             }
 
-            var configuredRoot = tempRootOverride ?? (OperatingSystem.IsMacOS() ? "/private/tmp" : "/tmp");
-            if (string.IsNullOrWhiteSpace(configuredRoot))
-            {
-                throw new InvalidOperationException("The operating system temporary directory is unavailable.");
-            }
-
-            var root = ResolveTrustedUnixTemporaryDirectory(configuredRoot);
+            var root = OperatingSystem.IsMacOS() ? "/private/tmp" : "/tmp";
+            ValidateTrustedUnixTemporaryDirectory(root, tempRootOverride);
             var executionDirectory = Path.Combine(root, $"netratel_private_{Guid.NewGuid():N}");
             if (MakeUnixDirectory(executionDirectory, (int)OwnerOnlyDirectoryMode) != 0)
             {
@@ -393,10 +450,14 @@ namespace NetRatel.Client.Service.Shells
             }
         }
 
-        private static string ResolveTrustedUnixTemporaryDirectory(string configuredRoot)
+        private static void ValidateTrustedUnixTemporaryDirectory(string expectedRoot, string? tempRootOverride)
         {
+            var configuredRoot = tempRootOverride ?? expectedRoot;
+            if (string.IsNullOrWhiteSpace(configuredRoot))
+            {
+                throw new InvalidOperationException("The operating system temporary directory is unavailable.");
+            }
             var candidate = new DirectoryInfo(Path.GetFullPath(configuredRoot));
-            var expectedRoot = OperatingSystem.IsMacOS() ? "/private/tmp" : "/tmp";
             if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS())
             {
                 throw new PlatformNotSupportedException("Private script files require a supported Linux or macOS temporary directory.");
@@ -427,8 +488,6 @@ namespace NetRatel.Client.Service.Shells
                 var isTemporaryRoot = string.Equals(ancestorPath, candidate.FullName, StringComparison.Ordinal);
                 ValidateUnixTemporaryAncestor(ancestorPath, isTemporaryRoot);
             }
-
-            return candidate.FullName;
         }
 
         private static void ValidateUnixTemporaryAncestor(string path, bool allowSharedWrite)
@@ -511,25 +570,22 @@ namespace NetRatel.Client.Service.Shells
         [SupportedOSPlatform("windows")]
         internal static void EnsureWindowsPrivateDirectory(string path, SecurityIdentifier owner)
         {
-            if (Directory.Exists(path))
+            var directory = new DirectoryInfo(path);
+            if (directory.Exists)
             {
-                // A pre-existing LocalSystem AppData root can inherit only SYSTEM and
-                // Administrators ACEs. Verify its owner, path and every readable ACE
-                // before replacing that inheritance with the canonical private ACL.
-                ValidateWindowsPrivateDirectory(path, owner, protectContents: true, requireProtected: false);
-                if (!new DirectoryInfo(path).GetAccessControl().AreAccessRulesProtected)
-                    ProtectWindowsPrivateDirectory(path);
-                ValidateWindowsPrivateDirectory(path, owner, protectContents: true);
-                return;
+                // A service or elevated account may have created the directory with
+                // SYSTEM or Administrators as owner. Validate its ACL before repair.
+                var security = ValidateWindowsPrivateDirectory(path, owner, protectContents: true, requireProtected: false);
+                if (!security.AreAccessRulesProtected || !owner.Equals(security.GetOwner(typeof(SecurityIdentifier))))
+                    directory.SetAccessControl(CreateWindowsPrivateSecurity(owner));
             }
+            else directory.Create(CreateWindowsPrivateSecurity(owner));
 
-            Directory.CreateDirectory(path);
-            ProtectWindowsPrivateDirectory(path);
             ValidateWindowsPrivateDirectory(path, owner, protectContents: true);
         }
 
         [SupportedOSPlatform("windows")]
-        private static void ValidateWindowsPrivateDirectory(string path, SecurityIdentifier owner, bool protectContents, bool requireProtected = true)
+        private static DirectorySecurity ValidateWindowsPrivateDirectory(string path, SecurityIdentifier owner, bool protectContents, bool requireProtected = true)
         {
             var info = new DirectoryInfo(path);
             if (!info.Exists || (info.Attributes & FileAttributes.ReparsePoint) != 0)
@@ -538,9 +594,13 @@ namespace NetRatel.Client.Service.Shells
             }
 
             var security = info.GetAccessControl();
-            if (security.GetOwner(typeof(SecurityIdentifier)) is not SecurityIdentifier directoryOwner || !directoryOwner.Equals(owner))
+            var system = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
+            var administrators = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
+            var requireExecutionOwner = protectContents && requireProtected;
+            if (security.GetOwner(typeof(SecurityIdentifier)) is not SecurityIdentifier directoryOwner ||
+                !directoryOwner.Equals(owner) && (requireExecutionOwner || !directoryOwner.Equals(system) && !directoryOwner.Equals(administrators)))
             {
-                throw new UnauthorizedAccessException("A private temporary directory is not owned by the current Windows identity.");
+                throw new UnauthorizedAccessException("The Windows temporary-directory owner is outside the allowed identities.");
             }
 
             if (protectContents && requireProtected && !security.AreAccessRulesProtected)
@@ -548,8 +608,6 @@ namespace NetRatel.Client.Service.Shells
                 throw new UnauthorizedAccessException("A private temporary directory must not inherit access rules from its parent.");
             }
 
-            var system = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
-            var administrators = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
             var creatorOwner = new SecurityIdentifier(WellKnownSidType.CreatorOwnerSid, null);
             var allowedWriters = new[] { owner, system, administrators, creatorOwner };
             var protectedRights = FileSystemRights.Write | FileSystemRights.Delete |
@@ -572,13 +630,12 @@ namespace NetRatel.Client.Service.Shells
                     throw new UnauthorizedAccessException("A private temporary directory grants write access to an untrusted Windows identity.");
                 }
             }
+            return security;
         }
 
         [SupportedOSPlatform("windows")]
-        private static void ProtectWindowsPrivateDirectory(string path)
+        private static DirectorySecurity CreateWindowsPrivateSecurity(SecurityIdentifier currentSid)
         {
-            using var identity = WindowsIdentity.GetCurrent();
-            var currentSid = identity.User ?? throw new InvalidOperationException("The current Windows identity has no user SID.");
             var systemSid = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
             var administratorsSid = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
             var security = new DirectorySecurity();
@@ -594,7 +651,7 @@ namespace NetRatel.Client.Service.Shells
                     PropagationFlags.None,
                     AccessControlType.Allow));
             }
-            new DirectoryInfo(path).SetAccessControl(security);
+            return security;
         }
 
         internal static void TryDeletePrivateTemp(string path)
@@ -847,7 +904,8 @@ namespace NetRatel.Client.Service.Shells
             CancellationToken ct,
             IReadOnlyDictionary<string, string>? environment = null,
             Encoding? outputEncoding = null,
-            ExecutionObserver? observer = null)
+            ExecutionObserver? observer = null,
+            string? protectedInput = null)
         {
             ct.ThrowIfCancellationRequested();
             if (timeout <= TimeSpan.Zero || timeout.TotalMilliseconds > uint.MaxValue - 1)
@@ -858,6 +916,8 @@ namespace NetRatel.Client.Service.Shells
             {
                 WorkingDirectory = resolvedCwd,
                 UseShellExecute = false,
+                RedirectStandardInput = protectedInput is not null,
+                StandardInputEncoding = protectedInput is null ? null : new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 StandardOutputEncoding = outputEncoding,
@@ -919,6 +979,7 @@ namespace NetRatel.Client.Service.Shells
 
             if (!proc.Start()) throw new InvalidOperationException($"Failed to start: {fileName}");
             res.ProcessStarted = true;
+            res.ObservedIdentity = NativeProcessIdentity.ObserveStartedProcess(proc);
             async Task PublishOutputAsync()
             {
                 if (observer is not null) await observer.Started().ConfigureAwait(false);
@@ -950,9 +1011,11 @@ namespace NetRatel.Client.Service.Shells
 
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             cts.CancelAfter(timeout);
+            var inputSent = protectedInput is null ? Task.FromResult(true) : SendProtectedInputAsync(proc, protectedInput, cts.Token);
 
             try
             {
+                res.ProtectedInputDeliveryFailed = !await inputSent.WaitAsync(cts.Token).ConfigureAwait(false);
                 await proc.WaitForExitAsync(cts.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cts.IsCancellationRequested)
@@ -975,6 +1038,11 @@ namespace NetRatel.Client.Service.Shells
                 {
                     await proc.WaitForExitAsync(cleanup.Token).ConfigureAwait(false);
                     await Task.WhenAll(tcsOut.Task, tcsErr.Task).WaitAsync(cleanup.Token).ConfigureAwait(false);
+                    try { await inputSent.WaitAsync(cleanup.Token).ConfigureAwait(false); }
+                    catch (OperationCanceledException) when (!cleanup.IsCancellationRequested)
+                    {
+                        res.ProtectedInputDeliveryFailed = true;
+                    }
                 }
                 catch (OperationCanceledException) when (cleanup.IsCancellationRequested)
                 {
@@ -993,6 +1061,7 @@ namespace NetRatel.Client.Service.Shells
             await Task.WhenAll(tcsOut.Task, tcsErr.Task);
             sw.Stop();
             res.ExitCode = proc.ExitCode;
+            if (res.ProtectedInputDeliveryFailed) res.Error.Add("The private input pipe closed before the protected parameters were delivered.");
             res.DurationMs = sw.Elapsed.TotalMilliseconds;
             output.Writer.TryComplete();
             await publisher.ConfigureAwait(false);
@@ -1001,6 +1070,19 @@ namespace NetRatel.Client.Service.Shells
                 res.Error.Add($"Process exited with code {res.ExitCode} without emitting stdout/stderr.");
             }
             return res;
+        }
+
+        private static async Task<bool> SendProtectedInputAsync(Process process, string input, CancellationToken ct)
+        {
+            var bytes = Encoding.UTF8.GetBytes(input);
+            try
+            {
+                using var writer = process.StandardInput;
+                await writer.BaseStream.WriteAsync(bytes, ct).ConfigureAwait(false);
+                return true;
+            }
+            catch (IOException) { return false; }
+            finally { CryptographicOperations.ZeroMemory(bytes); }
         }
     }
 }

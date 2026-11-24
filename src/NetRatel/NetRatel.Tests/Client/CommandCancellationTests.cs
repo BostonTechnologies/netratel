@@ -142,6 +142,7 @@ public sealed class CommandCancellationTests
     {
         using var identity = WindowsIdentity.GetCurrent();
         var security = new DirectoryInfo(directory).GetAccessControl();
+        security.GetOwner(typeof(SecurityIdentifier)).Should().Be(identity.User);
         security.AreAccessRulesProtected.Should().BeTrue();
         var allowedSids = security.GetAccessRules(includeExplicit: true, includeInherited: false, typeof(SecurityIdentifier))
             .Cast<FileSystemAccessRule>()
@@ -377,7 +378,8 @@ public sealed class CommandCancellationTests
 
         public async Task WaitUntilRunningAsync()
         {
-            await _ready.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            // A cold PowerShell process can take longer to start on a busy runner.
+            await _ready.Task.WaitAsync(TimeSpan.FromSeconds(15));
             _child = Process.GetProcessById(int.Parse(await File.ReadAllTextAsync(ReadyPath)));
         }
 

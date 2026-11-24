@@ -27,6 +27,7 @@ public static class ApiEndpointRegistrationExtensions
 
         app.MapTenantEndpoints();
         app.MapSecretEndpoints();
+        app.MapSecretVaultEndpoints();
         app.MapRatelDeskConnectorEndpoints();
         app.MapNotificationConnectorEndpoints();
         app.MapScriptEndpoints();

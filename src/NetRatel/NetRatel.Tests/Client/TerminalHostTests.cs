@@ -1,12 +1,46 @@
 using AwesomeAssertions;
 using NetRatel.Client;
 using NetRatel.Client.Service.Terminal;
+using NetRatel.Shared.Contracts.Secrets;
 using Xunit;
 
 namespace NetRatel.Tests.Client;
 
 public sealed class TerminalHostTests
 {
+    [Fact]
+    public async Task Redirected_terminal_reports_the_account_id_observed_inside_the_shell()
+    {
+        var windows = OperatingSystem.IsWindows();
+        var context = new TerminalHostContext(windows ? "cmd" : "sh", windows ? Path.Combine(Environment.SystemDirectory, "cmd.exe") : "/bin/sh",
+            windows ? "/d" : "", null, 100, 30, new TerminalHostOptions());
+        using var host = new RedirectedProcessTerminalHost(context);
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(10));
+        var output = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var buffer = new System.Text.StringBuilder();
+        await host.StartAsync(chunk =>
+        {
+            if (chunk.Direction != "stdout" || output.Task.IsCompleted) return Task.CompletedTask;
+            foreach (var line in buffer.Append(chunk.Data).ToString().Split('\n').SkipLast(1))
+            {
+                var text = line.Trim();
+                if (windows ? text.StartsWith('"') && text.Contains("S-1-", StringComparison.Ordinal) : uint.TryParse(text, out _))
+                    output.TrySetResult(text);
+            }
+            return Task.CompletedTask;
+        }, timeout.Token);
+        try
+        {
+            var observed = Assert.IsType<ObservedExecutionIdentity>(host.ObservedIdentity);
+            await host.WriteInputAsync(windows ? "whoami /user /fo csv /nh\r\n" : "id -u\n", timeout.Token);
+            var actual = await output.Task.WaitAsync(timeout.Token);
+            if (windows) Assert.Contains($"\"{observed.AccountId}\"", actual, StringComparison.Ordinal);
+            else Assert.Equal(observed.AccountId, actual);
+        }
+        finally { await host.RequestCloseAsync("test complete", timeout.Token); }
+    }
+
     [Fact]
     public void NativeUnixPty_IsEnabledByDefault()
     {

@@ -7,9 +7,9 @@ on:
         description: Run only this optional suite (client measurements use matching hosted OS runners)
         type: choice
         required: true
-        options: [pairing, gateway, mcp-campaign, stdio-assessment, browser, filesystem, deployment, release-images, candidate-images, native-client, upgrade-local, upgrade-oidc, client-measurement, client-trim-windows, client-trim-macos, client-control-macos, client-pty-debug-macos, windows-mcp, migrations-image, api-image, api-rid, cli-tool]
+        options: [pairing, gateway, mcp-campaign, stdio-assessment, browser, vault-fixture, filesystem, deployment, release-images, candidate-images, native-client, upgrade-local, upgrade-oidc, client-measurement, client-trim-windows, client-trim-macos, client-control-macos, client-pty-debug-macos, windows-mcp, migrations-image, api-image, api-rid, cli-tool]
       source_ref:
-        description: Source ref to test (published-image and upgrade suites use release_tag)
+        description: Source ref to test (published-image and upgrade suites use release_tag and vault-fixture uses the workflow ref)
         default: main
         required: true
       migrations_comparison:
@@ -68,9 +68,42 @@ permissions:
   actions: read
 
 jobs:
+  vault-fixture:
+    name: Disposable Infisical provider acceptance
+    if: inputs.suite == 'vault-fixture'
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6
+        with:
+          global-json-file: global.json
+      - name: Build and exercise the disposable provider
+        shell: bash
+        run: |
+          set -euo pipefail
+          project=src/NetRatel/NetRatel.Tests/NetRatel.Tests.csproj
+          mkdir -p TestResults/vault-fixture
+          git rev-parse HEAD > TestResults/vault-fixture/source.txt
+          dotnet restore "$project"
+          dotnet build "$project" --configuration Release --no-restore
+          dotnet test --project "$project" --configuration Release --no-build --no-restore \
+            --filter-method NetRatel.Tests.Infrastructure.TenantSecretVaultPostgresTests.Infisical_live_universal_auth_crud_preserves_pinned_versions \
+            --minimum-expected-tests 1 --results-directory TestResults/vault-fixture --report-trx --report-trx-filename provider.trx
+          python3 tools/ci/verify-mtp-trx.py TestResults/vault-fixture/provider.trx --expected-executed 1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: infisical-fixture-evidence
+          path: TestResults/vault-fixture
+          if-no-files-found: warn
+          retention-days: 14
+
   selected-suite:
     name: Manual ${{ inputs.suite }} (Linux)
-    if: inputs.suite != 'client-measurement' && inputs.suite != 'filesystem' && inputs.suite != 'client-trim-windows' && inputs.suite != 'client-trim-macos' && inputs.suite != 'client-control-macos' && inputs.suite != 'client-pty-debug-macos' && inputs.suite != 'windows-mcp' && inputs.suite != 'migrations-image' && inputs.suite != 'api-image' && inputs.suite != 'api-rid' && inputs.suite != 'cli-tool' && inputs.suite != 'candidate-images'
+    if: inputs.suite != 'client-measurement' && inputs.suite != 'filesystem' && inputs.suite != 'client-trim-windows' && inputs.suite != 'client-trim-macos' && inputs.suite != 'client-control-macos' && inputs.suite != 'client-pty-debug-macos' && inputs.suite != 'windows-mcp' && inputs.suite != 'migrations-image' && inputs.suite != 'api-image' && inputs.suite != 'api-rid' && inputs.suite != 'cli-tool' && inputs.suite != 'candidate-images' && inputs.suite != 'vault-fixture'
     runs-on: ubuntu-latest
     timeout-minutes: ${{ (inputs.suite == 'native-client' || inputs.suite == 'deployment' || inputs.suite == 'upgrade-local' || inputs.suite == 'upgrade-oidc') && 45 || inputs.suite == 'release-images' && 60 || 40 }}
     env:

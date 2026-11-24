@@ -252,6 +252,20 @@ replicas. Keep the key ring and database in the same backup and restore set.
 If a key is lost, public fetch fails closed and an operator must revoke the
 affected grants and issue new links. Never put the key ring in a public webroot.
 
+### API key-ring protection
+
+Configure the API with a persistent `DataProtection__KeysDirectory` and retain the same `DataProtection__ApplicationName` on every replica. For provider authentication outside Development, enroll an RSA wrapping certificate with `DataProtection__WrappingCertificatePath`. Use an absolute path to a PKCS#12 file containing the private key. For a password-protected file, set `DataProtection__WrappingCertificatePasswordFile` to the absolute path of the password file. Mount the certificate and password separately from PostgreSQL and restrict them to the operator and API service account.
+
+To enroll an existing ring, stop all API replicas sharing it and take an access-controlled backup of the database and key directory. From the API installation directory, with the API's key-directory and certificate environment variables loaded, run this one-shot command under the API service account.
+
+```sh
+dotnet NetRatel.API.dll --wrap-data-protection-keys
+```
+
+For a container deployment, run the same command inside a one-shot API container with the stopped replicas' key volume, wrapping credentials and settings mounted. The command wraps the existing key descriptors in place and preserves their IDs. Run it again if interrupted. On restart, the API checks for wrapped keys and attempts to open them before it serves requests. Test a previously saved Local secret and a protected historical job run after enrollment. Secure the pre-enrollment backup as plaintext key material under the deployment's retention policy.
+
+For wrapping certificate rotation, configure the old certificate under `DataProtection__PreviousWrappingCertificates__0__Path` and, if needed, `DataProtection__PreviousWrappingCertificates__0__PasswordFile`. Set the new certificate as active on each replica. New keys use the active certificate. Retain every private wrapping certificate required by the oldest database and key-ring backup that can be restored. Back up the database, original key-ring files, wrapping certificates and separate passwords together as one recoverable set. If key validation fails, restore the matching files and certificates before restarting.
+
 The Web application proxies `/clients/install/*` to the API so the displayed
 URL returns a raw `.sh` or `.ps1` file without a browser session. Configure
 your external proxy to forward that path to Web or API, avoid logging the

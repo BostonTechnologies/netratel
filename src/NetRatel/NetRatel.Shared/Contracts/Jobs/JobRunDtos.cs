@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using NetRatel.Shared;
+using NetRatel.Shared.Contracts.Secrets;
 
 namespace NetRatel.Shared.Contracts.Jobs;
 
@@ -27,6 +28,8 @@ public enum JobStepRunStatusDto
 }
 
 public sealed record JobRunOptionDto(string Name, string Value, string? Source = null);
+
+public sealed record JobProviderInput(string ParameterName, SecretReference Reference);
 
 public record JobRunDto(
     [property: System.Text.Json.Serialization.JsonNumberHandling(System.Text.Json.Serialization.JsonNumberHandling.WriteAsString | System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString)] ulong Id,
@@ -84,7 +87,11 @@ public record JobStepRunDto(
     string? ScriptType = null,
     string? CommandLabel = null,
     int? ExitCode = null
-);
+)
+{
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public ObservedExecutionIdentity? ObservedIdentity { get; init; }
+}
 
 public sealed record PagedJobRunsDto(
     IReadOnlyList<JobRunDto> Items,
@@ -111,4 +118,6 @@ public record RunJobRequest(
     /// <summary>Optional invocation-only subset of the complete resolved target set.</summary>
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public IReadOnlyList<Guid>? SelectedTargetAgentIds { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<JobProviderInput>? ProviderInputs { get; init; }
 }

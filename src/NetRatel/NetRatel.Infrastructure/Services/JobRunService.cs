@@ -16,6 +16,7 @@ public sealed class JobRunService(OrchestratorDbContext db, IDataProtectionProvi
     private const int TaskActivityInsertAttempts = 4;
     private readonly OrchestratorDbContext _db = db;
     private readonly JobRunInputProtection _protection = new(protection);
+    private readonly JobSecretDefaultProtection _defaults = new(db, protection);
     private readonly Dictionary<ulong, (ulong JobId, int? TenantId, JobRunInputProtection.Sensitivity Metadata)> _submissions = [];
     private readonly Dictionary<ulong, McpOperatorJobExecutionSnapshot> _mcpSnapshots = [];
     private readonly Dictionary<ulong, PinnedJobExecutionSnapshot> _pinnedSnapshots = [];
@@ -380,8 +381,14 @@ public sealed class JobRunService(OrchestratorDbContext db, IDataProtectionProvi
                 metadata = metadata with { DefinitionRevision = mcpSnapshot.ComputeDigest() };
             if (pinnedSnapshot is not null)
                 metadata = metadata with { DefinitionRevision = pinnedSnapshot.ComputeDigest() };
+            var inputs = existingHistory ? row.InputsJson : command.InputsJson;
+            if (isNew && mcpSnapshot is null)
+            {
+                var submittedDefaults = pinnedSnapshot is null ? await _defaults.CaptureAsync(row.JobId, ct) : pinnedSnapshot.SecretDefaults ?? [];
+                inputs = _defaults.Apply(row, inputs, submittedDefaults);
+            }
             _protection.Store(row, metadata,
-                existingHistory ? row.InputsJson : command.InputsJson,
+                inputs,
                 existingHistory ? row.OptionsJson : command.OptionsJson, mcpSnapshot, pinnedSnapshot, nodeContext);
         }
         row.Error = _protection.Diagnostic(row, NormalizeNullable(command.Error));

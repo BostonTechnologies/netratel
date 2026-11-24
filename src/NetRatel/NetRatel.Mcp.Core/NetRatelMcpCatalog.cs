@@ -125,15 +125,19 @@ public static class NetRatelMcpCatalog
                 result[index] = result[index] with { Operations = [.. result[index].Operations, .. operations],
                     Description = result[index].Description + " metadata reads hostname, friendlyName and tags with telemetry.read; set_metadata replaces operator labels with client.manage and confirm: true. Labels do not grant MCP target-policy authority." };
             else
+            {
+                var writes = group.Any(operation => operation.Mutation);
                 result.Add(new NetRatelMcpToolDescriptor(group.Key,
-                    $"{ManagedInstructions(group.Key)} Operations: {string.Join(", ", operations.Select(operation => operation.Name))}. Available over HTTP and stdio. Mutations require confirm: true. Set operation and supply only the matching closed request schema.",
-                    NetRatelMcpOperationSafety.OperatorMutation, true, operations));
+                    $"{ManagedInstructions(group.Key)} Operations: {string.Join(", ", operations.Select(operation => operation.Name))}. Available over HTTP and stdio. {(writes ? "Mutations require confirm: true. " : "")}Set operation and supply only the matching closed request schema.",
+                    writes ? NetRatelMcpOperationSafety.OperatorMutation : NetRatelMcpOperationSafety.Read, true, operations));
+            }
         }
         return result;
     }
 
     internal static string ManagedInstructions(string tool) => tool switch
     {
+        "netratel_secrets" => "Read tenant-scoped secret metadata and credential profile references. connections returns enabled connection IDs. browse takes connectionId and data with folder, search, cursor and limit; keep filters fixed while paging. entry takes connectionId and the exact locator, with an optional version. profiles additionally requires secret.use and execution.run-as. Results contain metadata and references only.",
         "netratel_execution_groups" => "Manage tenant-owned explicit AgentId groups through canonical services. All group administration requires tenant.admin; job operators use netratel_job_targets groups/group for read-only selection. list takes {search,page,pageSize} data; get requires groupId. create/update take the typed group write data and update/delete require the current expectedRevision. Empty groups may be saved but cannot execute. Renames preserve group identity. Group management never grants execution permission. Mutations require tenant.admin and confirm:true.",
         "netratel_job_targets" => "Read the allowlisted properties, search nodes, resolve identities, discover groups/group, validate or preview a selector; resolve_preview supports all four target modes. Use exact literals, explicit /regex/, tags comma OR and plus AND, property conjunctions and exclusions. Empty selectors never select all. Page the complete authorized result set; totalCount is the full match count. Preview dispatches no execution.",
         "netratel_software" => "Read cached tenant software policy, status, scan_status, snapshot, installations, aggregate and changes with bounded query data. Reads never trigger a scan. refresh is an explicit client.manage mutation; confirm:true queues one durable scan even offline. set_policy requires tenant.admin. Only complete scans establish removals. Inspect lastSuccessfulScanUtc and errors before interpreting absence.",

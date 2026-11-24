@@ -99,10 +99,14 @@ public sealed class ExecutionAdmissionDeniedException(string message) : InvalidO
 public sealed class ExecutionAdmissionBudgetExhaustedException() : InvalidOperationException("The linked rerun attempt budget is exhausted.");
 
 public sealed record PinnedJobScriptSnapshot(ScriptInfo Script, IReadOnlyList<ScriptParamInfo> Parameters, string ContentHash);
+public sealed record PinnedJobSecretDefault(ulong ParameterId, string Name, string ProtectedValue);
 
 /// <summary>A neutral immutable job/script source snapshot, separate from MCP-owned identities and grants.</summary>
 public sealed record PinnedJobExecutionSnapshot(JobDefinitionDetails Definition, IReadOnlyList<PinnedJobScriptSnapshot> Scripts)
 {
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<PinnedJobSecretDefault>? SecretDefaults { get; init; }
+
     public string ComputeDigest() => Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(this)));
 
     public void Validate(int tenantId)
@@ -116,6 +120,14 @@ public sealed record PinnedJobExecutionSnapshot(JobDefinitionDetails Definition,
             throw new ArgumentException("A pinned target definition cannot be combined with legacy AgentId.");
         Definition.Job.Target?.Validate();
         Definition.Job.ExecutionPolicy?.Validate();
+        if (SecretDefaults is not null && (SecretDefaults.GroupBy(value => value.ParameterId).Any(group => group.Count() != 1) ||
+            SecretDefaults.Any(value => !Definition.Params.Any(parameter => parameter.Id == value.ParameterId && parameter.Name == value.Name &&
+                parameter.Type.Equals("secret", StringComparison.OrdinalIgnoreCase) && parameter.HasProtectedDefault))))
+            throw new ArgumentException("Protected defaults must match their immutable secret parameters.");
+        if (Definition.Params.Any(parameter => parameter.ProviderDefault is { } binding &&
+                (!parameter.Type.Equals("secret", StringComparison.OrdinalIgnoreCase) || parameter.HasProtectedDefault ||
+                parameter.DefaultValue is not null || !ProtectedJobParameterRules.IsName(parameter.Name) || binding.ScopeRevision <= 0)))
+            throw new ArgumentException("Provider defaults must bind an immutable Secret parameter and provider scope.");
         foreach (var script in Scripts)
         {
             if (script.Script.Id == 0 || script.Script.SourceRevision <= 0 ||

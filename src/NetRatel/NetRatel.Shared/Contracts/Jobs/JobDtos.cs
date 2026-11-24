@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using NetRatel.Shared;
+using NetRatel.Shared.Contracts.Secrets;
 
 namespace NetRatel.Shared.Contracts.Jobs;
 
@@ -46,7 +47,15 @@ public record JobParamDto(
     string? Default,
     string? Description,
     string? OptionsJson
-);
+)
+{
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    public bool HasProtectedDefault { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    public bool HasProviderDefault { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public SecretReference? DefaultSecretReference { get; init; }
+}
 
 public enum JobStepTypeDto { RunCommand = 0, LibraryScript = 1, HttpAction = 2 }
 
@@ -120,7 +129,11 @@ public record AddJobParamRequest(
     string? Default,
     string? Description,
     string? OptionsJson
-);
+)
+{
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public SecretReference? DefaultSecretReference { get; init; }
+}
 
 public record UpdateJobParamRequest(
     string? Name,
@@ -129,7 +142,13 @@ public record UpdateJobParamRequest(
     string? Default,
     string? Description,
     string? OptionsJson
-);
+)
+{
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)]
+    public bool ClearProtectedDefault { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public SecretReference? DefaultSecretReference { get; init; }
+}
 
 public record AddJobStepRequest(
     int? Ordinal,

@@ -10,6 +10,7 @@ using System.Globalization;
 using NetRatel.Application.Jobs;
 using NetRatel.Application.Operations;
 using NetRatel.Application.Requests;
+using NetRatel.Application.Secrets;
 using NetRatel.Infrastructure.Flows;
 using NetRatel.Infrastructure.Identity.Authorization;
 using NetRatel.Infrastructure.Persistence;
@@ -323,6 +324,30 @@ public sealed class JobAggregateOrchestrator(
             await RequireActiveTargetAsync(plan.TenantId, plan.JobId, plan.Nodes[0].AgentId, ct);
             if (mcpSnapshot is not null) await mcpAuthority!.RequireAllowedAsync(mcpSnapshot, plan.Nodes[0].AgentId, ct);
         }
+        string? providerInputs = null;
+        var requestedInputs = JobProviderExecutionInputs.SelectBindings(snapshot.Definition, request);
+        if (requestedInputs.Length != 0)
+        {
+            try { await RequireProviderInputAuthorityAsync(sourceKind, principalId, credentialId, plan.TenantId, ct); }
+            catch (ExecutionAdmissionDeniedException error)
+            { throw new JobTargetValidationException("job_provider_input_denied", error.Message, StatusCodes.Status403Forbidden); }
+            if (db.Database.IsNpgsql())
+            {
+                // Provider removals take the matching exclusive tenant lock.
+                var tenant = await db.Database.SqlQuery<int>($"""
+                    SELECT "Id" AS "Value" FROM "Tenants" WHERE "Id" = {plan.TenantId} AND "DeletedAtUtc" IS NULL FOR SHARE
+                    """).SingleOrDefaultAsync(ct);
+                if (tenant == 0) throw new ExecutionAdmissionDeniedException("The tenant is no longer available for protected job admission.");
+            }
+            await using var providerScope = scopes.CreateAsyncScope();
+            try
+            {
+                providerInputs = await providerScope.ServiceProvider.GetRequiredService<JobProviderExecutionInputs>()
+                    .AdmitAsync(plan.TenantId, snapshot, request, requestedInputs, ct);
+            }
+            catch (SecretProviderException error)
+            { throw new JobTargetValidationException("job_provider_input_unavailable", error.Message); }
+        }
         if (mcpSnapshot is null) runs.BindPinnedExecutionSnapshot(parentId, snapshot);
         else runs.BindMcpExecutionSnapshot(parentId, mcpSnapshot);
         var now = clock.GetUtcNow();
@@ -339,7 +364,8 @@ public sealed class JobAggregateOrchestrator(
         db.Set<JobAggregateControlRecord>().Add(new()
         {
             ParentRunId = row.Id, AdmissionKey = admissionKey, PrincipalId = principalId,
-            IntegrationCredentialId = credentialId, SourceKind = sourceKind, ActionDeadlineAtUtc = actionDeadline
+            IntegrationCredentialId = credentialId, SourceKind = sourceKind, ActionDeadlineAtUtc = actionDeadline,
+            ProviderInputBindingsJson = providerInputs
         });
         db.Set<JobRunNodeRecord>().AddRange(plan.Nodes.Select((node, index) => new JobRunNodeRecord
         {
@@ -503,6 +529,8 @@ public sealed class JobAggregateOrchestrator(
         if (control.CancellationRequestedAtUtc is not null || control.ActionDeadlineAtUtc is { } end && clock.GetUtcNow() >= end)
             throw new ExecutionAdmissionDeniedException("The aggregate parent no longer admits native dispatch.");
         await RequireActiveTargetAsync(plan.TenantId, plan.JobId, agentId, ct);
+        if (control.ProviderInputBindingsJson is not null)
+            await RequireProviderInputAuthorityAsync(control.SourceKind, control.PrincipalId, control.IntegrationCredentialId, plan.TenantId, ct);
         if (control.SourceKind == "flow")
         {
             var binding = admissions is null ? null : await admissions.FindByExecutionAsync(ExecutionAdmissionKind.Job, parent.Id.ToString(), ct);
@@ -541,6 +569,35 @@ public sealed class JobAggregateOrchestrator(
                 throw new ExecutionAdmissionDeniedException("The historical fixed schedule cannot authorize this target policy.");
         }
         else await RequirePrincipalAsync(control.PrincipalId, control.IntegrationCredentialId, plan, ct, [agentId]);
+    }
+
+    internal async Task<JobProviderExecutionInputs.Binding[]> GetProviderInputsAsync(ulong parentRunId, CancellationToken ct)
+    {
+        var json = await db.JobAggregateControls.AsNoTracking().Where(row => row.ParentRunId == checked((long)parentRunId))
+            .Select(row => row.ProviderInputBindingsJson).SingleAsync(ct);
+        return JobProviderExecutionInputs.ReadBindings(json);
+    }
+
+    internal async Task<IReadOnlyDictionary<string, string>> ResolveProviderInputsAsync(JobRunInfo run,
+        JobProviderExecutionInputs.Binding[] bindings, IReadOnlyDictionary<string, string> stepNames, CancellationToken ct)
+    {
+        if (run.ParentRunId is not { } parentId || run.TenantId is not { } tenant)
+            throw new ExecutionAdmissionDeniedException("The native execution has no protected input admission.");
+        await using var scope = scopes.CreateAsyncScope();
+        return await scope.ServiceProvider.GetRequiredService<JobProviderExecutionInputs>()
+            .ResolveForStepAsync(checked((long)parentId), tenant, bindings, stepNames, ct);
+    }
+
+    private async Task RequireProviderInputAuthorityAsync(string? source, string? principalId, string? credentialId, int tenantId, CancellationToken ct)
+    {
+        // Restricted automation use needs an independent immutable review. The
+        // direct interactive path can use only authority that can already reveal.
+        if (source is not ("manual" or "schedule" or "request") || credentialId is not null || string.IsNullOrWhiteSpace(principalId))
+            throw new ExecutionAdmissionDeniedException("Protected job inputs require authorized interactive admission or a reviewed execution source.");
+        var principal = new ClaimsPrincipal(new ClaimsIdentity([new Claim("netratel_principal_id", principalId)], "NetclawSavedAuthority"));
+        if (!await access.AuthorizeAsync(principal, NetRatelPermissions.SecretUse, tenantId, ct) ||
+            !await access.AuthorizeAsync(principal, NetRatelPermissions.SecretReveal, tenantId, ct))
+            throw new ExecutionAdmissionDeniedException("The operator's authority to use protected job inputs is unavailable.");
     }
 
     /// <summary>

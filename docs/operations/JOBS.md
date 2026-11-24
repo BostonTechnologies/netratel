@@ -7,6 +7,12 @@ pool. Each fresh job invocation runs its complete ordered workflow on exactly
 lists continue to run on every selected node. Membership grants no execution
 permission.
 
+## Protected job defaults
+
+A Secret parameter can have a protected default. Its editor lets you replace or remove the default. Existing job and parameter views show whether a protected default is present. When starting a run, leave the field blank to use that default or supply an explicit value for this run.
+
+The API captures the applicable default in the run's existing encrypted input material. An edit applies to future admissions. The run history displays protected inputs as redacted. Keep the [API key ring](../deployment/CONFIGURATION.md#api-key-ring-protection) with your database backup to recover protected job material.
+
 ## Configure a group
 
 Open the tenant editor and select **HA Groups**. Create a named group, search

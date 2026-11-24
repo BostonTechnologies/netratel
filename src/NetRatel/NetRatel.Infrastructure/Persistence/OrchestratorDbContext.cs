@@ -55,6 +55,9 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
     public DbSet<OidcSigningKey> OidcSigningKeys => Set<OidcSigningKey>();
     public DbSet<Tenant> Tenants => Set<Tenant>();
     public DbSet<SecretRecord> Secrets => Set<SecretRecord>();
+    public DbSet<SecretVersionRecord> SecretVersions => Set<SecretVersionRecord>();
+    public DbSet<SecretProviderConnectionRecord> SecretProviderConnections => Set<SecretProviderConnectionRecord>();
+    public DbSet<CredentialProfileRecord> CredentialProfiles => Set<CredentialProfileRecord>();
     public DbSet<ScriptDefinition> Scripts => Set<ScriptDefinition>();
     public DbSet<ScriptParameterDefinition> ScriptParameters => Set<ScriptParameterDefinition>();
     public DbSet<ExecutionGroupRecord> ExecutionGroups => Set<ExecutionGroupRecord>();
@@ -1207,9 +1210,47 @@ public class OrchestratorDbContext(DbContextOptions<OrchestratorDbContext> optio
             entity.ToTable("Secrets");
             entity.HasKey(x => x.Id);
             entity.Property(x => x.Value).IsRequired();
+            entity.Property(x => x.Name).HasMaxLength(256);
+            entity.Property(x => x.Version).HasDefaultValue(1L);
+            entity.Property(x => x.Revision).HasDefaultValue(1L).IsConcurrencyToken();
             entity.HasIndex(x => x.TenantId);
             entity.HasIndex(x => x.ClientIdentity);
             entity.HasIndex(x => x.CreatedAtUtc);
+            entity.HasIndex(x => new { x.TenantId, x.Id });
+        });
+
+        modelBuilder.Entity<SecretVersionRecord>(entity =>
+        {
+            entity.ToTable("SecretVersions");
+            entity.HasKey(x => new { x.SecretId, x.Version });
+            entity.HasOne<SecretRecord>().WithMany().HasForeignKey(x => x.SecretId).OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<SecretProviderConnectionRecord>(entity =>
+        {
+            entity.ToTable("SecretProviderConnections", table =>
+                table.HasCheckConstraint("CK_SecretProviderConnections_DefaultEnabled", "NOT \"IsDefault\" OR \"Enabled\""));
+            entity.HasKey(x => new { x.TenantId, x.Id });
+            entity.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Cascade);
+            entity.HasIndex(x => x.TenantId).HasFilter("\"IsDefault\"").IsUnique();
+            entity.Property(x => x.DisplayName).HasMaxLength(128);
+            entity.Property(x => x.Revision).IsConcurrencyToken();
+            entity.Property(x => x.ConfigurationJson).HasColumnType("jsonb");
+            entity.Property(x => x.LastTestJson).HasColumnType("jsonb");
+        });
+
+        modelBuilder.Entity<CredentialProfileRecord>(entity =>
+        {
+            entity.ToTable("CredentialProfiles");
+            entity.HasKey(x => new { x.TenantId, x.Id });
+            entity.HasOne<Tenant>().WithMany().HasForeignKey(x => x.TenantId).OnDelete(DeleteBehavior.Cascade);
+            entity.Property(x => x.DisplayName).HasMaxLength(128);
+            entity.Property(x => x.Revision).IsConcurrencyToken();
+            entity.Property(x => x.MappingJson).HasColumnType("jsonb");
+            entity.Property(x => x.UsernameLocator).HasMaxLength(1024);
+            entity.Property(x => x.PasswordLocator).HasMaxLength(1024);
+            entity.HasIndex(x => new { x.TenantId, x.UsernameConnectionId, x.UsernameLocator });
+            entity.HasIndex(x => new { x.TenantId, x.PasswordConnectionId, x.PasswordLocator });
         });
 
         modelBuilder.Entity<ScriptDefinition>(entity =>

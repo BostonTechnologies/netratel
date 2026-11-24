@@ -14,6 +14,7 @@ using NetRatel.Infrastructure.Identity.Authorization;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Infrastructure.Services;
 using NetRatel.Shared.Contracts.Jobs;
+using NetRatel.Shared.Contracts.Secrets;
 using NetRatel.Shared.Contracts.Tasks;
 using NetRatel.Shared.Security;
 
@@ -136,7 +137,27 @@ public static partial class JobRunEndpoints
     internal static JobStepRunDto MapStepRun(JobStepRunInfo step, JobTaskActivityInfo? activity) =>
         new(step.Id, step.JobRunId, step.JobStepId, (JobStepRunStatusDto)step.Status, step.Ordinal,
             step.TaskRequestId, Micros(step.StartedAtUtc), Micros(step.CompletedAtUtc), step.Error, null,
-            activity?.ScriptName, activity?.ScriptType, activity?.CommandLabel, activity?.ExitCode);
+            activity?.ScriptName, activity?.ScriptType, activity?.CommandLabel, activity?.ExitCode)
+        { ObservedIdentity = ReadObservedIdentity(activity?.ResultJson) };
+
+    private static ObservedExecutionIdentity? ReadObservedIdentity(string? result)
+    {
+        if (string.IsNullOrWhiteSpace(result)) return null;
+        try
+        {
+            using var document = JsonDocument.Parse(result);
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object ||
+                !root.TryGetProperty("processStarted", out var started) || started.ValueKind != JsonValueKind.True ||
+                !root.TryGetProperty("diagnostics", out var diagnostics) || diagnostics.ValueKind != JsonValueKind.Object ||
+                !diagnostics.TryGetProperty("observedIdentity", out var identity) || identity.ValueKind != JsonValueKind.Object ||
+                !identity.TryGetProperty("account", out var account) || account.ValueKind != JsonValueKind.String ||
+                !identity.TryGetProperty("accountId", out var id) || id.ValueKind != JsonValueKind.String)
+                return null;
+            return ObservedExecutionIdentity.FromObservation(account.GetString(), id.GetString());
+        }
+        catch (JsonException) { return null; }
+    }
 
     private static string BoundStreamMessage(string value, int budget)
     {

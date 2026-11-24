@@ -1736,7 +1736,8 @@ public sealed partial class NetRatelCliTests
         string[] args,
         Func<HttpRequestMessage, Task<HttpResponseMessage>> responder,
         StringWriter? output = null,
-        StringWriter? errors = null)
+        StringWriter? errors = null,
+        TextReader? input = null)
         => NetRatelCli.RunAsync([
             "--api-base-url", "https://api.example",
             "--token-url", "https://auth.example/token",
@@ -1744,7 +1745,7 @@ public sealed partial class NetRatelCliTests
             "--username", "agent",
             "--app-password", "secret",
             .. args
-        ], new CliRuntime(() => new RecordingHandler(responder)) { Out = output ?? new StringWriter(), Error = errors ?? new StringWriter() });
+        ], new CliRuntime(() => new RecordingHandler(responder)) { Out = output ?? new StringWriter(), Error = errors ?? new StringWriter(), In = input ?? Console.In });
 
     private static string ClientsJson(bool includeSecondExample = false)
         => includeSecondExample

@@ -577,6 +577,7 @@ message GatewayJobFrame {
     JobStepDispatch dispatch = 11;
     JobCancel cancel = 12;
     JobLifecycleReceipt receipt = 13;
+    ProtectedJobStepDispatch protected_dispatch = 14;
   }
 }
 
@@ -623,6 +624,13 @@ message JobStepDispatch {
   uint64 next_version = 9;
   uint64 next_sequence = 10;
   google.protobuf.Timestamp requested_at_utc = 11;
+}
+
+// Sent once on the authenticated job stream. Lifecycle receipts never echo parameters.
+message ProtectedJobStepDispatch {
+  JobStepDispatch step = 1;
+  google.protobuf.Timestamp expires_at_utc = 2;
+  map<string, string> parameters = 3;
 }
 
 message JobLifecycleUpdate {
@@ -1209,7 +1217,16 @@ message TerminalSessionStart {
   string shell_type = 5;
   string working_directory = 6;
 }
-message TerminalSessionOpened { string session_id = 1; uint64 generation = 2; }
+message TerminalSessionOpened {
+  string session_id = 1;
+  uint64 generation = 2;
+  ObservedProcessIdentity observed_identity = 3;
+}
+
+message ObservedProcessIdentity {
+  string account = 1;
+  string account_id = 2;
+}
 message TerminalInput {
   string session_id = 1;
   uint64 generation = 2;

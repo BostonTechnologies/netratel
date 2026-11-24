@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using NetRatel.Shared.Contracts.Secrets;
 
 namespace NetRatel.Client.Service.Tasks;
 
@@ -8,7 +9,11 @@ internal sealed record ShellResultEnvelope(int? ExitCode, IReadOnlyList<string> 
     bool OutputTruncated, bool OutputStreamed, bool ProcessStarted, bool Cancelled, bool TimedOut, bool OutcomeUnknown,
     ShellExecutionDiagnostics Diagnostics);
 internal sealed record ShellExecutionDiagnostics(string? ShellPath, string? Arguments, string? WorkingDirectory,
-    double DurationMs, bool Cancelled, bool TimedOut);
+    double DurationMs, bool Cancelled, bool TimedOut)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public ObservedExecutionIdentity? ObservedIdentity { get; init; }
+}
 internal sealed record ShellProgressEnvelope(string?[] Stdout, string?[] Stderr, long OutputSequence, bool OutputTruncated,
     string? OutputProtectionBinding);
 internal sealed record ShellFailureEnvelope(int? ExitCode, string[] Stdout, string[] Stderr, ShellFailureDiagnostics Diagnostics);
@@ -25,4 +30,5 @@ internal sealed record ShellCancellationDiagnostics(string TaskType, bool Cancel
 [JsonSerializable(typeof(ShellFailureEnvelope))]
 [JsonSerializable(typeof(ShellCancelledEnvelope))]
 [JsonSerializable(typeof(string))]
+[JsonSerializable(typeof(IReadOnlyDictionary<string, string>), TypeInfoPropertyName = "ParameterMap")]
 internal partial class ClientShellJsonContext : JsonSerializerContext;
