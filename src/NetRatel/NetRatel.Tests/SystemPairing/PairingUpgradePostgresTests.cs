@@ -43,13 +43,16 @@ public sealed class PairingUpgradePostgresTests(PostgreSqlPersistenceFixture pos
 
         await db.Database.MigrateAsync(); db.ChangeTracker.Clear();
 
-        await using var after = new NpgsqlCommand("SELECT (to_jsonb(b) - 'TargetPlanDigest' - 'OriginContextJson')::text FROM \"ManagedOrchestrationRequestBindings\" b", sql);
+        await using var after = new NpgsqlCommand("SELECT (to_jsonb(b) - 'TargetPlanDigest' - 'OriginContextJson' - 'RunAsGrantId')::text FROM \"ManagedOrchestrationRequestBindings\" b", sql);
         Assert.Equal(original, await after.ExecuteScalarAsync());
         Assert.Equal(history.Append("20261111070535_AddManagedAggregateBindings").Append("20261116092107_AddAutomationTraceability")
             .Append("20261119161541_AddHistoricalMetrics").Append("20261122134000_ProtectSecretValues")
-            .Concat(TenantSecretVaultPostgresTests.MigrationIds), await db.Database.GetAppliedMigrationsAsync());
+            .Concat(TenantSecretVaultPostgresTests.MigrationIds).Append(CommittedConnectionOwnershipMigrationPostgresTests.ManagedJobRunAsGrantsMigration),
+            await db.Database.GetAppliedMigrationsAsync());
         var binding = await db.Set<ManagedOrchestrationRequestBinding>().SingleAsync();
         Assert.Equal(agent, binding.AgentId); Assert.Null(binding.TargetPlanDigest); Assert.Null(binding.OriginContextJson);
+        Assert.Null(binding.RunAsGrantId);
+        Assert.Empty(await db.Set<ManagedJobRunAsGrant>().ToArrayAsync());
         var delivery = await db.Set<OrchestrationCallbackDelivery>().SingleAsync();
         Assert.Equal(2, delivery.Attempts); Assert.Equal(3, delivery.Revision); Assert.Null(delivery.DeliveredAtUtc);
         Assert.Equal("running", (await db.Requests.SingleAsync()).Status);
