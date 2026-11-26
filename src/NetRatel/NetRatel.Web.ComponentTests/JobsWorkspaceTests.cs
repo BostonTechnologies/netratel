@@ -186,6 +186,27 @@ public sealed class JobsWorkspaceTests : AsyncBunitContext
     }
 
     [Fact]
+    public async Task Confirmed_missing_engine_disables_save_and_preserves_the_draft()
+    {
+        var (cut, _) = await OpenEditorAsync(jobId: 42);
+        Name(cut).Change("Retained incompatible draft");
+        _transport.ShellPreview = new(false, true, "Step 1 on Fixture agent requires Bash.");
+        var target = JobTargetDefinition.FromLegacy(AgentId);
+
+        await cut.InvokeAsync(() => cut.FindComponent<JobTargetPicker>().Instance.ValueChanged.InvokeAsync(target));
+
+        _transport.LastShellPreview!.Target!.AgentIds.Should().Equal(AgentId);
+        cut.Markup.Should().Contain("Step 1 on Fixture agent requires Bash.");
+        Button(cut, "Save").HasAttribute("disabled").Should().BeTrue();
+        Name(cut).GetAttribute("value").Should().Be("Retained incompatible draft");
+        _transport.UpdateCalls.Should().Be(0);
+
+        _transport.ShellPreview = new(true, true);
+        await cut.InvokeAsync(() => cut.FindComponent<JobTargetPicker>().Instance.ValueChanged.InvokeAsync(target));
+        Button(cut, "Save").HasAttribute("disabled").Should().BeFalse();
+    }
+
+    [Fact]
     public async Task Failed_validation_and_save_retain_input_and_require_target_reselection()
     {
         var (cut, _) = await OpenEditorAsync(jobId: 42);
@@ -437,6 +458,8 @@ public sealed class JobsWorkspaceTests : AsyncBunitContext
         public ulong? ParamJobId { get; private set; }
         public UpdateJobRequest? Update { get; private set; }
         public CreateJobRequest? Create { get; private set; }
+        public JobShellPreviewRequest? LastShellPreview { get; private set; }
+        public JobShellPreviewDto ShellPreview { get; set; } = new(true, false);
         public bool FailSave { get; set; }
         public bool FailParams { get; set; }
         public bool FailCloneParamCopy { get; set; }
@@ -462,6 +485,11 @@ public sealed class JobsWorkspaceTests : AsyncBunitContext
             if (request.Method == HttpMethod.Post)
             {
                 if (path == "/api/v2/tenants/7/job-targets/nodes/identities") return Ok(new[] { Node() });
+                if (path.EndsWith("/shell-compatibility", StringComparison.Ordinal))
+                {
+                    LastShellPreview = await request.Content!.ReadFromJsonAsync<JobShellPreviewRequest>(cancellationToken);
+                    return Ok(ShellPreview);
+                }
                 if (path == "/api/v1/jobs")
                 {
                     CreateCalls++;
