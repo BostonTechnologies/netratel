@@ -438,14 +438,14 @@ public sealed class ClientTaskManager : IDisposable
             return;
         }
 
-        ExecShellCommandPayload? payload = null;
+        ExecShellCommandPayload? payload;
         try
         {
             payload = JsonSerializer.Deserialize(task.Payload, TaskPayloadJsonContext.Default.ExecShellCommandPayload);
         }
         catch (JsonException)
         {
-            // handled below
+            payload = null;
         }
 
         if (payload is null || string.IsNullOrWhiteSpace(payload.Command))

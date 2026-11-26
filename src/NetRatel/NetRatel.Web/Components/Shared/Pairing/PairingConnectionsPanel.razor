@@ -184,7 +184,11 @@
     private async Task LoadNamesAsync(string pairId)
     {
         try { var directory = await Api.DirectoryAsync(pairId, _lifetime.Token); if (!_disposed) _directories[pairId] = directory; }
-        catch (Exception e) when (Expected(e)) { /* View reloads directory and shows its failure; cards remain deletable. */ }
+        catch (Exception e) when (Expected(e))
+        {
+            // The connection view reloads the directory and displays any failure.
+            return;
+        }
     }
     private void OpenCreate()
     {

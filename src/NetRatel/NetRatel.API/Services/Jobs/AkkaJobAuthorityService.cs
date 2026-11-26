@@ -422,6 +422,8 @@ public sealed class AkkaJobAuthorityService(
             pinnedSnapshot = await snapshotCapture.CaptureAsync(jobId, definition.Job.TenantId ?? 0, cancellationToken);
             definition = pinnedSnapshot.Definition;
         }
+        if (!preparedNativeIntent && recordedRequestId is null && shellCompatibility is not null)
+            await shellCompatibility.RequireDefinitionAsync(definition, cancellationToken);
         if (!preparedNativeIntent && JobProviderExecutionInputs.SelectBindings(definition, request).Length != 0)
             throw new ExecutionAdmissionDeniedException("This execution has no approved protected job input admission.");
         if (sourceRequest is not null && (definition.Job.Id != sourceRequest.JobDefinitionId ||

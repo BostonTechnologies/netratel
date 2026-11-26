@@ -80,7 +80,8 @@ public static partial class PairingEndpoints
         if (!PairingReadinessDiagnostics.IsValid(diagnostic)) diagnostic = null;
         var reference = diagnostic?.Reference ?? Guid.NewGuid().ToString("N");
         if (diagnostic is not null) message = PairingReadinessDiagnostics.Describe(diagnostic);
-        http.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("SystemPairing").LogWarning(
+        var logger = http.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("SystemPairing");
+        logger.LogWarning(
             "Pairing operation failed Code={Code} Reference={Reference} FailureType={FailureType} Stage={Stage} Reason={Reason} HttpStatus={HttpStatus}",
             code, reference, failureType, diagnostic?.Stage, diagnostic?.Code, diagnostic?.HttpStatus);
         // Mutating interactive failures notify only their current administrator. Peer/read traffic never emits notifications.
@@ -92,7 +93,11 @@ public static partial class PairingEndpoints
                 await using var scope = http.RequestServices.CreateAsyncScope(); var events = scope.ServiceProvider.GetService<IEventRecorder>();
                 if (events is not null) await events.RecordAsync(new DomainEvent { EventType = NetRatelNotificationAudience.PairingFailure, Source = "SystemPairing", CorrelationId = reference, EntityId = actor, Severity = "Warning", Message = message, Payload = new { Code = code, Reference = reference, Link = "/account/integration-credentials" } }, http.RequestAborted);
             }
-            catch (Exception) when (!http.RequestAborted.IsCancellationRequested) { }
+            catch (Exception exception) when (!http.RequestAborted.IsCancellationRequested)
+            {
+                logger.LogDebug("Pairing failure notification could not be recorded Reference={Reference} FailureType={FailureType}",
+                    reference, exception.GetType().Name);
+            }
         }
         return Results.Json(new { code, message, correlationId = reference, diagnostic }, statusCode: status);
     }

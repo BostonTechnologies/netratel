@@ -205,6 +205,20 @@ public static partial class InternalEndpoints
                 CreatedAtUtc = http.RequestServices.GetRequiredService<TimeProvider>().GetUtcNow()
                 , OriginContextJson = request.OriginContext is null ? null : JsonSerializer.Serialize(request.OriginContext, AutomationTrace.AutomationTraceValidation.Json)
             };
+            if (!aggregate && http.RequestServices.GetService<JobShellCompatibility>() is { } shellCompatibility &&
+                await jobs.GetDetailsAsync(job.Id, ct) is { } definition)
+            {
+                try
+                {
+                    await shellCompatibility.RequireDefinitionAsync(definition, ct);
+                }
+                catch (JobTargetValidationException error)
+                {
+                    if (transaction is not null)
+                        await transaction.RollbackAsync(CancellationToken.None);
+                    return await RejectAdmissionAsync(http, binding, error);
+                }
+            }
             RequestInfo created;
             {
                 created = await requests.CreateAsync(new CreateRequestCommand(binding.SourceSystem, job.ClientIdentity, job.Id.ToString(), request.PayloadJson, target.TenantId, target.AgentId), ct);
