@@ -55,6 +55,8 @@ public sealed class SavedAccountExecutionTests(ITestOutputHelper output)
             var missing = new ExecLibraryScriptPayload { ScriptType = ScriptType.PowerShell, Preferred = ShellExecutor.Pwsh };
             await Assert.ThrowsAsync<ExternalShellRunner.RequiredShellUnavailableException>(() =>
                 desktopOnly.RunLibraryScriptAsync(missing, "Write-Output 'unexpected'", ct, null, observer));
+            await VerifyPowerShellRequirementAsync(runner, observer, ShellExecutor.WindowsPowerShell, "#requires -PSEdition Core", ct);
+            await VerifyPowerShellRequirementAsync(runner, observer, ShellExecutor.Pwsh, "#requires -Version 99", ct);
         }
 
         var factory = new TerminalHostFactory(new());
@@ -112,6 +114,17 @@ public sealed class SavedAccountExecutionTests(ITestOutputHelper output)
         Assert.Equal(major, version.Major);
         Assert.Equal(edition, result.Output[2]);
         output.WriteLine($"Requested {executor}, observed {edition} {version}, account {result.Output[0]}");
+    }
+
+    private static async Task VerifyPowerShellRequirementAsync(ExternalShellRunner runner, ExternalShellRunner.ExecutionObserver observer,
+        ShellExecutor executor, string requirement, CancellationToken ct)
+    {
+        var payload = new ExecLibraryScriptPayload { ScriptType = ScriptType.PowerShell, Preferred = executor, TimeoutSeconds = 15 };
+        var result = await runner.RunLibraryScriptAsync(payload, requirement + "\nWrite-Output 'unexpected'", ct, null, observer);
+        Assert.True(result.ProcessStarted);
+        Assert.Equal(125, result.ExitCode);
+        Assert.Empty(result.Output);
+        Assert.Contains(result.Error, line => line.Contains("does not satisfy the script edition or version requirements", StringComparison.Ordinal));
     }
 
     private static bool IsObservedId(string line, string id, bool windows) => windows

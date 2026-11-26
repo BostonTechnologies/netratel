@@ -98,8 +98,14 @@ module.exports = async function selfServicePair(h) {
         await expect(page.getByText('Submit this request as yourself.', { exact: true })).toBeVisible();
         await expect(page.getByTestId('submission-organization')).toContainText('Acceptance RatelDesk organization');
       }
+      const verifyPromptReceipt = mode === 'self-success';
+      if (verifyPromptReceipt) await control('hold-next-ingest', 'netratel');
+      let receiptStarted = performance.now();
       await page.getByRole('button', { name: 'Submit', exact: true }).click();
-      if (mode === 'on-behalf') await page.getByRole('button', { name: 'Yes', exact: true }).click();
+      if (mode === 'on-behalf') {
+        receiptStarted = performance.now();
+        await page.getByRole('button', { name: 'Yes', exact: true }).click();
+      }
       const submittedHeading = page.getByRole('heading', { name: 'Request submitted', exact: true });
       try {
         await submittedHeading.or(page.locator('.self-service-form-page .mud-alert')).first().waitFor({ state: 'visible', timeout: 90000 });
@@ -120,6 +126,12 @@ module.exports = async function selfServicePair(h) {
         await page.screenshot({ path: path.join(evidence, mode + '-rendered-failure.png'), fullPage: true, animations: 'disabled',
           mask: [page.locator('input'), page.locator('textarea')] });
         throw error;
+      }
+      const receiptMilliseconds = Math.round(performance.now() - receiptStarted);
+      if (verifyPromptReceipt) {
+        await until('Provider dispatch held after rendered receipt', async () =>
+          (await control('ingest-hold-status', 'netratel')).held, 8);
+        await control('release-held-ingest', 'netratel');
       }
       const receiptElement = page.getByTestId('submitted-request-receipt');
       const submitted = { requestId: await receiptElement.getAttribute('data-request-id'), trackingId: await receiptElement.getAttribute('data-tracking-id') };
@@ -278,7 +290,8 @@ module.exports = async function selfServicePair(h) {
         correlationId: admitted.automationAttemptCorrelationId, providerState: actualRun.status,
         localStatus: completed.lastAutomationStatus, parentStatus: parent.workflowStatus, submissionRetryRetained: true,
         nativeExitCode: native.exitCode, admissionCount: await admissionCount(), failureIncidentId,
-        selectedPersonPreserved: mode === 'on-behalf' && requester.id !== owner.id, liveConvergenceMilliseconds });
+        selectedPersonPreserved: mode === 'on-behalf' && requester.id !== owner.id, liveConvergenceMilliseconds,
+        receiptMilliseconds, receiptWhileProviderHeld: verifyPromptReceipt });
     }
   } finally {
     if (context) await context.close(); await browser.close(); await ordinaryApi.dispose();

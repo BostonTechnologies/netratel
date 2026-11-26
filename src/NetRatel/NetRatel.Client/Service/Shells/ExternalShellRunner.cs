@@ -739,6 +739,14 @@ namespace NetRatel.Client.Service.Shells
                     foreach ($property in $request.Parameters.PSObject.Properties) { $arguments[$property.Name] = $property.Value }
                     $script = [scriptblock]::Create($request.Script)
                 } catch { [Console]::Error.WriteLine('The private script input could not be read.'); exit 126 }
+                # An in-memory script block does not get the script file engine checks.
+                $requirements = $script.Ast.ScriptRequirements
+                if ($null -ne $requirements -and (
+                    ($requirements.RequiredPSVersion -and $PSVersionTable.PSVersion -lt $requirements.RequiredPSVersion) -or
+                    ($requirements.RequiredPSEditions -and $PSVersionTable.PSEdition -notin $requirements.RequiredPSEditions))) {
+                    [Console]::Error.WriteLine('The selected PowerShell engine does not satisfy the script edition or version requirements.')
+                    exit 125
+                }
                 & $script @arguments
                 if ($null -ne $LASTEXITCODE) { exit $LASTEXITCODE }
                 """;

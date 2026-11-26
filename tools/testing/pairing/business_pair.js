@@ -72,6 +72,7 @@ async function runProxy(productName = 'rateldesk') {
   let armed = false, lost = false, original = null, callback = null;
   let traceArmed = false, traceOriginal = null;
   let holdCallbacks = false, blockReads = false, blockedReads = 0;
+  let ingestGate = null;
   const heldCallbacks = new Map();
   const admissionCounts = new Map();
   const observations = [];
@@ -98,6 +99,17 @@ async function runProxy(productName = 'rateldesk') {
         else if (command.action === 'restore-execution-reads') { blockReads = false; result = { blocked: false, blockedReads }; }
         else if (command.action === 'callback-fault-state') result = { held: Array.from(heldCallbacks.keys()), blockedReads };
         else if (command.action === 'admission-counts') result = { admissions: Array.from(admissionCounts, ([key, count]) => ({ key, count })) };
+        else if (command.action === 'hold-next-ingest') {
+          requireProof(productName === 'netratel' && ingestGate === null, 'Only the owned provider proxy can hold an admission');
+          ingestGate = { release: null };
+          result = { armed: true };
+        }
+        else if (command.action === 'ingest-hold-status') result = { held: ingestGate?.release != null };
+        else if (command.action === 'release-held-ingest') {
+          requireProof(ingestGate?.release != null, 'An actual provider ingest must arrive before it can be released');
+          ingestGate.release();
+          result = { released: true };
+        }
         else if (command.action === 'release-terminal-callbacks') {
           holdCallbacks = false;
           for (const held of heldCallbacks.values()) {
@@ -135,6 +147,13 @@ async function runProxy(productName = 'rateldesk') {
         const value = JSON.parse(body.toString('utf8'));
         const key = admissionIdentity(value);
         admissionCounts.set(key, (admissionCounts.get(key) || 0) + 1);
+        if (ingestGate && !ingestGate.release) {
+          await new Promise(resolve => {
+            const release = () => { clearTimeout(deadline); ingestGate = null; resolve(); };
+            const deadline = setTimeout(release, 15000);
+            ingestGate.release = release;
+          });
+        }
       }
       if (productName === 'netratel' && blockReads && incoming.method === 'GET' && incoming.url.startsWith('/internal/executions/')) {
         blockedReads++; outgoing.writeHead(503, { 'content-type': 'application/json' }); outgoing.end('{"code":"owned-transport-unavailable"}'); return;
