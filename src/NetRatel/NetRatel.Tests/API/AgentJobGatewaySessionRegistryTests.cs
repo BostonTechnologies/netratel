@@ -3,12 +3,40 @@ using NetRatel.AgentGateway.Contracts.V1;
 using NetRatel.API.Gateway;
 using NetRatel.Application.Presence;
 using NetRatel.Shared.Contracts.Tasks;
+using NetRatel.Shared.Service.ClientEnvironment;
 using Xunit;
 
 namespace NetRatel.Tests.API;
 
 public sealed class AgentJobGatewaySessionRegistryTests
 {
+    [Fact]
+    public void Shell_inventory_expires_and_only_the_current_registration_can_refresh_it()
+    {
+        var clock = new RenewalManualTimeProvider();
+        var registry = new AgentJobGatewaySessionRegistry(clock);
+        var client = new ClientKey(71, Guid.NewGuid());
+        var connection = Guid.NewGuid();
+        var owner = new OwnerKey(client, connection, 4);
+        using var registration = registry.RegisterWithCapabilities(client, connection, 4, provisional: true,
+            supportsProtectedParameters: false, [ShellInventoryDetector.JobInventoryCapability, "job-shell:powershell"]);
+
+        Assert.Null(registry.GetFreshJobShells(client));
+        Assert.True(registration.Activate());
+        Assert.Equal("powershell", Assert.Single(registry.GetFreshJobShells(client, owner)!));
+        Assert.Null(registry.GetFreshJobShells(new ClientKey(72, client.AgentId)));
+        clock.Advance(TimeSpan.FromMinutes(11));
+        Assert.Null(registry.GetFreshJobShells(client, owner));
+
+        registration.UpdateJobShells(new HashSet<string> { "pwsh" }, clock.GetUtcNow());
+        Assert.Equal("pwsh", Assert.Single(registry.GetFreshJobShells(client, owner)!));
+        using var replacement = registry.RegisterWithCapabilities(client, Guid.NewGuid(), 5, provisional: false,
+            supportsProtectedParameters: false, [ShellInventoryDetector.JobInventoryCapability]);
+        registration.UpdateJobShells(new HashSet<string> { "cmd" }, clock.GetUtcNow());
+        Assert.Empty(registry.GetFreshJobShells(client)!);
+        Assert.Null(registry.GetFreshJobShells(client, owner));
+    }
+
     [Fact]
     public async Task Protected_dispatch_requires_an_exact_capable_session_and_uses_its_own_frame()
     {

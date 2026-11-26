@@ -562,6 +562,7 @@ message AgentJobFrame {
   oneof payload {
     AgentJobHello hello = 10;
     JobLifecycleUpdate lifecycle = 11;
+    JobShellInventory job_shell_inventory = 12;
   }
 }
 
@@ -582,6 +583,7 @@ message GatewayJobFrame {
 }
 
 message AgentJobHello { repeated string capabilities = 1; }
+message JobShellInventory { repeated string capabilities = 1; }
 message JobConnectAccepted {
   string job_authority = 1;
   repeated string capabilities = 2;

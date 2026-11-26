@@ -23,7 +23,8 @@ to change its engine. A step's diagnostics show the requested and observed
 engine when the agent reports them.
 
 Save and admission check enabled steps against fresh native job gateway
-inventory. A fixed target with a confirmed missing engine blocks Save. HA
+inventory. The agent reports available engines at connection and refreshes the
+report while connected. A fixed target with a confirmed missing engine blocks Save. HA
 validation includes eligible workers. Multi-node plans retain their target
 set and respect the saved node-failure policy. The gateway treats absent,
 older and stale inventory as unverified. The agent resolves the executable

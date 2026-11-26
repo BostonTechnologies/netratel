@@ -12,6 +12,7 @@ public static class ShellInventoryDetector
     private static readonly ConcurrentDictionary<(string Path, long LastWrite), Lazy<string?>> Versions = new();
 
     public const string JobInventoryCapability = "job-shell-inventory-v1";
+    public const string JobInventoryRefreshCapability = "job-shell-inventory-refresh-v1";
     private const string JobShellPrefix = "job-shell:";
 
     public static IEnumerable<string> DetectJobCapabilities()
