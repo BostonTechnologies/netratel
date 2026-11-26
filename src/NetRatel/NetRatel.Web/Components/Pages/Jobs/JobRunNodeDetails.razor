@@ -57,6 +57,10 @@
                                     {
                                         <MudText Typo="Typo.caption" Style="overflow-wrap:anywhere">Account @identity.Account (@identity.AccountId)</MudText>
                                     }
+                                    @if (step.RequestedExecutor is { } executor)
+                                    {
+                                        <MudText Typo="Typo.caption">Requested @executor · Resolved @(step.ResolvedEngine ?? "unreported")</MudText>
+                                    }
                                     <MudText Typo="Typo.body2">@(step.ExitCode is { } exit ? $"Exit code: {exit}" : "Exit code was not captured.")</MudText>
                                     @if (!string.IsNullOrWhiteSpace(step.Error)) { <pre class="node-run-output">@Bound(step.Error)</pre> }
                                     @if (step.TaskRequestId is { Length: > 0 } requestId)

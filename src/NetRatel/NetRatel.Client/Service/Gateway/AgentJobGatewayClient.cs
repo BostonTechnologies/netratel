@@ -210,7 +210,7 @@ public sealed class AgentJobGatewayClient(GatewayClientOptions options, Action<s
             stream.WriteAsync(Stamp(new AgentJobFrame { Hello = new AgentJobHello
             {
                 Capabilities = { "job-lifecycle-v1", "gateway-execution", "progress-v1", "lifecycle-receipts-v1", ProtectedJobParameterRules.Capability,
-                    NativeExecutionAccounts.Capabilities }
+                    NativeExecutionAccounts.Capabilities, NetRatel.Shared.Service.ClientEnvironment.ShellInventoryDetector.DetectJobCapabilities() }
             } }, 0), cancellationToken);
 
         public bool TryRegisterDispatch(JobStepDispatch dispatch) => !_receipts.ContainsKey(dispatch.RequestId) &&

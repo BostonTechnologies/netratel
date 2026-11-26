@@ -117,7 +117,9 @@ public sealed class AgentJobGatewayService(
         var client = new ClientKey(identity.TenantId, identity.AgentId);
         await RequirePresenceAsync(client, connectionId, frame.ConnectionEpoch, cancellationToken).ConfigureAwait(false);
         return new ValidatedSession(client, connectionId, frame.ConnectionEpoch, frame.Hello.Capabilities.Contains("lifecycle-receipts-v1"),
-            frame.Hello.Capabilities.Contains(ProtectedJobParameterRules.Capability), ExecutionAccountServiceCapability.Recognized(frame.Hello.Capabilities));
+            frame.Hello.Capabilities.Contains(ProtectedJobParameterRules.Capability),
+            ExecutionAccountServiceCapability.Recognized(frame.Hello.Capabilities)
+                .Concat(NetRatel.Shared.Service.ClientEnvironment.ShellInventoryDetector.RecognizeJobCapabilities(frame.Hello.Capabilities)).ToArray());
     }
 
     private async Task<ulong> ProcessInboundAsync(AgentJobFrame frame, ValidatedSession session, ulong lastSequence, AgentJobGatewayRegistration registration, CancellationToken cancellationToken)

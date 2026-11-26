@@ -15,6 +15,8 @@ public interface IJobApiClient
         CancellationToken cancellationToken = default);
     Task<JobDto?> GetJobAsync(ulong id, CancellationToken cancellationToken = default);
     Task<JobWithDetailsDto?> GetJobWithDetailsAsync(ulong id, CancellationToken cancellationToken = default);
+    Task<JobShellPreviewDto?> PreviewShellsAsync(ulong jobId, JobShellPreviewRequest request, CancellationToken ct = default)
+        => Task.FromResult<JobShellPreviewDto?>(null);
 
     Task<IReadOnlyList<JobParamDto>> GetJobParamsAsync(ulong jobId, CancellationToken cancellationToken = default);
     Task<JobParamDto> AddJobParamAsync(ulong jobId, AddJobParamRequest request, CancellationToken cancellationToken = default);
@@ -133,17 +135,25 @@ public sealed class JobApiClient : IJobApiClient
         return result ?? [];
     }
 
+    public async Task<JobShellPreviewDto?> PreviewShellsAsync(ulong jobId, JobShellPreviewRequest request, CancellationToken ct = default)
+    {
+        using var response = await _http.PostAsJsonAsync($"/api/v1/jobs/{jobId}/shell-compatibility", request, ct);
+        if (response.StatusCode == System.Net.HttpStatusCode.NotFound) return null;
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadFromJsonAsync<JobShellPreviewDto>(cancellationToken: ct);
+    }
+
     public async Task<JobStepDto> AddJobStepAsync(ulong jobId, AddJobStepRequest request, CancellationToken cancellationToken = default)
     {
         var response = await _http.PostAsJsonAsync($"/api/v1/jobs/{jobId}/steps", request, cancellationToken);
-        response.EnsureSuccessStatusCode();
+        await EnsureDefinitionWriteAsync(response, cancellationToken);
         return (await response.Content.ReadFromJsonAsync<JobStepDto>(cancellationToken: cancellationToken))!;
     }
 
     public async Task<JobStepDto> UpdateJobStepAsync(ulong stepId, UpdateJobStepRequest request, CancellationToken cancellationToken = default)
     {
         var response = await _http.PutAsJsonAsync($"/api/v1/jobs/steps/{stepId}", request, cancellationToken);
-        response.EnsureSuccessStatusCode();
+        await EnsureDefinitionWriteAsync(response, cancellationToken);
         return (await response.Content.ReadFromJsonAsync<JobStepDto>(cancellationToken: cancellationToken))!;
     }
 
@@ -169,9 +179,22 @@ public sealed class JobApiClient : IJobApiClient
     public async Task<JobDto> UpdateJobAsync(ulong id, UpdateJobRequest request, CancellationToken cancellationToken = default)
     {
         var response = await _http.PutAsJsonAsync($"/api/v1/jobs/{id}", request, cancellationToken);
-        response.EnsureSuccessStatusCode();
+        await EnsureDefinitionWriteAsync(response, cancellationToken);
         return (await response.Content.ReadFromJsonAsync<JobDto>(cancellationToken: cancellationToken))!;
     }
+
+    private static async Task EnsureDefinitionWriteAsync(HttpResponseMessage response, CancellationToken ct)
+    {
+        if ((int)response.StatusCode is 400 or 409)
+        {
+            var problem = await response.Content.ReadFromJsonAsync<DefinitionWriteProblem>(cancellationToken: ct);
+            if ((problem?.Code is "required_shell_unavailable" or "shell_executor_conflict") && problem.Detail is { } detail)
+                throw new InvalidOperationException(detail);
+        }
+        response.EnsureSuccessStatusCode();
+    }
+
+    private sealed record DefinitionWriteProblem(string? Code, string? Detail);
 
     public async Task DeleteJobAsync(ulong id, CancellationToken cancellationToken = default)
     {

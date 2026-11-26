@@ -6,6 +6,7 @@ using NetRatel.Application.Presence;
 using NetRatel.Shared.Contracts.Jobs;
 using NetRatel.Shared.Contracts.Secrets;
 using NetRatel.Shared.Contracts.Tasks;
+using NetRatel.Shared.Service.ClientEnvironment;
 
 namespace NetRatel.API.Gateway;
 
@@ -26,6 +27,7 @@ public interface IAgentJobGatewaySessionRegistry
     // A physical registration is routing information, never durable authority.
     // Existing nonpersisting fixture adapters return no production fence.
     OwnerKey? GetRegisteredOwner(ClientKey client) => null;
+    IReadOnlySet<string>? GetFreshJobShells(ClientKey client, OwnerKey? expectedOwner = null) => null;
     Task DispatchAsync(ClientKey client, JobGatewayStepDispatch dispatch, CancellationToken cancellationToken);
     bool SupportsProtectedParameters(OwnerKey owner) => false;
     Task DispatchProtectedAsync(OwnerKey owner, JobGatewayStepDispatch dispatch, IReadOnlyDictionary<string, string> parameters,
@@ -62,6 +64,7 @@ public sealed class ProtectedJobDispatchUnavailableException()
 public sealed class AgentJobGatewaySessionRegistry(TimeProvider? clock = null) : IAgentJobGatewaySessionRegistry
 {
     private readonly ConcurrentDictionary<ClientKey, AgentJobGatewaySession> _sessions = new();
+    private static readonly TimeSpan MaximumShellInventoryAge = TimeSpan.FromMinutes(10);
 
     public AgentJobGatewayRegistration Register(ClientKey client, Guid connectionId, ulong connectionEpoch, bool provisional = false) =>
         RegisterWithCapabilities(client, connectionId, connectionEpoch, provisional, supportsProtectedParameters: false);
@@ -73,7 +76,11 @@ public sealed class AgentJobGatewaySessionRegistry(TimeProvider? clock = null) :
     public AgentJobGatewayRegistration RegisterWithCapabilities(ClientKey client, Guid connectionId, ulong connectionEpoch,
         bool provisional, bool supportsProtectedParameters, IReadOnlyCollection<string> capabilities)
     {
-        var session = new AgentJobGatewaySession(client, connectionId, connectionEpoch, supportsProtectedParameters, capabilities);
+        var session = new AgentJobGatewaySession(client, connectionId, connectionEpoch, supportsProtectedParameters, capabilities)
+        {
+            RegisteredAtUtc = (clock ?? TimeProvider.System).GetUtcNow(),
+            JobShells = ShellInventoryDetector.ReadJobInventory(capabilities)
+        };
         while (true)
         {
             if (!_sessions.TryGetValue(client, out var previous))
@@ -129,6 +136,12 @@ public sealed class AgentJobGatewaySessionRegistry(TimeProvider? clock = null) :
     public OwnerKey? GetRegisteredOwner(ClientKey client) =>
         _sessions.TryGetValue(client, out var session) && session.IsActive
             ? new OwnerKey(client, session.ConnectionId, checked((long)session.ConnectionEpoch)) : null;
+
+    public IReadOnlySet<string>? GetFreshJobShells(ClientKey client, OwnerKey? expectedOwner = null) =>
+        _sessions.TryGetValue(client, out var session) && session.IsActive &&
+        (expectedOwner is null || session.Matches(expectedOwner.Value)) &&
+        (clock ?? TimeProvider.System).GetUtcNow() - session.RegisteredAtUtc <= MaximumShellInventoryAge
+            ? session.JobShells : null;
 
     public Task DispatchAsync(ClientKey client, JobGatewayStepDispatch dispatch, CancellationToken cancellationToken)
     {
@@ -241,6 +254,8 @@ internal sealed class AgentJobGatewaySession(ClientKey client, Guid connectionId
     public Guid ConnectionId => connectionId;
     public ulong ConnectionEpoch => connectionEpoch;
     public bool SupportsProtectedParameters => supportsProtectedParameters;
+    public DateTimeOffset RegisteredAtUtc { get; init; }
+    public IReadOnlySet<string>? JobShells { get; init; }
     public bool Supports(string capability) => SupportsProtectedParameters && capabilities?.Contains(capability, StringComparer.Ordinal) == true;
     public bool Matches(OwnerKey owner) => owner.Client == client && owner.ConnectionId == connectionId && owner.Epoch == checked((long)connectionEpoch);
 

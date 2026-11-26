@@ -15,6 +15,12 @@ public interface IPairingApiClient
     Task<PairingConnectionDto> SaveAsync(PairingMapping mapping, CancellationToken ct = default);
     Task<PairingTestResult> TestAsync(PairingConnectionDto connection, CancellationToken ct = default);
     Task DeleteAsync(PairingConnectionDto connection, CancellationToken ct = default);
+    Task<PairedJobRunAsReview> GetJobRunAsAsync(Guid mappingId, ulong jobId, CancellationToken ct = default)
+        => throw new NotSupportedException();
+    Task<PairedJobRunAsReview> ApproveJobRunAsAsync(Guid mappingId, ulong jobId, string digest, CancellationToken ct = default)
+        => throw new NotSupportedException();
+    Task RevokeJobRunAsAsync(Guid mappingId, ulong jobId, Guid approvalId, CancellationToken ct = default)
+        => throw new NotSupportedException();
 }
 
 /// <summary>Human authenticated administration. Secrets stay in the backend and writes are never replayed by HTTP middleware.</summary>
@@ -36,6 +42,22 @@ public sealed class PairingApiClient(IHttpClientFactory clients) : IPairingApiCl
         NormalizeConnection(await SendAsync<PairingConnectionDto>(HttpMethod.Put, PairPath(mapping.PairId) + $"/mappings/{mapping.Id:D}", mapping, ct));
     public async Task<PairingTestResult> TestAsync(PairingConnectionDto connection, CancellationToken ct = default) =>
         NormalizeTest(await SendAsync<PairingTestResult>(HttpMethod.Post, MappingPath(connection), new { }, ct, "/test"));
+
+    public Task<PairedJobRunAsReview> GetJobRunAsAsync(Guid mappingId, ulong jobId, CancellationToken ct = default) =>
+        SendAsync<PairedJobRunAsReview>(HttpMethod.Get, JobRunAsPath(mappingId, jobId), null, ct);
+
+    public Task<PairedJobRunAsReview> ApproveJobRunAsAsync(Guid mappingId, ulong jobId, string digest, CancellationToken ct = default) =>
+        SendAsync<PairedJobRunAsReview>(HttpMethod.Put, JobRunAsPath(mappingId, jobId), new ApprovePairedJobRunAsRequest(digest), ct);
+
+    public async Task RevokeJobRunAsAsync(Guid mappingId, ulong jobId, Guid approvalId, CancellationToken ct = default)
+    {
+        using var api = clients.CreateClient("PairingApi");
+        using var budget = Budget(ct);
+        using var response = await api.DeleteAsync(JobRunAsPath(mappingId, jobId) + $"/{approvalId:D}", budget.Token);
+        await CheckAsync(response, budget.Token);
+    }
+
+    private static string JobRunAsPath(Guid mappingId, ulong jobId) => $"{Root}/mappings/{mappingId:D}/jobs/{jobId}/run-as";
 
     private static PairingConnectionDto NormalizeConnection(PairingConnectionDto connection) =>
         connection.LastTest is { } result ? connection with { LastTest = NormalizeTest(result) } : connection;
@@ -125,6 +147,9 @@ public sealed class PairingApiClient(IHttpClientFactory clients) : IPairingApiCl
     // HTTP fallback; an unknown or bare 401 still requires interactive sign-in.
     private static string FailureText(string? code, HttpStatusCode status) => code?.Replace('_', '-') switch
     {
+        "run-as-approval-denied" => "A tenant administrator with integration, jobs, Run as and secret-use permissions must approve saved accounts.",
+        "run-as-review-changed" => "The approval scope changed. Review the current job and accounts again.",
+        "required-shell-unavailable" => "An execution engine required by this job is unavailable on a target. Review the job steps and targets.",
         "invalid-code" or "pairing-code-invalid" or "pairing-code-rejected" or "pairing-code-used" or "code-expired" => "The pairing code is invalid, expired, replaced or already used. Generate a new code on the other system.",
         "invalid-address" or "address-invalid" or "invalid-origin" => "Enter a valid HTTP or HTTPS system address, including its port when needed.",
         "destination-blocked" or "unsafe-address" or "target-blocked" or "address-blocked" or "blocked-address" => "The address resolves to a blocked destination. Use the intended NetRatel or RatelDesk system address.",

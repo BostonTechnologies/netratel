@@ -6,7 +6,7 @@ using NetRatel.Application.Notifications;
 using NetRatel.Infrastructure.SystemPairing;
 using NetRatel.Shared.SystemPairing;
 namespace NetRatel.API.Endpoints.SystemPairing;
-public static class PairingEndpoints
+public static partial class PairingEndpoints
 {
     public const string RateLimiter = "SystemPairingSensitive";
     public const string SetupAuthenticationScheme = "PairingSetup";
@@ -49,6 +49,7 @@ public static class PairingEndpoints
         local.MapPost("/{pairId}/mappings/{id:guid}/test", (string pairId, Guid id, HttpContext http, PairingService pairing, CancellationToken ct) => ExecuteAsync(http, true, async () => Results.Ok(await pairing.TestAsync(pairId, id, http.User, ct))));
         local.MapDelete("/{pairId}/mappings/{id:guid}", (string pairId, Guid id, HttpContext http, PairingService pairing, CancellationToken ct) => ExecuteAsync(http, true, async () => { await pairing.DeleteAsync(pairId, id, http.User, ct); return Results.NoContent(); }));
         local.MapDelete("/{pairId}", (string pairId, HttpContext http, PairingService pairing, CancellationToken ct) => ExecuteAsync(http, true, async () => { await pairing.DeleteAsync(pairId, null, http.User, ct); return Results.NoContent(); }));
+        MapJobRunAs(local);
         return app;
     }
     private static Task<SystemPairRecord> AuthenticateAsync(HttpContext http, PairingService pairing, CancellationToken ct)

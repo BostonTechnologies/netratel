@@ -17,6 +17,7 @@ using NetRatel.Shared.Contracts.Execution;
 using NetRatel.Shared.Contracts.Jobs;
 using NetRatel.Shared.Contracts.Tasks;
 using NetRatel.Shared.Service.Shells;
+using NetRatel.Shared.Service.ClientEnvironment;
 using NetRatel.Shared.Security;
 using NetRatel.Shared.Data.Task;
 using NetRatel.Shared.Contracts.Services;
@@ -467,7 +468,7 @@ public sealed class ClientTaskManager : IDisposable
             LogManager.WriteLog($"[Command] Executing shell command requestId={task.RequestId} preferred={payload.Preferred} timeout={payload.TimeoutSeconds?.ToString() ?? "default"}");
             var result = await _shellRunner.RunShellCommandAsync(payload, ct, CreateExecutionObserver(task)).ConfigureAwait(false);
             LogManager.WriteLog($"[Command] Shell command finished requestId={task.RequestId} exitCode={result.ExitCode}");
-            await EmitResultAsync(task, sink, result).ConfigureAwait(false);
+            await EmitResultAsync(task, sink, result, payload.Preferred).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -475,7 +476,17 @@ public sealed class ClientTaskManager : IDisposable
         }
         catch (ExternalShellRunner.ExecutionOutcomeUnknownException exception)
         {
-            await EmitResultAsync(task, sink, exception.Execution).ConfigureAwait(false);
+            await EmitResultAsync(task, sink, exception.Execution, payload.Preferred).ConfigureAwait(false);
+        }
+        catch (ExternalShellRunner.RequiredShellUnavailableException error)
+        {
+            await PublishFailureAsync(task, sink, error.Message, null, failureCode: "required_shell_unavailable",
+                executor: payload.Preferred, requiredShell: error.Shell).ConfigureAwait(false);
+        }
+        catch (WindowsExecutionAccount.LogonRejectedException)
+        {
+            await PublishFailureAsync(task, sink, "Windows rejected the saved execution-account logon.", null,
+                failureCode: "run_as_logon_failed", executor: payload.Preferred).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -558,7 +569,7 @@ public sealed class ClientTaskManager : IDisposable
                 : await _shellRunner.RunProtectedLibraryScriptAsync(payload, content, ct, mergedParams, protectedParameters,
                     CreateExecutionObserver(task)).ConfigureAwait(false);
             LogManager.WriteLog($"[Command] Library script finished requestId={task.RequestId} exitCode={result.ExitCode}");
-            await EmitResultAsync(task, sink, result).ConfigureAwait(false);
+            await EmitResultAsync(task, sink, result, payload.Preferred).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -566,7 +577,17 @@ public sealed class ClientTaskManager : IDisposable
         }
         catch (ExternalShellRunner.ExecutionOutcomeUnknownException exception)
         {
-            await EmitResultAsync(task, sink, exception.Execution).ConfigureAwait(false);
+            await EmitResultAsync(task, sink, exception.Execution, payload.Preferred).ConfigureAwait(false);
+        }
+        catch (ExternalShellRunner.RequiredShellUnavailableException error)
+        {
+            await PublishFailureAsync(task, sink, error.Message, null, failureCode: "required_shell_unavailable",
+                executor: payload.Preferred, requiredShell: error.Shell).ConfigureAwait(false);
+        }
+        catch (WindowsExecutionAccount.LogonRejectedException)
+        {
+            await PublishFailureAsync(task, sink, "Windows rejected the saved execution-account logon.", null,
+                failureCode: "run_as_logon_failed", executor: payload.Preferred).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
@@ -605,7 +626,8 @@ public sealed class ClientTaskManager : IDisposable
             Environment.GetEnvironmentVariable(reference) is not null);
     }
 
-    private async Task EmitResultAsync(CommandExecutionContext task, ITaskLogSink sink, ExternalShellRunner.RunResult res)
+    private async Task EmitResultAsync(CommandExecutionContext task, ITaskLogSink sink, ExternalShellRunner.RunResult res,
+        ShellExecutor? requestedExecutor = null)
     {
         var remainingBytes = MaximumGatewayResultBytes;
         var stdout = BoundOutput(res.Output.Select(line => task.Output.Redact(line)!).ToArray(), ref remainingBytes, out var stdoutTruncated);
@@ -617,7 +639,11 @@ public sealed class ClientTaskManager : IDisposable
             res.Cancelled, res.TimedOut, res.OutcomeUnknown,
             // Raw arguments can contain private command or parameter values.
             new ShellExecutionDiagnostics(res.ShellPath, null, res.WorkingDirectory, res.DurationMs, res.Cancelled, res.TimedOut)
-            { ObservedIdentity = res.ObservedIdentity }),
+            {
+                ObservedIdentity = res.ObservedIdentity,
+                RequestedExecutor = requestedExecutor is { } executor ? JobStepExecutor.WireName(executor) : null,
+                ResolvedEngine = ShellInventoryDetector.NormalizeKeyword(Path.GetFileNameWithoutExtension(res.ShellPath))
+            }),
             ClientShellJsonContext.Default.ShellResultEnvelope);
         await SafeStatusAsync(task, res.Cancelled ? TaskStatuses.Cancelled : res.Success ? TaskStatuses.Completed : TaskStatuses.Failed, res.TimedOut ? "Timed out" : res.Cancelled ? "Cancelled" : res.Success ? "OK" : "Failed", payload, res.ExitCode).ConfigureAwait(false);
     }
@@ -683,7 +709,8 @@ public sealed class ClientTaskManager : IDisposable
         return bounded;
     }
 
-    private async Task PublishFailureAsync(CommandExecutionContext task, ITaskLogSink sink, string message, string? detail, string? payload = null, int? exitCode = null)
+    private async Task PublishFailureAsync(CommandExecutionContext task, ITaskLogSink sink, string message, string? detail,
+        string? payload = null, int? exitCode = null, string? failureCode = null, ShellExecutor? executor = null, string? requiredShell = null)
     {
         var errorText = task.Output.Redact(string.IsNullOrWhiteSpace(detail) ? message : detail!)!;
         try
@@ -696,7 +723,11 @@ public sealed class ClientTaskManager : IDisposable
         }
 
         var returnData = JsonSerializer.Serialize(new ShellFailureEnvelope(exitCode, Array.Empty<string>(), new[] { errorText },
-            new ShellFailureDiagnostics(task.TaskType, ExecLibraryScriptPayloadDiagnostics.Sanitize(task.TaskType, payload), message)),
+            new ShellFailureDiagnostics(task.TaskType, ExecLibraryScriptPayloadDiagnostics.Sanitize(task.TaskType, payload), message)
+            {
+                FailureCode = failureCode, RequestedExecutor = executor is { } requested ? JobStepExecutor.WireName(requested) : null,
+                RequiredShell = requiredShell
+            }),
             ClientShellJsonContext.Default.ShellFailureEnvelope);
 
         await SafeStatusAsync(task, TaskStatuses.Failed, message, returnData, exitCode).ConfigureAwait(false);

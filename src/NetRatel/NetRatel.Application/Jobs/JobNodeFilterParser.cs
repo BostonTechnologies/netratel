@@ -8,6 +8,10 @@ public sealed class JobTargetValidationException(string code, string message, in
 {
     public string Code { get; } = code;
     public int StatusCode { get; } = statusCode;
+    public Guid? AgentId { get; init; }
+    public int? StepOrdinal { get; init; }
+    public string? RequestedExecutor { get; init; }
+    public string? RequiredShell { get; init; }
 }
 
 /// <summary>The one bounded grammar for saved selectors, builders, previews and execution.</summary>

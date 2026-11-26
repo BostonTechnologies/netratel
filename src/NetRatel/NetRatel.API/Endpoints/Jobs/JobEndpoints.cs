@@ -54,6 +54,30 @@ public static class JobEndpoints
             var browse = await access.AuthorizeAsync(http.User, NetRatelPermissions.SecretBrowse, detail.Job.TenantId, ct);
             return Results.Ok(new JobWithDetailsDto(dto, detail.Steps.Select(MapStep).ToList(), detail.Params.Select(p => MapParam(p, browse)).ToList()));
         });
+        group.MapPost("/{id:long}/shell-compatibility", async (ulong id, JobShellPreviewRequest request, HttpContext http,
+            IJobDefinitionService jobs, IEffectiveAccessService access, [FromServices] JobShellCompatibility shells, CancellationToken ct) =>
+        {
+            var current = await jobs.GetDetailsAsync(id, ct);
+            if (current is null) return Results.NotFound();
+            if (!await CanManageAsync(http, access, current.Job.TenantId, ct)) return Results.Forbid();
+            var job = current.Job with
+            {
+                Target = request.Target ?? current.Job.Target,
+                ExecutionPolicy = request.ExecutionPolicy ?? current.Job.ExecutionPolicy,
+                OptionsJson = JobExecutionContextPolicy.MergeOptionsJson(current.Job.OptionsJson, request.Environment)
+            };
+            var steps = current.Steps;
+            if (request.Step is { } draft)
+            {
+                var existing = draft.Id is { } stepId ? current.Steps.SingleOrDefault(step => step.Id == stepId) : null;
+                if (draft.Id is not null && existing is null) return Results.NotFound();
+                var ordinal = existing?.Ordinal ?? (current.Steps.Count == 0 ? 1 : current.Steps.Max(step => step.Ordinal) + 1);
+                steps = current.Steps.Where(step => step.Id != draft.Id).Append(new(draft.Id ?? 0, id, ordinal,
+                    (JobStepKind)draft.Type, draft.Runner, null, draft.ScriptId, draft.PayloadJson, draft.Enabled)).ToArray();
+            }
+            try { return Results.Ok(await shells.VerifyDefinitionAsync(new(job, current.Params, steps), ct)); }
+            catch (JobTargetValidationException error) { return Results.Ok(new JobShellPreviewDto(false, true, error.Message)); }
+        });
         group.MapPost("/", async ([FromBody] CreateJobRequest request, HttpContext http, [FromServices] IEffectiveAccessService access, IJobDefinitionService jobs, [FromServices] OrchestratorDbContext db, IEventRecorder events, ICorrelationContext correlation, CancellationToken ct) =>
         {
             if (!await CanManageAsync(http, access, request.TenantId, ct)) return Results.Forbid();

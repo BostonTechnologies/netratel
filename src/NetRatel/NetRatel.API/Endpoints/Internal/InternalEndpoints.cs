@@ -4,10 +4,12 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.AspNetCore.Mvc;
 using NetRatel.API.Services.Events;
 using NetRatel.API.Services.Jobs;
 using NetRatel.API.Services.Orchestration;
 using NetRatel.Application.Jobs;
+using NetRatel.Application.Events;
 using NetRatel.Application.Requests;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Infrastructure.Services;
@@ -60,6 +62,27 @@ public static partial class InternalEndpoints
         group.MapGet("/catalog/capabilities", () => Results.Ok(new NetRatelAutomationCapabilities(2,
             ["legacyAgent", "explicitNodes", "executionGroup", "nodeFilter", "runtimeInput"], true, true, true)))
             .RequireAuthorization(OrchestrationManagedAuthorization.ReadPolicy);
+        group.MapGet("/catalog/jobs/{jobId:long}/execution-readiness", async (ulong jobId, HttpContext http,
+            [FromServices] JobAggregateOrchestrator jobs, ManagedJobRunAsGrants approvals, CancellationToken ct) =>
+        {
+            var principal = await OrchestrationManagedAuthorization.ResolveAsync(http, OrchestrationManagedAuthorization.ReadScope, ct);
+            if (principal is null || !OrchestrationManagedAuthorization.Constraints(principal).RequestDefinitionIds
+                .Contains(jobId.ToString(CultureInfo.InvariantCulture), StringComparer.Ordinal))
+                return AutomationError(http, 403, "job-execution-readiness", "access_denied");
+            try
+            {
+                var plan = await jobs.PlanManagedRunAsAsync(jobId, principal, ct);
+                return Results.Ok((await approvals.ReviewAsync(principal, plan, ct)).Readiness);
+            }
+            catch (PairingException error) when (error.StatusCode == 422)
+            {
+                return Results.Ok(new PairedJobExecutionReadiness(false, error.Code, error.Message));
+            }
+            catch (Exception error) when (error is PairingException or InvalidOperationException or ArgumentException or KeyNotFoundException)
+            {
+                return AutomationError(http, 409, "job-execution-readiness", "job_unavailable");
+            }
+        }).RequireAuthorization(OrchestrationManagedAuthorization.ReadPolicy);
         group.MapGet("/catalog/target-choices", async (HttpContext http, OrchestratorDbContext db, CancellationToken ct) =>
         {
             var principal = await OrchestrationManagedAuthorization.ResolveAsync(http, OrchestrationManagedAuthorization.ReadScope, ct);
@@ -154,7 +177,10 @@ public static partial class InternalEndpoints
             if (!OrchestrationManagedAuthorization.Constraints(principal).RequestDefinitionIds.Contains(id, StringComparer.Ordinal) ||
                 (await FilterDefinitionsAsync(db, [job], principal, ct)).Count != 1)
                 return AutomationError(http, 403, "invoke-job", "access_denied");
-            if (job.Target is not null || job.ExecutionPolicy is not null) target = target with { AgentId = null };
+            var aggregate = job.Target is not null || job.ExecutionPolicy is not null || target.AgentId is { } resolvedAgent &&
+                await db.Agents.AsNoTracking().AnyAsync(row => row.Id == resolvedAgent && row.TenantId == target.TenantId &&
+                    row.DefaultJobCredentialProfileId != null, ct);
+            if (aggregate) target = target with { AgentId = null };
             var predecessor = await db.Set<ManagedOrchestrationRequestBinding>().AsNoTracking()
                 .Where(x => x.ServicePrincipalId == principal.Id && x.ParentRequestId == request.RequestId && x.RequestTaskId == request.RequestTaskId)
                 .OrderByDescending(x => x.CreatedAtUtc).ThenByDescending(x => x.RequestId).FirstOrDefaultAsync(ct);
@@ -184,7 +210,7 @@ public static partial class InternalEndpoints
                 created = await requests.CreateAsync(new CreateRequestCommand(binding.SourceSystem, job.ClientIdentity, job.Id.ToString(), request.PayloadJson, target.TenantId, target.AgentId), ct);
                 binding.RequestId = created.Id;
                 // Persist the request, scoped binding and proven-undispatched run intent before the first actor call.
-                if (job.Target is not null || job.ExecutionPolicy is not null)
+                if (aggregate)
                 {
                     db.Set<ManagedOrchestrationRequestBinding>().Add(binding);
                     await db.SaveChangesAsync(ct);
@@ -195,8 +221,9 @@ public static partial class InternalEndpoints
                     }
                     catch (Exception error) when (error is JobTargetValidationException or ArgumentException or InvalidOperationException)
                     {
-                        return AutomationError(http, 422, "invoke-job", error is JobTargetValidationException invalid ? invalid.Code : "managed_admission_rejected",
-                            "The job's target, inputs, executable content or retained connection authority cannot currently admit this execution.");
+                        if (transaction is not null)
+                            await transaction.RollbackAsync(CancellationToken.None);
+                        return await RejectAdmissionAsync(http, binding, error as JobTargetValidationException);
                     }
                     created = (await requests.UpdateAsync(new(created.Id, null, null, null, binding.ExecutionId,
                         null, null, null, null, null), ct))!;
@@ -246,7 +273,7 @@ public static partial class InternalEndpoints
             }
             catch (Exception exception) when (exception is InvalidOperationException or KeyNotFoundException)
             {
-                loggers.CreateLogger("NetRatel.API.Endpoints.Internal").LogWarning(exception, "Paired ingest could not dispatch job {JobId}. correlationId={CorrelationId}", job.Id, correlationId);
+                loggers.CreateLogger("NetRatel.API.Endpoints.Internal").LogWarning("Paired ingest could not confirm job dispatch. JobId={JobId} CorrelationId={CorrelationId} FailureType={FailureType}", job.Id, correlationId, exception.GetType().Name);
                 var logs = created.Logs.Concat([$"[{DateTimeOffset.UtcNow:O}] Failed to start NetRatel job: {exception.Message}"]).ToArray();
                 // An uncertain actor outcome remains recoverable through this exact durable binding.
                 var failed = await requests.UpdateAsync(new UpdateRequestCommand(created.Id, null, job.ClientIdentity, job.Id.ToString(), null, null, null, null, request.PayloadJson, logs), ct).ConfigureAwait(false);
@@ -254,11 +281,47 @@ public static partial class InternalEndpoints
                 return Results.Json(new { operation = "invoke-job", httpStatus = 409, code = "job_authority_unavailable", correlationId,
                     requestId = created.Id.ToString(CultureInfo.InvariantCulture), runId = binding.ExecutionId,
                     executionId = binding.ExecutionId, status = "Unknown",
+                    diagnostic = new NetRatelProviderDiagnostic("NetRatel", "delivery", "delivery_uncertain",
+                        "Reconcile the existing provider execution before retrying.", "reconciliation_required", correlationId,
+                        true, 409, binding.LinkId, binding.JobDefinitionId, created.Id.ToString(CultureInfo.InvariantCulture), binding.ExecutionId),
                     message = "The execution intent is recorded. Retry this exact request-task attempt to reconcile its outcome." }, statusCode: 409);
             }
         }).RequireAuthorization(OrchestrationManagedAuthorization.InvokePolicy);
 
         return app;
+    }
+
+    private static async Task<IResult> RejectAdmissionAsync(HttpContext http, ManagedOrchestrationRequestBinding binding,
+        JobTargetValidationException? error)
+    {
+        var diagnostic = NetRatelProviderDiagnostics.Admission(binding, error);
+        var logger = http.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("NetRatel.API.Endpoints.Internal");
+        var eventId = SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(new
+        { binding.ServicePrincipalId, binding.ParentRequestId, binding.RequestTaskId, binding.CorrelationId, diagnostic.Code }));
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        try
+        {
+            var events = http.RequestServices.GetRequiredService<IEventRecorder>();
+            await events.RecordIndependentAsync(new DomainEvent
+            {
+                EventId = new Guid(eventId.AsSpan(0, 16)), EventType = "Orchestration.PairedAdmissionRejected",
+                Source = "Orchestration", CorrelationId = binding.CorrelationId, TenantId = binding.TenantId.ToString(CultureInfo.InvariantCulture),
+                EntityId = binding.JobDefinitionId, Severity = "Warning", Message = diagnostic.Message, Payload = diagnostic
+            }, deadline.Token);
+        }
+        catch (DbUpdateException exception) when (exception.InnerException is Npgsql.PostgresException { SqlState: Npgsql.PostgresErrorCodes.UniqueViolation })
+        {
+            logger.LogDebug("The paired admission rejection already has an event. CorrelationId={CorrelationId}", binding.CorrelationId);
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning("Could not persist paired admission rejection. CorrelationId={CorrelationId} FailureType={FailureType}",
+                binding.CorrelationId, exception.GetType().Name);
+        }
+        logger.LogInformation("Paired job admission rejected. CorrelationId={CorrelationId} ConnectionId={ConnectionId} JobId={JobId} ReasonCode={ReasonCode} HttpStatus={HttpStatus}",
+            diagnostic.CorrelationId, diagnostic.ConnectionId, diagnostic.JobDefinitionId, diagnostic.Code, diagnostic.HttpStatus);
+        return Results.Json(new { operation = "invoke-job", httpStatus = 422, diagnostic.Code, detail = diagnostic.Message,
+            correlationId = diagnostic.CorrelationId, diagnostic }, statusCode: 422);
     }
 
     private static async Task<IReadOnlyList<JobDefinitionInfo>> FilterDefinitionsAsync(OrchestratorDbContext db,

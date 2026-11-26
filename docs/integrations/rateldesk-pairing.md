@@ -43,6 +43,25 @@ also removes the pair credentials. An unused pairing can be deleted. Any
 peer cleanup runs automatically; an offline peer has not acknowledged it.
 Existing incidents, receipts, Flow runs and task history remain intact.
 
+### Approve a saved execution account for a job
+
+In NetRatel, open **System connections** and select **Paired Run as** on the
+automation connection. Select the job and review its targets and effective
+credential profiles. A tenant administrator with integration, jobs, Run as
+and secret-use permissions can select **Approve saved accounts**.
+
+Approval applies to the current connection revision, reviewed job and the
+displayed target and profile set. For a selector job, review requires a
+resolvable target set. A changed mapping, definition, membership or profile
+requires review again. **Revoke** removes that approval. An existing paired
+installation can use this workflow on its current mapping.
+
+Jobs using the agent service account need no saved-account approval. An
+inherited client default or an explicit job override needs approval when it
+uses a saved profile. An HTTP 422 `run_as_denied` means NetRatel rejected the
+attempt before creating an execution. Search the RatelDesk attempt reference
+in NetRatel operations to locate the matching rejection.
+
 ## Addresses and credentials
 
 Valid HTTPS works with public or private DNS and reverse proxies. Deliberately

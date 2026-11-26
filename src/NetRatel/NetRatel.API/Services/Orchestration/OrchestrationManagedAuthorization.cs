@@ -30,6 +30,7 @@ public static class OrchestrationManagedAuthorization
         services.AddScoped<IAuthorizationHandler, OrchestrationServiceAuthorizationHandler>();
         services.TryAddSingleton<IAuthorizationMiddlewareResultHandler, OrchestrationAuthorizationResultHandler>();
         services.AddScoped<ManagedOrchestrationInvocationGuard>();
+        services.AddScoped<ManagedJobRunAsGrants>();
         services.AddScoped<INetRatelExternalServiceCallbackReplayService, NetRatelExternalServiceCallbackReplayService>();
         services.AddScoped<OrchestrationCallbackReconciler>();
         services.AddHostedService<OrchestrationCallbackWorker>();

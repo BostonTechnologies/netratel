@@ -61,7 +61,7 @@ internal sealed class WindowsExecutionAccount(SafeAccessTokenHandle token, strin
             {
                 var error = Marshal.GetLastPInvokeError();
                 login?.Dispose();
-                throw Failed("Windows rejected the requested logon", error);
+                throw new LogonRejectedException(error);
             }
         }
         finally { Marshal.ZeroFreeGlobalAllocUnicode(password); }
@@ -166,6 +166,8 @@ internal sealed class WindowsExecutionAccount(SafeAccessTokenHandle token, strin
 
     private static InvalidOperationException Unavailable() => new("Windows could not authenticate or launch the selected account on this client.");
     private static InvalidOperationException Failed(string action, int error) => new($"{action} (Windows error {error}).");
+
+    internal sealed class LogonRejectedException(int error) : InvalidOperationException($"Windows rejected the requested logon (Windows error {error}).");
 
     [StructLayout(LayoutKind.Sequential)]
     internal struct StartupInfo
