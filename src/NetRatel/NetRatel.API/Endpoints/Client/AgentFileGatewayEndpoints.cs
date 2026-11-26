@@ -360,6 +360,8 @@ public static partial class AgentFileGatewayEndpoints
             "not_a_file" => (StatusCodes.Status409Conflict, "The selected path is a directory."),
             "file_not_found" or "directory_not_found" or "path_not_found" => (StatusCodes.Status404NotFound, "The requested remote path does not exist."),
             "access_denied" => (StatusCodes.Status403Forbidden, "The remote client denied access to the requested path."),
+            "file_roots_not_configured" => (StatusCodes.Status403Forbidden, "File browsing requires an administrator to configure allowed folders on the server."),
+            "file_path_outside_roots" => (StatusCodes.Status403Forbidden, "This path is outside the folders allowed by the server. Choose an allowed folder."),
             "protected_path" => (StatusCodes.Status403Forbidden, "Filesystem roots, approved roots, and symbolic links cannot be deleted through folder operations."),
             "path_already_exists" => (StatusCodes.Status409Conflict, "A file or folder already exists at this path."),
             "destination_already_exists" => (StatusCodes.Status409Conflict, "The destination already exists. No replacement was performed."),

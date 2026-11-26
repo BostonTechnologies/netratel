@@ -322,9 +322,13 @@ public sealed class FullExplorerAcceptanceTests(ClientsManagementBrowserFixture 
         await page.GetByRole(AriaRole.Button, new() { Name = "Open file browser", Exact = true }).First.ClickAsync();
         await page.GetByText("Full Explorer", new() { Exact = true }).ClickAsync();
         var workspace = page.GetByTestId("full-explorer");
+        await OpenAllowedRootAsync(workspace);
         await workspace.Locator(".mud-ex-file-grid:visible").GetByText("notes.txt", new() { Exact = true }).WaitForAsync();
         return workspace;
     }
+
+    private static Task OpenAllowedRootAsync(ILocator workspace) =>
+        workspace.Locator(".mud-ex-file-grid:visible").GetByText("/", new() { Exact = true }).DblClickAsync();
 
     private static Task<ClientsManagementFixtureHost> StartExplorerAsync(Action<ExplorerFixtureFactory> capture) => ClientsManagementFixtureHost.StartAsync(services =>
     {
@@ -376,6 +380,7 @@ public sealed class FullExplorerAcceptanceTests(ClientsManagementBrowserFixture 
         await page.GetByRole(AriaRole.Button, new() { Name = "Open file browser", Exact = true }).First.ClickAsync();
         await page.GetByText("Full Explorer", new() { Exact = true }).ClickAsync();
         var workspace = page.GetByTestId("full-explorer");
+        await OpenAllowedRootAsync(workspace);
         try { await workspace.GetByText("notes.txt", new() { Exact = true }).WaitForAsync(new() { Timeout = 60_000 }); }
         catch
         {
@@ -395,13 +400,14 @@ public sealed class FullExplorerAcceptanceTests(ClientsManagementBrowserFixture 
             await page.GetByRole(AriaRole.Button, new() { Name = "Open file browser", Exact = true }).First.ClickAsync();
             await Assertions.Expect(workspace).ToHaveCountAsync(0);
             await page.GetByText("Full Explorer", new() { Exact = true }).ClickAsync();
+            await OpenAllowedRootAsync(workspace);
             await workspace.GetByText("notes.txt", new() { Exact = true }).WaitForAsync();
         }
         var pathInput = workspace.GetByRole(AriaRole.Textbox, new() { Name = "Remote path", Exact = true });
         await pathInput.FillAsync("/draft-that-is-not-open");
         await workspace.GetByRole(AriaRole.Button, new() { Name = "Refresh", Exact = true }).ClickAsync();
         await Assertions.Expect(pathInput).ToHaveValueAsync("/");
-        await workspace.GetByRole(AriaRole.Button, new() { Name = "Volumes", Exact = true }).ClickAsync();
+        await workspace.GetByRole(AriaRole.Button, new() { Name = "Allowed folders", Exact = true }).ClickAsync();
         await Assertions.Expect(workspace.GetByLabel("Upload remote file")).ToBeDisabledAsync();
         await pathInput.FillAsync("/");
         await workspace.GetByRole(AriaRole.Button, new() { Name = "Go", Exact = true }).ClickAsync();

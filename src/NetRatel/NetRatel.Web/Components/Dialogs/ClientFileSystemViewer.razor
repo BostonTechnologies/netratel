@@ -20,7 +20,11 @@
             <MudStack Spacing="1" Class="file-explorer-toolbar">
                 <MudStack Row="true" Spacing="1" AlignItems="AlignItems.Center" Class="file-explorer-navigation">
                     <MudButton Variant="Variant.Outlined" StartIcon="@Icons.Material.Filled.ArrowUpward" OnClick="GoUpAsync" Disabled="_loading || _mutating || !CanGoUp">Up</MudButton>
-                    <MudTextField @bind-Value="_currentPath" Label="Remote path" Variant="Variant.Outlined" Margin="Margin.Dense" Immediate="true" OnKeyDown="HandlePathKeyDownAsync" Disabled="_mutating" Class="flex-grow-1" data-testid="file-explorer-path" />
+                    @if (IsGatewayClient)
+                    {
+                        <MudButton OnClick="ShowRootsAsync" Disabled="_loading || _mutating">Allowed folders</MudButton>
+                    }
+                    <MudTextField @bind-Value="_currentPath" Label="Remote path" Variant="Variant.Outlined" Margin="Margin.Dense" Immediate="true" OnKeyDown="HandlePathKeyDownAsync" Disabled="_loading || _mutating" Class="flex-grow-1" data-testid="file-explorer-path" />
                     <MudIconButton Icon="@Icons.Material.Filled.Refresh" Color="Color.Primary" OnClick="RefreshAsync" Disabled="_loading || _mutating" aria-label="Refresh directory" />
                     @if (_canCreateDirectory)
                     {
@@ -70,7 +74,7 @@
                 }
                 <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1" Class="file-explorer-location">
                     <MudIcon Icon="@Icons.Material.Filled.FolderOpen" />
-                    <MudText Typo="Typo.body2" data-testid="file-explorer-location">@_currentPath</MudText>
+                    <MudText Typo="Typo.body2" data-testid="file-explorer-location">@(_showRoots ? "Allowed folders" : _currentPath)</MudText>
                 </MudStack>
                 <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
                     <MudTextField @bind-Value="_filter" Placeholder="Filter files and folders..." Variant="Variant.Outlined" Margin="Margin.Dense" Immediate="true" Adornment="Adornment.Start" AdornmentIcon="@Icons.Material.Filled.Search" Clearable="true" Class="flex-grow-1" data-testid="file-explorer-filter" />
@@ -93,7 +97,7 @@
             {
                 <div class="file-explorer-state" data-testid="file-explorer-empty">
                     <MudIcon Icon="@Icons.Material.Filled.FolderOff" Size="Size.Large" />
-                    <MudText Typo="Typo.subtitle1">This directory is empty.</MudText>
+                    <MudText Typo="Typo.subtitle1">@(_showRoots ? "No allowed folders are available on this client." : "This directory is empty.")</MudText>
                 </div>
             }
             else if (FilteredEntries.Count == 0)
@@ -190,13 +194,14 @@
     [Parameter] public int? TenantId { get; set; }
     [Parameter] public Guid? AgentId { get; set; }
     [Parameter] public string HostLabel { get; set; } = "Client";
-    [Parameter] public string InitialPath { get; set; } = "/";
+    [Parameter] public string? InitialPath { get; set; } = "/";
 
     private readonly List<FileSystemEntryDto> _entries = [];
     private List<FileSystemEntryDto> _filteredEntries = [];
     private string _currentPath = string.Empty;
     private string _filter = string.Empty;
     private bool _loading;
+    private bool _showRoots;
     private bool _gatewayReconnecting;
     private bool _disposed;
     private bool _canWriteFiles;
@@ -229,19 +234,36 @@
 
     protected override async Task OnInitializedAsync()
     {
+        if (IsGatewayClient && InitialPath is null)
+        {
+            await ShowRootsAsync();
+            return;
+        }
         _currentPath = RemoteFilePath.TryNormalizeDirectory(InitialPath, out var initialPath) ? initialPath : "/";
         await RefreshAsync();
     }
 
+    private Task ShowRootsAsync()
+    {
+        _showRoots = true;
+        _currentPath = string.Empty;
+        return RefreshAsync();
+    }
+
     private async Task RefreshAsync()
     {
-        if (!RemoteFilePath.TryNormalizeDirectory(_currentPath, out var normalizedPath)) { _lastDirectoryError = "Enter an absolute Unix path or Windows drive path."; return; }
-        _currentPath = normalizedPath;
+        _showRoots = IsGatewayClient && _showRoots && string.IsNullOrEmpty(_currentPath);
+        if (!_showRoots)
+        {
+            if (!RemoteFilePath.TryNormalizeDirectory(_currentPath, out var normalizedPath)) { _lastDirectoryError = "Enter an absolute Unix path or Windows drive path."; return; }
+            _currentPath = normalizedPath;
+        }
         _loading = true;
         _lastDirectoryError = null;
+        _canWriteFiles = _canCreateDirectory = _canDeleteDirectory = false;
         try
         {
-            var response = await ListDirectoryAsync(_currentPath);
+            var response = _showRoots ? await ListRootsAsync() : await ListDirectoryAsync(_currentPath);
             _entries.Clear();
             _entries.AddRange(response.Entries.OrderBy(entry => entry.IsDirectory ? 0 : 1).ThenBy(entry => entry.Name, StringComparer.OrdinalIgnoreCase));
             ApplyFilter();
@@ -491,6 +513,13 @@
                 CreatedUtc = entry.CreatedUtc,
                 LastModifiedUtc = entry.LastModifiedUtc
             }).ToArray());
+    }
+
+    private async Task<FileSystemListResponse> ListRootsAsync()
+    {
+        var roots = await GatewayFileSystemApi.RootsAsync(TenantId!.Value, AgentId!.Value, _directoryLifecycle.Token);
+        return new FileSystemListResponse("akka-gateway", "", "completed", null,
+            roots.Entries.Select(entry => new FileSystemEntryDto("", entry.Name, entry.FullPath, true, 0)).ToArray());
     }
 
     private static string FormatTimestamp(DateTimeOffset? timestamp) => timestamp?.UtcDateTime.ToString("yyyy-MM-dd HH:mm", System.Globalization.CultureInfo.InvariantCulture) ?? "Not reported";

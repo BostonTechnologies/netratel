@@ -28,8 +28,38 @@ public sealed class AgentFileGatewaySessionRegistryTests
         using var registration = registry.Register(client, connection, 2, ProtectedCapabilities);
 
         var listing = () => registry.ListAsync(client, "/data", 32, new(["/data"]), CancellationToken.None);
-        (await listing.Should().ThrowAsync<AgentFileGatewayOperationException>()).Which.Code.Should().Be("access_denied");
+        (await listing.Should().ThrowAsync<AgentFileGatewayOperationException>()).Which.Code.Should().Be("file_roots_not_configured");
         registration.Reader.TryRead(out _).Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData("/", "/srv/shared-reports")]
+    [InlineData("C:\\", "C:\\SharedReports")]
+    public async Task Listing_outside_configured_roots_is_denied_before_dispatch(string volume, string allowedFolder)
+    {
+        var client = new ClientKey(3, Guid.NewGuid());
+        var connection = Guid.NewGuid();
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?> { ["NetRatel:FileGateway:AllowedRoots:0"] = allowedFolder }).Build();
+        var registry = new AgentFileGatewaySessionRegistry(new CurrentPresenceRouter(client, connection, 2), configuration);
+        using var registration = registry.Register(client, connection, 2, ProtectedCapabilities);
+
+        var denied = () => registry.ListAsync(client, volume, 32, CancellationToken.None);
+        (await denied.Should().ThrowAsync<AgentFileGatewayOperationException>()).Which.Code.Should().Be("file_path_outside_roots");
+        registration.Reader.TryRead(out _).Should().BeFalse();
+
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var listing = registry.ListAsync(client, allowedFolder, 32, deadline.Token);
+        var dispatch = (await registration.Reader.ReadAsync(deadline.Token)).Dispatch;
+        dispatch.Path.Should().Be(allowedFolder);
+        dispatch.AllowedRoots.Should().Equal(allowedFolder);
+        registry.TryAccept(client, new FileRequestAccepted { RequestId = dispatch.RequestId, AttemptId = dispatch.AttemptId }).Should().BeTrue();
+        registry.TryAddPage(client, new FileListPage
+        {
+            RequestId = dispatch.RequestId, AttemptId = dispatch.AttemptId, IsLastPage = true
+        }).Should().BeTrue();
+        registry.TryComplete(client, new FileRequestCompleted { RequestId = dispatch.RequestId, AttemptId = dispatch.AttemptId }).Should().BeTrue();
+        (await listing).Should().BeEmpty();
     }
 
     [Fact]

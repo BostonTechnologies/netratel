@@ -1080,6 +1080,8 @@ internal sealed class AgentFileGatewaySession(
         RequireCapability(FileGatewaySecurityCapabilities.ProtectedPaths);
         if (!supportsPolicyRoots)
             throw new AgentFileGatewayOperationException("capability_unavailable");
+        if (configuredRoots.Count == 0)
+            throw new AgentFileGatewayOperationException("file_roots_not_configured");
 
         var isRelocation = operation is "copy" or "move" or "move_entry";
         var roots = operation == "roots" ? configuredRoots :
@@ -1098,7 +1100,8 @@ internal sealed class AgentFileGatewaySession(
         }
         else if (roots.Count == 0)
         {
-            throw new AgentFileGatewayOperationException("access_denied");
+            throw new AgentFileGatewayOperationException(operation == "list" && accessPolicy is null
+                ? "file_path_outside_roots" : "access_denied");
         }
 
         await EnsurePresenceLeaseAsync(cancellationToken).ConfigureAwait(false);
