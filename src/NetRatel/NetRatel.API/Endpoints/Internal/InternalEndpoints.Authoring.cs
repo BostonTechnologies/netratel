@@ -77,66 +77,110 @@ public static partial class InternalEndpoints
             return Results.Created($"/internal/catalog/request-definitions/{created.Id}", ToRequestDefinition(catalog.Single()));
         }).RequireAuthorization(OrchestrationManagedAuthorization.InvokePolicy);
 
-        group.MapPost("/catalog/request-definitions/{id}/inputs/sync", async (
-            string id, SyncNetRatelRequestDefinitionInputsDto request, HttpContext http,
-            IJobDefinitionService jobs, OrchestratorDbContext db, CancellationToken ct) =>
-        {
-            var principal = await OrchestrationManagedAuthorization.ResolveAsync(http, OrchestrationManagedAuthorization.InvokeScope, ct);
-            if (principal is null) return AutomationError(http, 403, "authoring", "access_denied");
-            if (!ulong.TryParse(id, NumberStyles.None, CultureInfo.InvariantCulture, out var jobId) || jobId == 0 || jobId > long.MaxValue ||
-                jobId.ToString(CultureInfo.InvariantCulture) != id)
-                return AutomationError(http, 400, "authoring", "invalid_request_definition_id");
-            var constraints = OrchestrationManagedAuthorization.Constraints(principal);
-            var job = await jobs.GetAsync(jobId, ct);
-            if (job is null || job.TenantId != principal.TenantId) return AutomationError(http, 403, "authoring", "access_denied");
-            var target = await ValidateTargetAsync(db, job, ct);
-            if (target is null) return AutomationError(http, 422, "sync-inputs", "target_unavailable");
-            if (!constraints.RequestDefinitionIds.Contains(id, StringComparer.Ordinal) || target.AgentId is { } fixedAgent && !constraints.ResourceIds.Contains(fixedAgent.ToString("D"), StringComparer.Ordinal))
-                return AutomationError(http, 403, "authoring", "access_denied");
-            if (!ValidCatalogInputs(request.Inputs)) return AutomationError(http, 400, "sync-inputs", "invalid_request_definition_inputs");
+        group.MapPost("/catalog/request-definitions/{id}/inputs/sync",
+            (string id, SyncNetRatelRequestDefinitionInputsDto request, HttpContext http,
+                IJobDefinitionService jobs, OrchestratorDbContext db, CancellationToken ct) =>
+                SyncInputsAsync(id, request, http, jobs, db, requireReview: false, ct))
+            .RequireAuthorization(OrchestrationManagedAuthorization.InvokePolicy);
+        group.MapPost("/catalog/request-definitions/{id}/inputs/review-sync",
+            (string id, SyncNetRatelRequestDefinitionInputsDto request, HttpContext http,
+                IJobDefinitionService jobs, OrchestratorDbContext db, CancellationToken ct) =>
+                SyncInputsAsync(id, request, http, jobs, db, requireReview: true, ct))
+            .RequireAuthorization(OrchestrationManagedAuthorization.InvokePolicy);
+    }
 
-            await using var transaction = db.Database.IsRelational() ? await db.Database.BeginTransactionAsync(ct) : null;
-            if (db.Database.IsNpgsql())
-                await db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock({checked((long)jobId)})", ct);
-            // Share definition retirement's row fence until the input replacement commits.
-            if (db.Database.IsRelational())
-                await db.Database.ExecuteSqlInterpolatedAsync(
-                    $"UPDATE \"Jobs\" SET \"UpdatedAtUtc\" = \"UpdatedAtUtc\" WHERE \"Id\" = {checked((long)jobId)}", ct);
-            // Recheck the live target under the write fence, including revocation or a changed job assignment.
-            var originalTarget = JsonSerializer.Serialize(job.Target);
-            job = await jobs.GetAsync(jobId, ct);
-            if (job is null || job.TenantId != principal.TenantId ||
-                await ValidateTargetAsync(db, job, ct) is not { } currentTarget || currentTarget.AgentId != target.AgentId || JsonSerializer.Serialize(job.Target) != originalTarget)
-                return AutomationError(http, 403, "authoring", "access_denied");
-            var rows = await db.JobParameters.Where(x => x.JobId == checked((long)jobId)).ToListAsync(ct);
-            if (rows.Select(x => x.Name).Distinct(StringComparer.OrdinalIgnoreCase).Count() != rows.Count)
-                return AutomationError(http, 409, "authoring", "request_definition_existing_inputs_conflict");
-            var desiredKeys = request.Inputs.Select(x => x.Key.Trim()).ToHashSet(StringComparer.OrdinalIgnoreCase);
-            db.JobParameters.RemoveRange(rows.Where(row => !desiredKeys.Contains(row.Name)));
-            foreach (var input in request.Inputs)
+    private static async Task<IResult> SyncInputsAsync(
+        string id, SyncNetRatelRequestDefinitionInputsDto request, HttpContext http,
+        IJobDefinitionService jobs, OrchestratorDbContext db, bool requireReview, CancellationToken ct)
+    {
+        var principal = await OrchestrationManagedAuthorization.ResolveAsync(http, OrchestrationManagedAuthorization.InvokeScope, ct);
+        if (principal is null) return AutomationError(http, 403, "authoring", "access_denied");
+        if (!ulong.TryParse(id, NumberStyles.None, CultureInfo.InvariantCulture, out var jobId) || jobId == 0 || jobId > long.MaxValue ||
+            jobId.ToString(CultureInfo.InvariantCulture) != id)
+            return AutomationError(http, 400, "authoring", "invalid_request_definition_id");
+        var constraints = OrchestrationManagedAuthorization.Constraints(principal);
+        var job = await jobs.GetAsync(jobId, ct);
+        if (job is null || job.TenantId != principal.TenantId) return AutomationError(http, 403, "authoring", "access_denied");
+        var target = await ValidateTargetAsync(db, job, ct);
+        if (target is null) return AutomationError(http, 422, "sync-inputs", "target_unavailable");
+        if (!constraints.RequestDefinitionIds.Contains(id, StringComparer.Ordinal) || target.AgentId is { } fixedAgent && !constraints.ResourceIds.Contains(fixedAgent.ToString("D"), StringComparer.Ordinal))
+            return AutomationError(http, 403, "authoring", "access_denied");
+        if (!ValidCatalogInputs(request.Inputs)) return AutomationError(http, 400, "sync-inputs", "invalid_request_definition_inputs");
+
+        await using var transaction = db.Database.IsRelational() ? await db.Database.BeginTransactionAsync(ct) : null;
+        if (db.Database.IsNpgsql())
+            await db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock({checked((long)jobId)})", ct);
+        // Share definition retirement's row fence until the input replacement commits.
+        if (db.Database.IsRelational())
+            await db.Database.ExecuteSqlInterpolatedAsync(
+                $"UPDATE \"Jobs\" SET \"UpdatedAtUtc\" = \"UpdatedAtUtc\" WHERE \"Id\" = {checked((long)jobId)}", ct);
+        // Recheck the live target under the write fence, including revocation or a changed job assignment.
+        var originalTarget = JsonSerializer.Serialize(job.Target);
+        job = await jobs.GetAsync(jobId, ct);
+        if (job is null || job.TenantId != principal.TenantId ||
+            await ValidateTargetAsync(db, job, ct) is not { } currentTarget || currentTarget.AgentId != target.AgentId || JsonSerializer.Serialize(job.Target) != originalTarget)
+            return AutomationError(http, 403, "authoring", "access_denied");
+        var rows = await db.JobParameters.Where(x => x.JobId == checked((long)jobId)).ToListAsync(ct);
+        if (rows.Select(x => x.Name).Distinct(StringComparer.OrdinalIgnoreCase).Count() != rows.Count)
+            return AutomationError(http, 409, "authoring", "request_definition_existing_inputs_conflict");
+        if (requireReview &&
+            (request.ExpectedInputs is null || !MatchesReviewedInputs(rows, request.ExpectedInputs)))
+            return AutomationError(http, 409, "sync-inputs", "request_definition_inputs_changed");
+
+        var desiredKeys = request.Inputs.Select(x => x.Key.Trim()).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (requireReview && rows.Any(row => !desiredKeys.Contains(row.Name)))
+            return AutomationError(http, 422, "sync-inputs", "review_cannot_remove_inputs");
+        if (requireReview && !SupportsReviewedChanges(rows, request.Inputs))
+            return AutomationError(http, 422, "sync-inputs", "review_unsupported_input_change");
+        if (!requireReview) db.JobParameters.RemoveRange(rows.Where(row => !desiredKeys.Contains(row.Name)));
+        foreach (var input in request.Inputs)
+        {
+            var key = input.Key.Trim();
+            var row = rows.SingleOrDefault(x => string.Equals(x.Name, key, StringComparison.OrdinalIgnoreCase));
+            if (requireReview && row is not null && SameCatalogInput(row, input)) continue;
+            if (row is null)
             {
-                var key = input.Key.Trim();
-                var row = rows.SingleOrDefault(x => string.Equals(x.Name, key, StringComparison.OrdinalIgnoreCase));
-                if (row is null)
-                {
-                    row = new JobParameterDefinition { JobId = checked((long)jobId), Name = key };
-                    db.JobParameters.Add(row);
-                }
-                row.Name = key;
-                row.Label = input.Label.Trim();
-                row.SortOrder = input.Order;
-                row.Type = input.Type.Trim();
-                row.Required = input.Required;
-                row.DefaultValue = input.DefaultValue;
-                row.Description = input.HelpText;
-                row.OptionsJson = input.OptionsJson;
+                row = new JobParameterDefinition { JobId = checked((long)jobId), Name = key };
+                db.JobParameters.Add(row);
             }
-            await db.SaveChangesAsync(ct);
-            var refreshed = await jobs.GetAsync(jobId, ct) ?? throw new InvalidOperationException("Updated definition disappeared.");
-            var catalog = await MapCatalogJobsAsync(db, [refreshed], ct);
-            if (transaction is not null) await transaction.CommitAsync(ct);
-            return Results.Ok(ToRequestDefinition(catalog.Single()));
-        }).RequireAuthorization(OrchestrationManagedAuthorization.InvokePolicy);
+            row.Name = key;
+            row.Label = input.Label.Trim();
+            row.SortOrder = input.Order;
+            row.Type = input.Type.Trim();
+            row.Required = input.Required;
+            row.DefaultValue = input.DefaultValue;
+            row.Description = input.HelpText;
+            row.OptionsJson = input.OptionsJson;
+        }
+        await db.SaveChangesAsync(ct);
+        var refreshed = await jobs.GetAsync(jobId, ct) ?? throw new InvalidOperationException("Updated definition disappeared.");
+        var catalog = await MapCatalogJobsAsync(db, [refreshed], ct);
+        if (transaction is not null) await transaction.CommitAsync(ct);
+        return Results.Ok(ToRequestDefinition(catalog.Single()));
+    }
+
+    private static bool MatchesReviewedInputs(
+        IReadOnlyList<JobParameterDefinition> rows, IReadOnlyList<NetRatelCatalogInputDefinitionDto> expected)
+    {
+        if (rows.Count != expected.Count) return false;
+        var current = rows.ToDictionary(row => row.Name, StringComparer.Ordinal);
+        return expected.All(input => input is { Key.Length: > 0 } && current.Remove(input.Key, out var row) &&
+            SameCatalogInput(row, input));
+    }
+
+    private static bool SameCatalogInput(JobParameterDefinition row, NetRatelCatalogInputDefinitionDto input)
+        => (row.Label ?? row.Name) == input.Label && row.SortOrder == input.Order &&
+            row.Type == input.Type && row.Required == input.Required && row.DefaultValue == input.DefaultValue &&
+            row.Description == input.HelpText && row.OptionsJson == input.OptionsJson;
+
+    private static bool SupportsReviewedChanges(IReadOnlyList<JobParameterDefinition> rows,
+        IReadOnlyList<NetRatelCatalogInputDefinitionDto> requested)
+    {
+        var existing = rows.ToDictionary(row => row.Name, StringComparer.OrdinalIgnoreCase);
+        return requested.All(input => !existing.TryGetValue(input.Key, out var row) ||
+            row.Name == input.Key && row.Type == input.Type && row.SortOrder == input.Order &&
+            row.DefaultValue == input.DefaultValue && row.Description == input.HelpText &&
+            (row.OptionsJson == input.OptionsJson || row.Type.Equals("select", StringComparison.OrdinalIgnoreCase)));
     }
 
     private static bool ValidCatalogText(string? value, int maximum) =>

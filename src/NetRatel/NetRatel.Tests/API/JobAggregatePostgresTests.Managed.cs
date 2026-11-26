@@ -106,6 +106,22 @@ public sealed partial class JobAggregatePostgresTests
                 new SyncNetRatelRequestDefinitionInputsDto { Inputs = [new() { Key = "message", Label = "Message", Type = "text", DefaultValue = "synthetic" }] }, ct);
             sync.EnsureSuccessStatusCode();
             (await sync.Content.ReadFromJsonAsync<NetRatelCatalogRequestDefinitionDto>(ct))!.Target!.Definition!.AgentIds.Should().Equal(h.AgentIds[0]);
+            var savedInputs = (await sync.Content.ReadFromJsonAsync<NetRatelCatalogRequestDefinitionDto>(ct))!.Inputs;
+            var reviewPath = $"/internal/catalog/request-definitions/{authored.RequestDefinitionId}/inputs/review-sync";
+            var reviewed = new SyncNetRatelRequestDefinitionInputsDto
+            {
+                ExpectedInputs = authored.Inputs,
+                Inputs = [new() { Key = "message", Label = "Reviewed label", Type = "text", DefaultValue = "synthetic" }]
+            };
+            using var staleReview = await client.PostAsJsonAsync(reviewPath, reviewed, ct);
+            staleReview.StatusCode.Should().Be(HttpStatusCode.Conflict);
+            reviewed.ExpectedInputs = savedInputs;
+            using var freshReview = await client.PostAsJsonAsync(reviewPath, reviewed, ct);
+            freshReview.EnsureSuccessStatusCode();
+            (await freshReview.Content.ReadFromJsonAsync<NetRatelCatalogRequestDefinitionDto>(ct))!.Inputs
+                .Should().ContainSingle(input => input.Label == "Reviewed label" && input.DefaultValue == "synthetic");
+            using var replayReview = await client.PostAsJsonAsync(reviewPath, reviewed, ct);
+            replayReview.StatusCode.Should().Be(HttpStatusCode.Conflict);
             NetRatelIngestRequest Ingest(string job = "41", string correlation = "attempt-one", string payload = "{\"input\":{\"message\":\"synthetic\"}}") => new()
             { RequestId = "synthetic-request", RequestTaskId = "synthetic-task", CorrelationId = correlation,
                 NetRatelRequestDefinitionId = job, NetRatelJobDefinitionId = job, PayloadJson = payload };
