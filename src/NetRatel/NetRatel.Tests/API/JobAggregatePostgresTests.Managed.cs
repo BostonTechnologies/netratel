@@ -105,8 +105,9 @@ public sealed partial class JobAggregatePostgresTests
             using var sync = await client.PostAsJsonAsync($"/internal/catalog/request-definitions/{authored.RequestDefinitionId}/inputs/sync",
                 new SyncNetRatelRequestDefinitionInputsDto { Inputs = [new() { Key = "message", Label = "Message", Type = "text", DefaultValue = "synthetic" }] }, ct);
             sync.EnsureSuccessStatusCode();
-            (await sync.Content.ReadFromJsonAsync<NetRatelCatalogRequestDefinitionDto>(ct))!.Target!.Definition!.AgentIds.Should().Equal(h.AgentIds[0]);
-            var savedInputs = (await sync.Content.ReadFromJsonAsync<NetRatelCatalogRequestDefinitionDto>(ct))!.Inputs;
+            var syncedDefinition = (await sync.Content.ReadFromJsonAsync<NetRatelCatalogRequestDefinitionDto>(ct))!;
+            syncedDefinition.Target!.Definition!.AgentIds.Should().Equal(h.AgentIds[0]);
+            var savedInputs = syncedDefinition.Inputs;
             var reviewPath = $"/internal/catalog/request-definitions/{authored.RequestDefinitionId}/inputs/review-sync";
             var reviewed = new SyncNetRatelRequestDefinitionInputsDto
             {
