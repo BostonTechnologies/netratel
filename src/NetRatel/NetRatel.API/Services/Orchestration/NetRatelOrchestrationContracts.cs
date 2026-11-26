@@ -67,6 +67,7 @@ public sealed record NetRatelAutomationTarget(int Version, string Kind, string S
 
 public sealed class SyncNetRatelRequestDefinitionInputsDto
 {
+    public IReadOnlyList<NetRatelCatalogInputDefinitionDto>? ExpectedInputs { get; set; }
     public IReadOnlyList<NetRatelCatalogInputDefinitionDto> Inputs { get; set; } = [];
 }
 
