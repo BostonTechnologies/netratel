@@ -2,7 +2,7 @@
 const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
-const { product, record, jsonRequest, login, selectChoice, seedCustomer, identifiers, state, root, fixture, evidence } = require('./browser_pair');
+const { product, record, jsonRequest, login, selectChoice, assertChoice, seedCustomer, identifiers, state, root, fixture, evidence } = require('./browser_pair');
 const { chromium, expect } = require(path.join(root, 'browser/node_modules/@playwright/test'));
 const launcher = path.join(__dirname, 'final_save.py');
 const native = path.join(__dirname, 'native_pair.py');
@@ -66,9 +66,9 @@ async function main() {
       expect(mapping.createIncidents).toBe(true); expect(mapping.runAutomation).toBe(true);
     }
     async function assertDraft() {
-      await expect(rdPage.getByTestId(ids.nrTenant).and(rdPage.getByRole('combobox'))).toHaveText(tenant.name);
-      await expect(rdPage.getByTestId(ids.rdOrg).and(rdPage.getByRole('combobox'))).toHaveText(organization.name);
-      await expect(rdPage.getByTestId(ids.rdCustomer).and(rdPage.getByRole('combobox'))).toHaveText(customer.name);
+      await assertChoice(rdPage, ids.nrTenant, tenant.name);
+      await assertChoice(rdPage, ids.rdOrg, organization.name);
+      await assertChoice(rdPage, ids.rdCustomer, customer.name);
       await expect(nameInput).toHaveValue(name);
       await expect(incidents).toBeChecked(); await expect(automation).toBeChecked();
     }
