@@ -270,6 +270,7 @@
         }
         catch (OperationCanceledException) when (_directoryLifecycle.IsCancellationRequested)
         {
+            return;
         }
         catch (Exception exception)
         {

@@ -74,7 +74,7 @@ public sealed class ClientFileSystemViewerGatewayTests : AsyncBunitContext
         provider.WaitForAssertion(() => provider.Find("[data-testid='file-explorer-location']").TextContent.Should().Be("Allowed folders"));
         provider.WaitForAssertion(() => factory.RequestedUris.Should().Equal($"{endpoint}/roots"));
         provider.WaitForAssertion(() => provider.Find("[data-testid='file-explorer-list']").TextContent.Should().Contain("Shared reports"));
-        provider.FindAll("button").Single(button => button.TextContent.Trim() == "Shared reports").Click();
+        provider.Find("[data-testid='file-explorer-entry'] .file-explorer-name").Click();
         provider.WaitForAssertion(() =>
         {
             factory.RequestedUris.Should().Equal($"{endpoint}/roots", $"{endpoint}?path=%2Fsrv%2Freports");
