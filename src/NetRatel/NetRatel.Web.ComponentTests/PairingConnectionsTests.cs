@@ -6,10 +6,13 @@ using Bunit;
 using Microsoft.Extensions.DependencyInjection;
 using MudBlazor;
 using MudBlazor.Services;
+using NetRatel.Shared.Contracts.Jobs;
+using NetRatel.Shared.Contracts.Secrets;
 using NetRatel.Shared.SystemPairing;
 using NetRatel.Web.Components.Pages.Flows;
 using NetRatel.Web.Components.Shared.Pairing;
 using NetRatel.Web.Services.Flows;
+using NetRatel.Web.Services.Jobs;
 using NetRatel.Web.Services.Pairing;
 using Xunit;
 
@@ -21,6 +24,46 @@ public sealed class PairingConnectionsTests : AsyncBunitContext
     {
         JSInterop.Mode = JSRuntimeMode.Loose;
         Services.AddMudServices(options => options.PopoverOptions.CheckForPopoverProvider = false);
+    }
+
+    [Fact]
+    public async Task Paired_run_as_shows_the_profile_and_approves_the_reviewed_scope()
+    {
+        var connection = FakeApi.Configured(Guid.NewGuid(), "Automation connection");
+        var mapping = connection.Mapping! with { RunAutomation = true };
+        var api = new FakeApi
+        {
+            Connections = [connection with { Mapping = mapping }],
+            RunAsReview = new(new(false, "run_as_denied", "The approved scope changed.")
+            {
+                Reason = PairedRunAsReasons.ScopeChanged
+            }, 2, [new(Guid.NewGuid(), "Windows node", Guid.NewGuid(), ExecutionIdentityMode.WindowsPassword, 3)
+            {
+                ProfileName = "Approved Windows account"
+            }], "reviewed-scope", null)
+        };
+        Services.AddSingleton<IPairingApiClient>(api);
+        Services.AddSingleton<IHttpClientFactory>(new RunAsJobTransport());
+        Services.AddScoped<IJobApiClient, JobApiClient>();
+        var panel = RenderPanel();
+        await FindAll(panel, "button").Single(button => button.TextContent.Contains("Paired Run as", StringComparison.Ordinal)).ClickAsync(new());
+        var jobs = FindComponents<MudSelect<ulong?>>(panel).Single(x => x.Instance.Label == "Job");
+        await panel.InvokeAsync(() => jobs.Instance.ValueChanged.InvokeAsync(41UL));
+        Markup(panel).Should().Contain("The approved scope changed.").And.Contain("Windows node").And.Contain("Approved Windows account");
+        await FindAll(panel, "button").Single(button => button.TextContent.Contains("Approve saved accounts", StringComparison.Ordinal)).ClickAsync(new());
+        api.ApprovedScope.Should().Be("reviewed-scope");
+        Markup(panel).Should().Contain("Saved execution accounts are approved.");
+    }
+
+    private sealed class RunAsJobTransport : HttpMessageHandler, IHttpClientFactory
+    {
+        public HttpClient CreateClient(string name) => new(this, disposeHandler: false) { BaseAddress = new("https://api.example.test") };
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+            Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = JsonContent.Create(new[] { new JobDto(41, "Identity", "", null, 12, "", 0, 0) })
+            });
     }
 
     [Fact]
@@ -238,6 +281,8 @@ public sealed class PairingConnectionsTests : AsyncBunitContext
         public PairingConnectRequest? LastConnect;
         public PairingMapping? LastSave;
         public PairingConnectionDto? LastDeleted;
+        public PairedJobRunAsReview? RunAsReview;
+        public string? ApprovedScope;
         public TaskCompletionSource<PairingTestResult>? TestGate;
         public static PairingConnectionDto Unconfigured() => new("pair-1", "pair-1", null, Peer, "paired");
         public static PairingConnectionDto Configured(Guid id, string name) => new(id.ToString("D"), "pair-1", new(id, "pair-1", name, "12", "org-1", "customer-1", true, false), Peer, "connected");
@@ -259,5 +304,12 @@ public sealed class PairingConnectionsTests : AsyncBunitContext
         public Task<PairingTestResult> TestAsync(PairingConnectionDto connection, CancellationToken ct = default)
         { TestCalls++; return TestGate?.Task ?? Task.FromResult(new PairingTestResult(true, "Authenticated access checked.", DateTimeOffset.UtcNow)); }
         public Task DeleteAsync(PairingConnectionDto connection, CancellationToken ct = default) { LastDeleted = connection; return Task.CompletedTask; }
+        public Task<PairedJobRunAsReview> GetJobRunAsAsync(Guid mappingId, ulong jobId, CancellationToken ct = default) =>
+            Task.FromResult(RunAsReview!);
+        public Task<PairedJobRunAsReview> ApproveJobRunAsAsync(Guid mappingId, ulong jobId, string digest, CancellationToken ct = default)
+        {
+            ApprovedScope = digest;
+            return Task.FromResult(RunAsReview! with { Readiness = new(true, "run_as_approved", "Saved execution accounts are approved.") });
+        }
     }
 }

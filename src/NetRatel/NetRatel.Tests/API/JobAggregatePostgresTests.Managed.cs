@@ -318,7 +318,7 @@ public sealed partial class JobAggregatePostgresTests
         {
             var vault = setup.ServiceProvider.GetRequiredService<ITenantSecretService>();
             var local = (await vault.ListConnectionsAsync(7, false, ct)).First();
-            var secret = await vault.WriteAsync(7, local.Id, new() { Locator = "fixture-password", Value = fixtureSecret }, ct);
+            var secret = await vault.WriteAsync(7, local.Id, new() { Name = "Fixture password", Value = fixtureSecret }, ct);
             var password = new SecretReference(1, local.Id, secret.Locator, null, SecretVersionMode.Pinned, secret.Version);
             fleet = await vault.SaveProfileAsync(7, null, new("Fleet fixture", ExecutionIdentityMode.WindowsPassword,
                 "fleet-fixture", null, null, password, new([agentId], null, true, false), null), ct);
