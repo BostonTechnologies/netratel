@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
@@ -6,6 +7,7 @@ using NetRatel.Infrastructure.Identity.Authorization;
 using NetRatel.Infrastructure.Persistence;
 using NetRatel.Infrastructure.ServiceIdentity;
 using NetRatel.Infrastructure.SystemPairing;
+using NetRatel.Shared.SystemPairing;
 using NetRatel.Tests.Infrastructure;
 using NetRatel.Tests.API;
 using Npgsql;
@@ -23,17 +25,24 @@ public sealed class PairingUpgradePostgresTests(PostgreSqlPersistenceFixture pos
         await db.GetService<IMigrator>().MigrateAsync("20261110142747_AddHaGroupWorkerCursor");
         var history = (await db.Database.GetAppliedMigrationsAsync()).ToArray();
         var request = new RequestRecord { SourceSystem = "service:synthetic", TargetClientIdentity = "retained-agent", JobDefinitionId = "9007199254740995", Status = "running", Logs = [], CreatedAtUtc = DateTimeOffset.UtcNow, UpdatedAtUtc = DateTimeOffset.UtcNow };
+        var principal = Guid.NewGuid(); var agent = Guid.NewGuid();
+        var pairId = PairingService.Hash("retained-pair");
+        var peerId = Guid.NewGuid().ToString("D");
+        var mapping = new PairingMapping(Guid.NewGuid(), pairId, "Retained automation", "23", PairingBusinessAuthorityFixture.Organization, null, false, true);
+        var mappingJson = JsonSerializer.Serialize(mapping, PairingTransport.Json);
+        db.Add(new SystemPairRecord { Id = pairId, PeerInstanceId = peerId, AdministratorId = PairingBusinessAuthorityFixture.Administrator, CreatedAtUtc = DateTimeOffset.UtcNow });
+        db.Add(new PairingConnectionRecord { Id = mapping.Id, PairId = pairId, MappingJson = mappingJson, Revision = 7, Active = true,
+            AdministratorId = PairingBusinessAuthorityFixture.Administrator, InboundPrincipalId = principal, CreatedAtUtc = DateTimeOffset.UtcNow });
         db.Requests.Add(request);
         await db.SaveChangesAsync();
-        var principal = Guid.NewGuid(); var agent = Guid.NewGuid();
         await db.Database.ExecuteSqlInterpolatedAsync($"""
             INSERT INTO "ManagedOrchestrationRequestBindings"
                 ("RequestId", "ServicePrincipalId", "TenantId", "AgentId", "JobDefinitionId", "ExecutionId",
                  "ParentRequestId", "RequestTaskId", "CorrelationId", "IngestFingerprint", "LinkId", "LinkRevision",
                  "GrantHash", "PeerInstanceId", "PeerTenantId", "CallbackUrl", "CreatedAtUtc")
             VALUES ({request.Id}, {principal}, 23, {agent}, '9007199254740995', '9007199254740993',
-                    'retained-request', 'retained-task', 'retained-attempt', {new string('a', 64)}, 'retained-connection', 7,
-                    {new string('b', 64)}, 'retained-peer', 'retained-organization', 'https://rd.example.test/callback', CURRENT_TIMESTAMP)
+                    'retained-request', 'retained-task', 'retained-attempt', {new string('a', 64)}, {mapping.Id.ToString("D")}, 7,
+                    {PairingService.Hash(mappingJson)}, {peerId}, {mapping.RatelDeskOrganizationId}, 'https://rd.example.test/callback', CURRENT_TIMESTAMP)
             """);
         db.Add(new OrchestrationCallbackDelivery { RequestId = request.Id, Phase = "running", NextAttemptAtUtc = DateTimeOffset.UtcNow, Attempts = 2, Revision = 3 });
         await db.SaveChangesAsync();
@@ -52,6 +61,16 @@ public sealed class PairingUpgradePostgresTests(PostgreSqlPersistenceFixture pos
         var binding = await db.Set<ManagedOrchestrationRequestBinding>().SingleAsync();
         Assert.Equal(agent, binding.AgentId); Assert.Null(binding.TargetPlanDigest); Assert.Null(binding.OriginContextJson);
         Assert.Null(binding.RunAsGrantId);
+        var pair = await db.Set<SystemPairRecord>().SingleAsync();
+        var connectionRecord = await db.Set<PairingConnectionRecord>().SingleAsync();
+        Assert.Equal(pairId, pair.Id);
+        Assert.Equal(peerId, pair.PeerInstanceId);
+        Assert.Equal(pair.Id, connectionRecord.PairId);
+        Assert.Equal(mappingJson, connectionRecord.MappingJson);
+        Assert.True(connectionRecord.Active);
+        Assert.Equal(connectionRecord.Id.ToString("D"), binding.LinkId);
+        Assert.Equal(connectionRecord.Revision, binding.LinkRevision);
+        Assert.Equal(connectionRecord.InboundPrincipalId, binding.ServicePrincipalId);
         Assert.Empty(await db.Set<ManagedJobRunAsGrant>().ToArrayAsync());
         var delivery = await db.Set<OrchestrationCallbackDelivery>().SingleAsync();
         Assert.Equal(2, delivery.Attempts); Assert.Equal(3, delivery.Revision); Assert.Null(delivery.DeliveredAtUtc);

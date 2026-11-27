@@ -57,10 +57,11 @@ public sealed partial class JobAggregatePostgresTests
         using var key = ECDsa.Create();
         try
         {
-            await using var app = await OrchestrationManagedServiceHttpTests.StartAsync(connection, directory, key, services =>
+            var epochs = h.Services.GetRequiredService<IClientConnectionEpochStore>();
+            Task<WebApplication> StartHostAsync() => OrchestrationManagedServiceHttpTests.StartAsync(connection, directory, key, services =>
             {
                 services.AddSingleton<TimeProvider>(h.Clock);
-                services.AddSingleton<IClientConnectionEpochStore>(h.Services.GetRequiredService<IClientConnectionEpochStore>());
+                services.AddSingleton(epochs);
                 services.AddOptions<JobAggregateOptions>(); services.AddNetRatelJobObservationPersistence();
                 services.AddSingleton<IJobAggregateWakeup, NoWakeup>();
                 services.AddScoped<IScriptService, NoScripts>(); services.AddScoped<IJobExecutionSnapshotCapture, PinnedJobExecutionSnapshotCapture>();
@@ -80,6 +81,7 @@ public sealed partial class JobAggregatePostgresTests
                     db: provider.GetRequiredService<OrchestratorDbContext>(), clock: h.Clock,
                     snapshotCapture: provider.GetRequiredService<IJobExecutionSnapshotCapture>(), aggregates: provider.GetRequiredService<JobAggregateOrchestrator>()));
             }, ha ? null : builder => ConfigureRunAsReview(builder, key));
+            await using var app = await StartHostAsync();
             h.UseServices((ServiceProvider)app.Services);
             CreatedServiceClient credential;
             await using (var scope = app.Services.CreateAsyncScope())
@@ -92,10 +94,7 @@ public sealed partial class JobAggregatePostgresTests
                     scope.ServiceProvider.GetRequiredService<IServicePrincipalRegistry>(), 7, ServiceIdentityScopes.Business, ct: ct,
                     protection: scope.ServiceProvider.GetRequiredService<IDataProtectionProvider>());
             }
-            var client = app.GetTestClient();
-            var token = await OrchestrationManagedServiceHttpTests.TokenAsync(client, credential, string.Join(' ', ServiceIdentityScopes.Business));
-            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
-            client.DefaultRequestHeaders.Add("X-NetRatel-Automation-Contract", "2");
+            using var client = await OpenPairedClientAsync(app, credential);
             var capabilities = await client.GetFromJsonAsync<NetRatelAutomationCapabilities>("/internal/catalog/capabilities", ct);
             capabilities!.AggregateExecution.Should().BeTrue();
             var choices = await client.GetFromJsonAsync<NetRatelAutomationTargetChoice[]>("/internal/catalog/target-choices", ct);
@@ -229,8 +228,6 @@ public sealed partial class JobAggregatePostgresTests
             var runtimeId = ulong.Parse((await runtimeAccepted.Content.ReadFromJsonAsync<NetRatelIngestResponse>(ct))!.ExecutionId!);
             await h.FillAsync(runtimeId, ct); await h.SucceedNodeAsync(h.Gateway.Active.Keys.Single(), ct); await h.FillAsync(runtimeId, ct);
             (await h.ReadAsync(runtimeId, ct)).Status.Should().Be(JobRunState.Succeeded);
-            if (!ha)
-                await VerifyPairedRunAsAsync(h, client, app.GetTestClient(), key, credential, ulong.Parse(authored.RequestDefinitionId), ct);
             using var drifted = await client.PostAsJsonAsync("/internal/ingest", Ingest(correlation: "drift-attempt"), ct);
             drifted.EnsureSuccessStatusCode();
             var driftId = ulong.Parse((await drifted.Content.ReadFromJsonAsync<NetRatelIngestResponse>(ct))!.ExecutionId!);
@@ -245,8 +242,32 @@ public sealed partial class JobAggregatePostgresTests
             await h.FillAsync(driftId, ct);
             h.Gateway.Dispatches.Count.Should().Be(beforeDrift);
             (await h.ReadAsync(driftId, ct)).Status.Should().Be(JobRunState.Failed);
+
+            if (!ha)
+            {
+                using var browser = app.GetTestClient();
+                var profileId = await VerifyPairedRunAsAsync(h, client, browser, key, credential, ulong.Parse(authored.RequestDefinitionId), ct);
+                await app.StopAsync(ct);
+                await using var restarted = await StartHostAsync();
+                h.UseServices((ServiceProvider)restarted.Services);
+                using var restartedClient = await OpenPairedClientAsync(restarted, credential);
+                var readiness = await restartedClient.GetFromJsonAsync<PairedJobExecutionReadiness>(
+                    $"/internal/catalog/jobs/{authored.RequestDefinitionId}/execution-readiness", ct);
+                readiness!.Code.Should().Be("run_as_approved");
+                using var afterRestart = await SubmitPairedExecutionAsync(restartedClient, authored.RequestDefinitionId, "after-host-restart", ct);
+                await CompletePairedExecutionAsync(h, afterRestart, profileId, ct);
+            }
         }
         finally { Directory.Delete(directory, true); }
+    }
+
+    private static async Task<HttpClient> OpenPairedClientAsync(WebApplication app, CreatedServiceClient credential)
+    {
+        var client = app.GetTestClient();
+        var token = await OrchestrationManagedServiceHttpTests.TokenAsync(client, credential, string.Join(' ', ServiceIdentityScopes.Business));
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        client.DefaultRequestHeaders.Add("X-NetRatel-Automation-Contract", "2");
+        return client;
     }
 
     private const string ReviewerIssuer = "https://identity.example.test";
@@ -303,7 +324,7 @@ public sealed partial class JobAggregatePostgresTests
         browser.DefaultRequestHeaders.Authorization = new("Bearer", new JwtSecurityTokenHandler().WriteToken(token));
     }
 
-    private static async Task VerifyPairedRunAsAsync(AggregateHarness h, HttpClient client, HttpClient browser, ECDsa key,
+    private static async Task<Guid> VerifyPairedRunAsAsync(AggregateHarness h, HttpClient client, HttpClient browser, ECDsa key,
         CreatedServiceClient credential, ulong jobId, CancellationToken ct)
     {
         var mapping = Guid.Parse(credential.Principal.LinkId!);
@@ -343,12 +364,7 @@ public sealed partial class JobAggregatePostgresTests
             await db.SaveChangesAsync(ct);
         }
 
-        Task<HttpResponseMessage> SubmitAsync(string attempt) => client.PostAsJsonAsync("/internal/ingest", new NetRatelIngestRequest
-        {
-            RequestId = $"request-{attempt}", RequestTaskId = $"task-{attempt}", CorrelationId = attempt,
-            NetRatelJobDefinitionId = jobId.ToString(), PayloadJson = "{\"input\":{\"message\":\"synthetic\"}}",
-            ExpectedRuntimeSeconds = 120, GraceSeconds = 30, HardTimeoutSeconds = 150
-        }, ct);
+        Task<HttpResponseMessage> SubmitAsync(string attempt) => SubmitPairedExecutionAsync(client, jobId.ToString(), attempt, ct);
 
         async Task VerifyDenialAsync(string attempt, string reason)
         {
@@ -386,14 +402,7 @@ public sealed partial class JobAggregatePostgresTests
         async Task FinishAsync(string attempt, Guid? expectedProfile)
         {
             using var accepted = await SubmitAsync(attempt);
-            accepted.EnsureSuccessStatusCode();
-            var parent = ulong.Parse((await accepted.Content.ReadFromJsonAsync<NetRatelIngestResponse>(ct))!.ExecutionId!);
-            var accountCount = h.Gateway.ExecutionAccounts.Count;
-            await h.FillAsync(parent, ct);
-            h.Gateway.ExecutionAccounts.Skip(accountCount).Should().Equal(expectedProfile is { } profile ? [(agentId, profile)] : []);
-            await h.SucceedNodeAsync(h.Gateway.Active.Keys.Single(), ct);
-            await h.FillAsync(parent, ct);
-            (await h.ReadAsync(parent, ct)).Status.Should().Be(JobRunState.Succeeded);
+            await CompletePairedExecutionAsync(h, accepted, expectedProfile, ct);
         }
 
         (await client.GetFromJsonAsync<PairedJobExecutionReadiness>(readinessPath, ct))!.Code.Should().Be("agent_account");
@@ -445,6 +454,27 @@ public sealed partial class JobAggregatePostgresTests
             user.IsEnabled = true;
             await identity.SaveChangesAsync(ct);
         }
-        await SelectAccountAsync(null, null);
+        await ReviewAndApproveAsync(OidcReviewer, fleet, PairedRunAsReasons.ApprovalRevoked);
+        return fleet.Id;
+    }
+
+    private static Task<HttpResponseMessage> SubmitPairedExecutionAsync(HttpClient client, string jobId, string attempt, CancellationToken ct)
+        => client.PostAsJsonAsync("/internal/ingest", new NetRatelIngestRequest
+        {
+            RequestId = $"request-{attempt}", RequestTaskId = $"task-{attempt}", CorrelationId = attempt,
+            NetRatelJobDefinitionId = jobId, PayloadJson = "{\"input\":{\"message\":\"synthetic\"}}",
+            ExpectedRuntimeSeconds = 120, GraceSeconds = 30, HardTimeoutSeconds = 150
+        }, ct);
+
+    private static async Task CompletePairedExecutionAsync(AggregateHarness h, HttpResponseMessage accepted, Guid? expectedProfile, CancellationToken ct)
+    {
+        accepted.EnsureSuccessStatusCode();
+        var parent = ulong.Parse((await accepted.Content.ReadFromJsonAsync<NetRatelIngestResponse>(ct))!.ExecutionId!);
+        var accountCount = h.Gateway.ExecutionAccounts.Count;
+        await h.FillAsync(parent, ct);
+        h.Gateway.ExecutionAccounts.Skip(accountCount).Should().Equal(expectedProfile is { } profile ? [(h.AgentIds[0], profile)] : []);
+        await h.SucceedNodeAsync(h.Gateway.Active.Keys.Single(), ct);
+        await h.FillAsync(parent, ct);
+        (await h.ReadAsync(parent, ct)).Status.Should().Be(JobRunState.Succeeded);
     }
 }
