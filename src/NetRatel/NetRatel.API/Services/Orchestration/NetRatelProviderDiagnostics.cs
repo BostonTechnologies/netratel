@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text.Json;
 using NetRatel.Application.Jobs;
 using NetRatel.Infrastructure.Persistence;
+using NetRatel.Shared.SystemPairing;
 
 namespace NetRatel.API.Services.Orchestration;
 
@@ -10,15 +11,17 @@ public sealed record NetRatelProviderDiagnostic(string Provider, string Stage, s
     string? ConnectionId = null, string? JobDefinitionId = null, string? ProviderRequestId = null,
     string? ProviderRunId = null, Guid? NodeId = null, int? StepOrdinal = null,
     string? RequestedExecutor = null, string? ResolvedEngine = null, string? RequiredShell = null,
-    string? ParentResult = null);
+    string? ParentResult = null, string? Reason = null);
 
 internal static class NetRatelProviderDiagnostics
 {
     internal static NetRatelProviderDiagnostic Admission(ManagedOrchestrationRequestBinding binding, JobTargetValidationException? error)
     {
+        var reason = error?.Reason is PairedRunAsReasons.ApprovalRequired or PairedRunAsReasons.ApprovalRevoked or
+            PairedRunAsReasons.ScopeChanged or PairedRunAsReasons.ConnectionUnavailable ? error.Reason : null;
         var (code, message) = error?.Code switch
         {
-            "run_as_denied" => ("run_as_denied", ManagedJobRunAsGrants.ApprovalRequired),
+            "run_as_denied" => ("run_as_denied", ManagedJobRunAsGrants.Describe(reason)),
             "run_as_profile_unavailable" or "run_as_profile_ineligible" or "run_as_plan_changed" or "run_as_secret_unavailable" =>
                 (error.Code, "Review the current account, credential profile and secret policy in NetRatel."),
             "required_shell_unavailable" => ("required_shell_unavailable", "Install the required shell or select a compatible engine."),
@@ -27,7 +30,7 @@ internal static class NetRatelProviderDiagnostics
         };
         return new("NetRatel", "admission", code, message, "configuration_required", binding.CorrelationId, false, 422,
             binding.LinkId, binding.JobDefinitionId, NodeId: error?.AgentId, StepOrdinal: error?.StepOrdinal,
-            RequestedExecutor: Engine(error?.RequestedExecutor), RequiredShell: Engine(error?.RequiredShell));
+            RequestedExecutor: Engine(error?.RequestedExecutor), RequiredShell: Engine(error?.RequiredShell), Reason: reason);
     }
 
     internal static NetRatelProviderDiagnostic? ForRun(ManagedOrchestrationRequestBinding binding, JobRunDetails details,
