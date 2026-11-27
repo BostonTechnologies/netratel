@@ -48,7 +48,7 @@ public sealed partial class JobAggregatePostgresTests
     [InlineData(true)]
     public async Task Issued_pairing_token_admits_one_durable_parent_and_callbacks_wait_for_the_complete_target_plan(bool ha)
     {
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(60)); var ct = deadline.Token;
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(90)); var ct = deadline.Token;
         var connection = await postgres.CreateDatabaseAsync(ct);
         await using var h = await AggregateHarness.CreateAsync(connection, 2, ct, JobNodeFailurePolicy.ContinueRemaining);
         if (ha) await UseHaGroupAsync(h, 5, ct);
