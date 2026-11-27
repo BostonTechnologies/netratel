@@ -45,9 +45,13 @@ public sealed class ManagedOrchestrationInvocationGuard(OrchestratorDbContext db
             binding.JobDefinitionId != run.JobId.ToString(CultureInfo.InvariantCulture))
             throw new ManagedOrchestrationGrantUnavailableException("The managed run has no recorded ingress authority.");
         await AuthorizeBindingAsync(binding, job, ct);
+        if (binding.AgentId is { } agentId && await db.Agents.AsNoTracking().AnyAsync(row => row.Id == agentId &&
+            row.TenantId == binding.TenantId && row.DefaultJobCredentialProfileId != null, ct))
+            throw new ManagedOrchestrationGrantUnavailableException("The managed run does not bind the client's saved execution account.");
     }
 
-    public async Task AuthorizeAggregateAsync(JobRunInfo parent, JobResolvedTargetPlan plan, string? inputs, CancellationToken ct)
+    public async Task<(ManagedOrchestrationRequestBinding Binding, IReadOnlyList<JobTargetNode> Nodes)> AuthorizeAggregateAsync(
+        JobRunInfo parent, JobResolvedTargetPlan plan, string? inputs, CancellationToken ct)
     {
         var executionId = parent.Id.ToString(CultureInfo.InvariantCulture);
         var binding = await db.Set<ManagedOrchestrationRequestBinding>().AsNoTracking().SingleOrDefaultAsync(row => row.ExecutionId == executionId, ct);
@@ -77,6 +81,7 @@ public sealed class ManagedOrchestrationInvocationGuard(OrchestratorDbContext db
         var admitted = plan.HaGroupSelection?.Candidates ?? plan.Nodes;
         if (current.GroupRevision != plan.GroupRevision || !current.Nodes.Select(node => node.AgentId).ToHashSet().SetEquals(admitted.Select(node => node.AgentId)))
             throw new ManagedOrchestrationGrantUnavailableException("The managed target membership changed after admission.");
+        return (binding, current.Nodes);
     }
 
     private async Task AuthorizeBindingAsync(ManagedOrchestrationRequestBinding binding, JobDefinitionInfo job, CancellationToken ct)

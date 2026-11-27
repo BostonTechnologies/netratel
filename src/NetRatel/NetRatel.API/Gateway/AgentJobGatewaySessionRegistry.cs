@@ -6,6 +6,7 @@ using NetRatel.Application.Presence;
 using NetRatel.Shared.Contracts.Jobs;
 using NetRatel.Shared.Contracts.Secrets;
 using NetRatel.Shared.Contracts.Tasks;
+using NetRatel.Shared.Service.ClientEnvironment;
 
 namespace NetRatel.API.Gateway;
 
@@ -26,6 +27,7 @@ public interface IAgentJobGatewaySessionRegistry
     // A physical registration is routing information, never durable authority.
     // Existing nonpersisting fixture adapters return no production fence.
     OwnerKey? GetRegisteredOwner(ClientKey client) => null;
+    IReadOnlySet<string>? GetFreshJobShells(ClientKey client, OwnerKey? expectedOwner = null) => null;
     Task DispatchAsync(ClientKey client, JobGatewayStepDispatch dispatch, CancellationToken cancellationToken);
     bool SupportsProtectedParameters(OwnerKey owner) => false;
     Task DispatchProtectedAsync(OwnerKey owner, JobGatewayStepDispatch dispatch, IReadOnlyDictionary<string, string> parameters,
@@ -62,6 +64,7 @@ public sealed class ProtectedJobDispatchUnavailableException()
 public sealed class AgentJobGatewaySessionRegistry(TimeProvider? clock = null) : IAgentJobGatewaySessionRegistry
 {
     private readonly ConcurrentDictionary<ClientKey, AgentJobGatewaySession> _sessions = new();
+    private static readonly TimeSpan MaximumShellInventoryAge = TimeSpan.FromMinutes(10);
 
     public AgentJobGatewayRegistration Register(ClientKey client, Guid connectionId, ulong connectionEpoch, bool provisional = false) =>
         RegisterWithCapabilities(client, connectionId, connectionEpoch, provisional, supportsProtectedParameters: false);
@@ -74,6 +77,8 @@ public sealed class AgentJobGatewaySessionRegistry(TimeProvider? clock = null) :
         bool provisional, bool supportsProtectedParameters, IReadOnlyCollection<string> capabilities)
     {
         var session = new AgentJobGatewaySession(client, connectionId, connectionEpoch, supportsProtectedParameters, capabilities);
+        if (ShellInventoryDetector.ReadJobInventory(capabilities) is { } shells)
+            session.UpdateJobShells(shells, (clock ?? TimeProvider.System).GetUtcNow());
         while (true)
         {
             if (!_sessions.TryGetValue(client, out var previous))
@@ -121,7 +126,7 @@ public sealed class AgentJobGatewaySessionRegistry(TimeProvider? clock = null) :
                 ((ICollection<KeyValuePair<ClientKey, AgentJobGatewaySession>>)_sessions)
                     .Remove(new KeyValuePair<ClientKey, AgentJobGatewaySession>(client, session));
                 session.Complete();
-            }, session.PublishReceiptAsync);
+            }, session.PublishReceiptAsync, session.UpdateJobShells);
     }
 
     public bool IsAvailable(ClientKey client) => _sessions.TryGetValue(client, out var session) && session.IsActive;
@@ -129,6 +134,11 @@ public sealed class AgentJobGatewaySessionRegistry(TimeProvider? clock = null) :
     public OwnerKey? GetRegisteredOwner(ClientKey client) =>
         _sessions.TryGetValue(client, out var session) && session.IsActive
             ? new OwnerKey(client, session.ConnectionId, checked((long)session.ConnectionEpoch)) : null;
+
+    public IReadOnlySet<string>? GetFreshJobShells(ClientKey client, OwnerKey? expectedOwner = null) =>
+        _sessions.TryGetValue(client, out var session) && session.IsActive &&
+        (expectedOwner is null || session.Matches(expectedOwner.Value))
+            ? session.GetJobShells((clock ?? TimeProvider.System).GetUtcNow() - MaximumShellInventoryAge) : null;
 
     public Task DispatchAsync(ClientKey client, JobGatewayStepDispatch dispatch, CancellationToken cancellationToken)
     {
@@ -192,7 +202,8 @@ public sealed class AgentJobGatewayRegistration(
     Func<bool> isCurrent,
     Func<bool> activate,
     Action unregister,
-    Func<JobLifecycleReceipt, CancellationToken, Task>? publishReceipt = null) : IDisposable
+    Func<JobLifecycleReceipt, CancellationToken, Task>? publishReceipt = null,
+    Action<IReadOnlySet<string>, DateTimeOffset>? updateJobShells = null) : IDisposable
 {
     private int _disposed;
 
@@ -201,6 +212,10 @@ public sealed class AgentJobGatewayRegistration(
     public CancellationToken CompletionToken { get; } = completionToken;
     public bool IsCurrent => Volatile.Read(ref _disposed) == 0 && !CompletionToken.IsCancellationRequested && isCurrent();
     public bool Activate() => IsCurrent && activate();
+    internal void UpdateJobShells(IReadOnlySet<string> shells, DateTimeOffset receivedAtUtc)
+    {
+        if (IsCurrent) updateJobShells?.Invoke(shells, receivedAtUtc);
+    }
 
     public Task PublishReceiptAsync(JobLifecycleReceipt receipt, CancellationToken cancellationToken) =>
         IsCurrent && publishReceipt is not null
@@ -232,6 +247,8 @@ internal sealed class AgentJobGatewaySession(ClientKey client, Guid connectionId
     private int _completed;
     private long _outboundSequence;
     private readonly SemaphoreSlim _writeGate = new(1, 1);
+    private sealed record ShellSnapshot(IReadOnlySet<string> Shells, DateTimeOffset ReceivedAtUtc);
+    private ShellSnapshot? _shellSnapshot;
 
     public ChannelReader<GatewayJobFrame> Reader => _outbound.Reader;
     public Guid RegistrationId { get; } = Guid.NewGuid();
@@ -241,6 +258,11 @@ internal sealed class AgentJobGatewaySession(ClientKey client, Guid connectionId
     public Guid ConnectionId => connectionId;
     public ulong ConnectionEpoch => connectionEpoch;
     public bool SupportsProtectedParameters => supportsProtectedParameters;
+    public void UpdateJobShells(IReadOnlySet<string> shells, DateTimeOffset receivedAtUtc) =>
+        Volatile.Write(ref _shellSnapshot, new(shells, receivedAtUtc));
+
+    public IReadOnlySet<string>? GetJobShells(DateTimeOffset cutoff) =>
+        Volatile.Read(ref _shellSnapshot) is { } snapshot && snapshot.ReceivedAtUtc >= cutoff ? snapshot.Shells : null;
     public bool Supports(string capability) => SupportsProtectedParameters && capabilities?.Contains(capability, StringComparer.Ordinal) == true;
     public bool Matches(OwnerKey owner) => owner.Client == client && owner.ConnectionId == connectionId && owner.Epoch == checked((long)connectionEpoch);
 

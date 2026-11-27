@@ -12,6 +12,8 @@ public sealed class NetRatelExternalServiceCallbackRequest
     public string? ResultJson { get; set; }
     public string? ErrorJson { get; set; }
     public string? WorklogSummary { get; set; }
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public NetRatelProviderDiagnostic? Diagnostic { get; set; }
     public DateTimeOffset? StartedAtUtc { get; set; }
     public DateTimeOffset? CompletedAtUtc { get; set; }
 }

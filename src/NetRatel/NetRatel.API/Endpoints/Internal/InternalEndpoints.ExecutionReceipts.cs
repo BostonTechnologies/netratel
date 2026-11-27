@@ -84,6 +84,7 @@ public static partial class InternalEndpoints
             orchestrationRequestId = binding.RequestId.ToString(CultureInfo.InvariantCulture),
             orchestrationRunId = binding.ExecutionId, executionId = binding.ExecutionId,
             status, startedAtUtc = details.Run.StartedAtUtc,
+            diagnostic = ready ? await OrchestrationCallbackProjection.ReadDiagnosticAsync(db, runs, details, binding, ct) : null,
             completedAtUtc = ready && status is not ("pending" or "running" or "unknown") ? details.Run.CompletedAtUtc : null,
             message = status switch
             {

@@ -19,6 +19,8 @@ using NetRatel.Infrastructure.Persistence;
 using NetRatel.Infrastructure.Services;
 using NetRatel.Shared.Contracts.Jobs;
 using NetRatel.Shared.Contracts.Secrets;
+using NetRatel.Infrastructure.ServiceIdentity;
+using NetRatel.Shared.SystemPairing;
 
 namespace NetRatel.API.Services.Jobs;
 
@@ -40,7 +42,8 @@ public sealed class JobAggregateOrchestrator(
     TimeProvider clock, IOptions<JobAggregateOptions> options, IHttpContextAccessor? http = null,
     IExecutionAdmissionStore? admissions = null, IKeyedExecutionAuthority? keyedAuthority = null,
     IMcpAggregateExecutionAuthority? mcpAuthority = null, IRequestService? requests = null,
-    HaGroupWorkerSelector? haWorkers = null, ManagedOrchestrationInvocationGuard? managedGuard = null) : IJobAggregatePump
+    HaGroupWorkerSelector? haWorkers = null, ManagedOrchestrationInvocationGuard? managedGuard = null,
+    ManagedJobRunAsGrants? managedRunAs = null, JobShellCompatibility? shellCompatibility = null) : IJobAggregatePump
 {
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
 
@@ -49,6 +52,17 @@ public sealed class JobAggregateOrchestrator(
         var job = await definitions.GetAsync(jobId, ct) ?? throw new KeyNotFoundException("The job definition is unavailable.");
         var snapshot = await snapshots.CaptureAsync(jobId, job.TenantId ?? 0, ct);
         return await ResolvePlanAsync(snapshot, request, ct);
+    }
+
+    internal async Task<JobResolvedTargetPlan> PlanManagedRunAsAsync(ulong jobId, ServicePrincipalRegistration principal, CancellationToken ct)
+    {
+        var job = await definitions.GetAsync(jobId, ct);
+        if (job?.TenantId != principal.TenantId)
+            throw new PairingException(404, "job_unavailable", "The job is unavailable in the connection's tenant.");
+        var snapshot = await snapshots.CaptureAsync(jobId, principal.TenantId, ct);
+        try { return await ResolvePlanAsync(snapshot, ManagedRequest(job, $"service:{principal.Id:N}", null), ct); }
+        catch (JobTargetValidationException error)
+        { throw new PairingException(422, error.Code, "The paired job's current targets and execution accounts could not be resolved."); }
     }
 
     public async Task<JobResolvedTargetPlan> ResolvePlanAsync(PinnedJobExecutionSnapshot snapshot,
@@ -80,6 +94,7 @@ public sealed class JobAggregateOrchestrator(
             result.GroupRevision, result.Bindings, nodes, job.ExecutionPolicy ?? new(), request.SelectedTargetAgentIds,
             null, version == 2 ? result.GroupName : null);
         RequireExpectedPlan(request, plan);
+        shellCompatibility?.RequireAdmission(snapshot, plan);
         return plan;
     }
 
@@ -159,8 +174,11 @@ public sealed class JobAggregateOrchestrator(
         var request = ManagedRequest(snapshot.Definition.Job, binding.SourceSystem, inputs) with
         { ExpectedRuntimeSeconds = ingest.ExpectedRuntimeSeconds, GraceSeconds = ingest.GraceSeconds, HardTimeoutSeconds = ingest.HardTimeoutSeconds };
         var plan = await ResolvePlanAsync(snapshot, request, ct);
+        if (ManagedJobRunAsGrants.Candidates(plan).Any(node => node.ExecutionAccount is not null))
+            binding.RunAsGrantId = await (managedRunAs ?? throw ManagedJobRunAsGrants.Denied()).RequireAsync(binding, plan, ct);
         var parent = await PersistAsync(ids.Next(), snapshot, request, plan,
-            $"managed:{binding.ServicePrincipalId:N}:{binding.RequestId}", null, null, "managed", null, clock.GetUtcNow().Add(JobExecutionRuntimePolicy.FromJobAndRequest(snapshot.Definition.Job, request).HardTimeout), ct, deferWakeup: true);
+            $"managed:{binding.ServicePrincipalId:N}:{binding.RequestId}", null, null, "managed", null, clock.GetUtcNow().Add(JobExecutionRuntimePolicy.FromJobAndRequest(snapshot.Definition.Job, request).HardTimeout), ct,
+            deferWakeup: true, managedRunAsApproval: binding.RunAsGrantId);
         binding.ExecutionId = parent.Id.ToString(CultureInfo.InvariantCulture);
         binding.TargetPlanDigest = parent.TargetPlanDigest;
         await db.SaveChangesAsync(ct);
@@ -327,7 +345,8 @@ public sealed class JobAggregateOrchestrator(
     private async Task<JobRunInfo> PersistAsync(ulong parentId, PinnedJobExecutionSnapshot snapshot,
         RunJobRequest request, JobResolvedTargetPlan plan, string? admissionKey, string? principalId,
         string? credentialId, string sourceKind, McpOperatorJobExecutionSnapshot? mcpSnapshot,
-        DateTimeOffset? actionDeadline, CancellationToken ct, int? sourceRequestId = null, bool deferWakeup = false)
+        DateTimeOffset? actionDeadline, CancellationToken ct, int? sourceRequestId = null, bool deferWakeup = false,
+        Guid? managedRunAsApproval = null)
     {
         // An advisory key also covers the absent-row case for same-occurrence reservations.
         await using var transaction = db.Database.IsRelational() && db.Database.CurrentTransaction is null ? await db.Database.BeginTransactionAsync(ct) : null;
@@ -388,7 +407,8 @@ public sealed class JobAggregateOrchestrator(
             catch (SecretProviderException error)
             { throw new JobTargetValidationException("job_provider_input_unavailable", error.Message); }
         }
-        var accountBindings = await BindExecutionAccountsAsync(plan, principalId, credentialId, ct);
+        var accountBindings = await BindExecutionAccountsAsync(plan, principalId, credentialId, sourceKind, managedRunAsApproval, ct);
+        shellCompatibility?.RequireAdmission(snapshot, plan);
         if (mcpSnapshot is null) runs.BindPinnedExecutionSnapshot(parentId, snapshot);
         else runs.BindMcpExecutionSnapshot(parentId, mcpSnapshot);
         var now = clock.GetUtcNow();
@@ -594,8 +614,19 @@ public sealed class JobAggregateOrchestrator(
             try
             {
                 if (managedGuard is null) throw new ManagedOrchestrationGrantUnavailableException("Managed authority is unavailable.");
-                await managedGuard.AuthorizeAggregateAsync((await runs.GetAsync(parentId, ct))!, plan,
+                var (binding, currentNodes) = await managedGuard.AuthorizeAggregateAsync((await runs.GetAsync(parentId, ct))!, plan,
                     await runs.GetExecutionInputsAsync(parentId, ct), ct);
+                var accounts = await ResolveExecutionAccountsAsync(plan.TenantId, currentNodes, plan.ExecutionPolicy.RunAs, ct);
+                var admitted = ManagedJobRunAsGrants.Candidates(plan).ToDictionary(node => node.AgentId, node => node.ExecutionAccount);
+                if (accounts.Any(node => node.ExecutionAccount != admitted[node.AgentId]))
+                    throw ManagedJobRunAsGrants.Denied();
+                if (admitted.Values.Any(account => account is not null))
+                {
+                    if (binding.RunAsGrantId is null || managedRunAs is null ||
+                        (await snapshots.CaptureAsync(plan.JobId, plan.TenantId, ct)).ComputeDigest() != plan.DefinitionDigest)
+                        throw ManagedJobRunAsGrants.Denied();
+                    await managedRunAs.RequireAsync(binding, plan, ct);
+                }
             }
             catch (Exception error) when (error is InvalidOperationException or ArgumentException or KeyNotFoundException)
             { throw new ExecutionAdmissionDeniedException("The paired managed target or connection authority is no longer available."); }
@@ -620,14 +651,18 @@ public sealed class JobAggregateOrchestrator(
     }
 
     private async Task<string?> BindExecutionAccountsAsync(JobResolvedTargetPlan plan, string? principalId, string? credentialId,
-        CancellationToken ct)
+        string sourceKind, Guid? managedRunAsApproval, CancellationToken ct)
     {
         if (plan.Nodes.All(node => node.ExecutionAccount is null)) return null;
         await using var scope = scopes.CreateAsyncScope();
         var accounts = scope.ServiceProvider.GetRequiredService<ExecutionAccountService>();
         try
         {
-            await accounts.RequireSavedAsync(principalId, credentialId, plan.TenantId, ct);
+            if (sourceKind == "managed")
+            {
+                if (managedRunAsApproval is null) throw ManagedJobRunAsGrants.Denied();
+            }
+            else await accounts.RequireSavedAsync(principalId, credentialId, plan.TenantId, ct);
             var bindings = new Dictionary<Guid, ExecutionAccountService.Binding>();
             var byAccount = new Dictionary<JobExecutionAccount, ExecutionAccountService.Binding>();
             foreach (var node in plan.Nodes)
@@ -658,11 +693,21 @@ public sealed class JobAggregateOrchestrator(
             throw new ExecutionAccountException("run_as_admission_unavailable", "The admitted execution account binding is unavailable.");
         await using var scope = scopes.CreateAsyncScope();
         var accounts = scope.ServiceProvider.GetRequiredService<ExecutionAccountService>();
-        await accounts.RequireSavedAsync(control.PrincipalId, control.IntegrationCredentialId, tenantId, ct);
+        if (control.SourceKind == "managed") await RequireNodeAuthorityAsync(run, ct);
+        else await accounts.RequireSavedAsync(control.PrincipalId, control.IntegrationCredentialId, tenantId, ct);
         var client = await accounts.GetClientAsync(tenantId, agentId, ct);
         var credential = await accounts.ResolveAsync(client, binding, false, ct);
-        await accounts.RequireSavedAsync(control.PrincipalId, control.IntegrationCredentialId, tenantId, ct);
-        return credential;
+        try
+        {
+            if (control.SourceKind == "managed") await RequireNodeAuthorityAsync(run, ct);
+            else await accounts.RequireSavedAsync(control.PrincipalId, control.IntegrationCredentialId, tenantId, ct);
+            return credential;
+        }
+        catch
+        {
+            ExecutionAccountServiceCapability.Clear(credential);
+            throw;
+        }
     }
 
     internal async Task<IReadOnlyDictionary<string, string>> ResolveProviderInputsAsync(JobRunInfo run,

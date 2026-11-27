@@ -91,6 +91,8 @@ public record JobStepRunDto(
 {
     [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
     public ObservedExecutionIdentity? ObservedIdentity { get; init; }
+    public string? RequestedExecutor { get; init; }
+    public string? ResolvedEngine { get; init; }
 }
 
 public sealed record PagedJobRunsDto(

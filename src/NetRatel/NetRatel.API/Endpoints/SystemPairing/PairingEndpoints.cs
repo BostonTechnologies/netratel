@@ -6,7 +6,7 @@ using NetRatel.Application.Notifications;
 using NetRatel.Infrastructure.SystemPairing;
 using NetRatel.Shared.SystemPairing;
 namespace NetRatel.API.Endpoints.SystemPairing;
-public static class PairingEndpoints
+public static partial class PairingEndpoints
 {
     public const string RateLimiter = "SystemPairingSensitive";
     public const string SetupAuthenticationScheme = "PairingSetup";
@@ -49,6 +49,7 @@ public static class PairingEndpoints
         local.MapPost("/{pairId}/mappings/{id:guid}/test", (string pairId, Guid id, HttpContext http, PairingService pairing, CancellationToken ct) => ExecuteAsync(http, true, async () => Results.Ok(await pairing.TestAsync(pairId, id, http.User, ct))));
         local.MapDelete("/{pairId}/mappings/{id:guid}", (string pairId, Guid id, HttpContext http, PairingService pairing, CancellationToken ct) => ExecuteAsync(http, true, async () => { await pairing.DeleteAsync(pairId, id, http.User, ct); return Results.NoContent(); }));
         local.MapDelete("/{pairId}", (string pairId, HttpContext http, PairingService pairing, CancellationToken ct) => ExecuteAsync(http, true, async () => { await pairing.DeleteAsync(pairId, null, http.User, ct); return Results.NoContent(); }));
+        MapJobRunAs(local);
         return app;
     }
     private static Task<SystemPairRecord> AuthenticateAsync(HttpContext http, PairingService pairing, CancellationToken ct)
@@ -79,7 +80,8 @@ public static class PairingEndpoints
         if (!PairingReadinessDiagnostics.IsValid(diagnostic)) diagnostic = null;
         var reference = diagnostic?.Reference ?? Guid.NewGuid().ToString("N");
         if (diagnostic is not null) message = PairingReadinessDiagnostics.Describe(diagnostic);
-        http.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("SystemPairing").LogWarning(
+        var logger = http.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("SystemPairing");
+        logger.LogWarning(
             "Pairing operation failed Code={Code} Reference={Reference} FailureType={FailureType} Stage={Stage} Reason={Reason} HttpStatus={HttpStatus}",
             code, reference, failureType, diagnostic?.Stage, diagnostic?.Code, diagnostic?.HttpStatus);
         // Mutating interactive failures notify only their current administrator. Peer/read traffic never emits notifications.
@@ -91,7 +93,11 @@ public static class PairingEndpoints
                 await using var scope = http.RequestServices.CreateAsyncScope(); var events = scope.ServiceProvider.GetService<IEventRecorder>();
                 if (events is not null) await events.RecordAsync(new DomainEvent { EventType = NetRatelNotificationAudience.PairingFailure, Source = "SystemPairing", CorrelationId = reference, EntityId = actor, Severity = "Warning", Message = message, Payload = new { Code = code, Reference = reference, Link = "/account/integration-credentials" } }, http.RequestAborted);
             }
-            catch (Exception) when (!http.RequestAborted.IsCancellationRequested) { }
+            catch (Exception exception) when (!http.RequestAborted.IsCancellationRequested)
+            {
+                logger.LogDebug("Pairing failure notification could not be recorded Reference={Reference} FailureType={FailureType}",
+                    reference, exception.GetType().Name);
+            }
         }
         return Results.Json(new { code, message, correlationId = reference, diagnostic }, statusCode: status);
     }

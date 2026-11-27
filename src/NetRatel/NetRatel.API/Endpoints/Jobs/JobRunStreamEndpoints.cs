@@ -134,29 +134,39 @@ public static partial class JobRunEndpoints
             output.OrderBy(x => x.Ordinal).ToArray());
     }
 
-    internal static JobStepRunDto MapStepRun(JobStepRunInfo step, JobTaskActivityInfo? activity) =>
-        new(step.Id, step.JobRunId, step.JobStepId, (JobStepRunStatusDto)step.Status, step.Ordinal,
+    internal static JobStepRunDto MapStepRun(JobStepRunInfo step, JobTaskActivityInfo? activity)
+    {
+        var (identity, requested, resolved) = ReadExecutionMetadata(activity?.ResultJson);
+        return new(step.Id, step.JobRunId, step.JobStepId, (JobStepRunStatusDto)step.Status, step.Ordinal,
             step.TaskRequestId, Micros(step.StartedAtUtc), Micros(step.CompletedAtUtc), step.Error, null,
             activity?.ScriptName, activity?.ScriptType, activity?.CommandLabel, activity?.ExitCode)
-        { ObservedIdentity = ReadObservedIdentity(activity?.ResultJson) };
+        { ObservedIdentity = identity, RequestedExecutor = requested, ResolvedEngine = resolved };
+    }
 
-    private static ObservedExecutionIdentity? ReadObservedIdentity(string? result)
+    private static (ObservedExecutionIdentity? Identity, string? Requested, string? Resolved) ReadExecutionMetadata(string? result)
     {
-        if (string.IsNullOrWhiteSpace(result)) return null;
+        if (string.IsNullOrWhiteSpace(result)) return default;
         try
         {
             using var document = JsonDocument.Parse(result);
             var root = document.RootElement;
-            if (root.ValueKind != JsonValueKind.Object ||
-                !root.TryGetProperty("processStarted", out var started) || started.ValueKind != JsonValueKind.True ||
-                !root.TryGetProperty("diagnostics", out var diagnostics) || diagnostics.ValueKind != JsonValueKind.Object ||
-                !diagnostics.TryGetProperty("observedIdentity", out var identity) || identity.ValueKind != JsonValueKind.Object ||
-                !identity.TryGetProperty("account", out var account) || account.ValueKind != JsonValueKind.String ||
-                !identity.TryGetProperty("accountId", out var id) || id.ValueKind != JsonValueKind.String)
-                return null;
-            return ObservedExecutionIdentity.FromObservation(account.GetString(), id.GetString());
+            if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("diagnostics", out var diagnostics) ||
+                diagnostics.ValueKind != JsonValueKind.Object) return default;
+            var requested = Engine(diagnostics, "requestedExecutor");
+            if (!root.TryGetProperty("processStarted", out var started) || started.ValueKind != JsonValueKind.True)
+                return (null, requested, null);
+            var resolved = Engine(diagnostics, "resolvedEngine");
+            var observed = diagnostics.TryGetProperty("observedIdentity", out var identity) && identity.ValueKind == JsonValueKind.Object &&
+                identity.TryGetProperty("account", out var account) && account.ValueKind == JsonValueKind.String &&
+                identity.TryGetProperty("accountId", out var id) && id.ValueKind == JsonValueKind.String
+                    ? ObservedExecutionIdentity.FromObservation(account.GetString(), id.GetString()) : null;
+            return (observed, requested, resolved);
         }
-        catch (JsonException) { return null; }
+        catch (JsonException) { return default; }
+
+        static string? Engine(JsonElement diagnostics, string field) => diagnostics.TryGetProperty(field, out var value) &&
+            value.ValueKind == JsonValueKind.String && value.GetString() is { } name &&
+            name is "auto" or "powershell" or "windows-powershell" or "pwsh" or "cmd" or "bash" or "sh" ? name : null;
     }
 
     private static string BoundStreamMessage(string value, int budget)

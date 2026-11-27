@@ -4498,6 +4498,41 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                     b.ToTable("JobTaskLogs", (string)null);
                 });
 
+            modelBuilder.Entity("NetRatel.Infrastructure.Persistence.ManagedJobRunAsGrant", b =>
+                {
+                    b.Property<Guid>("MappingId")
+                        .HasColumnType("uuid");
+
+                    b.Property<long>("JobId")
+                        .HasColumnType("bigint");
+
+                    b.Property<Guid>("ApprovalId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("ApprovedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ApprovedBy")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<DateTimeOffset?>("RevokedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ScopeDigest")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<int>("TenantId")
+                        .HasColumnType("integer");
+
+                    b.HasKey("MappingId", "JobId");
+
+                    b.ToTable("ManagedJobRunAsGrants", (string)null);
+                });
+
             modelBuilder.Entity("NetRatel.Infrastructure.Persistence.ManagedOrchestrationRequestBinding", b =>
                 {
                     b.Property<int>("RequestId")
@@ -4565,6 +4600,9 @@ namespace NetRatel.Infrastructure.Persistence.Migrations
                         .IsRequired()
                         .HasMaxLength(256)
                         .HasColumnType("character varying(256)");
+
+                    b.Property<Guid?>("RunAsGrantId")
+                        .HasColumnType("uuid");
 
                     b.Property<Guid>("ServicePrincipalId")
                         .HasColumnType("uuid");

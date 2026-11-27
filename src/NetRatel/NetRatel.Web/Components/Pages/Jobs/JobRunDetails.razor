@@ -132,6 +132,10 @@
                                             {
                                                 <MudText Typo="Typo.caption" Style="overflow-wrap:anywhere">Account @identity.Account (@identity.AccountId)</MudText>
                                             }
+                                            @if (step.RequestedExecutor is { } executor)
+                                            {
+                                                <MudText Typo="Typo.caption">Requested @executor · Resolved @(step.ResolvedEngine ?? "unreported")</MudText>
+                                            }
                                             @if (!string.IsNullOrWhiteSpace(step.Error))
                                             {
                                                 <pre class="job-run-diagnostic-text">@BoundText(step.Error)</pre>

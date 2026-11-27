@@ -18,7 +18,7 @@ namespace NetRatel.Infrastructure.Services;
 /// path: every V2 read first proves an ownership record and every V2 write
 /// advances its ETag-backed revision with accepted-operation evidence.
 /// </summary>
-public sealed partial class McpOperatorJobStore(OrchestratorDbContext db) : IMcpOperatorJobStore
+public sealed partial class McpOperatorJobStore(OrchestratorDbContext db, IJobShellCompatibility? shellCompatibility = null) : IMcpOperatorJobStore
 {
     private static readonly JsonSerializerOptions ResolvedPlanJson = new(JsonSerializerDefaults.Web);
     private const int MaximumDefinitionJsonBytes = 8 * 1024;
@@ -416,6 +416,9 @@ public sealed partial class McpOperatorJobStore(OrchestratorDbContext db) : IMcp
             PayloadJson = SerializeScriptReference(step),
             Enabled = step.Enabled
         };
+        if (shellCompatibility is not null)
+            await shellCompatibility.RequireDefinitionAsync(new(JobDefinitionService.Map(row.job), [],
+                existing.Append(created).Select(JobDefinitionService.Map).ToArray()), cancellationToken);
         _db.JobSteps.Add(created);
         Touch(row, request.Decision, request.AcceptedAudit, "step_added", request.OccurredAtUtc);
         await SaveWithConcurrencyAsync(cancellationToken).ConfigureAwait(false);
@@ -442,6 +445,13 @@ public sealed partial class McpOperatorJobStore(OrchestratorDbContext db) : IMcp
         existing.ScriptId = step.ScriptId;
         existing.PayloadJson = SerializeScriptReference(step);
         existing.Enabled = step.Enabled;
+        if (shellCompatibility is not null)
+        {
+            var others = await _db.JobSteps.AsNoTracking().Where(candidate => candidate.JobId == request.JobId && candidate.Id != existing.Id)
+                .ToArrayAsync(cancellationToken);
+            await shellCompatibility.RequireDefinitionAsync(new(JobDefinitionService.Map(row.job), [],
+                others.Append(existing).Select(JobDefinitionService.Map).ToArray()), cancellationToken);
+        }
         Touch(row, request.Decision, request.AcceptedAudit, "step_updated", request.OccurredAtUtc);
         await SaveWithConcurrencyAsync(cancellationToken).ConfigureAwait(false);
         if (transaction is not null) await transaction.CommitAsync(cancellationToken);

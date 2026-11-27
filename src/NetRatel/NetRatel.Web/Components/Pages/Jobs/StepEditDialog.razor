@@ -13,26 +13,42 @@
 <MudDialog>
     <DialogContent>
         <MudStack Spacing="2">
+            @if (_validationError is { } validationError)
+            {
+                <MudAlert Severity="Severity.Error" Dense="true" data-testid="job-step-validation">@validationError</MudAlert>
+            }
+            @if (_shellPreview is { Message: { } shellMessage })
+            {
+                <MudAlert Severity="@(_shellPreview.Allowed ? Severity.Warning : Severity.Error)" Dense="true">@shellMessage</MudAlert>
+            }
             <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
                 <MudText Typo="Typo.h6">@((ExistingStep is null) ? "Add Step" : "Edit Step")</MudText>
-                <MudSwitch T="bool" @bind-value="_enabled" Color="Color.Primary">Enabled</MudSwitch>
+                <MudSwitch T="bool" @bind-Value="_enabled" @bind-Value:after="PreviewShellsAsync" Color="Color.Primary">Enabled</MudSwitch>
             </MudStack>
 
-            <MudSelect T="JobStepTypeDto" Label="Action" @bind-Value="_action">
+            <MudSelect T="JobStepTypeDto" Label="Action" @bind-Value="_action" @bind-Value:after="PreviewShellsAsync">
                 @foreach (JobStepTypeDto value in Enum.GetValues(typeof(JobStepTypeDto)))
                 {
                     <MudSelectItem Value="@value">@value</MudSelectItem>
                 }
             </MudSelect>
 
-            @if (_action == JobStepTypeDto.RunCommand)
+            @if (_action is JobStepTypeDto.RunCommand or JobStepTypeDto.LibraryScript)
             {
-                <MudSelect T="string" Label="Runner" @bind-Value="_runner" Required="true">
-                    @foreach (var runner in _runnerOptions)
+                <MudSelect T="string" Label="Execution engine" @bind-Value="_runner" @bind-Value:after="PreviewShellsAsync">
+                    @if (_runner is { } current && !RunnerOptions.Any(option => option.Value == current))
                     {
-                        <MudSelectItem Value="@runner">@runner</MudSelectItem>
+                        <MudSelectItem Value="@current">@LegacyRunnerLabel(current)</MudSelectItem>
+                    }
+                    @foreach (var (value, label) in RunnerOptions)
+                    {
+                        <MudSelectItem Value="@value">@label</MudSelectItem>
                     }
                 </MudSelect>
+            }
+
+            @if (_action == JobStepTypeDto.RunCommand)
+            {
                 <MudTextField @bind-Value="_command" Label="Command" Lines="3" Required="true" />
                 @if (_jobParams.Count > 0)
                 {
@@ -57,7 +73,7 @@
                                   Class="flex-grow-1" />
                     <MudButton Variant="Variant.Outlined" Color="Color.Primary" OnClick="OpenScriptDialog">Choose Script</MudButton>
                 </MudStack>
-                <MudTextField @bind-Value="_libraryPayloadJson" Label="Payload JSON" Lines="4" />
+                <MudTextField @bind-Value="_libraryPayloadJson" @bind-Value:after="PreviewShellsAsync" Label="Payload JSON" Lines="4" />
                 @if (_jobParams.Count > 0)
                 {
                     <MudText Typo="Typo.caption" Class="mud-text-secondary">Available options:</MudText>
@@ -126,7 +142,7 @@
         </MudStack>
     </DialogContent>
     <DialogActions>
-        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="SaveAsync">Save</MudButton>
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="SaveAsync" Disabled="@(_shellPreview?.Allowed == false)">Save</MudButton>
         <MudButton Variant="Variant.Text" OnClick="Cancel">Cancel</MudButton>
     </DialogActions>
 </MudDialog>
@@ -140,10 +156,20 @@
 
     private JobStepTypeDto _action = JobStepTypeDto.RunCommand;
     private bool _enabled = true;
+    private string? _validationError;
+    private JobShellPreviewDto? _shellPreview;
+    private int _shellPreviewRevision;
     private List<JobParamDto> _jobParams = new();
 
-    private readonly string[] _runnerOptions = new[] { "powershell", "pwsh", "cmd", "bash" };
-    private string? _runner;
+    private static readonly (string Value, string Label)[] RunnerOptions =
+    [
+        (JobStepExecutor.Automatic, "Automatic"),
+        (JobStepExecutor.WindowsPowerShell, "Windows PowerShell (5.1)"),
+        (JobStepExecutor.PowerShell7, "PowerShell 7 (pwsh)"),
+        (JobStepExecutor.CommandPrompt, "Command Prompt"),
+        (JobStepExecutor.Bash, "Bash")
+    ];
+    private string _runner = JobStepExecutor.Automatic;
     private string? _command;
 
     private ulong? _scriptId;
@@ -170,17 +196,16 @@
 
         if (ExistingStep is null)
         {
-            _runner = _runnerOptions.FirstOrDefault();
             _enabled = true;
             return;
         }
 
         _action = ExistingStep.Type;
         _enabled = ExistingStep.Enabled;
+        _runner = string.IsNullOrWhiteSpace(ExistingStep.Runner) ? JobStepExecutor.Automatic : ExistingStep.Runner;
         switch (_action)
         {
             case JobStepTypeDto.RunCommand:
-                _runner = ExistingStep.Runner;
                 _command = ExistingStep.Command;
                 break;
             case JobStepTypeDto.LibraryScript:
@@ -198,12 +223,32 @@
                 }
                 break;
         }
+        await PreviewShellsAsync();
+    }
 
-        if (_action == JobStepTypeDto.RunCommand && string.IsNullOrWhiteSpace(_runner))
+    private async Task PreviewShellsAsync()
+    {
+        var revision = ++_shellPreviewRevision;
+        _validationError = null;
+        _shellPreview = null;
+        var payload = _action == JobStepTypeDto.LibraryScript ? _libraryPayloadJson : ExistingStep?.PayloadJson;
+        var step = new JobShellStepDraft(ExistingStep?.Id, _action, _runner, _scriptId, payload, _enabled);
+        try
         {
-            _runner = _runnerOptions.FirstOrDefault();
+            var preview = await JobApi.PreviewShellsAsync(JobId, new(null, null, null, step));
+            if (revision == _shellPreviewRevision) _shellPreview = preview;
+        }
+        catch (Exception error) when (error is HttpRequestException or OperationCanceledException or JsonException)
+        {
+            if (revision == _shellPreviewRevision)
+                _shellPreview = new(true, false, "Engine compatibility will be checked when this step is saved.");
         }
     }
+
+    private static string LegacyRunnerLabel(string runner) =>
+        string.Equals(runner.Trim(), "powershell", StringComparison.OrdinalIgnoreCase)
+            ? "PowerShell 7 (legacy powershell selection)"
+            : $"Legacy selection ({runner})";
 
     private void ResetHttpDefaults()
     {
@@ -265,7 +310,7 @@
         }
         catch
         {
-            // Ignore lookup failures.
+            _scriptDisplayName = $"Script #{id}";
         }
     }
 
@@ -279,6 +324,7 @@
         {
             _scriptId = summary.Id;
             _scriptDisplayName = summary.Name;
+            await PreviewShellsAsync();
             StateHasChanged();
         }
     }
@@ -321,6 +367,7 @@
 
     private async Task SaveAsync()
     {
+        _validationError = null;
         var type = _action;
 
         string? runnerToSend = null;
@@ -348,6 +395,7 @@
                 }
 
                 scriptIdToSend = _scriptId;
+                runnerToSend = _runner;
                 payloadToSend = _libraryPayloadJson;
                 break;
 
@@ -404,7 +452,7 @@
         }
         catch (Exception ex)
         {
-            Snackbar.Add($"Failed to save step: {ex.Message}", Severity.Error);
+            _validationError = ex.Message;
         }
     }
 

@@ -7,6 +7,29 @@ pool. Each fresh job invocation runs its complete ordered workflow on exactly
 lists continue to run on every selected node. Membership grants no execution
 permission.
 
+## Select an execution engine
+
+Choose **Windows PowerShell (5.1)** for `powershell.exe` or **PowerShell 7 (pwsh)**
+for `pwsh`. The canonical job runner values are `windows-powershell` and `pwsh`.
+**Command Prompt** uses `cmd` and **Bash** uses `bash`. Explicit selections
+require the selected engine on the execution node. A PowerShell library step
+without an engine selection uses **Automatic** and honors the script's edition
+and version directives. If the library payload specifies an engine, the step
+runner must agree with it or use Automatic.
+
+Existing definitions stored with `powershell` or `powershellcore` keep their
+historical `pwsh` behavior. Edit the step and select Windows PowerShell (5.1)
+to change its engine. A step's diagnostics show the requested and observed
+engine when the agent reports them.
+
+Save and admission check enabled steps against fresh native job gateway
+inventory. The agent reports available engines at connection and refreshes the
+report while connected. A fixed target with a confirmed missing engine blocks Save. HA
+validation includes eligible workers. Multi-node plans retain their target
+set and respect the saved node-failure policy. The gateway treats absent,
+older and stale inventory as unverified. The agent resolves the executable
+at execution time and verifies saved-account launch separately.
+
 ## Protected job defaults
 
 A Secret parameter can have a protected default. Its editor lets you replace or remove the default. Existing job and parameter views show whether a protected default is present. When starting a run, leave the field blank to use that default or supply an explicit value for this run.

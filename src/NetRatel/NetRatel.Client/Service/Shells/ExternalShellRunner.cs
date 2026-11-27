@@ -61,6 +61,11 @@ namespace NetRatel.Client.Service.Shells
             public RunResult Execution { get; } = execution;
         }
 
+        internal sealed class RequiredShellUnavailableException(string shell, string message) : InvalidOperationException(message)
+        {
+            public string Shell { get; } = shell;
+        }
+
         public sealed record ExecutionObserver(Func<Task> Started, Func<string, string, Task> Output,
             Func<string, string>? RedactOutput = null)
         {
@@ -146,7 +151,7 @@ namespace NetRatel.Client.Service.Shells
                 return RunCmdCommandAsync(command, cwd, timeout, ct, observer);
             }
 
-            return RunBashCommandAsync(command, cwd, timeout, ct, observer);
+            return RunBashCommandAsync(command, cwd, timeout, ct, observer, allowSh: true);
         }
 
         private Task<RunResult> RunScriptByTypeAsync(
@@ -164,20 +169,21 @@ namespace NetRatel.Client.Service.Shells
                 case ScriptType.PowerShell:
                     return RunPowerShellScriptFileAsync(pref, content, cwd, timeoutSec, ct, parameters, observer: observer);
                 case ScriptType.Bash:
-                    var bashPreference = pref == ShellExecutor.Auto ? ShellExecutor.Bash : pref;
-                    if (bashPreference == ShellExecutor.Bash)
+                    if (pref is ShellExecutor.Auto or ShellExecutor.Bash)
                     {
-                        return RunBashScriptAsync(content, cwd, timeoutSec, ct, parameters, observer: observer);
+                        return RunBashScriptAsync(content, cwd, timeoutSec, ct, parameters, observer, allowSh: pref == ShellExecutor.Auto);
                     }
 
-                    return RunByPreferenceAsync(bashPreference, content, cwd, timeoutSec, ct, observer);
+                    return RunByPreferenceAsync(pref, content, cwd, timeoutSec, ct, observer);
                 case ScriptType.Python:
                 case ScriptType.JavaScript:
                 case ScriptType.TypeScript:
                 case ScriptType.Sql:
                 case ScriptType.Json:
                     return RunByPreferenceAsync(
-                        RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? ShellExecutor.Cmd : ShellExecutor.Bash,
+                        pref == ShellExecutor.Auto
+                            ? OperatingSystem.IsWindows() ? ShellExecutor.Cmd : ShellExecutor.Bash
+                            : pref,
                         content, cwd, timeoutSec, ct, observer);
                 default:
                     throw new NotSupportedException($"Unsupported ScriptType: {type}");
@@ -277,8 +283,10 @@ namespace NetRatel.Client.Service.Shells
         private Task<RunResult> RunWinPSCommandAsync(string command, string? cwd, TimeSpan timeout, CancellationToken ct, ExecutionObserver? observer)
             => RunViaTempPs1Async(ResolvePowerShellHost(ShellExecutor.WindowsPowerShell, command, FindShell, OperatingSystem.IsWindows()), command, timeout, cwd, ct, observer);
 
-        private Task<RunResult> RunBashCommandAsync(string command, string? cwd, TimeSpan timeout, CancellationToken ct, ExecutionObserver? observer)
-            => RunDirectAsync((FindShell("bash") ?? FindShell("sh")) ?? Throw("bash/sh"), "-lc", command, timeout, cwd, ct, observer);
+        private Task<RunResult> RunBashCommandAsync(string command, string? cwd, TimeSpan timeout, CancellationToken ct,
+            ExecutionObserver? observer, bool allowSh = false)
+            => RunDirectAsync(FindShell("bash") ?? (allowSh ? FindShell("sh") : null) ?? Throw(allowSh ? "bash/sh" : "bash"),
+                "-lc", command, timeout, cwd, ct, observer);
 
         private Task<RunResult> RunBashScriptAsync(
             string script,
@@ -286,11 +294,12 @@ namespace NetRatel.Client.Service.Shells
             int? timeoutSeconds,
             CancellationToken ct,
             IReadOnlyDictionary<string, string>? parameters,
-            ExecutionObserver? observer)
+            ExecutionObserver? observer,
+            bool allowSh)
         {
             var timeout = TimeSpan.FromSeconds(timeoutSeconds ?? (int)_defaultTimeout.TotalSeconds);
             var environment = CreateBashParameterEnvironment(parameters);
-            var shellPath = (FindShell("bash") ?? FindShell("sh")) ?? Throw("bash/sh");
+            var shellPath = FindShell("bash") ?? (allowSh ? FindShell("sh") : null) ?? Throw(allowSh ? "bash/sh" : "bash");
             return RunDirectAsync(shellPath, "-lc", script, timeout, cwd, ct, observer, environment);
         }
 
@@ -354,7 +363,8 @@ namespace NetRatel.Client.Service.Shells
             return RunDirectAsync(path, "/d /s /c", command, timeout, cwd, ct, observer);
         }
 
-        private static string Throw(string what) => throw new InvalidOperationException($"Required shell not found: {what}");
+        private static string Throw(string what, string? keyword = null) =>
+            throw new RequiredShellUnavailableException(keyword ?? what, $"Required shell not found: {what}");
 
         private static string WrapPSBlock(string userCode)
         {
@@ -729,6 +739,14 @@ namespace NetRatel.Client.Service.Shells
                     foreach ($property in $request.Parameters.PSObject.Properties) { $arguments[$property.Name] = $property.Value }
                     $script = [scriptblock]::Create($request.Script)
                 } catch { [Console]::Error.WriteLine('The private script input could not be read.'); exit 126 }
+                # An in-memory script block does not get the script file engine checks.
+                $requirements = $script.Ast.ScriptRequirements
+                if ($null -ne $requirements -and (
+                    ($requirements.RequiredPSVersion -and $PSVersionTable.PSVersion -lt $requirements.RequiredPSVersion) -or
+                    ($requirements.RequiredPSEditions -and $PSVersionTable.PSEdition -notin $requirements.RequiredPSEditions))) {
+                    [Console]::Error.WriteLine('The selected PowerShell engine does not satisfy the script edition or version requirements.')
+                    exit 125
+                }
                 & $script @arguments
                 if ($null -ne $LASTEXITCODE) { exit $LASTEXITCODE }
                 """;
@@ -761,99 +779,27 @@ namespace NetRatel.Client.Service.Shells
                 return resolve("pwsh") ?? Throw("pwsh");
             if (preference == ShellExecutor.WindowsPowerShell)
             {
-                if (!isWindows) throw new InvalidOperationException("Windows PowerShell requires Windows; install and select pwsh on this platform.");
-                return resolve("powershell") ?? Throw("Windows PowerShell");
+                if (!isWindows) throw new RequiredShellUnavailableException("powershell", "Windows PowerShell requires Windows; install and select pwsh on this platform.");
+                return resolve("powershell") ?? Throw("Windows PowerShell", "powershell");
             }
             if (preference != ShellExecutor.Auto)
                 throw new InvalidOperationException($"PowerShell scripts require a PowerShell executor, not {preference}.");
 
-            // Only choose an engine for the supported #requires engine/version hints.
-            // The selected external engine still parses and validates the original
-            // script, including all other #requires options and exact versions.
-            var requiresDesktop = false;
-            var requiresCore = false;
-            foreach (var options in ReadPowerShellRequirements(script))
-            {
-                var edition = PowerShellEditionPattern.Match(options).Groups["edition"].Value;
-                requiresDesktop |= edition.Equals("Desktop", StringComparison.OrdinalIgnoreCase);
-                requiresCore |= edition.Equals("Core", StringComparison.OrdinalIgnoreCase);
-                var versionText = PowerShellVersionPattern.Match(options).Groups["version"].Value;
-                if (Version.TryParse(versionText.Contains('.') ? versionText : versionText + ".0", out var version) &&
-                    (version.Major > 5 || version.Major == 5 && version.Minor > 1)) requiresCore = true;
-            }
+            var (requiresDesktop, requiresCore) = PowerShellScriptRequirements.Read(script);
 
             if (requiresDesktop)
             {
-                if (!isWindows) throw new InvalidOperationException("The script requires Windows PowerShell (Desktop edition), which is unavailable on this platform.");
+                if (!isWindows) throw new RequiredShellUnavailableException("powershell", "The script requires Windows PowerShell (Desktop edition), which is unavailable on this platform.");
                 if (requiresCore) throw new InvalidOperationException("The script requires incompatible PowerShell Desktop and Core versions or editions.");
-                return resolve("powershell") ?? Throw("Windows PowerShell required by #requires -PSEdition Desktop");
+                return resolve("powershell") ?? Throw("Windows PowerShell required by #requires -PSEdition Desktop", "powershell");
             }
 
             var pwsh = resolve("pwsh");
             if (pwsh is not null) return pwsh;
             if (isWindows && !requiresCore)
-                return resolve("powershell") ?? Throw("pwsh or Windows PowerShell");
-            return Throw(requiresCore ? "pwsh required by the script's #requires engine/version directive" : "pwsh");
+                return resolve("powershell") ?? Throw("pwsh or Windows PowerShell", "powershell-compatible");
+            return Throw(requiresCore ? "pwsh required by the script's #requires engine/version directive" : "pwsh", "pwsh");
         }
-
-        private static IEnumerable<string> ReadPowerShellRequirements(string script)
-        {
-            using var reader = new StringReader(script);
-            var blockCommentDepth = 0;
-            char? quote = null;
-            string? hereStringEnd = null;
-            while (reader.ReadLine() is { } line)
-            {
-                var offset = 0;
-                if (hereStringEnd is not null)
-                {
-                    if (!line.StartsWith(hereStringEnd, StringComparison.Ordinal)) continue;
-                    offset = hereStringEnd.Length;
-                    hereStringEnd = null;
-                }
-                for (var index = offset; index < line.Length; index++)
-                {
-                    var character = line[index];
-                    var next = index + 1 < line.Length ? line[index + 1] : '\0';
-                    if (blockCommentDepth > 0)
-                    {
-                        if (character == '<' && next == '#') { blockCommentDepth++; index++; }
-                        else if (character == '#' && next == '>') { blockCommentDepth--; index++; }
-                        continue;
-                    }
-                    if (quote is not null)
-                    {
-                        if (quote == '"' && character == '`') { index++; continue; }
-                        if (character != quote) continue;
-                        if (quote == '\'' && next == '\'') { index++; continue; }
-                        quote = null;
-                        continue;
-                    }
-                    if (character == '`') { index++; continue; }
-                    if (character == '<' && next == '#') { blockCommentDepth++; index++; continue; }
-                    if (character == '#')
-                    {
-                        const string directive = "#requires";
-                        var comment = line[index..];
-                        if (comment.StartsWith(directive, StringComparison.OrdinalIgnoreCase) &&
-                            comment.Length > directive.Length && char.IsWhiteSpace(comment[directive.Length]))
-                            yield return comment[directive.Length..].Trim();
-                        break;
-                    }
-                    if (character == '@' && next is '\'' or '"' && string.IsNullOrWhiteSpace(line[(index + 2)..]))
-                    {
-                        hereStringEnd = next + "@";
-                        break;
-                    }
-                    if (character is '\'' or '"') quote = character;
-                }
-            }
-        }
-
-        private static readonly Regex PowerShellEditionPattern = new(
-            "(?:^|\\s)-PSEdition\\s+['\"]?(?<edition>Desktop|Core)['\"]?(?=\\s|$)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
-        private static readonly Regex PowerShellVersionPattern = new(
-            @"(?:^|\s)-Version\s+(?<version>\d+(?:\.\d+){0,3})(?=\s|$)", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
         private static string QuoteArgument(string? value)
         {

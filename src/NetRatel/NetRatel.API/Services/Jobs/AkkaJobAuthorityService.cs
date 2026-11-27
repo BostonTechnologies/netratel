@@ -73,7 +73,7 @@ public sealed class AkkaJobAuthorityService(
     IRequestService? requests = null,
     IScriptExecutionReplayStore? scriptReplayPins = null,
     JobAggregateOrchestrator? aggregates = null,
-    IJobAggregateWakeup? aggregateWakeup = null) : IAkkaJobAuthorityService
+    IJobAggregateWakeup? aggregateWakeup = null, JobShellCompatibility? shellCompatibility = null) : IAkkaJobAuthorityService
 {
     private const string Authority = "akka";
     private const string Feature = "jobs";
@@ -422,6 +422,8 @@ public sealed class AkkaJobAuthorityService(
             pinnedSnapshot = await snapshotCapture.CaptureAsync(jobId, definition.Job.TenantId ?? 0, cancellationToken);
             definition = pinnedSnapshot.Definition;
         }
+        if (!preparedNativeIntent && recordedRequestId is null && shellCompatibility is not null)
+            await shellCompatibility.RequireDefinitionAsync(definition, cancellationToken);
         if (!preparedNativeIntent && JobProviderExecutionInputs.SelectBindings(definition, request).Length != 0)
             throw new ExecutionAdmissionDeniedException("This execution has no approved protected job input admission.");
         if (sourceRequest is not null && (definition.Job.Id != sourceRequest.JobDefinitionId ||
@@ -846,6 +848,15 @@ public sealed class AkkaJobAuthorityService(
         {
             await FailBeforeDispatchAsync(run, cancellationToken, "run_as_unsupported: The current agent or job step cannot launch the selected execution account.");
             return (await jobRuns.GetAsync(run.Id, cancellationToken))!;
+        }
+        if (dispatchOwner is { } shellOwner && shellCompatibility is not null)
+        {
+            try { shellCompatibility.RequireDispatch(client, shellOwner, step.Ordinal, run.TargetDisplayName ?? run.TargetHostName, invocation); }
+            catch (JobTargetValidationException error)
+            {
+                await FailBeforeDispatchAsync(run, cancellationToken, $"{error.Code}: {error.Message}");
+                return (await jobRuns.GetAsync(run.Id, cancellationToken))!;
+            }
         }
         var now = _clock.GetUtcNow();
         var running = await jobRuns.UpsertRunAsync(new UpsertJobRunCommand(

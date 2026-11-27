@@ -120,6 +120,11 @@
                                 </MudTabPanel>
 <MudTabPanel Text="Targets" Icon="@Icons.Material.Filled.Devices">
                     <JobTargetPicker TenantId="@(_selectedTenant?.Id ?? 0)" Environment="_environment" Value="_target" ValueChanged="TargetChanged" ExecutionPolicy="CurrentExecutionPolicy" PreviewCountChanged="TargetPreviewChanged" Parameters="TargetParameters" />
+                    @if (_shellPreview is { Message: { } shellMessage })
+                    {
+                        <MudAlert Severity="@(_shellPreview.Allowed ? Severity.Warning : Severity.Error)" Dense="true" Class="mt-2">@shellMessage</MudAlert>
+                        <MudButton Size="Size.Small" OnClick="PreviewShellsAsync">Refresh engine compatibility</MudButton>
+                    }
                 </MudTabPanel>
 <MudTabPanel Text="Execution">
                                     <MudStack Spacing="2">
@@ -140,7 +145,7 @@
                                     <MudNumericField T="int" @bind-Value="_threadCount" Label="Thread Count" Min="1" Max="100" Required="true" Variant="Variant.Outlined" HelperText="Maximum nodes running this job concurrently. Each slot runs one node’s complete ordered workflow." />
                                     <MudText Typo="Typo.body2" role="status">@ConcurrencySummary</MudText>
                                     <MudText Typo="Typo.subtitle2">If a node fails</MudText>
-                                    <MudRadioGroup T="JobNodeFailurePolicy" @bind-Value="_nodeFailurePolicy" aria-label="If a node fails">
+                                    <MudRadioGroup T="JobNodeFailurePolicy" @bind-Value="_nodeFailurePolicy" @bind-Value:after="PreviewShellsAsync" aria-label="If a node fails">
                                         <MudRadio Value="JobNodeFailurePolicy.StopRemaining">Stop starting remaining nodes</MudRadio>
                                         <MudRadio Value="JobNodeFailurePolicy.ContinueRemaining">Continue on remaining nodes, then fail the run</MudRadio>
                                     </MudRadioGroup>
@@ -319,7 +324,7 @@
             <MudSpacer />
         }
         <MudButton OnClick="CancelAsync" Disabled="@(_isSaving || _detailsBusy)">@(_createdInWorkspace ? "Close draft" : "Cancel")</MudButton>
-        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="SaveAsync" Disabled="@(_isSaving || _isLoading || _detailsBusy)" StartIcon="@Icons.Material.Filled.Save">
+        <MudButton Color="Color.Primary" Variant="Variant.Filled" OnClick="SaveAsync" Disabled="@(_isSaving || _isLoading || _detailsBusy || _shellPreview?.Allowed == false)" StartIcon="@Icons.Material.Filled.Save">
             @(_isSaving ? "Saving…" : _jobId == null ? "Create and add steps" : "Save")
         </MudButton>
     </DialogActions>
@@ -409,16 +414,47 @@
     private JobNodeFailurePolicy _nodeFailurePolicy = JobNodeFailurePolicy.StopRemaining;
     private ExecutionIdentitySetting? _runAs;
     private JobExecutionPolicy CurrentExecutionPolicy => new(_threadCount, _nodeFailurePolicy) { RunAs = _runAs };
-    private void ExecutionAccountChanged(ExecutionAccountOption? option) => _runAs = option is null
-        ? null : new(option.Mode, option.Id, _runAs?.OverrideClientDefault ?? false);
-    private void SetExecutionOverride(bool useJobAccount) { if (_runAs is not null) _runAs = _runAs with { OverrideClientDefault = useJobAccount }; }
+    private async Task ExecutionAccountChanged(ExecutionAccountOption? option)
+    {
+        _runAs = option is null ? null : new(option.Mode, option.Id, _runAs?.OverrideClientDefault ?? true);
+        await PreviewShellsAsync();
+    }
+    private async Task SetExecutionOverride(bool useJobAccount)
+    {
+        if (_runAs is not null) _runAs = _runAs with { OverrideClientDefault = useJobAccount };
+        await PreviewShellsAsync();
+    }
     private int? _targetPreviewCount;
+    private JobShellPreviewDto? _shellPreview;
+    private int _shellPreviewRevision;
     private IReadOnlyDictionary<string, string[]> TargetParameters => _params.Where(parameter => !parameter.Type.Equals("secret", StringComparison.OrdinalIgnoreCase) && parameter.Default is not null)
         .ToDictionary(parameter => parameter.Name, parameter => new[] { parameter.Default! }, StringComparer.OrdinalIgnoreCase);
     private string ConcurrencySummary => _targetPreviewCount is { } count
         ? $"{count} targets · configured {_threadCount} · up to {Math.Min(count, _threadCount)} active, subject to available capacity."
         : $"Configured {_threadCount} concurrent node workflows. Preview Targets to see the effective target count.";
-    private void TargetChanged(JobTargetDefinition target) { _target = target; _targetPreviewCount = null; }
+    private async Task TargetChanged(JobTargetDefinition target)
+    {
+        _target = target;
+        _targetPreviewCount = null;
+        await PreviewShellsAsync();
+    }
+
+    private async Task PreviewShellsAsync()
+    {
+        var revision = ++_shellPreviewRevision;
+        _shellPreview = null;
+        if (_jobId is not { } id || _selectedTenant?.Id != _definitionOrigin?.TenantId) return;
+        try
+        {
+            var preview = await JobApi.PreviewShellsAsync(id, new(_target, CurrentExecutionPolicy, _environment));
+            if (revision == _shellPreviewRevision) _shellPreview = preview;
+        }
+        catch (Exception error) when (error is HttpRequestException or OperationCanceledException or System.Text.Json.JsonException)
+        {
+            if (revision == _shellPreviewRevision)
+                _shellPreview = new(true, false, "Engine compatibility will be checked when the job is saved.");
+        }
+    }
     private void TargetPreviewChanged(int? count) => _targetPreviewCount = count;
     private void ApplyTargetPolicy(JobDto job)
     {

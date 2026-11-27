@@ -11,6 +11,29 @@ public static class ShellInventoryDetector
     private static readonly string[] KnownShells = ["pwsh", "powershell", "bash", "sh", "zsh", "cmd"];
     private static readonly ConcurrentDictionary<(string Path, long LastWrite), Lazy<string?>> Versions = new();
 
+    public const string JobInventoryCapability = "job-shell-inventory-v1";
+    public const string JobInventoryRefreshCapability = "job-shell-inventory-refresh-v1";
+    private const string JobShellPrefix = "job-shell:";
+
+    public static IEnumerable<string> DetectJobCapabilities()
+    {
+        yield return JobInventoryCapability;
+        foreach (var keyword in KnownShells)
+            if (ShellExecutableResolver.Resolve(keyword) is not null)
+                yield return JobShellPrefix + keyword;
+    }
+
+    public static IEnumerable<string> RecognizeJobCapabilities(IEnumerable<string> capabilities) =>
+        capabilities.Where(value => value == JobInventoryCapability ||
+            value.StartsWith(JobShellPrefix, StringComparison.Ordinal) && NormalizeKeyword(value[JobShellPrefix.Length..]) is not null)
+        .Distinct(StringComparer.Ordinal);
+
+    public static IReadOnlySet<string>? ReadJobInventory(IReadOnlyCollection<string> capabilities) =>
+        capabilities.Contains(JobInventoryCapability, StringComparer.Ordinal)
+            ? capabilities.Where(value => value.StartsWith(JobShellPrefix, StringComparison.Ordinal))
+                .Select(value => value[JobShellPrefix.Length..]).ToHashSet(StringComparer.OrdinalIgnoreCase)
+            : null;
+
     public static IReadOnlyList<ShellCapability> Detect()
     {
         var shells = new List<ShellCapability>();

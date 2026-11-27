@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
@@ -19,9 +20,10 @@ namespace NetRatel.API.Services.Jobs;
 /// </summary>
 public sealed class JobTaskBridge
 {
-    private static readonly JsonSerializerOptions DeserializeOptions = new(JsonSerializerDefaults.Web)
+    internal static readonly JsonSerializerOptions DeserializeOptions = new(JsonSerializerDefaults.Web)
     {
-        PropertyNameCaseInsensitive = true
+        PropertyNameCaseInsensitive = true,
+        Converters = { new JsonStringEnumConverter<ShellExecutor>(), new JsonStringEnumConverter<ScriptType>() }
     };
     private readonly ILogger<JobTaskBridge> _logger;
     private readonly IScriptService _scripts;
@@ -294,6 +296,11 @@ public sealed class JobTaskBridge
 
             if (payload is null && !string.IsNullOrWhiteSpace(resolvedPayload))
             {
+                if (HasExecutorMetadata(resolvedPayload))
+                {
+                    error = "The step payload has an invalid executor preference.";
+                    return false;
+                }
                 payload = new ExecShellCommandPayload
                 {
                     Command = resolvedPayload
@@ -316,10 +323,12 @@ public sealed class JobTaskBridge
             };
         }
 
-        if (payload.Preferred == ShellExecutor.Auto)
+        if (!JobStepExecutor.TryResolve(step.Runner, payload.Preferred, out var executor))
         {
-            payload.Preferred = ParseShellExecutor(step.Runner);
+            error = "The step runner and payload executor must specify the same supported engine.";
+            return false;
         }
+        payload.Preferred = executor;
 
         try
         {
@@ -351,44 +360,6 @@ public sealed class JobTaskBridge
         return true;
     }
 
-    private async Task<(ScriptInfo? Script, ScriptType ScriptType, ShellExecutor Preferred)> ResolveLibraryExecutionAsync(
-        JobStepInfo step,
-        ExecLibraryScriptPayload payload,
-        CancellationToken cancellationToken,
-        McpOperatorScriptExecutionSnapshot? reviewedScript)
-    {
-        var scriptType = payload.ScriptType == default ? ParseScriptType(step.Runner) : payload.ScriptType;
-        var preferred = payload.Preferred == ShellExecutor.Auto ? ParseShellExecutor(step.Runner) : payload.Preferred;
-
-        if (payload.ScriptId <= 0)
-        {
-            return (null, scriptType, preferred);
-        }
-
-        var script = reviewedScript?.Script ?? await _scripts.GetAsync((ulong)payload.ScriptId, cancellationToken).ConfigureAwait(false);
-        if (script is null)
-        {
-            return (null, scriptType, preferred);
-        }
-
-        if (payload.ScriptType == default && Enum.TryParse<ScriptType>(script.ScriptType, true, out var resolvedType))
-        {
-            scriptType = resolvedType;
-        }
-
-        if (payload.Preferred == ShellExecutor.Auto)
-        {
-            preferred = scriptType switch
-            {
-                ScriptType.Bash => ShellExecutor.Bash,
-                ScriptType.PowerShell => ShellExecutor.Pwsh,
-                _ => preferred
-            };
-        }
-
-        return (script, scriptType, preferred);
-    }
-
     private async Task<(bool Success, TaskInvocation Invocation, string? Error)> TryBuildLibraryScriptInvocationAsync(
         JobRunInfo run,
         JobStepInfo step,
@@ -402,7 +373,10 @@ public sealed class JobTaskBridge
         if (!string.IsNullOrWhiteSpace(step.PayloadJson))
         {
             var resolvedPayload = JobTemplateHelper.ResolvePlaceholders(step.PayloadJson!, inputs) ?? string.Empty;
-            payload = TryDeserializeLibraryPayload(resolvedPayload, out payloadParameters) ?? new ExecLibraryScriptPayload();
+            var parsed = TryDeserializeLibraryPayload(resolvedPayload, out payloadParameters);
+            if (parsed is null && HasExecutorMetadata(resolvedPayload))
+                return (false, default, "The library payload has an invalid executor preference.");
+            payload = parsed ?? new ExecLibraryScriptPayload();
         }
         else
         {
@@ -418,15 +392,24 @@ public sealed class JobTaskBridge
         payload.ScriptId = scriptId.Value;
         if (reviewedScript is not null && reviewedScript.Script.Id != (ulong)payload.ScriptId)
             return (false, default, "The job payload cannot select a different reviewed script.");
-        var execution = await ResolveLibraryExecutionAsync(step, payload, cancellationToken, reviewedScript).ConfigureAwait(false);
-        if (execution.Script is null)
+        var script = reviewedScript?.Script ?? await _scripts.GetAsync((ulong)payload.ScriptId, cancellationToken).ConfigureAwait(false);
+        if (script is null)
         {
             return (false, default, $"Script {payload.ScriptId} not found.");
         }
 
-        payload.ScriptType = execution.ScriptType;
-        payload.ScriptContent = execution.Script.Content;
-        payload.Preferred = execution.Preferred;
+        if (!JobStepExecutor.TryResolve(step.Runner, payload.Preferred, out var executor))
+            return (false, default, "The step runner and payload executor must specify the same supported engine.");
+
+        if (payload.ScriptType == default)
+            payload.ScriptType = Enum.TryParse<ScriptType>(script.ScriptType, true, out var scriptType) ? scriptType : ParseScriptType(step.Runner);
+
+        if (payload.ScriptType == ScriptType.PowerShell && executor is not (ShellExecutor.Auto or ShellExecutor.WindowsPowerShell or ShellExecutor.Pwsh) ||
+            payload.ScriptType == ScriptType.Bash && executor is not (ShellExecutor.Auto or ShellExecutor.Bash))
+            return (false, default, "The selected executor is incompatible with the library script language.");
+
+        payload.ScriptContent = script.Content;
+        payload.Preferred = executor;
         if (reviewedScript is not null)
             payload.WorkingDirectory = reviewedScript.WorkingDirectory;
         _logger.LogInformation(
@@ -435,8 +418,8 @@ public sealed class JobTaskBridge
             step.Ordinal,
             payload.ScriptId,
             payload.ScriptType,
-            execution.Script.UpdatedAtUtc,
-            ComputeContentHash(execution.Script.Content));
+            script.UpdatedAtUtc,
+            ComputeContentHash(script.Content));
 
         var parameters = BuildLibraryScriptParameters(inputs, payloadParameters, payload.Parameters);
         try
@@ -462,8 +445,8 @@ public sealed class JobTaskBridge
             runtimePolicy.GraceSeconds,
             runtimePolicy.HardTimeoutSeconds);
 
-        var invocation = new TaskInvocation(TaskKinds.ExecLibraryScript, JsonSerializer.Serialize(payload), execution.Script.Name,
-            payload.ScriptType.ToString(), execution.Script.Name, ComputeContentHash(execution.Script.Content), execution.Script.SourceRevision);
+        var invocation = new TaskInvocation(TaskKinds.ExecLibraryScript, JsonSerializer.Serialize(payload), script.Name,
+            payload.ScriptType.ToString(), script.Name, ComputeContentHash(script.Content), script.SourceRevision);
 
         _logger.LogDebug(
             "JobRun {RunId} step {Ordinal}: library dispatch prepared for script {ScriptId} with {ParameterCount} parameters.",
@@ -563,23 +546,15 @@ public sealed class JobTaskBridge
         return Convert.ToHexString(bytes).ToLowerInvariant();
     }
 
-    private static ShellExecutor ParseShellExecutor(string? runner)
+    internal static bool HasExecutorMetadata(string json)
     {
-        if (string.IsNullOrWhiteSpace(runner))
+        try
         {
-            return ShellExecutor.Auto;
+            using var document = JsonDocument.Parse(json);
+            return document.RootElement.ValueKind == JsonValueKind.Object && document.RootElement.EnumerateObject()
+                .Any(property => property.Name.Equals("preferred", StringComparison.OrdinalIgnoreCase));
         }
-
-        var normalized = runner.Trim().ToLowerInvariant();
-        return normalized switch
-        {
-            "pwsh" or "powershell" or "powershellcore" => ShellExecutor.Pwsh,
-            "windows-powershell" or "powershell5" => ShellExecutor.WindowsPowerShell,
-            "bash" => ShellExecutor.Bash,
-            "cmd" or "commandprompt" => ShellExecutor.Cmd,
-            _ when Enum.TryParse<ShellExecutor>(runner, true, out var parsed) => parsed,
-            _ => ShellExecutor.Auto
-        };
+        catch (JsonException) { return false; }
     }
 
     private static ScriptType ParseScriptType(string? runner)

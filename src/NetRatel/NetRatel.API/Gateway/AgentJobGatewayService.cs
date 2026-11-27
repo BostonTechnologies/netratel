@@ -7,6 +7,7 @@ using NetRatel.API.Services.Jobs;
 using NetRatel.Application.Agents;
 using NetRatel.Application.Presence;
 using NetRatel.Shared.Contracts.Jobs;
+using NetRatel.Shared.Service.ClientEnvironment;
 
 namespace NetRatel.API.Gateway;
 
@@ -117,14 +118,18 @@ public sealed class AgentJobGatewayService(
         var client = new ClientKey(identity.TenantId, identity.AgentId);
         await RequirePresenceAsync(client, connectionId, frame.ConnectionEpoch, cancellationToken).ConfigureAwait(false);
         return new ValidatedSession(client, connectionId, frame.ConnectionEpoch, frame.Hello.Capabilities.Contains("lifecycle-receipts-v1"),
-            frame.Hello.Capabilities.Contains(ProtectedJobParameterRules.Capability), ExecutionAccountServiceCapability.Recognized(frame.Hello.Capabilities));
+            frame.Hello.Capabilities.Contains(ProtectedJobParameterRules.Capability),
+            ExecutionAccountServiceCapability.Recognized(frame.Hello.Capabilities)
+                .Concat(ShellInventoryDetector.RecognizeJobCapabilities(frame.Hello.Capabilities))
+                .Concat(frame.Hello.Capabilities.Contains(ShellInventoryDetector.JobInventoryRefreshCapability)
+                    ? [ShellInventoryDetector.JobInventoryRefreshCapability] : Array.Empty<string>()).ToArray());
     }
 
     private async Task<ulong> ProcessInboundAsync(AgentJobFrame frame, ValidatedSession session, ulong lastSequence, AgentJobGatewayRegistration registration, CancellationToken cancellationToken)
     {
         var receivedAtUtc = clock.GetUtcNow();
         if (!MatchesSession(frame, session) || frame.Sequence == 0 || frame.Sequence <= lastSequence ||
-            frame.PayloadCase != AgentJobFrame.PayloadOneofCase.Lifecycle)
+            frame.PayloadCase is not (AgentJobFrame.PayloadOneofCase.Lifecycle or AgentJobFrame.PayloadOneofCase.JobShellInventory))
         {
             throw new RpcException(new Status(StatusCode.InvalidArgument, "The job gateway frame is invalid or stale."));
         }
@@ -132,6 +137,15 @@ public sealed class AgentJobGatewayService(
         RequireCurrent(registration);
         await RequirePresenceAsync(session.Client, session.ConnectionId, session.ConnectionEpoch, cancellationToken).ConfigureAwait(false);
         RequireCurrent(registration);
+        if (frame.PayloadCase == AgentJobFrame.PayloadOneofCase.JobShellInventory)
+        {
+            var advertised = frame.JobShellInventory.Capabilities;
+            if (!session.ExecutionCapabilities.Contains(ShellInventoryDetector.JobInventoryRefreshCapability, StringComparer.Ordinal) ||
+                advertised.Count > 8 || ShellInventoryDetector.ReadJobInventory(ShellInventoryDetector.RecognizeJobCapabilities(advertised).ToArray()) is not { } shells)
+                throw new RpcException(new Status(StatusCode.InvalidArgument, "Job shell inventory refresh was not negotiated or is invalid."));
+            registration.UpdateJobShells(shells, receivedAtUtc);
+            return frame.Sequence;
+        }
         var update = frame.Lifecycle;
         if (!TryMapStatus(update.Status, out var status) || update.JobRunId == 0 || update.JobStepId == 0 || update.JobStepRunId == 0 ||
             update.Ordinal < 0 || string.IsNullOrWhiteSpace(update.RequestId) || update.RequestId.Length > 256 ||

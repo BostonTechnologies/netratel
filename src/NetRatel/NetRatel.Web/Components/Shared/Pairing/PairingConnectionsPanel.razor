@@ -45,6 +45,10 @@
                     <MudStack Row="true" Wrap="Wrap.Wrap" Spacing="1" Class="mt-1">
                         <MudButton Variant="Variant.Text" Size="Size.Small" OnClick="@(() => ViewAsync(connection))" Disabled="@(_busy || _deleting.Contains(Key(connection)))" data-testid="connection-view">@(Connected(connection) ? "View" : "Continue setup")</MudButton>
                         <MudButton Variant="Variant.Text" Size="Size.Small" OnClick="@(() => TestAsync(connection))" Disabled="@(_busy || testing || connection.Mapping is null || _deleting.Contains(Key(connection)))" data-testid="connection-test">Test connection</MudButton>
+                        @if (Connected(connection) && connection.Mapping is { RunAutomation: true } automationMapping)
+                        {
+                            <MudButton Variant="Variant.Text" Size="Size.Small" OnClick="@(() => _runAsMapping = automationMapping)">Paired Run as</MudButton>
+                        }
                         <MudButton Variant="Variant.Text" Size="Size.Small" Color="Color.Error" OnClick="@(() => _deleteTarget = connection)" Disabled="@_deleting.Contains(Key(connection))" data-testid="connection-delete">Delete connection</MudButton>
                     </MudStack>
                 </MudPaper>
@@ -53,6 +57,11 @@
         @if (!VisibleConnections.Any()) { <MudText Typo="Typo.body2">No matching connections.</MudText> }
     }
 </section>
+
+@if (_runAsMapping is { } runAsMapping)
+{
+    <PairedJobRunAsDialog Mapping="runAsMapping" Closed="@(() => _runAsMapping = null)" />
+}
 
 <MudDialog Visible="@(_code is not null)" VisibleChanged="CodeVisibleChanged" AriaLabel="System pairing code" Options="ReviewOptions" ContentStyle="max-height:65dvh;overflow-y:auto">
     <TitleContent><MudText Typo="Typo.h6">System pairing code</MudText></TitleContent>
@@ -124,6 +133,7 @@
     private static readonly DialogOptions ReviewOptions = new() { FullWidth = true, MaxWidth = MaxWidth.Small, BackdropClick = false, CloseOnEscapeKey = false };
     private string _search = "", _statusFilter = "all";
     private PairingConnectionDto? _deleteTarget;
+    private PairingMapping? _runAsMapping;
     private readonly HashSet<string> _testing = new(StringComparer.Ordinal);
     private IEnumerable<PairingConnectionDto> VisibleConnections => _connections.Where(x =>
         (_statusFilter == "all" || (_statusFilter == "connected") == Connected(x)) &&
@@ -174,7 +184,11 @@
     private async Task LoadNamesAsync(string pairId)
     {
         try { var directory = await Api.DirectoryAsync(pairId, _lifetime.Token); if (!_disposed) _directories[pairId] = directory; }
-        catch (Exception e) when (Expected(e)) { /* View reloads directory and shows its failure; cards remain deletable. */ }
+        catch (Exception e) when (Expected(e))
+        {
+            // The connection view reloads the directory and displays any failure.
+            return;
+        }
     }
     private void OpenCreate()
     {

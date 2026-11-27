@@ -10,6 +10,7 @@ public sealed class ManagedOrchestrationRequestBinding
     public int TenantId { get; set; }
     public Guid? AgentId { get; set; }
     public string? TargetPlanDigest { get; set; }
+    public Guid? RunAsGrantId { get; set; }
     public string JobDefinitionId { get; set; } = "";
     public string? ExecutionId { get; set; }
     public string ParentRequestId { get; set; } = "";
@@ -25,6 +26,18 @@ public sealed class ManagedOrchestrationRequestBinding
     public string? CallbackUrl { get; set; }
     public DateTimeOffset CreatedAtUtc { get; set; }
     public string SourceSystem => $"service:{ServicePrincipalId:N}";
+}
+
+public sealed class ManagedJobRunAsGrant
+{
+    public Guid MappingId { get; set; }
+    public long JobId { get; set; }
+    public Guid ApprovalId { get; set; }
+    public int TenantId { get; set; }
+    public string ScopeDigest { get; set; } = "";
+    public string ApprovedBy { get; set; } = "";
+    public DateTimeOffset ApprovedAtUtc { get; set; }
+    public DateTimeOffset? RevokedAtUtc { get; set; }
 }
 
 /// <summary>Durable delivery lease and acknowledgement; HTTP delivery remains at least once.</summary>
@@ -47,6 +60,13 @@ public static class ManagedOrchestrationModelConfiguration
 {
     public static void ConfigureManagedOrchestrationModel(this ModelBuilder model)
     {
+        model.Entity<ManagedJobRunAsGrant>(e =>
+        {
+            e.ToTable("ManagedJobRunAsGrants");
+            e.HasKey(x => new { x.MappingId, x.JobId });
+            e.Property(x => x.ScopeDigest).HasMaxLength(64);
+            e.Property(x => x.ApprovedBy).HasMaxLength(256);
+        });
         model.Entity<ManagedOrchestrationRequestBinding>(e =>
         {
             e.ToTable("ManagedOrchestrationRequestBindings");

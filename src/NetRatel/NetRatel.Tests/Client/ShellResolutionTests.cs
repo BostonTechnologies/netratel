@@ -64,7 +64,7 @@ public sealed class ShellResolutionTests
     [InlineData(ShellExecutor.WindowsPowerShell, "pwsh")]
     public void Explicit_missing_engine_never_substitutes_the_other_engine(ShellExecutor requested, string installed)
     {
-        var error = Assert.Throws<InvalidOperationException>(() => ExternalShellRunner.ResolvePowerShellHost(
+        var error = Assert.Throws<ExternalShellRunner.RequiredShellUnavailableException>(() => ExternalShellRunner.ResolvePowerShellHost(
             requested, "Write-Output 'marker'", keyword => keyword == installed ? "/installed/" + keyword : null, isWindows: true));
         Assert.Contains("Required shell not found", error.Message, StringComparison.Ordinal);
     }
@@ -72,7 +72,7 @@ public sealed class ShellResolutionTests
     [Fact]
     public void Windows_powershell_is_rejected_on_unix_even_if_an_executable_has_that_name()
     {
-        var error = Assert.Throws<InvalidOperationException>(() => ExternalShellRunner.ResolvePowerShellHost(
+        var error = Assert.Throws<ExternalShellRunner.RequiredShellUnavailableException>(() => ExternalShellRunner.ResolvePowerShellHost(
             ShellExecutor.WindowsPowerShell, "", keyword => "/installed/" + keyword, isWindows: false));
         Assert.Contains("requires Windows", error.Message, StringComparison.Ordinal);
     }
@@ -101,7 +101,7 @@ public sealed class ShellResolutionTests
     {
         string? Resolve(string keyword) => keyword == "powershell" ? keyword : null;
         if (expected is null)
-            Assert.Throws<InvalidOperationException>(() => ExternalShellRunner.ResolvePowerShellHost(ShellExecutor.Auto, script, Resolve, isWindows: true));
+            Assert.Throws<ExternalShellRunner.RequiredShellUnavailableException>(() => ExternalShellRunner.ResolvePowerShellHost(ShellExecutor.Auto, script, Resolve, isWindows: true));
         else
             Assert.Equal(expected, ExternalShellRunner.ResolvePowerShellHost(ShellExecutor.Auto, script, Resolve, isWindows: true));
     }

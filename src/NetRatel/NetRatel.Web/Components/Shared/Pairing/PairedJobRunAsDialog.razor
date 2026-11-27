@@ -1,0 +1,102 @@
+@using NetRatel.Shared.Contracts.Jobs
+@using NetRatel.Shared.SystemPairing
+@using NetRatel.Web.Services.Jobs
+@using NetRatel.Web.Services.Pairing
+@inject IPairingApiClient Api
+@inject IJobApiClient Jobs
+@implements IDisposable
+
+<MudDialog Visible="true" VisibleChanged="OnVisibleChanged" Options="Options" AriaLabel="Paired Run as"
+           ContentStyle="max-height:65dvh;overflow-y:auto" data-testid="paired-run-as">
+    <TitleContent><MudText Typo="Typo.h6">Paired Run as</MudText></TitleContent>
+    <DialogContent>
+        <MudStack Spacing="2">
+            <MudText Typo="Typo.body2">@Mapping.Name</MudText>
+            <MudSelect T="ulong?" Label="Job" Value="_job" ValueChanged="ReviewAsync" Disabled="_busy" Margin="Margin.Dense" Variant="Variant.Outlined">
+                @foreach (var job in _jobs)
+                {
+                    <MudSelectItem T="ulong?" Value="@((ulong?)job.Id)">@job.Name</MudSelectItem>
+                }
+            </MudSelect>
+            @if (_busy) { <MudProgressLinear Indeterminate="true" /> }
+            @if (_error is { } error) { <MudAlert Dense="true" Severity="Severity.Error">@error</MudAlert> }
+            @if (_review is { } review)
+            {
+                <MudAlert Dense="true" Severity="@(review.Readiness.Ready ? Severity.Success : Severity.Warning)">@review.Readiness.Message</MudAlert>
+                @foreach (var target in review.Targets)
+                {
+                    <MudPaper Outlined="true" Class="pa-2">
+                        <MudText Typo="Typo.subtitle2">@target.Node</MudText>
+                        <MudText Typo="Typo.caption" Style="overflow-wrap:anywhere">
+                            @(target.ProfileId is { } profile ? $"{target.Mode} · Profile {profile:D} · Revision {target.ProfileRevision}" : "Agent service account")
+                        </MudText>
+                    </MudPaper>
+                }
+            }
+        </MudStack>
+    </DialogContent>
+    <DialogActions>
+        <MudButton OnClick="@(() => Closed.InvokeAsync())">Close</MudButton>
+        @if (_review?.ApprovalId is not null)
+        {
+            <MudButton Disabled="_busy" Color="Color.Error" OnClick="RevokeAsync">Revoke</MudButton>
+        }
+        @if (_review is { Readiness.Ready: false, ScopeDigest: not null })
+        {
+            <MudButton Disabled="_busy" Color="Color.Primary" Variant="Variant.Filled" OnClick="ApproveAsync">Approve saved accounts</MudButton>
+        }
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [Parameter, EditorRequired] public PairingMapping Mapping { get; set; } = default!;
+    [Parameter] public EventCallback Closed { get; set; }
+    private static readonly DialogOptions Options = new() { FullWidth = true, MaxWidth = MaxWidth.Small };
+    private readonly CancellationTokenSource _lifetime = new();
+    private JobDto[] _jobs = [];
+    private ulong? _job;
+    private PairedJobRunAsReview? _review;
+    private bool _busy;
+    private string? _error;
+
+    protected override Task OnInitializedAsync() => LoadAsync(async token =>
+    {
+        if (int.TryParse(Mapping.NetRatelTenantId, out var tenant))
+            _jobs = (await Jobs.GetJobsAsync(null, cancellationToken: token)).Where(job => job.TenantId == tenant).ToArray();
+    });
+
+    private Task ReviewAsync(ulong? job)
+    {
+        _job = job;
+        _review = null;
+        return job is { } id ? LoadAsync(async token => _review = await Api.GetJobRunAsAsync(Mapping.Id, id, token)) : Task.CompletedTask;
+    }
+
+    private Task ApproveAsync() => _job is { } job && _review?.ScopeDigest is { } digest
+        ? LoadAsync(async token => _review = await Api.ApproveJobRunAsAsync(Mapping.Id, job, digest, token)) : Task.CompletedTask;
+
+    private Task RevokeAsync() => _job is { } job && _review?.ApprovalId is { } approval ? LoadAsync(async token =>
+    {
+        await Api.RevokeJobRunAsAsync(Mapping.Id, job, approval, token);
+        _review = await Api.GetJobRunAsAsync(Mapping.Id, job, token);
+    }) : Task.CompletedTask;
+
+    private async Task LoadAsync(Func<CancellationToken, Task> work)
+    {
+        _busy = true;
+        _error = null;
+        try { await work(_lifetime.Token); }
+        catch (PairingApiException error) { _error = error.Message; }
+        catch (Exception error) when (error is HttpRequestException or OperationCanceledException or NotSupportedException)
+        { _error = "The paired job approval could not be checked. Review the connection and try again."; }
+        finally { _busy = false; }
+    }
+
+    private Task OnVisibleChanged(bool visible) => visible ? Task.CompletedTask : Closed.InvokeAsync();
+
+    public void Dispose()
+    {
+        _lifetime.Cancel();
+        _lifetime.Dispose();
+    }
+}

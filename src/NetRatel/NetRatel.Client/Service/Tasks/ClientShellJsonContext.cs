@@ -13,11 +13,23 @@ internal sealed record ShellExecutionDiagnostics(string? ShellPath, string? Argu
 {
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public ObservedExecutionIdentity? ObservedIdentity { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? RequestedExecutor { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ResolvedEngine { get; init; }
 }
 internal sealed record ShellProgressEnvelope(string?[] Stdout, string?[] Stderr, long OutputSequence, bool OutputTruncated,
     string? OutputProtectionBinding);
 internal sealed record ShellFailureEnvelope(int? ExitCode, string[] Stdout, string[] Stderr, ShellFailureDiagnostics Diagnostics);
-internal sealed record ShellFailureDiagnostics(string TaskType, string? Payload, string FailureMessage);
+internal sealed record ShellFailureDiagnostics(string TaskType, string? Payload, string FailureMessage)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? FailureCode { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? RequestedExecutor { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? RequiredShell { get; init; }
+}
 internal sealed record ShellCancelledEnvelope(int? ExitCode, string[] Stdout, string[] Stderr, ShellCancellationDiagnostics Diagnostics);
 internal sealed record ShellCancellationDiagnostics(string TaskType, bool Cancelled);
 

@@ -14,6 +14,7 @@ using NetRatel.Client.Service.Shells;
 using NetRatel.Client.Service.Tasks;
 using NetRatel.Shared.Contracts.Jobs;
 using NetRatel.Shared.Contracts.Tasks;
+using NetRatel.Shared.Service.ClientEnvironment;
 
 namespace NetRatel.Client.Service.Gateway;
 
@@ -72,6 +73,7 @@ public sealed class AgentJobGatewayClient(GatewayClientOptions options, Action<s
         var headers = new Metadata { { "Authorization", $"Bearer {session.GetAccessToken(accessToken)}" } };
         using var streamLifetime = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
         using var call = client.Connect(headers, cancellationToken: streamLifetime.Token);
+        Task inventoryRefresh = Task.CompletedTask;
         try
         {
             await writer.WriteHelloAsync(call.RequestStream, stoppingToken).ConfigureAwait(false);
@@ -83,6 +85,8 @@ public sealed class AgentJobGatewayClient(GatewayClientOptions options, Action<s
             var negotiated = call.ResponseStream.Current.Accepted.Capabilities.ToHashSet(StringComparer.Ordinal);
             var supportsProtectedParameters = negotiated.Contains(ProtectedJobParameterRules.Capability);
             await writer.AttachAsync(call.RequestStream, streamLifetime.Token).ConfigureAwait(false);
+            if (negotiated.Contains(ShellInventoryDetector.JobInventoryRefreshCapability))
+                inventoryRefresh = writer.RefreshInventoryAsync(call.RequestStream, streamLifetime.Token);
             log($"Job gateway admitted. authority={call.ResponseStream.Current.Accepted.JobAuthority}.");
             ulong lastServerSequence = 0;
             while (await call.ResponseStream.MoveNext(stoppingToken).ConfigureAwait(false))
@@ -118,8 +122,9 @@ public sealed class AgentJobGatewayClient(GatewayClientOptions options, Action<s
         }
         finally
         {
-            writer.Detach(call.RequestStream);
             streamLifetime.Cancel();
+            await inventoryRefresh.ConfigureAwait(false);
+            writer.Detach(call.RequestStream);
             try { await call.RequestStream.CompleteAsync().ConfigureAwait(false); }
             catch (RpcException) { log("Job gateway stream had already closed before request completion."); }
             catch (OperationCanceledException) when (streamLifetime.IsCancellationRequested) { }
@@ -210,8 +215,32 @@ public sealed class AgentJobGatewayClient(GatewayClientOptions options, Action<s
             stream.WriteAsync(Stamp(new AgentJobFrame { Hello = new AgentJobHello
             {
                 Capabilities = { "job-lifecycle-v1", "gateway-execution", "progress-v1", "lifecycle-receipts-v1", ProtectedJobParameterRules.Capability,
-                    NativeExecutionAccounts.Capabilities }
+                    NativeExecutionAccounts.Capabilities, ShellInventoryDetector.JobInventoryRefreshCapability, ShellInventoryDetector.DetectJobCapabilities() }
             } }, 0), cancellationToken);
+
+        public async Task RefreshInventoryAsync(IClientStreamWriter<AgentJobFrame> stream, CancellationToken cancellationToken)
+        {
+            using var timer = new PeriodicTimer(TimeSpan.FromMinutes(4), clock);
+            try
+            {
+                while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    var inventory = new JobShellInventory { Capabilities = { ShellInventoryDetector.DetectJobCapabilities() } };
+                    await _writeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+                    try
+                    {
+                        var frame = Stamp(new AgentJobFrame { JobShellInventory = inventory }, ++_sequence);
+                        await stream.WriteAsync(frame, cancellationToken).ConfigureAwait(false);
+                    }
+                    finally { _writeGate.Release(); }
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { return; }
+            catch (Exception error) when (error is RpcException or IOException or InvalidOperationException)
+            {
+                log($"Job shell inventory could not be refreshed: {error.GetType().Name}.");
+            }
+        }
 
         public bool TryRegisterDispatch(JobStepDispatch dispatch) => !_receipts.ContainsKey(dispatch.RequestId) &&
             _cursors.TryAdd(dispatch.RequestId, new JobLifecycleCursor(dispatch.JobRunId, dispatch.JobStepId, dispatch.JobStepRunId,

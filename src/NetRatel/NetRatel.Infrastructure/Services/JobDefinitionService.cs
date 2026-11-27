@@ -11,7 +11,7 @@ using System.Text.Json;
 namespace NetRatel.Infrastructure.Services;
 
 public sealed class JobDefinitionService(OrchestratorDbContext db, JobSecretDefaultProtection? secretDefaults = null,
-    ITenantSecretService? vault = null) : IJobDefinitionService
+    ITenantSecretService? vault = null, IJobShellCompatibility? shellCompatibility = null) : IJobDefinitionService
 {
     private readonly OrchestratorDbContext _db = db;
     private static readonly JsonSerializerOptions ProviderDefaultJson = new(JsonSerializerDefaults.Web);
@@ -119,6 +119,8 @@ public sealed class JobDefinitionService(OrchestratorDbContext db, JobSecretDefa
         if (command.OptionsJson is not null) job.OptionsJson = NormalizeNullable(command.OptionsJson);
         job.UpdatedAtUtc = DateTimeOffset.UtcNow;
 
+        if (shellCompatibility is not null)
+            await ValidateShellsAsync(job, await _db.JobSteps.AsNoTracking().Where(step => step.JobId == job.Id).ToArrayAsync(ct), ct);
         await _db.SaveChangesAsync(ct);
         if (transaction is not null) await transaction.CommitAsync(ct);
         return Map(job);
@@ -326,6 +328,7 @@ public sealed class JobDefinitionService(OrchestratorDbContext db, JobSecretDefa
             Enabled = command.Enabled ?? true
         };
 
+        await ValidateShellsAsync(job, job.Steps.Append(row), ct);
         _db.JobSteps.Add(row);
         await _db.SaveChangesAsync(ct);
         if (transaction is not null) await transaction.CommitAsync(ct);
@@ -357,9 +360,24 @@ public sealed class JobDefinitionService(OrchestratorDbContext db, JobSecretDefa
         if (command.PayloadJson is not null) row.PayloadJson = command.PayloadJson;
         if (command.Enabled.HasValue) row.Enabled = command.Enabled.Value;
 
+        if (shellCompatibility is not null)
+        {
+            var job = await _db.Jobs.AsNoTracking().SingleAsync(parent => parent.Id == row.JobId, ct);
+            var otherSteps = await _db.JobSteps.AsNoTracking().Where(step => step.JobId == row.JobId && step.Id != row.Id).ToArrayAsync(ct);
+            await ValidateShellsAsync(job, otherSteps.Append(row), ct);
+        }
         await _db.SaveChangesAsync(ct);
         if (transaction is not null) await transaction.CommitAsync(ct);
         return Map(row);
+    }
+
+    private async Task ValidateShellsAsync(JobDefinition job, IEnumerable<JobStepDefinition> steps, CancellationToken ct)
+    {
+        if (shellCompatibility is null) return;
+        var enabled = steps.Where(step => step.Enabled).Select(Map).OrderBy(step => step.Ordinal).ToArray();
+        if (enabled.Length == 0) return;
+        var parameters = await ListParamsAsync(checked((ulong)job.Id), ct);
+        await shellCompatibility.RequireDefinitionAsync(new(Map(job), parameters, enabled), ct);
     }
 
     public async Task<JobStepInfo?> ReorderStepAsync(ulong stepId, int newOrdinal, CancellationToken ct = default)
@@ -489,7 +507,7 @@ public sealed class JobDefinitionService(OrchestratorDbContext db, JobSecretDefa
     private static string? NormalizeNullable(string? value)
         => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
-    private static JobDefinitionInfo Map(JobDefinition row)
+    internal static JobDefinitionInfo Map(JobDefinition row)
         => new(
             checked((ulong)row.Id),
             row.Name,
@@ -517,7 +535,7 @@ public sealed class JobDefinitionService(OrchestratorDbContext db, JobSecretDefa
             row.Description,
             row.OptionsJson) { HasProtectedDefault = row.ProtectedDefaultValue is not null, ProviderDefault = ReadProviderDefault(row.ProviderDefaultReferenceJson) };
 
-    private static JobStepInfo Map(JobStepDefinition row)
+    internal static JobStepInfo Map(JobStepDefinition row)
         => new(
             checked((ulong)row.Id),
             checked((ulong)row.JobId),

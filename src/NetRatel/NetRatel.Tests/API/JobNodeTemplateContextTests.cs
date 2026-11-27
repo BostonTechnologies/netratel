@@ -72,9 +72,38 @@ public sealed class JobNodeTemplateContextTests
         JobNodeTemplateContext.ResolveLiteral("@node.id@", new Dictionary<string, object?> { ["node.id"] = "forged" }).Should().Be("@node.id@");
     }
 
-    private sealed class SyntheticScript : IScriptService
+    [Theory]
+    [InlineData(null, ShellExecutor.Auto, ShellExecutor.Auto)]
+    [InlineData("windows-powershell", ShellExecutor.Auto, ShellExecutor.WindowsPowerShell)]
+    [InlineData("powershell", ShellExecutor.Auto, ShellExecutor.Pwsh)]
+    [InlineData(null, ShellExecutor.WindowsPowerShell, ShellExecutor.WindowsPowerShell)]
+    [InlineData("windows-powershell", ShellExecutor.Pwsh, null)]
+    public async Task PowerShell_library_preserves_explicit_engines_and_uses_auto_for_language_only(string? runner,
+        ShellExecutor preferred, ShellExecutor? expected)
     {
-        private readonly ScriptInfo _script = new(91, "Synthetic parameter echo", "/", null, "printf '%s' \"$1\"", null, "bash", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, 1);
+        var now = DateTimeOffset.UtcNow;
+        var run = new JobRunInfo(101, 41, 7, "", "fixture", JobRunState.Running, 1, now, null, null, null, null, null, Guid.NewGuid());
+        var step = new JobStepInfo(42, 41, 1, JobStepKind.LibraryScript, runner, null, 91,
+            JsonSerializer.Serialize(new ExecLibraryScriptPayload { Preferred = preferred }), true);
+        var bridge = new JobTaskBridge(new SyntheticScript("PowerShell"), NullLogger<JobTaskBridge>.Instance);
+        var result = await bridge.BuildGatewayInvocationAsync(run, step, new Dictionary<string, object?>(),
+            JobExecutionRuntimePolicy.FromValues(60, 0, 60), TestContext.Current.CancellationToken);
+        if (expected is null)
+        {
+            result.Success.Should().BeFalse();
+            result.Error.Should().Contain("same supported engine");
+            return;
+        }
+        result.Success.Should().BeTrue();
+        var payload = JsonSerializer.Deserialize<ExecLibraryScriptPayload>(result.PayloadJson!)!;
+        payload.Preferred.Should().Be(expected.Value);
+        payload.ScriptType.Should().Be(ScriptType.PowerShell);
+    }
+
+    private sealed class SyntheticScript(string language = "bash") : IScriptService
+    {
+        private readonly ScriptInfo _script = new(91, "Synthetic parameter echo", "/", null,
+            language == "bash" ? "printf '%s' \"$1\"" : "Write-Output 'fixture'", null, language, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, 1);
         public Task<ScriptInfo?> GetAsync(ulong id, CancellationToken ct = default) => Task.FromResult<ScriptInfo?>(id == 91 ? _script : null);
         public Task<IReadOnlyList<ScriptParamInfo>> GetParamsAsync(ulong id, CancellationToken ct = default) => Task.FromResult<IReadOnlyList<ScriptParamInfo>>([new(1, 91, "Label", "string", false, null, null, null)]);
         public Task<IReadOnlyList<ScriptInfo>> ListAsync(CancellationToken ct = default) => Task.FromResult<IReadOnlyList<ScriptInfo>>([_script]);

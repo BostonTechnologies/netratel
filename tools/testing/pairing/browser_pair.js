@@ -173,15 +173,31 @@ async function visualMatrix(page, stem) {
   }
   await resizeForVisualCapture(page, { width: 1440, height: 900 });
 }
+async function choiceControl(page, testId) {
+  const field = page.getByTestId(testId);
+  const search = field.locator('.creation-search-picker input:not([type="hidden"])');
+  // Older companions and NetRatel render a MudSelect with a visible combobox.
+  const searchable = await search.count() > 0;
+  return { trigger: searchable ? search : field.and(page.getByRole('combobox')), searchable };
+}
+async function assertChoice(page, testId, name) {
+  const { trigger, searchable } = await choiceControl(page, testId);
+  if (searchable) await expect(trigger).toHaveValue(name);
+  else await expect(trigger).toHaveText(name);
+}
+async function readChoice(page, testId) {
+  const { trigger, searchable } = await choiceControl(page, testId);
+  return (await (searchable ? trigger.inputValue() : trigger.innerText())).trim();
+}
 async function selectChoice(page, testId, name) {
-  // MudSelect also labels a hidden input; its accessible combobox is the visible trigger.
-  const trigger = page.getByTestId(testId).and(page.getByRole('combobox'));
+  const { trigger, searchable } = await choiceControl(page, testId);
   await expect(trigger).toHaveCount(1);
-  await trigger.click();
+  if (searchable) await trigger.fill(name);
+  else await trigger.click();
   const option = page.getByRole('option', { name, exact: true });
   await expect(option).toHaveCount(1);
   await option.click();
-  await expect(trigger).toHaveText(name);
+  await assertChoice(page, testId, name);
   await expect(option).toBeHidden();
 }
 async function visiblePair(page, consumer, generatorPage, generator, mappingName, capabilities) {
@@ -256,13 +272,11 @@ async function visiblePair(page, consumer, generatorPage, generator, mappingName
   await final.getByRole('checkbox', { name: /^Run automation/ }).setChecked(capabilities.automation);
   await expect(finalDialog.getByRole('button', { name: 'Save', exact: true })).toBeEnabled();
   const nameInput = final.getByLabel('Connection name', { exact: true });
-  const nrChoice = page.getByTestId(ids.nrTenant).and(page.getByRole('combobox'));
-  const rdChoice = page.getByTestId(ids.rdOrg).and(page.getByRole('combobox'));
   const incidentBox = final.getByRole('checkbox', { name: /^Create incidents/ });
   const automationBox = final.getByRole('checkbox', { name: /^Run automation/ });
   const assertInputs = async () => {
-    await expect(nrChoice).toHaveText(nr.name); await expect(rdChoice).toHaveText(rd.name);
-    if (customer) await expect(page.getByTestId(ids.rdCustomer).and(page.getByRole('combobox'))).toHaveText(customer.name);
+    await assertChoice(page, ids.nrTenant, nr.name); await assertChoice(page, ids.rdOrg, rd.name);
+    if (customer) await assertChoice(page, ids.rdCustomer, customer.name);
     else await expect(page.getByTestId(ids.rdCustomer)).toHaveCount(0);
     await expect(nameInput).toHaveValue(mappingName);
     await expect(incidentBox).toBeChecked({ checked: capabilities.incidents });
@@ -276,8 +290,8 @@ async function visiblePair(page, consumer, generatorPage, generator, mappingName
     await assertInputs();
   } catch (error) {
     let comparisons = { observationUnavailable: true };
-    try { comparisons = { netRatelTenantMatches: (await nrChoice.innerText()).trim() === nr.name, ratelDeskOrganizationMatches: (await rdChoice.innerText()).trim() === rd.name,
-      customerMatches: customer ? (await page.getByTestId(ids.rdCustomer).and(page.getByRole('combobox')).innerText()).trim() === customer.name : await page.getByTestId(ids.rdCustomer).count() === 0,
+    try { comparisons = { netRatelTenantMatches: await readChoice(page, ids.nrTenant) === nr.name, ratelDeskOrganizationMatches: await readChoice(page, ids.rdOrg) === rd.name,
+      customerMatches: customer ? await readChoice(page, ids.rdCustomer) === customer.name : await page.getByTestId(ids.rdCustomer).count() === 0,
       nameMatches: await nameInput.inputValue() === mappingName, createIncidentsChecked: await incidentBox.isChecked(), runAutomationChecked: await automationBox.isChecked() }; } catch {}
     record(consumer.name + '-final-input-values', 'failed', comparisons);
     throw error;
@@ -385,5 +399,5 @@ async function main() {
     throw error;
   } finally { await browser.close(); }
 }
-module.exports = { product, record, jsonRequest, login, account, visualMatrix, resizeForVisualCapture, selectChoice, seedCustomer, identifiers, state, root, fixture, evidence };
+module.exports = { product, record, jsonRequest, login, account, visualMatrix, resizeForVisualCapture, selectChoice, assertChoice, seedCustomer, identifiers, state, root, fixture, evidence };
 if (require.main === module) main().catch(error => { record('actual-rendered-pair-acceptance', 'failed', { ...safeFailure(error) }); process.exitCode = 1; });

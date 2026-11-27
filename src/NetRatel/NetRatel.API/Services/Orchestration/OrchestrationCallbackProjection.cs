@@ -21,6 +21,7 @@ public static class OrchestrationCallbackProjection
         if (!details.Run.IsAggregate) return Build(request, details, binding);
         var nodes = await JobRunNodeProjection.ReadAsync(db, checked((long)details.Run.Id), ct);
         var callback = Build(request, details, binding, nodes);
+        callback.Diagnostic = await ReadDiagnosticAsync(db, runs, details, binding, ct, nodes);
         var results = new JsonArray();
         var remainingBytes = 64 * 1024;
         foreach (var node in nodes.Take(25))
@@ -45,6 +46,26 @@ public static class OrchestrationCallbackProjection
         root["childResultsTruncated"] = nodes.Count > 25 || remainingBytes < 4;
         callback.ResultJson = root.ToJsonString();
         return callback;
+    }
+
+    internal static async Task<NetRatelProviderDiagnostic?> ReadDiagnosticAsync(OrchestratorDbContext db,
+        IJobRunService runs, JobRunDetails details, ManagedOrchestrationRequestBinding binding, CancellationToken ct,
+        IReadOnlyList<JobRunNodeDto>? nodes = null)
+    {
+        var diagnostic = NetRatelProviderDiagnostics.ForRun(binding, details);
+        if (diagnostic?.Code != "execution_failed" || !details.Run.IsAggregate) return diagnostic;
+        nodes ??= await JobRunNodeProjection.ReadAsync(db, checked((long)details.Run.Id), ct);
+        foreach (var node in nodes.Where(node => node.NativeRunId is not null &&
+                     node.State is JobRunNodeState.Failed or JobRunNodeState.TimedOut or JobRunNodeState.Cancelled or JobRunNodeState.Unknown).Take(25))
+        {
+            var native = await runs.GetDetailsAsync(node.NativeRunId!.Value, ct);
+            if (native is null || native.Run.ParentRunId != details.Run.Id || native.Run.TenantId != binding.TenantId ||
+                native.Run.AgentId != node.AgentId || !await TerminalReadyAsync(db, native, ct)) continue;
+            var candidate = NetRatelProviderDiagnostics.ForRun(binding, details, native);
+            if (candidate?.Code != "execution_failed") return candidate;
+            if (diagnostic.NodeId is null) diagnostic = candidate;
+        }
+        return diagnostic;
     }
 
     public static string ResultHash(JobRunDetails details) => JobRunProjectionHash.Compute(details);
@@ -103,7 +124,7 @@ public static class OrchestrationCallbackProjection
     {
         request.RequestTaskId, request.RequestId, request.ExecutionId,
         OrchestrationRequestId = request.NetRatelRequestId, OrchestrationRunId = request.NetRatelRunId,
-        request.Status, request.Message, request.ResultJson, request.ErrorJson, request.WorklogSummary,
+        request.Status, request.Message, request.ResultJson, request.ErrorJson, request.WorklogSummary, request.Diagnostic,
         request.StartedAtUtc, request.CompletedAtUtc
     };
 
@@ -148,7 +169,8 @@ public static class OrchestrationCallbackProjection
                     nativeRunId = node.NativeRunId?.ToString(CultureInfo.InvariantCulture), node.State, node.Reason }),
                 truncated = nodes.Count > 100 }) : results.Length == 0 ? null : JsonSerializer.Serialize(new { activities = results }),
             ErrorJson = run.Status is JobRunState.Failed or JobRunState.TimedOut or JobRunState.Cancelled or JobRunState.Unknown ? JsonSerializer.Serialize(new { state = run.Status.ToString(), message = run.Error ?? $"Job execution {run.Status}." }) : null,
-            StartedAtUtc = run.StartedAtUtc, CompletedAtUtc = run.CompletedAtUtc
+            StartedAtUtc = run.StartedAtUtc, CompletedAtUtc = run.CompletedAtUtc,
+            Diagnostic = NetRatelProviderDiagnostics.ForRun(binding, details)
         };
     }
 }
