@@ -376,10 +376,11 @@ public sealed partial class JobAggregatePostgresTests
                 && target.ProfileName == profile.DisplayName && target.Mode == ExecutionIdentityMode.WindowsPassword);
             using var approved = await browser.PutAsJsonAsync(path, new ApprovePairedJobRunAsRequest(reviewed.ScopeDigest!), ct);
             approved.EnsureSuccessStatusCode();
-            (await approved.Content.ReadFromJsonAsync<PairedJobRunAsReview>(ct))!.Readiness.Ready.Should().BeTrue();
+            var approval = (await approved.Content.ReadFromJsonAsync<PairedJobRunAsReview>(ct))!;
+            approval.Readiness.Ready.Should().BeTrue();
             var raw = await client.GetStringAsync(readinessPath, ct);
             raw.Should().Contain("run_as_approved").And.NotContain(profile.DisplayName).And.NotContain(profile.Id.ToString("D"));
-            return (await approved.Content.ReadFromJsonAsync<PairedJobRunAsReview>(ct))!.ApprovalId!.Value;
+            return approval.ApprovalId!.Value;
         }
 
         async Task FinishAsync(string attempt, Guid? expectedProfile)
