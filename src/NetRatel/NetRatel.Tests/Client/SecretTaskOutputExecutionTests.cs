@@ -66,7 +66,8 @@ public sealed class SecretTaskOutputExecutionTests
             ScriptContent = script, OutputPolicy = policy, TimeoutSeconds = 10
         });
         Assert.True(manager.EnqueueProtectedJobStep("protected-library-binding", TaskKinds.ExecLibraryScript, payload, 7, 0,
-            new Dictionary<string, string> { ["Canary"] = secret, ["LargeSecret"] = largeSecret }, DateTimeOffset.UtcNow.AddSeconds(expired ? -1 : 30)));
+            new Dictionary<string, string> { ["Canary"] = secret, ["LargeSecret"] = largeSecret },
+            new(TimeProvider.System, TimeProvider.System.GetTimestamp(), TimeSpan.FromSeconds(expired ? 0 : 30))));
         await completion.Task.WaitAsync(TimeSpan.FromSeconds(15), TestContext.Current.CancellationToken);
         foreach (var update in updates)
         {

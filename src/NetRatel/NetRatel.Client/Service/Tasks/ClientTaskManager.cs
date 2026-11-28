@@ -62,7 +62,7 @@ public sealed class ClientTaskManager : IDisposable
         int Environment,
         CancellationTokenSource Cancellation,
         IReadOnlyDictionary<string, string>? ProtectedParameters = null,
-        DateTimeOffset ProtectedExpires = default,
+        ProtectedJobDispatchLease? ProtectedLease = null,
         RunAsCredential? Credential = null) : IDisposable
     {
         private int _disposed;
@@ -178,14 +178,14 @@ public sealed class ClientTaskManager : IDisposable
         EnqueueCommand(commandId, taskType, payload, tenantId, environment);
 
     internal bool EnqueueProtectedJobStep(string commandId, string taskType, string payload, int tenantId, int environment,
-        IReadOnlyDictionary<string, string>? parameters, DateTimeOffset expires, RunAsCredential? credential = null) =>
-        expires != default && taskType is TaskKinds.ExecLibraryScript or TaskKinds.ExecShellCommand &&
+        IReadOnlyDictionary<string, string>? parameters, ProtectedJobDispatchLease lease, RunAsCredential? credential = null) =>
+        taskType is TaskKinds.ExecLibraryScript or TaskKinds.ExecShellCommand &&
         (parameters is null || taskType == TaskKinds.ExecLibraryScript && ProtectedJobParameterRules.AreValid(parameters)) &&
         (credential is null || NativeExecutionAccounts.IsValid(credential)) &&
-        EnqueueCommand(commandId, taskType, payload, tenantId, environment, parameters, expires, credential);
+        EnqueueCommand(commandId, taskType, payload, tenantId, environment, parameters, lease, credential);
 
     private bool EnqueueCommand(string commandId, string taskType, string? payload, int tenantId, int environment,
-        IReadOnlyDictionary<string, string>? protectedParameters = null, DateTimeOffset protectedExpires = default,
+        IReadOnlyDictionary<string, string>? protectedParameters = null, ProtectedJobDispatchLease? protectedLease = null,
         RunAsCredential? credential = null)
     {
         if (string.IsNullOrWhiteSpace(commandId) || string.IsNullOrWhiteSpace(taskType)) return false;
@@ -193,7 +193,7 @@ public sealed class ClientTaskManager : IDisposable
         {
             if (!_started || _cts is null || _queue is not { IsAddingCompleted: false } queue) return false;
             var work = new CommandWorkItem(commandId, taskType, payload, tenantId, environment,
-                CancellationTokenSource.CreateLinkedTokenSource(_cts.Token), protectedParameters, protectedExpires, credential);
+                CancellationTokenSource.CreateLinkedTokenSource(_cts.Token), protectedParameters, protectedLease, credential);
             if (!_enqueued.TryAdd(commandId, work))
             {
                 work.Dispose();
@@ -294,9 +294,10 @@ public sealed class ClientTaskManager : IDisposable
             task = task with { Output = new TaskOutputRedactor(null, additionalSecretValues: protectedParameters) };
 
         ITaskLogSink sink = NullTaskLogSink.Instance;
-        if (workItem.ProtectedExpires != default && workItem.ProtectedExpires <= DateTimeOffset.UtcNow)
+        if (workItem.ProtectedLease is { IsExpired: true })
         {
-            await PublishFailureAsync(task, sink, "Protected job parameters expired", "The protected dispatch expired while waiting to start.").ConfigureAwait(false);
+            await PublishFailureAsync(task, sink, "The protected job dispatch expired while waiting to start.",
+                null, failureCode: "protected_dispatch_expired").ConfigureAwait(false);
             return;
         }
 

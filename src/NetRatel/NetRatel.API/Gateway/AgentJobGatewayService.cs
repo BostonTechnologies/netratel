@@ -79,7 +79,12 @@ public sealed class AgentJobGatewayService(
                 ConnectionEpoch = session.ConnectionEpoch,
                 ConnectionId = session.ConnectionId.ToString("D"),
                 Sequence = 0,
-                Accepted = new JobConnectAccepted { JobAuthority = Authority, Capabilities = { "lifecycle-receipts-v1", ProtectedJobParameterRules.Capability, session.ExecutionCapabilities } }
+                Accepted = new JobConnectAccepted
+                {
+                    JobAuthority = Authority,
+                    Capabilities = { "lifecycle-receipts-v1", ProtectedJobParameterRules.Capability, session.ExecutionCapabilities },
+                    ServerUtc = Google.Protobuf.WellKnownTypes.Timestamp.FromDateTimeOffset(clock.GetUtcNow())
+                }
             }, admissionCancellation.Token).ConfigureAwait(false);
             logger.LogInformation("Job gateway admitted. authority={Authority} tenantId={TenantId} agentId={AgentId}", Authority, session.Client.TenantId, session.Client.AgentId);
 

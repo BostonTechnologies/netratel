@@ -76,13 +76,17 @@ public sealed class AgentJobGatewayClient(GatewayClientOptions options, Action<s
         Task inventoryRefresh = Task.CompletedTask;
         try
         {
+            var clock = TimeProvider.System;
+            var helloSentAt = clock.GetTimestamp();
             await writer.WriteHelloAsync(call.RequestStream, stoppingToken).ConfigureAwait(false);
             if (!await call.ResponseStream.MoveNext(stoppingToken).ConfigureAwait(false) ||
                 call.ResponseStream.Current.PayloadCase != GatewayJobFrame.PayloadOneofCase.Accepted)
                 throw new RpcException(new Status(StatusCode.Unavailable, "Job gateway closed before accepting the session."));
 
             writer.ValidateAccepted(call.ResponseStream.Current);
-            var negotiated = call.ResponseStream.Current.Accepted.Capabilities.ToHashSet(StringComparer.Ordinal);
+            var accepted = call.ResponseStream.Current.Accepted;
+            var serverAtAcceptance = accepted.ServerUtc is { } serverUtc ? ReadTimestamp(serverUtc) : (DateTimeOffset?)null;
+            var negotiated = accepted.Capabilities.ToHashSet(StringComparer.Ordinal);
             var supportsProtectedParameters = negotiated.Contains(ProtectedJobParameterRules.Capability);
             await writer.AttachAsync(call.RequestStream, streamLifetime.Token).ConfigureAwait(false);
             if (negotiated.Contains(ShellInventoryDetector.JobInventoryRefreshCapability))
@@ -104,7 +108,8 @@ public sealed class AgentJobGatewayClient(GatewayClientOptions options, Action<s
                     case GatewayJobFrame.PayloadOneofCase.ProtectedDispatch:
                         if (!supportsProtectedParameters)
                             throw new RpcException(new Status(StatusCode.FailedPrecondition, "Protected job parameters were not negotiated."));
-                        HandleProtectedDispatch(frame.ProtectedDispatch, taskManager, writer, negotiated, streamLifetime.Token);
+                        HandleProtectedDispatch(frame.ProtectedDispatch, taskManager, writer, negotiated,
+                            clock, serverAtAcceptance, helloSentAt, streamLifetime.Token);
                         break;
                     case GatewayJobFrame.PayloadOneofCase.Receipt:
                         writer.Acknowledge(frame.Receipt);
@@ -131,19 +136,30 @@ public sealed class AgentJobGatewayClient(GatewayClientOptions options, Action<s
         }
     }
 
-    private void HandleProtectedDispatch(ProtectedJobStepDispatch envelope, ClientTaskManager taskManager, JobGatewayWriter writer,
-        IReadOnlySet<string> negotiated, CancellationToken cancellationToken)
+    private static DateTimeOffset ReadTimestamp(Timestamp timestamp)
     {
-        var now = DateTimeOffset.UtcNow;
-        if (envelope.Step is not { TaskType: TaskKinds.ExecShellCommand or TaskKinds.ExecLibraryScript } dispatch || envelope.ExpiresAtUtc is null || envelope.Parameters.Count != 0 &&
+        try { return timestamp.ToDateTimeOffset(); }
+        catch (Exception error) when (error is InvalidOperationException or ArgumentOutOfRangeException)
+        { throw new RpcException(new Status(StatusCode.InvalidArgument, "The protected job gateway timestamp is invalid.")); }
+    }
+
+    internal void HandleProtectedDispatch(ProtectedJobStepDispatch envelope, ClientTaskManager taskManager, JobGatewayWriter writer,
+        IReadOnlySet<string> negotiated, TimeProvider clock, DateTimeOffset? serverAtAcceptance, long helloSentAt,
+        CancellationToken cancellationToken)
+    {
+        if (envelope.Step is not { TaskType: TaskKinds.ExecShellCommand or TaskKinds.ExecLibraryScript } dispatch || envelope.ExpiresAtUtc is not { } expiry || envelope.Parameters.Count != 0 &&
             (dispatch.TaskType != TaskKinds.ExecLibraryScript || !ProtectedJobParameterRules.AreValid(envelope.Parameters)))
             throw new RpcException(new Status(StatusCode.InvalidArgument, "The protected job dispatch is invalid."));
-        DateTimeOffset expires;
-        try { expires = envelope.ExpiresAtUtc.ToDateTimeOffset(); }
-        catch (Exception error) when (error is InvalidOperationException or ArgumentOutOfRangeException)
-        { throw new RpcException(new Status(StatusCode.InvalidArgument, "The protected job dispatch expiry is invalid.")); }
-        if (expires <= now || expires > now + ProtectedJobParameterRules.DispatchLifetime + ProtectedJobParameterRules.MaximumClockSkew)
-            throw new RpcException(new Status(StatusCode.FailedPrecondition, "The protected job dispatch expired or has an invalid lifetime."));
+        var lease = ProtectedJobDispatchLease.FromServerExpiry(ReadTimestamp(expiry), clock, serverAtAcceptance, helloSentAt);
+        if (lease is null)
+        {
+            envelope.Parameters.Clear();
+            NativeExecutionAccounts.Clear(envelope.Credential);
+            envelope.Credential = null;
+            RegisterDispatch(dispatch, writer);
+            _ = ReportExpiredDispatchAsync(dispatch, writer);
+            return;
+        }
         var parameters = envelope.Parameters.Count == 0 ? null :
             envelope.Parameters.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase);
         envelope.Parameters.Clear();
@@ -155,12 +171,22 @@ public sealed class AgentJobGatewayClient(GatewayClientOptions options, Action<s
             NativeExecutionAccounts.Clear(credential);
             throw new RpcException(new Status(StatusCode.FailedPrecondition, "The execution account mode was not negotiated."));
         }
-        HandleDispatch(dispatch, taskManager, writer, cancellationToken, parameters, expires, credential);
+        HandleDispatch(dispatch, taskManager, writer, cancellationToken, parameters, lease, credential);
     }
 
-    private void HandleDispatch(JobStepDispatch dispatch, ClientTaskManager taskManager, JobGatewayWriter writer,
-        CancellationToken cancellationToken, IReadOnlyDictionary<string, string>? protectedParameters = null, DateTimeOffset expires = default,
-        RunAsCredential? credential = null)
+    private async Task ReportExpiredDispatchAsync(JobStepDispatch dispatch, JobGatewayWriter writer)
+    {
+        try
+        {
+            await writer.PublishLifecycleAsync(dispatch.RequestId, JobLifecycleStatus.Failed,
+                """{"failureCode":"protected_dispatch_expired","error":"The protected job dispatch expired or had an invalid lifetime."}""",
+                null, 0).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) { return; }
+        catch (Exception exception) { log($"Job dispatch rejection failed for {dispatch.RequestId}: {exception.GetType().Name}"); }
+    }
+
+    private static void RegisterDispatch(JobStepDispatch dispatch, JobGatewayWriter writer)
     {
         if (dispatch.JobRunId == 0 || dispatch.JobStepId == 0 || dispatch.JobStepRunId == 0 || dispatch.Ordinal < 0 ||
             dispatch.TenantId != writer.TenantId || string.IsNullOrWhiteSpace(dispatch.RequestId) || string.IsNullOrWhiteSpace(dispatch.CorrelationId) ||
@@ -168,6 +194,13 @@ public sealed class AgentJobGatewayClient(GatewayClientOptions options, Action<s
             throw new RpcException(new Status(StatusCode.InvalidArgument, "Job gateway dispatch is invalid."));
         if (!writer.TryRegisterDispatch(dispatch))
             throw new RpcException(new Status(StatusCode.FailedPrecondition, "Job gateway dispatch was already observed; execution will not be repeated."));
+    }
+
+    private void HandleDispatch(JobStepDispatch dispatch, ClientTaskManager taskManager, JobGatewayWriter writer,
+        CancellationToken cancellationToken, IReadOnlyDictionary<string, string>? protectedParameters = null,
+        ProtectedJobDispatchLease? lease = null, RunAsCredential? credential = null)
+    {
+        RegisterDispatch(dispatch, writer);
         _ = AcceptAndEnqueueAsync();
         async Task AcceptAndEnqueueAsync()
         {
@@ -177,10 +210,10 @@ public sealed class AgentJobGatewayClient(GatewayClientOptions options, Action<s
                 // Keep the response reader free to consume the durable acknowledgement.
                 await writer.PublishLifecycleAsync(dispatch.RequestId, JobLifecycleStatus.Accepted, null, null, 0).ConfigureAwait(false);
                 cancellationToken.ThrowIfCancellationRequested();
-                enqueued = expires == default
-                    ? taskManager.EnqueueGatewayCommand(dispatch.RequestId, dispatch.TaskType, dispatch.PayloadJson, dispatch.TenantId, dispatch.Environment)
-                    : taskManager.EnqueueProtectedJobStep(dispatch.RequestId, dispatch.TaskType, dispatch.PayloadJson, dispatch.TenantId, dispatch.Environment,
-                        protectedParameters, expires, credential);
+                enqueued = lease is { } protectedLease
+                    ? taskManager.EnqueueProtectedJobStep(dispatch.RequestId, dispatch.TaskType, dispatch.PayloadJson, dispatch.TenantId, dispatch.Environment,
+                        protectedParameters, protectedLease, credential)
+                    : taskManager.EnqueueGatewayCommand(dispatch.RequestId, dispatch.TaskType, dispatch.PayloadJson, dispatch.TenantId, dispatch.Environment);
                 if (!enqueued)
                     await writer.PublishLifecycleAsync(dispatch.RequestId, JobLifecycleStatus.Failed, "{\"error\":\"job_queue_unavailable\"}", null, 0).ConfigureAwait(false);
             }
