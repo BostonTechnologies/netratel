@@ -587,6 +587,8 @@ message JobShellInventory { repeated string capabilities = 1; }
 message JobConnectAccepted {
   string job_authority = 1;
   repeated string capabilities = 2;
+  // An authenticated clock sample for checking protected dispatch expiry.
+  google.protobuf.Timestamp server_utc = 3;
 }
 
 // Emitted only after the authority commits the immutable lifecycle evidence.

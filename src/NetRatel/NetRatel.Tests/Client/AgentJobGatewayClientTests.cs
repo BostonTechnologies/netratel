@@ -4,12 +4,74 @@ using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using NetRatel.AgentGateway.Contracts.V1;
 using NetRatel.Client.Service.Gateway;
+using NetRatel.Client.Service.Tasks;
+using NetRatel.Shared.Contracts.Jobs;
+using NetRatel.Shared.Contracts.Tasks;
 using Xunit;
 
 namespace NetRatel.Tests.Client;
 
 public sealed class AgentJobGatewayClientTests
 {
+    [Theory]
+    [InlineData(-300)]
+    [InlineData(300)]
+    public void ProtectedDispatchUsesServerTimeAndRetainsItsDeadlineAcrossClockCorrections(int offsetSeconds)
+    {
+        var serverTime = DateTimeOffset.Parse("2026-11-28T17:00:00Z");
+        var clock = new JobClock(serverTime.AddSeconds(offsetSeconds));
+        var helloSentAt = clock.GetTimestamp();
+        clock.MonotonicTicks += TimeSpan.FromSeconds(2).Ticks;
+        var expires = serverTime + ProtectedJobParameterRules.DispatchLifetime;
+
+        ProtectedJobDispatchLease.FromServerExpiry(expires, clock, null, helloSentAt).Should().BeNull();
+        var lease = ProtectedJobDispatchLease.FromServerExpiry(expires, clock, serverTime, helloSentAt);
+        lease.Should().NotBeNull();
+        lease!.Value.Remaining.Should().Be(TimeSpan.FromSeconds(118));
+        clock.UtcNow = serverTime.AddDays(1);
+        lease.Value.IsExpired.Should().BeFalse();
+        clock.UtcNow = serverTime.AddDays(-1);
+        clock.MonotonicTicks += lease.Value.Remaining.Ticks;
+        lease.Value.IsExpired.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task ExpiredProtectedDispatchReportsTerminalFailureAndKeepsTheGatewayUsable()
+    {
+        var now = DateTimeOffset.Parse("2026-11-28T17:00:00Z");
+        var clock = new JobClock(now);
+        using var writer = NewWriter(clock);
+        var stream = new RecordingWriter();
+        await writer.AttachAsync(stream, CancellationToken.None);
+        var client = new AgentJobGatewayClient(new(), _ => { });
+        using var manager = new ClientTaskManager(writer.PublishTaskStatusAsync, _ => { });
+        var dispatch = Dispatch(now.AddMinutes(-3));
+        dispatch.TaskType = TaskKinds.ExecShellCommand;
+        var credential = new RunAsCredential { Username = "synthetic", Password = "synthetic-password" };
+        var protectedDispatch = new ProtectedJobStepDispatch
+        {
+            Step = dispatch, ExpiresAtUtc = Timestamp.FromDateTimeOffset(now.AddMinutes(-1)), Credential = credential
+        };
+
+        client.HandleProtectedDispatch(protectedDispatch, manager, writer, new HashSet<string>(), clock, now, 0, CancellationToken.None);
+
+        var failed = await stream.ReadAsync();
+        failed.Lifecycle.Status.Should().Be(JobLifecycleStatus.Failed);
+        failed.Lifecycle.StartedAtUtc.Should().BeNull();
+        failed.Lifecycle.ResultJson.Should().Contain("protected_dispatch_expired").And.NotContain("synthetic");
+        credential.Password.Should().BeEmpty();
+        protectedDispatch.Credential.Should().BeNull();
+        writer.Acknowledge(Receipt(failed));
+        writer.TryRegisterDispatch(dispatch).Should().BeFalse();
+
+        var next = Dispatch(now);
+        next.RequestId = "request-2";
+        writer.TryRegisterDispatch(next).Should().BeTrue();
+        var accepted = writer.PublishLifecycleAsync(next.RequestId, JobLifecycleStatus.Accepted, null, null, 0);
+        writer.Acknowledge(Receipt(await stream.ReadAsync()));
+        await accepted;
+    }
+
     [Fact]
     public async Task IndependentClocksAndBackwardCorrection_PreserveEventTimeAndOrderedCommittedEvidence()
     {
@@ -172,6 +234,9 @@ public sealed class AgentJobGatewayClientTests
     private sealed class JobClock(DateTimeOffset utcNow) : TimeProvider
     {
         public DateTimeOffset UtcNow { get; set; } = utcNow;
+        public long MonotonicTicks { get; set; }
+        public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+        public override long GetTimestamp() => MonotonicTicks;
         public override DateTimeOffset GetUtcNow() => UtcNow;
     }
     private sealed class RecordingWriter : IClientStreamWriter<AgentJobFrame>
