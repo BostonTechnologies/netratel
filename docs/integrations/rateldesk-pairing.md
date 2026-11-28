@@ -47,20 +47,26 @@ Existing incidents, receipts, Flow runs and task history remain intact.
 
 In NetRatel, open **System connections** and select **Paired Run as** on the
 automation connection. Select the job and review its targets and effective
-credential profiles. A tenant administrator with integration, jobs, Run as
-and secret-use permissions can select **Approve saved accounts**.
+credential profiles. An operator with tenant administration, integration
+management, job management, Run as and secret-use permissions for the mapped
+tenant can select **Approve saved accounts**. The pairing and connection
+owners must still have their retained authority for that mapping.
 
 Approval applies to the current connection revision, reviewed job and the
 displayed target and profile set. For a selector job, review requires a
 resolvable target set. A changed mapping, definition, membership or profile
 requires review again. **Revoke** removes that approval. An existing paired
-installation can use this workflow on its current mapping.
+installation can use this workflow on its current mapping. Refresh
+**Execution readiness** on the RatelDesk binding after approval.
 
 Jobs using the agent service account need no saved-account approval. An
 inherited client default or an explicit job override needs approval when it
 uses a saved profile. An HTTP 422 `run_as_denied` means NetRatel rejected the
-attempt before creating an execution. Search the RatelDesk attempt reference
-in NetRatel operations to locate the matching rejection.
+attempt before creating an execution. If approval is required, revoked or
+stale, review and approve the current scope. If connection authority is
+unavailable, check the saved mapping, its owners' permissions and its
+credentials before reviewing the job again. Search the RatelDesk attempt
+reference in NetRatel operations to locate the matching rejection.
 
 ## Addresses and credentials
 

@@ -71,12 +71,16 @@ public static partial class InternalEndpoints
                 return AutomationError(http, 403, "job-execution-readiness", "access_denied");
             try
             {
+                if (!await approvals.CanInvokeAsync(principal, ct))
+                    return Results.Ok(ManagedJobRunAsGrants.UnavailableReadiness);
                 var plan = await jobs.PlanManagedRunAsAsync(jobId, principal, ct);
-                return Results.Ok((await approvals.ReviewAsync(principal, plan, ct)).Readiness);
+                return Results.Ok(await approvals.ReadinessAsync(principal, plan, ct));
             }
             catch (PairingException error) when (error.StatusCode == 422)
             {
-                return Results.Ok(new PairedJobExecutionReadiness(false, error.Code, error.Message));
+                return Results.Ok(error.Code == "required_shell_unavailable"
+                    ? new PairedJobExecutionReadiness(false, error.Code, "Install the required shell or select a compatible engine.")
+                    : new PairedJobExecutionReadiness(false, "configuration_required", "Review the paired job's targets and execution accounts in NetRatel."));
             }
             catch (Exception error) when (error is PairingException or InvalidOperationException or ArgumentException or KeyNotFoundException)
             {
@@ -309,6 +313,7 @@ public static partial class InternalEndpoints
         JobTargetValidationException? error)
     {
         var diagnostic = NetRatelProviderDiagnostics.Admission(binding, error);
+        var logCorrelation = diagnostic.CorrelationId.ReplaceLineEndings(" ");
         var logger = http.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("NetRatel.API.Endpoints.Internal");
         var eventId = SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(new
         { binding.ServicePrincipalId, binding.ParentRequestId, binding.RequestTaskId, binding.CorrelationId, diagnostic.Code }));
@@ -325,15 +330,15 @@ public static partial class InternalEndpoints
         }
         catch (DbUpdateException exception) when (exception.InnerException is Npgsql.PostgresException { SqlState: Npgsql.PostgresErrorCodes.UniqueViolation })
         {
-            logger.LogDebug("The paired admission rejection already has an event. CorrelationId={CorrelationId}", binding.CorrelationId);
+            logger.LogDebug("The paired admission rejection already has an event. CorrelationId={CorrelationId}", logCorrelation);
         }
         catch (Exception exception)
         {
             logger.LogWarning("Could not persist paired admission rejection. CorrelationId={CorrelationId} FailureType={FailureType}",
-                binding.CorrelationId, exception.GetType().Name);
+                logCorrelation, exception.GetType().Name);
         }
-        logger.LogInformation("Paired job admission rejected. CorrelationId={CorrelationId} ConnectionId={ConnectionId} JobId={JobId} ReasonCode={ReasonCode} HttpStatus={HttpStatus}",
-            diagnostic.CorrelationId, diagnostic.ConnectionId, diagnostic.JobDefinitionId, diagnostic.Code, diagnostic.HttpStatus);
+        logger.LogInformation("Paired job admission rejected. CorrelationId={CorrelationId} ConnectionId={ConnectionId} JobId={JobId} Code={Code} Reason={Reason} HttpStatus={HttpStatus}",
+            logCorrelation, diagnostic.ConnectionId, diagnostic.JobDefinitionId, diagnostic.Code, diagnostic.Reason, diagnostic.HttpStatus);
         return Results.Json(new { operation = "invoke-job", httpStatus = 422, diagnostic.Code, detail = diagnostic.Message,
             correlationId = diagnostic.CorrelationId, diagnostic }, statusCode: 422);
     }

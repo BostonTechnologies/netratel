@@ -12,6 +12,7 @@ public sealed class JobTargetValidationException(string code, string message, in
     public int? StepOrdinal { get; init; }
     public string? RequestedExecutor { get; init; }
     public string? RequiredShell { get; init; }
+    public string? Reason { get; init; }
 }
 
 /// <summary>The one bounded grammar for saved selectors, builders, previews and execution.</summary>

@@ -12,12 +12,16 @@
     <DialogContent>
         <MudStack Spacing="2">
             <MudText Typo="Typo.body2">@Mapping.Name</MudText>
-            <MudSelect T="ulong?" Label="Job" Value="_job" ValueChanged="ReviewAsync" Disabled="_busy" Margin="Margin.Dense" Variant="Variant.Outlined">
-                @foreach (var job in _jobs)
-                {
-                    <MudSelectItem T="ulong?" Value="@((ulong?)job.Id)">@job.Name</MudSelectItem>
-                }
-            </MudSelect>
+            <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1">
+                <MudSelect T="ulong?" Label="Job" Value="_job" ValueChanged="ReviewAsync" Disabled="_busy" Margin="Margin.Dense" Variant="Variant.Outlined">
+                    @foreach (var job in _jobs)
+                    {
+                        <MudSelectItem T="ulong?" Value="@((ulong?)job.Id)">@job.Name</MudSelectItem>
+                    }
+                </MudSelect>
+                <MudIconButton Icon="@Icons.Material.Filled.Refresh" aria-label="Refresh Run as review" Disabled="@(_busy || _job is null)"
+                               OnClick="@(() => ReviewAsync(_job))" />
+            </MudStack>
             @if (_busy) { <MudProgressLinear Indeterminate="true" /> }
             @if (_error is { } error) { <MudAlert Dense="true" Severity="Severity.Error">@error</MudAlert> }
             @if (_review is { } review)
@@ -28,7 +32,7 @@
                     <MudPaper Outlined="true" Class="pa-2">
                         <MudText Typo="Typo.subtitle2">@target.Node</MudText>
                         <MudText Typo="Typo.caption" Style="overflow-wrap:anywhere">
-                            @(target.ProfileId is { } profile ? $"{target.Mode} · Profile {profile:D} · Revision {target.ProfileRevision}" : "Agent service account")
+                            @(target.ProfileId is { } profile ? $"{target.ProfileName ?? profile.ToString("D")} · {target.Mode} · Revision {target.ProfileRevision}" : "Agent service account")
                         </MudText>
                     </MudPaper>
                 }
@@ -86,7 +90,13 @@
         _busy = true;
         _error = null;
         try { await work(_lifetime.Token); }
-        catch (PairingApiException error) { _error = error.Message; }
+        catch (PairingApiException error)
+        {
+            _review = null;
+            _error = error.Code == "run_as_review_changed"
+                ? "The scope changed during review. Refresh the review for the current targets and accounts."
+                : error.Message;
+        }
         catch (Exception error) when (error is HttpRequestException or OperationCanceledException or NotSupportedException)
         { _error = "The paired job approval could not be checked. Review the connection and try again."; }
         finally { _busy = false; }

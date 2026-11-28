@@ -175,7 +175,8 @@ public sealed class JobAggregateOrchestrator(
         { ExpectedRuntimeSeconds = ingest.ExpectedRuntimeSeconds, GraceSeconds = ingest.GraceSeconds, HardTimeoutSeconds = ingest.HardTimeoutSeconds };
         var plan = await ResolvePlanAsync(snapshot, request, ct);
         if (ManagedJobRunAsGrants.Candidates(plan).Any(node => node.ExecutionAccount is not null))
-            binding.RunAsGrantId = await (managedRunAs ?? throw ManagedJobRunAsGrants.Denied()).RequireAsync(binding, plan, ct);
+            binding.RunAsGrantId = await (managedRunAs ?? throw ManagedJobRunAsGrants.Denied(PairedRunAsReasons.ConnectionUnavailable))
+                .RequireAsync(binding, plan, ct);
         var parent = await PersistAsync(ids.Next(), snapshot, request, plan,
             $"managed:{binding.ServicePrincipalId:N}:{binding.RequestId}", null, null, "managed", null, clock.GetUtcNow().Add(JobExecutionRuntimePolicy.FromJobAndRequest(snapshot.Definition.Job, request).HardTimeout), ct,
             deferWakeup: true, managedRunAsApproval: binding.RunAsGrantId);

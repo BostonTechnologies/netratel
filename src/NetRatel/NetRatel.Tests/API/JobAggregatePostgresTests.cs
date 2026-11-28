@@ -513,7 +513,7 @@ public sealed partial class JobAggregatePostgresTests(PostgreSqlPersistenceFixtu
         public ClaimCommitCrash ClaimCrash { get; } = new();
         private ServiceProvider? originalServices;
         public IJobRuntimeRouter NativeRouter => _native;
-        public void UseServices(ServiceProvider services) { originalServices = Services; Services = services; }
+        public void UseServices(ServiceProvider services) { originalServices ??= Services; Services = services; }
         private ActorSystem _actors = null!;
         private NativeRouter _native = null!;
         private static readonly ClaimsPrincipal Principal = new(new ClaimsIdentity([new("netratel_principal_id", "synthetic-manager")], "fixture"));

@@ -21,6 +21,7 @@ using Microsoft.IdentityModel.Tokens;
 using NetRatel.API.Endpoints;
 using NetRatel.API.Endpoints.Auth;
 using NetRatel.API.Endpoints.Systems;
+using NetRatel.API.Endpoints.SystemPairing;
 using NetRatel.API.Security.M2M;
 using NetRatel.API.Services.Jobs;
 using NetRatel.API.Services.Orchestration;
@@ -425,7 +426,8 @@ public sealed class OrchestrationManagedServiceHttpTests(PostgreSqlPersistenceFi
     private static NetRatelIngestRequest Ingest(string definition, string payload = "{\"value\":1}", string? callback = null, string correlation = "corr-managed") => new()
     { RequestId = "parent-request", RequestTaskId = "parent-task", CorrelationId = correlation, NetRatelRequestDefinitionId = definition, NetRatelJobDefinitionId = definition, JobName = "Permitted job", PayloadJson = payload, CallbackUrl = callback };
 
-    internal static async Task<WebApplication> StartAsync(string connection, string directory, ECDsa legacyKey, Action<IServiceCollection>? configure = null)
+    internal static async Task<WebApplication> StartAsync(string connection, string directory, ECDsa legacyKey,
+        Action<IServiceCollection>? configure = null, Action<WebApplicationBuilder>? configurePairingReview = null)
     {
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = Environments.Production }); builder.WebHost.UseTestServer();
         builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
@@ -462,7 +464,14 @@ public sealed class OrchestrationManagedServiceHttpTests(PostgreSqlPersistenceFi
         builder.Services.AddScoped<IAkkaJobAuthorityService, RecordingAuthority>(); builder.Services.AddOrchestrationManagedServices();
         foreach (var worker in builder.Services.Where(item => item.ServiceType == typeof(OrchestrationCallbackReconciler) || item.ServiceType == typeof(IHostedService) && (item.ImplementationType == typeof(OrchestrationCallbackWorker) || item.ImplementationType == typeof(ManagedJobRunRecoveryWorker))).ToArray()) builder.Services.Remove(worker);
         configure?.Invoke(builder.Services);
+        if (configurePairingReview is not null)
+        {
+            configurePairingReview(builder);
+            builder.Services.AddScoped<PairingService>();
+            builder.Services.AddPairingApi();
+        }
         var app = builder.Build(); app.UseAuthentication(); app.UseAuthorization(); app.UseRateLimiter(); app.MapInternalEndpoints(); app.MapSystemEndpoints(); app.MapM2MTokenEndpoints(); app.MapServiceIdentityMetadataEndpoints();
+        if (configurePairingReview is not null) app.MapPairingEndpoints();
         app.MapGet("/broad-legacy", () => Results.Ok()).RequireAuthorization("M2MOnly"); await app.StartAsync(); return app;
     }
 

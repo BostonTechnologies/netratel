@@ -29,11 +29,12 @@ public sealed class PairingAuthority(IEffectiveAccessService access, NetRatelIde
     public async Task<bool> CanManageAsync(string id, int tenant, bool incidents, bool automation, CancellationToken ct)
     {
         if (!await CurrentAsync(id, ct)) return false;
-        var actor = Retained(id);
-        return await access.AuthorizeAsync(actor, NetRatelPermissions.IntegrationManagement, tenant, ct) &&
+        return await CanManageAsync(Retained(id), tenant, incidents, automation, ct);
+    }
+    public async Task<bool> CanManageAsync(ClaimsPrincipal actor, int tenant, bool incidents, bool automation, CancellationToken ct) =>
+        await access.AuthorizeAsync(actor, NetRatelPermissions.IntegrationManagement, tenant, ct) &&
             (!incidents || await access.AuthorizeAsync(actor, NetRatelPermissions.SecretUse, tenant, ct)) &&
             (!automation || await access.AuthorizeAsync(actor, NetRatelPermissions.JobManagement, tenant, ct));
-    }
     private static bool SafeId(string? value) => value is { Length: > 0 and <= 128 } && value.Trim() == value && !value.Any(char.IsControl);
     public static void RequireShape(PairingMapping mapping)
     {
