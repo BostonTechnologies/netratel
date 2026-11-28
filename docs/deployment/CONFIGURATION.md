@@ -158,6 +158,12 @@ that may be shared by the native clients. For example, set
 container environment. Use dedicated data directories on the clients. The
 gateway requires a client that supports protected-path checks and an explicit
 root for every operation. Reviewed MCP grants can narrow this scope further.
+Before upgrading a deployment that previously browsed native volumes by
+default, configure the directories intended for file browsing on that
+instance. An empty list denies all file gateway operations. Open Basic or Full
+Explorer from the folder menu to see the allowed directories available on a
+client. A disk shortcut or manually entered path must fall inside an allowed
+directory.
 
 ## RatelDesk connections
 

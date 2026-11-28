@@ -30,7 +30,7 @@
                 <MudButton Disabled="@_busy" OnClick="NavigateAsync">Go</MudButton>
                 <MudButton Disabled="@_busy" OnClick="RefreshAsync" StartIcon="@Icons.Material.Filled.Refresh">Refresh</MudButton>
                 <MudButton Disabled="@_busy" OnClick="UpAsync">Up</MudButton>
-                <MudButton Disabled="@_busy" OnClick="VolumesAsync">Volumes</MudButton>
+                <MudButton Disabled="@_busy" OnClick="VolumesAsync">Allowed folders</MudButton>
                 <MudButton OnClick="@(() => _view = _view == MudExFileGridView.Details ? MudExFileGridView.Tiles : MudExFileGridView.Details)">Details / tiles</MudButton>
             </MudStack>
             <MudStack Row="true" Spacing="1" AlignItems="AlignItems.Center" Wrap="Wrap.Wrap">
@@ -89,7 +89,11 @@
                                   Height="@(_narrow ? "45vh" : "65vh")" InitialLayoutJson="@_layout" CurrentDirectoryChanged="DirectoryChangedAsync"
                                   SelectedNodesChanged="SelectionAsync" OnFileOpened="OpenFileAsync">
                     <FileAreaTemplate Context="entries">
-                        @if (_manager?.CurrentDirectory is { } directory && _provider.DirectoryListing(directory) is { Status: not RemoteDirectoryLoadStatus.Loaded } listing)
+                        @if (_manager?.CurrentDirectory is null && _provider.RootsError is { } rootsError)
+                        {
+                            <MudAlert Severity="Severity.Warning" data-testid="explorer-roots-unavailable">@rootsError</MudAlert>
+                        }
+                        else if (_manager?.CurrentDirectory is { } directory && _provider.DirectoryListing(directory) is { Status: not RemoteDirectoryLoadStatus.Loaded } listing)
                         {
                             @if (listing.Status == RemoteDirectoryLoadStatus.Unavailable)
                             { <MudAlert Severity="Severity.Warning" data-testid="explorer-listing-unavailable">@listing.Error</MudAlert> }
@@ -136,7 +140,7 @@
                     <MudTabs><MudTabPanel Text="Preview">@PreviewContent(true)</MudTabPanel><MudTabPanel Text="Details">@DetailsContent()</MudTabPanel></MudTabs>
                 </MudHidden>
                 </div>
-                <MudText Typo="Typo.caption" Style="overflow-wrap:anywhere">Browsing: @(_currentPath ?? "Select a native volume or enter a path")</MudText>
+                <MudText Typo="Typo.caption" Style="overflow-wrap:anywhere">Browsing: @(_currentPath ?? "Allowed folders")</MudText>
                 <MudText Typo="Typo.caption">@_selected.Count selected · immediate directory only · listing limit 4,096 · Full is read-only for file contents</MudText>
             }
         </div>
@@ -148,7 +152,7 @@
     [Parameter] public int TenantId { get; set; }
     [Parameter] public Guid AgentId { get; set; }
     [Parameter] public string HostLabel { get; set; } = "Client";
-    [Parameter] public string InitialPath { get; set; } = "/";
+    [Parameter] public string? InitialPath { get; set; } = "/";
     private readonly CancellationTokenSource _lifetime = new();
     private CancellationTokenSource? _operation;
     private CancellationTokenRegistration _connection;
@@ -179,7 +183,7 @@
     {
         _context = (TenantId, AgentId);
         _connection = Circuit.Token.Register(() => _lifetime.Cancel());
-        _path = RemoteFilePath.TryNormalizeDirectory(InitialPath, out var normalized) ? normalized : "/";
+        _path = RemoteFilePath.TryNormalizeDirectory(InitialPath, out var normalized) ? normalized : "";
         _provider = new(Gateway, TenantId, AgentId, _path, _lifetime.Token);
         _provider.ListingChanged += ListingChangedAsync;
         _layout = DefaultLayout;
@@ -207,7 +211,7 @@
         }
         if (_initialized || _manager is null) return;
         _initialized = true;
-        await NavigateAsync();
+        if (!string.IsNullOrEmpty(_path)) await NavigateAsync();
     }
     private async Task NavigateAsync()
     {
@@ -383,7 +387,7 @@
         await RejoinAsync();
         Dialog.Close();
         await Dialogs.ShowAsync<ClientFileSystemViewer>("Basic Explorer", new DialogParameters<ClientFileSystemViewer>
-        { { value => value.TenantId, _context.TenantId }, { value => value.AgentId, _context.AgentId }, { value => value.HostLabel, HostLabel }, { value => value.InitialPath, _currentPath ?? _provider!.CurrentPath } },
+        { { value => value.TenantId, _context.TenantId }, { value => value.AgentId, _context.AgentId }, { value => value.HostLabel, HostLabel }, { value => value.InitialPath, _currentPath } },
             new DialogOptions { FullScreen = true, CloseOnEscapeKey = true });
     }
     private async Task CloseAsync() { await RejoinAsync(); Dialog.Close(); }

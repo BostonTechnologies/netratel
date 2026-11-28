@@ -55,6 +55,34 @@ public sealed class ClientFileSystemViewerGatewayTests : AsyncBunitContext
     }
 
     [Fact]
+    public async Task OpeningFromTheFolderMenuDiscoversAllowedFoldersBeforeListing()
+    {
+        var factory = (GatewayFileHttpClientFactory)Services.GetRequiredService<IHttpClientFactory>();
+        var endpoint = $"/api/v2/agents/3/{AgentId:D}/filesystem";
+        factory.Respond = (request, _) => Task.FromResult(request.RequestUri!.AbsolutePath == $"{endpoint}/roots"
+            ? JsonResponse(HttpStatusCode.OK, new GatewayFileSystemListResponse(3, AgentId, "", "fixture", [new("Shared reports", "/srv/reports", true, 0)]))
+            : JsonResponse(HttpStatusCode.OK, new GatewayFileSystemListResponse(3, AgentId, "/srv/reports", "fixture", [new("report.txt", "/srv/reports/report.txt", false, 5)])));
+
+        var provider = Render<MudBlazor.MudDialogProvider>();
+        await Services.GetRequiredService<MudBlazor.IDialogService>()
+            .ShowAsync<ClientFileSystemViewer>("File Browser", new MudBlazor.DialogParameters<ClientFileSystemViewer>
+            {
+                { component => component.TenantId, 3 },
+                { component => component.AgentId, AgentId },
+                { component => component.InitialPath, null }
+            });
+        provider.WaitForAssertion(() => provider.Find("[data-testid='file-explorer-location']").TextContent.Should().Be("Allowed folders"));
+        provider.WaitForAssertion(() => factory.RequestedUris.Should().Equal($"{endpoint}/roots"));
+        provider.WaitForAssertion(() => provider.Find("[data-testid='file-explorer-list']").TextContent.Should().Contain("Shared reports"));
+        provider.Find("[data-testid='file-explorer-entry'] .file-explorer-name").Click();
+        provider.WaitForAssertion(() =>
+        {
+            factory.RequestedUris.Should().Equal($"{endpoint}/roots", $"{endpoint}?path=%2Fsrv%2Freports");
+            provider.Find("[data-testid='file-explorer-list']").TextContent.Should().Contain("report.txt");
+        });
+    }
+
+    [Fact]
     public async Task Uses_The_StreamingHttpClient_For_A_GatewayFileRead()
     {
         var factory = Services.GetRequiredService<IHttpClientFactory>();

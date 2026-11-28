@@ -36,7 +36,7 @@ public static class ClientToolDialogLauncher
             new DialogOptions { FullScreen = true, FullWidth = true, CloseOnEscapeKey = true, CloseButton = false });
     }
 
-    public static async Task<IDialogReference> FilesAsync(IDialogService dialogs, IServiceProvider services, ClientPresentationModel client, string initialPath, bool? explicitFull = null)
+    public static async Task<IDialogReference> FilesAsync(IDialogService dialogs, IServiceProvider services, ClientPresentationModel client, string? initialPath, bool? explicitFull = null)
     {
         if (!client.CanUseFilesystem) throw new InvalidOperationException(client.FilesystemUnavailableReason);
         var preference = services.GetService<ExplorerPreferenceService>();

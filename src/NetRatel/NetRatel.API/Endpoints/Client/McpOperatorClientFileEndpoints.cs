@@ -2010,7 +2010,7 @@ public static partial class McpOperatorClientFileEndpoints
     {
         "session_unavailable" => Failure("target_offline", context),
         "capability_unavailable" => Failure("capability_unavailable", context),
-        "access_denied" or "protected_path" => Failure("file_access_denied", context),
+        "access_denied" or "protected_path" or "file_roots_not_configured" or "file_path_outside_roots" => Failure("file_access_denied", context),
         "file_too_large" or "artifact_too_large" or "file_listing_too_large" => Results.Problem(
             statusCode: StatusCodes.Status413PayloadTooLarge,
             title: "The file exceeds the policy-admitted MCP transfer limit.",

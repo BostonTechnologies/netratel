@@ -155,7 +155,7 @@
                 "Services" => await ClientToolDialogLauncher.ServicesAsync(Dialogs, tenant, agent, HostLabel, TenantLabel),
                 "Telemetry" => await ClientToolDialogLauncher.TelemetryAsync(Dialogs, tenant, agent, HostLabel, TenantLabel, client?.Telemetry),
                 "Terminal" => await ClientToolDialogLauncher.TerminalAsync(Dialogs, client!, shell!),
-                "Browse files" => await ClientToolDialogLauncher.FilesAsync(Dialogs, Services, client!, client!.Telemetry?.Disks.FirstOrDefault()?.Scope ?? (client.OperatingSystem?.Contains("Windows", StringComparison.OrdinalIgnoreCase) == true ? "C:\\" : "/"), full),
+                "Browse files" => await ClientToolDialogLauncher.FilesAsync(Dialogs, Services, client!, null, full),
                 "Client logs" => await ClientToolDialogLauncher.LogsAsync(Dialogs, client!),
                 _ => await ClientToolDialogLauncher.SoftwareAsync(Dialogs, client!)
             };

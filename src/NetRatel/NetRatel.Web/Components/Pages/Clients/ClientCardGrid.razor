@@ -129,8 +129,8 @@
                                              Icon="@Icons.Material.Filled.FolderOpen" Color="Color.Secondary" Size="Size.Small" AriaLabel="Open file browser"
                                              AnchorOrigin="Origin.BottomCenter" TransformOrigin="Origin.TopCenter">
                                       <ChildContent>
-                                        <MudMenuItem OnClick="@(() => OpenFileBrowserAsync(client, primaryDisk?.Scope ?? "/", false))">Basic Explorer</MudMenuItem>
-                                        <MudMenuItem OnClick="@(() => OpenFileBrowserAsync(client, primaryDisk?.Scope ?? "/", true))">Full Explorer</MudMenuItem>
+                                        <MudMenuItem OnClick="@(() => OpenFileBrowserAsync(client, null, false))">Basic Explorer</MudMenuItem>
+                                        <MudMenuItem OnClick="@(() => OpenFileBrowserAsync(client, null, true))">Full Explorer</MudMenuItem>
                                       </ChildContent>
                                     </MudMenu>
                                     </MudTooltip>
@@ -275,7 +275,7 @@
 
     private async Task OpenSoftwareInventoryAsync(ClientPresentationModel client) => await ClientToolDialogLauncher.SoftwareAsync(DialogService, client);
     private async Task OpenTelemetryDialogAsync(ClientPresentationModel client, GatewayTelemetrySummary? telemetry) => await ClientToolDialogLauncher.TelemetryAsync(DialogService, client, telemetry);
-    private async Task OpenFileBrowserAsync(ClientPresentationModel client, string initialPath, bool? explicitFull = null) => await ClientToolDialogLauncher.FilesAsync(DialogService, Services, client, initialPath, explicitFull);
+    private async Task OpenFileBrowserAsync(ClientPresentationModel client, string? initialPath, bool? explicitFull = null) => await ClientToolDialogLauncher.FilesAsync(DialogService, Services, client, initialPath, explicitFull);
     private async Task OpenTerminalAsync(ClientPresentationModel client, string shell) => await ClientToolDialogLauncher.TerminalAsync(DialogService, client, shell);
     private async Task OpenLogExplorerAsync(ClientPresentationModel client) => await ClientToolDialogLauncher.LogsAsync(DialogService, client);
     private static string LogsTooltip(ClientPresentationModel client) => client.CanUseLogs ? "Open client logs" : $"Logs unavailable: {client.LogsUnavailableReason}";

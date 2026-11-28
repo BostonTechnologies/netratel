@@ -101,14 +101,14 @@ public sealed class ClientCardGridTests : AsyncBunitContext
             var parameters = provider.FindComponent<Stub<FullFileExplorerDialog>>().Instance.Parameters;
             parameters.Get(component => component.TenantId).Should().Be(3);
             parameters.Get(component => component.AgentId).Should().Be(AgentId);
-            parameters.Get(component => component.InitialPath).Should().Be("/");
+            parameters.Get(component => component.InitialPath).Should().BeNull();
         }
         else
         {
             var parameters = provider.FindComponent<Stub<ClientFileSystemViewer>>().Instance.Parameters;
             parameters.Get(component => component.TenantId).Should().Be(3);
             parameters.Get(component => component.AgentId).Should().Be(AgentId);
-            parameters.Get(component => component.InitialPath).Should().Be("/");
+            parameters.Get(component => component.InitialPath).Should().BeNull();
         }
         JSInterop.Invocations.Should().Contain(invocation => invocation.Identifier == "netratelExplorer.set" &&
             invocation.Arguments.Last()!.ToString() == (full ? "full" : "basic"));

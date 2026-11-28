@@ -24,7 +24,7 @@ public sealed class GatewayFileSystemApiService(IHttpClientFactory factory, Time
             cancellationToken).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
-            var problem = await response.Content.ReadFromJsonAsync<GatewayFileProblem>(cancellationToken);
+            var problem = await ReadProblemAsync(response, cancellationToken);
             if (problem?.Code == "session_unavailable") throw new GatewayFileCapabilityUnavailableException();
             throw new HttpRequestException(problem?.Detail ?? "Remote listing failed. Refresh the directory.", null, response.StatusCode);
         }
@@ -101,9 +101,24 @@ public sealed class GatewayFileSystemApiService(IHttpClientFactory factory, Time
     public async Task<GatewayFileSystemListResponse> RootsAsync(int tenantId, Guid agentId, CancellationToken cancellationToken)
     {
         using var response = await _control.GetAsync($"/api/v2/agents/{tenantId}/{agentId:D}/filesystem/roots", cancellationToken);
-        response.EnsureSuccessStatusCode();
-        return await response.Content.ReadFromJsonAsync<GatewayFileSystemListResponse>(cancellationToken)
+        if (!response.IsSuccessStatusCode)
+        {
+            var problem = await ReadProblemAsync(response, cancellationToken);
+            throw new GatewayFileRootsException(problem?.Detail ?? "Unable to load allowed folders.", response.StatusCode, problem?.Code);
+        }
+        var roots = await response.Content.ReadFromJsonAsync<GatewayFileSystemListResponse>(cancellationToken)
             ?? throw new InvalidOperationException("The client returned no root metadata.");
+        if (roots.TenantId != tenantId || roots.AgentId != agentId || roots.Path != "" ||
+            roots.Entries is null || roots.Entries.Count > 64 || roots.Entries.Any(entry => !entry.IsDirectory ||
+                !RemoteFilePath.TryNormalizeDirectory(entry.FullPath, out var path) || path != entry.FullPath))
+            throw new InvalidOperationException("The allowed folders response did not match this client.");
+        return roots;
+    }
+
+    private static async Task<GatewayFileProblem?> ReadProblemAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+    {
+        try { return await response.Content.ReadFromJsonAsync<GatewayFileProblem>(cancellationToken); }
+        catch (JsonException) { return null; }
     }
 
     public async Task<GatewayFileSystemMutationResponse> MutateAsync(int tenantId, Guid agentId, GatewayFileSystemMutationRequest request,
@@ -183,3 +198,9 @@ public sealed class GatewayFileSystemApiService(IHttpClientFactory factory, Time
 
 public sealed class GatewayFileCapabilityUnavailableException()
     : InvalidOperationException("The file gateway is unavailable. Browse again after it reconnects.");
+
+internal sealed class GatewayFileRootsException(string message, HttpStatusCode statusCode, string? code)
+    : HttpRequestException(message, null, statusCode)
+{
+    public string? Code { get; } = code;
+}

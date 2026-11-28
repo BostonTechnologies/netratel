@@ -12,6 +12,22 @@ public sealed class RemoteFileStructureManagerTests
     private static readonly Guid Agent = Guid.Parse("4886c6c0-e486-4f59-a006-40e4043a4a46");
 
     [Fact]
+    public async Task MissingServerRootsAreShownWithoutInventingAVolume()
+    {
+        var provider = Provider(request =>
+        {
+            request.RequestUri!.AbsolutePath.Should().EndWith("/filesystem/roots");
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.Forbidden)
+            {
+                Content = JsonContent.Create(new { code = "file_roots_not_configured", detail = "Configure allowed folders on the server." })
+            });
+        });
+
+        (await provider.GetRootAsync()).Should().BeEmpty();
+        provider.RootsError.Should().Be("Configure allowed folders on the server.");
+    }
+
+    [Fact]
     public async Task TreeStartedLoadCommitsCanonicalChildrenAndNotifiesAfterThePackagesSecondCallerReturns()
     {
         var completion = new TaskCompletionSource<HttpResponseMessage>(TaskCreationOptions.RunContinuationsAsynchronously);

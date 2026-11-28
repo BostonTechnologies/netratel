@@ -17,6 +17,7 @@ public sealed class RemoteFileStructureManager(GatewayFileSystemApiService gatew
     public RemoteDirectoryListing DirectoryListing(MudExFileStructureNode node) =>
         TryEntry(node, out var entry) ? _listings.GetValueOrDefault(entry.FullPath) ?? RemoteDirectoryListing.NotLoaded : RemoteDirectoryListing.NotLoaded;
     public string CurrentPath { get; set; } = initialPath;
+    public string? RootsError { get; private set; }
     public GatewayFileSystemMutationResponse? LastOutcomes { get; private set; }
     public IReadOnlyList<string> RefreshFailures { get; private set; } = [];
     public MudExFileManagerCapabilities Capabilities => MudExFileManagerCapabilities.Read |
@@ -30,21 +31,32 @@ public sealed class RemoteFileStructureManager(GatewayFileSystemApiService gatew
         lifetime.ThrowIfCancellationRequested();
         Invalidate();
         var generation = _generation;
+        RootsError = null;
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, lifetime);
         try
         {
             var roots = await gateway.RootsAsync(tenantId, agentId, linked.Token);
             linked.Token.ThrowIfCancellationRequested();
             if (generation != _generation) throw new OperationCanceledException("The remote roots were replaced.");
-            return roots.Entries.Where(entry => entry.IsDirectory).Select(entry => Node(entry)).ToHashSet();
+            if (roots.Entries.Count > 0)
+                return roots.Entries.Select(entry => Node(entry)).ToHashSet();
+
+            RootsError = "No allowed folders are available on this client.";
         }
-        catch (HttpRequestException exception) when (exception.StatusCode == System.Net.HttpStatusCode.Conflict)
+        catch (GatewayFileRootsException exception) when (exception.Code == "capability_unavailable" && CurrentPath.Length > 0)
         {
             // An older agent can still browse its selected volume. Never
             // substitute roots from the Web host or pretend seeking is supported.
             var root = RemoteFilePath.IsWindows(CurrentPath) ? CurrentPath[..3] : "/";
             return [Node(new(root, root, true, 0))];
         }
+        catch (Exception exception) when (exception is HttpRequestException or InvalidOperationException or System.Text.Json.JsonException)
+        {
+            linked.Token.ThrowIfCancellationRequested();
+            if (generation != _generation) throw new OperationCanceledException("The remote roots were replaced.");
+            RootsError = exception.Message;
+        }
+        return [];
     }
 
     public Task<HashSet<MudExFileStructureNode>> GetChildrenAsync(MudExFileStructureNode node, CancellationToken ct = default)
@@ -93,7 +105,7 @@ public sealed class RemoteFileStructureManager(GatewayFileSystemApiService gatew
         var parents = new Stack<string>();
         var current = path;
         parents.Push(current);
-        while (RemoteFilePath.TryGetDirectoryParent(current, out var parent))
+        while (!_nodes.ContainsKey(current) && RemoteFilePath.TryGetDirectoryParent(current, out var parent))
         { if (parents.Count > 256) throw new InvalidOperationException("The remote path has too many levels."); parents.Push(parent); current = parent; }
         MudExFileStructureNode? node = null;
         while (parents.TryPop(out var nextPath))
