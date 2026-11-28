@@ -245,11 +245,14 @@ public sealed partial class JobAggregatePostgresTests
 
             if (!ha)
             {
+                await h.ConnectAgentAsync(h.AgentIds[0], ct);
                 using var browser = app.GetTestClient();
                 var profileId = await VerifyPairedRunAsAsync(h, client, browser, key, credential, ulong.Parse(authored.RequestDefinitionId), ct);
                 await app.StopAsync(ct);
                 await using var restarted = await StartHostAsync();
                 h.UseServices((ServiceProvider)restarted.Services);
+                // The synthetic agent does not send periodic heartbeats. Reconnect it to the restarted API.
+                await h.ConnectAgentAsync(h.AgentIds[0], ct);
                 using var restartedClient = await OpenPairedClientAsync(restarted, credential);
                 var readiness = await restartedClient.GetFromJsonAsync<PairedJobExecutionReadiness>(
                     $"/internal/catalog/jobs/{authored.RequestDefinitionId}/execution-readiness", ct);

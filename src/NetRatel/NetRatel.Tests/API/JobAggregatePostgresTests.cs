@@ -575,16 +575,24 @@ public sealed partial class JobAggregatePostgresTests(PostgreSqlPersistenceFixtu
                     new JobStepDefinition { Id = 43, JobId = 41, Ordinal = 2, Type = 0, Runner = "bash", Command = "printf phase-two", Enabled = true });
                 await db.SaveChangesAsync(ct);
             }
-            var ownership = h.Services.GetRequiredService<IClientConnectionEpochStore>();
             foreach (var agent in h.AgentIds)
-            {
-                h.Clock.Reset(); var now = h.Clock.GetUtcNow(); var client = new ClientKey(7, agent);
-                var reservation = await ownership.ReserveAsync(new(client, Guid.NewGuid(), Guid.NewGuid(), 0, now, now.AddSeconds(30), now.AddMinutes(10), new("synthetic-gateway", ["presence"], null)), ct);
-                reservation.Disposition.Should().Be(OwnershipDisposition.Accepted);
-                var committed = await ownership.CommitAsync(reservation.Reservation!, new(reservation.Reservation!.Owner, 1, now), ct);
-                committed.Disposition.Should().Be(OwnershipDisposition.Accepted); h.Gateway.Owners[client] = committed.Current!.Owner;
-            }
+                await h.ConnectAgentAsync(agent, ct);
             return h;
+        }
+
+        public async Task ConnectAgentAsync(Guid agent, CancellationToken ct)
+        {
+            Clock.Reset();
+            var now = Clock.GetUtcNow();
+            var client = new ClientKey(7, agent);
+            var ownership = Services.GetRequiredService<IClientConnectionEpochStore>();
+            var reservation = await ownership.ReserveAsync(new(client, Guid.NewGuid(), Guid.NewGuid(), 0,
+                now, now.AddSeconds(30), now.AddMinutes(10), new("synthetic-gateway", ["presence"], null)), ct);
+            reservation.Disposition.Should().Be(OwnershipDisposition.Accepted);
+            var admitted = reservation.Reservation!;
+            var committed = await ownership.CommitAsync(admitted, new(admitted.Owner, 1, now), ct);
+            committed.Disposition.Should().Be(OwnershipDisposition.Accepted);
+            Gateway.Owners[client] = committed.Current!.Owner;
         }
         public async Task<JobRunInfo> StartAsync(CancellationToken ct, RunJobRequest? request = null)
         { await using var scope = Services.CreateAsyncScope(); return await scope.ServiceProvider.GetRequiredService<IAkkaJobAuthorityService>().StartAsync(41, request ?? new("synthetic-manager", null, null), ct); }
